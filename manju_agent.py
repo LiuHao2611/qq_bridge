@@ -56,7 +56,7 @@ IPADAPTER_MODEL = "ip-adapter_sd15.safetensors"  # -> models/ipadapter/
 CLIP_VISION = "CLIP-ViT-H-14-laion2B-s32B-b4K.safetensors"  # -> models/clip_vision/
 
 W, H = 768, 432  # 16:9 视频分辨率(出图)；动画建议降到 512x512 更稳
-BASE = os.path.dirname(os.path.abspath(__file__))
+BASE = os.environ.get("MANJU_APP_ROOT") or os.path.dirname(os.path.abspath(__file__))
 
 
 # ----------------------------- 模型可用性探测 -----------------------------

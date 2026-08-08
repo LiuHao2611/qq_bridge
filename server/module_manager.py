@@ -122,8 +122,12 @@ async def _run_frontend_build():
     若运行环境设置了 MANJU_FRONTEND_DIR，则构建到该目录，与 web_app 服务目录保持一致，
     实现回退→重建→即时生效的闭环（CLOSE-01）。未设置时回退到默认 frontend/dist。
 
-    注意：vite build 耗时十余秒，必须用 asyncio.to_thread 避免阻塞 FastAPI 事件循环。
-    """
+        注意：vite build 耗时十余秒，必须用 asyncio.to_thread 避免阻塞 FastAPI 事件循环。
+        """
+    # 冻结版(exe)不含 Node 运行时，无法在运行时重建前端；版本回退仍恢复源码，
+    # 但不再自动 vite build（对应 PROJECT_MAP 注明取舍）。
+    if getattr(sys, "frozen", False):
+        return {"ok": False, "reason": "frozen build 不支持运行时前端重建（不含 Node）"}
     if not os.path.isfile(VITE):
         return {"ok": False, "reason": "vite 未安装（node_modules 缺失）"}
     out_dir = os.environ.get("MANJU_FRONTEND_DIR")

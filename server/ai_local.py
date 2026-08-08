@@ -18,6 +18,7 @@ import subprocess
 import urllib.request
 import urllib.error
 import logging
+import sys
 
 logger = logging.getLogger("ai_local")
 
@@ -30,23 +31,100 @@ COMFY_URL = "http://127.0.0.1:8188"
 MODEL = os.environ.get("MANJU_OLLAMA_MODEL", "qwen3.5:9b")
 
 
-def ollama_available():
-    """检查 Ollama 可用且目标模型已加载（不仅检查 API 存活，还验证模型存在）。"""
+# -----------------------------------------------------------------------------
+# 模型设置读取（与 Settings.vue 的 modelSettings 结构对齐）
+# -----------------------------------------------------------------------------
+_settings_cache = None
+_settings_loaded_at = 0
+_SETTINGS_TTL_MS = 2000  # 2 秒内复用缓存，避免频繁读库
+
+
+def _load_model_settings():
+    """读取 SQLite settings 表中的 modelSettings，失败返回 {}（回退到全局默认值）。"""
+    global _settings_cache, _settings_loaded_at
+    now = time.time() * 1000
+    if _settings_cache is not None and now - _settings_loaded_at < _SETTINGS_TTL_MS:
+        return _settings_cache
+    try:
+        import db
+        conn = db.get_conn()
+        try:
+            row = db.fetch_one(conn, "SELECT value FROM settings WHERE key=?", ("modelSettings",))
+            if row and row.get("value"):
+                val = row["value"]
+                try:
+                    val = json.loads(val)
+                except Exception:
+                    val = {}
+                _settings_cache = val if isinstance(val, dict) else {}
+            else:
+                _settings_cache = {}
+        finally:
+            conn.close()
+    except Exception:
+        _settings_cache = {}
+    _settings_loaded_at = now
+    return _settings_cache
+
+
+def _get_ollama_url():
+    """返回 settings 中配置的 Ollama 地址，未配置则回退全局 OLLAMA_URL。"""
+    ms = _load_model_settings()
+    for purpose in ("create", "planning"):
+        cfg = ms.get(purpose, {})
+        if cfg.get("provider") == "local":
+            return cfg.get("local", {}).get("baseUrl") or OLLAMA_URL
+    return OLLAMA_URL
+
+
+def _get_comfy_url():
+    """返回 settings 中配置的 ComfyUI 地址，未配置则回退全局 COMFY_URL。"""
+    ms = _load_model_settings()
+    for purpose in ("video", "img"):
+        cfg = ms.get(purpose, {})
+        if cfg.get("provider") == "local":
+            return cfg.get("local", {}).get("baseUrl") or COMFY_URL
+    return COMFY_URL
+
+
+def _get_llm_model_config(purpose="create"):
+    """根据 purpose（create/planning）构造 model_config 供 split_story/extract_assets/ollama_chat 使用。"""
+    ms = _load_model_settings()
+    cfg = ms.get(purpose, {})
+    provider = cfg.get("provider") or "local"
+    out = {"provider": provider}
+    if provider == "local":
+        out["model"] = cfg.get("local", {}).get("model") or MODEL
+        out["apiBase"] = cfg.get("local", {}).get("baseUrl") or OLLAMA_URL
+    else:
+        out["apiBase"] = cfg.get("online", {}).get("baseUrl") or ""
+        out["apiKey"] = cfg.get("online", {}).get("apiKey") or ""
+        out["model"] = cfg.get("online", {}).get("model") or ""
+    return out
+
+
+def ollama_available(model=None):
+    """检查 Ollama 可用且目标模型已加载（不仅检查 API 存活，还验证模型存在）。
+
+    model: 指定模型名；None 则使用环境变量 MODEL 或 settings 中对应模型。
+    """
+    target = model or MODEL
     try:
         models = ollama_list_models()
-        if MODEL not in models:
+        if target not in models:
             logger.warning("[ollama] API 存活但模型 %s 未加载（可用模型: %s）"
-                           % (MODEL, models or "无"))
+                           % (target, models or "无"))
             return False
         return True
     except Exception:
         return False
 
 
-def ollama_list_models():
+def ollama_list_models(base_url=None):
     """返回 Ollama 本地已加载模型名列表；服务不可用时返回 []（不抛错）。"""
+    url = (base_url or _get_ollama_url()).rstrip("/") + "/api/tags"
     try:
-        with urllib.request.urlopen(OLLAMA_URL + "/api/tags", timeout=3) as r:
+        with urllib.request.urlopen(url, timeout=3) as r:
             if r.status != 200:
                 return []
             data = json.loads(r.read().decode("utf-8", "ignore"))
@@ -55,9 +133,10 @@ def ollama_list_models():
         return []
 
 
-def comfy_available():
+def comfy_available(base_url=None):
+    url = (base_url or _get_comfy_url()).rstrip("/") + "/system_stats"
     try:
-        with urllib.request.urlopen(COMFY_URL + "/system_stats", timeout=3) as r:
+        with urllib.request.urlopen(url, timeout=3) as r:
             return r.status == 200
     except Exception:
         return False
@@ -192,14 +271,17 @@ def detect_comfy_controlnet():
 
 
 def _resolve_ffmpeg():
-    p = shutil.which("ffmpeg")
-    if p:
-        return p
-    # 个人本地版：FFmpeg 常见安装位置（不依赖 PATH）
+    # 冻结版：ffmpeg.exe 随包放在可执行文件同级目录；其次 MANJU_APP_ROOT；
+    # 其次 PATH；最后回退本机旧绝对路径。避免对当前机器的强依赖。
+    _exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    _app_root = os.environ.get("MANJU_APP_ROOT") or _exe_dir
     for cand in (
+        os.path.join(_exe_dir, "ffmpeg.exe"),
+        os.path.join(_app_root, "ffmpeg.exe"),
+        shutil.which("ffmpeg") or "",
         r"D:\AI\tools\ffmpeg\ffmpeg-8.1.2-essentials_build\bin\ffmpeg.exe",
     ):
-        if os.path.isfile(cand):
+        if cand and os.path.isfile(cand):
             return cand
     return "ffmpeg"  # 退回 PATH（若仍缺失会诚实报错）
 
@@ -256,21 +338,29 @@ def build_prompt(role, objective, constraints=None, invariants=None):
     return "\n".join(lines)
 
 
-def _ollama_generate(prompt, think=False, keep_alive=None):
-    pl = {"model": MODEL, "prompt": prompt, "stream": False, "think": think}
+def _ollama_generate(prompt, think=False, keep_alive=None, model=None, base_url=None):
+    target_model = model or MODEL
+    url = (base_url or _get_ollama_url()).rstrip("/") + "/api/generate"
+    pl = {"model": target_model, "prompt": prompt, "stream": False, "think": think}
     if keep_alive is not None:
         pl["keep_alive"] = keep_alive
     payload = json.dumps(pl).encode("utf-8")
-    body = _http_post_json(OLLAMA_URL + "/api/generate", payload, timeout=180)
+    body = _http_post_json(url, payload, timeout=180)
     return json.loads(body).get("response", "")
 
 
-def ollama_chat(prompt, think=False, keep_alive=None):
-    """LLM 统一入口（§9 提示词规范）：内部复用 _ollama_generate。
+def ollama_chat(prompt, think=False, keep_alive=None, purpose="create"):
+    """LLM 统一入口（§9 提示词规范）：按 purpose 读取 settings 决定本地/在线。
 
-    满足业务对 ai_local.ollama_chat() 的调用约定；所有提示词都经 build_prompt 生成。
+    purpose: 'create' | 'planning' | 'extract'，对应 Settings.vue 中 modelSettings 的 key。
+    当 settings 中该 purpose 配置为 online 时，走 OpenAI 兼容在线 API；否则走本地 Ollama。
     """
-    return _ollama_generate(prompt, think=think, keep_alive=keep_alive)
+    cfg = _get_llm_model_config(purpose)
+    if cfg.get("provider") == "online":
+        raw, _ = _call_online_llm(prompt, cfg)
+        return raw or ""
+    return _ollama_generate(prompt, think=think, keep_alive=keep_alive,
+                            model=cfg.get("model"), base_url=cfg.get("apiBase"))
 
 
 def ollama_unload():
@@ -470,7 +560,7 @@ def extract_assets_from_story(story, model_config=None):
     成功返回 {"roles": [...], "scenes": [...], "props": [...], "meta": {...}}；
     失败返回 {"roles": [], "scenes": [], "props": [], "meta": {"error": ...}}。
     """
-    model_config = model_config or {}
+    model_config = model_config or _get_llm_model_config("create")
     provider = model_config.get("provider") or "local"
     model = model_config.get("model") or MODEL
     meta = {"model": model, "source": "llm", "provider": provider}
@@ -518,7 +608,7 @@ def split_story_with_llm(story, model_config=None):
     成功返回 {"segments": [...], "meta": {...}}；失败返回 {"segments": None, "meta": {...}}。
     meta 含 model/raw_preview/duration_ms/provider/error，供前端展示推理过程与回退原因。
     """
-    model_config = model_config or {}
+    model_config = model_config or _get_llm_model_config("planning")
     provider = model_config.get("provider") or "local"
     model = model_config.get("model") or MODEL
     meta = {"model": model, "source": "llm", "provider": provider}

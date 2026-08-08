@@ -38,14 +38,22 @@ sys.modules["routers_compiled"] = routers_compiled  # 注册后 `from routers_co
 _spec.loader.exec_module(routers_compiled)
 
 # 2) 复用其中的 api（全部路由）与所有公开符号
-from routers_compiled import *  # noqa: F401,F403
+#    冻结(PyInstaller)时 `routers_compiled` 由 importlib 按路径加载并注册进 sys.modules，
+#    此处改为运行时把公开符号注入全局，避免 `from X import *` 的静态分析报找不到模块。
+for _name, _val in vars(routers_compiled).items():
+    if not _name.startswith("_"):
+        globals()[_name] = _val
 
 # 覆盖实现所需的依赖（来自原模块 / 公共模块）
 from fastapi import Request  # noqa: F401
 import re  # noqa: F401
 from common import ok, ApiError  # noqa: F401
-from ai_local import split_story_with_llm, ollama_list_models, extract_assets_from_story  # noqa: F401
-from routers_compiled import _body, _redistribute_durations  # noqa: F401
+from ai_local import (  # noqa: F401
+    split_story_with_llm, ollama_list_models, extract_assets_from_story,
+    _call_online_llm, comfy_available
+)
+_body = getattr(routers_compiled, "_body")
+_redistribute_durations = getattr(routers_compiled, "_redistribute_durations")
 from db import get_conn, fetch_all, uid, SINGLE_USER_ID, log_operation  # noqa: F401
 
 # ======================================================================
@@ -268,6 +276,72 @@ async def update_settings(req: Request):
         return ok({"settings": {r["key"]: _parse_setting_value(r["value"]) for r in rows if _is_user_setting_key(r["key"])}})
     finally:
         conn.close()
+
+
+# --- 模型连接测试（Settings.vue 中「测试连接」按钮调用） ---
+@api.post("/models/test")
+async def test_model_connection(req: Request):
+    """测试给定 AI 模型配置的连通性。
+
+    body: { kind: 'create'|'planning'|'video'|'img', provider: 'local'|'online',
+            local?: {baseUrl, model}, online?: {baseUrl, apiKey, model} }
+    返回 data: { ok: bool, message: str }
+    """
+    b = await _body(req)
+    kind = b.get("kind") or "create"
+    provider = b.get("provider") or "local"
+    local_cfg = b.get("local") or {}
+    online_cfg = b.get("online") or {}
+
+    if provider == "local":
+        base_url = (local_cfg.get("baseUrl") or "").strip()
+        model = (local_cfg.get("model") or "").strip()
+        if not base_url:
+            return ok({"ok": False, "message": "未填写本地服务地址"})
+        if kind in ("create", "planning"):
+            try:
+                models = ollama_list_models(base_url)
+                if not models:
+                    return ok({"ok": False, "message": "无法从 %s 获取 Ollama 模型列表" % base_url})
+                if model and model not in models:
+                    return ok({"ok": False, "message": "目标模型 %s 未加载（可用：%s）" % (model, ", ".join(models[:10]))})
+                return ok({"ok": True, "message": "Ollama 可用，已加载模型：%s" % ", ".join(models[:10])})
+            except Exception as e:
+                return ok({"ok": False, "message": "连接 Ollama 失败：%s" % e})
+        else:  # video / img
+            try:
+                ok_flag = comfy_available(base_url)
+                return ok({"ok": ok_flag, "message": "ComfyUI 连接%s" % ("成功" if ok_flag else "失败")})
+            except Exception as e:
+                return ok({"ok": False, "message": "连接 ComfyUI 失败：%s" % e})
+    else:
+        api_base = (online_cfg.get("baseUrl") or "").strip()
+        api_key = online_cfg.get("apiKey") or ""
+        model = (online_cfg.get("model") or "").strip()
+        if not api_base:
+            return ok({"ok": False, "message": "未填写在线 API 地址"})
+        if kind in ("create", "planning"):
+            if not model:
+                return ok({"ok": False, "message": "未填写在线模型名"})
+            raw, meta = _call_online_llm("hi", {"apiBase": api_base, "apiKey": api_key, "model": model})
+            if raw is None:
+                return ok({"ok": False, "message": meta.get("error") or "在线模型无响应"})
+            return ok({"ok": True, "message": "在线 LLM 响应正常（模型：%s）" % model})
+        else:
+            # 视频/图像在线 API：先探测 /models 端点或基础连通性
+            import urllib.request
+            probe_url = api_base.rstrip("/") + "/models"
+            headers = {}
+            if api_key:
+                headers["Authorization"] = "Bearer " + api_key
+            try:
+                r = urllib.request.Request(probe_url, headers=headers, method="GET")
+                with urllib.request.urlopen(r, timeout=10) as resp:
+                    return ok({"ok": resp.status < 400, "message": "在线服务可访问（状态：%s）" % resp.status})
+            except Exception as e:
+                # 很多视频/图像服务没有 /models，仅验证地址格式也算"配置有效"
+                return ok({"ok": api_base.startswith(("http://", "https://")),
+                           "message": "在线地址已记录；实际生成时会按该地址调用（本次探测：%s）" % e})
 
 
 # --- 资产初始化：从剧本一键提取 + 批量创建（Phase 1 闭环） ---
