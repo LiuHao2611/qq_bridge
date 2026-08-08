@@ -451,24 +451,33 @@ def _extract_json_block(text):
 
 
 def _split_story_prompt(story):
-    """构造分场提示词，本地/在线模型共用。"""
+    """构造分场提示词，本地/在线模型共用（对齐手册 §3.1.2/§3.1.3 输出 schema）。"""
     return build_prompt(
         role="你是一个专业短剧编剧 / 分场导演",
         objective=(
-            "把下面长故事拆成若干个「场次」，严格输出 JSON 数组。每个元素字段：\n"
+            "把下面长故事拆成若干个「场次」，严格输出 JSON 数组。每个场次字段：\n"
             "  title(场次标题), duration(秒, 取值 5/8/10/12/15), scene_description(场景描述),\n"
             "  characters(出现的中文人名数组), summary(一句话梗概),\n"
-            "  shots(3 个分镜数组，每镜含 caption/description/duration/shot_type/camera_movement/refs)\n"
+            "  shots(分镜数组，按动作断点/台词停顿切分，每镜 3-12 秒)。每个分镜字段：\n"
+            "    shot_id(字符串, 如 's1'), duration(秒), shot_type(景别),\n"
+            "    camera_params:{ focal_length(焦距), angle(机位), movement(运镜) },\n"
+            "    scene_desc(镜头画面/场景描述), action_desc(动作/表演描述), audio_desc(台词/音效描述),\n"
+            "    refs(本镜出现的中文人名数组, 用于资产绑定)\n"
             "故事：\n%s" % story
         ),
         constraints=[
             "严格只输出 JSON 数组，不要任何解释文字",
-            "每场 shots 固定 3 个，时长之和 = duration",
-            "shot_type∈{wide,medium,close_up,extreme_close_up,full,long}; camera_movement∈{static,pan,tilt,dolly,zoom,follow}",
+            "每场 shots 时长之和 = duration（容差≤0.5s）",
+            "shot_type∈{extreme_close_up,close_up,medium_close,medium,medium_full,full,long,extreme_long}",
+            "camera_params.movement∈{static,pan,tilt,dolly,zoom,handheld,aerial,follow}",
+            "camera_params.angle∈{eye_level,low_angle,high_angle,dutch,overhead,shoulder,pov}",
+            "camera_params.focal_length∈{24mm,35mm,50mm,85mm,135mm}",
+            "紧张情节用近景+手持运镜，抒情情节用全景+慢推轨（按剧情情绪补全未明确参数）",
         ],
         invariants=[
             "不新增故事里未出现过的角色",
             "保留原始情节先后顺序",
+            "每个分镜必须有 scene_desc 与 action_desc（禁止无约束自由描述）",
         ],
     )
 
@@ -515,7 +524,12 @@ def _call_online_llm(prompt, model_config):
 
 
 def _normalize_split_segments(arr):
-    """把 LLM 返回的 JSON 数组规范化为标准 segment 结构。"""
+    """把 LLM 返回的 JSON 数组规范化为标准 segment 结构（对齐手册 §3.1.3 shot_list）。
+
+    每个分镜统一产出：shot_id / duration / shot_type / camera_params{focal_length,angle,movement}
+    / scene_desc / action_desc / audio_desc / refs；同时保留 shot_type/camera_movement 等
+    扁平字段供 persist_segment 等下游兼容消费。
+    """
     if not isinstance(arr, list) or not arr:
         return None, "解析结果为空或非数组"
     out = []
@@ -525,16 +539,44 @@ def _normalize_split_segments(arr):
         dur = int(seg.get("duration") or 10)
         if dur not in (5, 8, 10, 12, 15):
             dur = 10
-        shots = seg.get("shots") or []
-        if not isinstance(shots, list) or not shots:
-            shots = [{"caption": "镜头", "description": seg.get("scene_description", "")[:80],
-                      "duration": dur, "shot_type": "medium", "camera_movement": "static", "refs": []}]
+        raw_shots = seg.get("shots") or []
+        if not isinstance(raw_shots, list) or not raw_shots:
+            raw_shots = [{}]
+        norm_shots = []
+        for j, sh in enumerate(raw_shots):
+            if not isinstance(sh, dict):
+                sh = {}
+            cp = sh.get("camera_params") or {}
+            shot_type = sh.get("shot_type") or cp.get("shot_type") or "medium"
+            movement = sh.get("camera_movement") or cp.get("movement") or "static"
+            angle = sh.get("camera_angle") or cp.get("angle") or "eye_level"
+            focal = sh.get("focal_length") or cp.get("focal_length") or "50mm"
+            scene_desc = sh.get("scene_desc") or sh.get("description") or ""
+            norm_shots.append({
+                "shot_id": sh.get("shot_id") or ("s%d" % (j + 1)),
+                "index": j,
+                "duration": int(sh.get("duration") or 4),
+                "shot_type": shot_type,
+                "camera_params": {
+                    "focal_length": str(focal),
+                    "angle": angle,
+                    "movement": movement,
+                },
+                "camera_movement": movement,
+                "camera_angle": angle,
+                "focal_length": str(focal),
+                "scene_desc": scene_desc,
+                "action_desc": sh.get("action_desc") or "",
+                "audio_desc": sh.get("audio_desc") or "",
+                "description": scene_desc,
+                "refs": sh.get("refs") or sh.get("characters") or [],
+            })
         seg["title"] = seg.get("title") or ("场次 %02d" % (i + 1))
         seg["duration"] = dur
         seg["scene_description"] = seg.get("scene_description") or ""
         seg["summary"] = seg.get("summary") or ""
         seg["characters"] = seg.get("characters") or []
-        seg["shots"] = shots
+        seg["shots"] = norm_shots
         out.append(seg)
     return out, None
 

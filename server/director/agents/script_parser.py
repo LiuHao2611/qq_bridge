@@ -63,15 +63,80 @@ class ScriptParserAgent(BaseAgent):
             if asset_lib:
                 bound, bind_warn = self._auto_bind(segs, asset_lib)
 
+        # ① 空间站位预规划（设计逻辑「空间站位预规划」）：多人/群像生成相对位置/朝向/视线蓝图
+        for seg in segs:
+            self._plan_stage_positions(seg, bound.get(seg.get("segment_id")) or [])
+
+        # ② 规则引擎二次校验（项⑨ / §3.1.5）：解析必须结构化、资产强约束、相似度≥0.85；
+        #    不合格直接阻断（禁止无约束自由描述进入下游）。
+        rule_warnings = list(bind_warn)
+        for seg in segs:
+            seg_id = seg.get("segment_id")
+            seg_bounds = bound.get(seg_id) or []
+            asset_bindings = {sh.get("shot_id"): seg_bounds for sh in (seg.get("shots") or [])}
+            try:
+                from director.rule_engine import enforce
+                w = enforce(seg.get("shots") or [],
+                           max_shot_duration=int(seg.get("duration") or 12),
+                           asset_bindings=asset_bindings)
+                rule_warnings.extend(w)
+            except Exception as e:
+                self._set_state("failed", 0.0)
+                raise AgentError("RULE_ENGINE_FAILED", "规则引擎二次校验未通过: %s" % e, cause=e)
+
         self._set_state("done", 100.0, segment_count=len(segs), bound_segments=len(bound))
         self._log("agent_done", level="info", segment_count=len(segs),
                   bound_segments=len(bound), asset_lib_size=lib_size,
-                  needs_review=len(bind_warn))
+                  needs_review=len([w for w in rule_warnings if "待人工确认" in w]))
         return AgentResult(
             status="success",
             data={"segments": segs, "meta": meta, "bound_assets": bound, "asset_lib_size": lib_size},
-            warnings=bind_warn,
+            warnings=rule_warnings,
         )
+
+    # -- 空间站位预规划（设计逻辑「空间站位预规划」） -------------------------
+    def _plan_stage_positions(self, seg, seg_bound):
+        """多人/群像场景：生成角色相对位置/朝向/视线关系蓝图，作为生成约束避免穿模/左右混乱。"""
+        role_ids = {b.get("asset_id") for b in (seg_bound or []) if b.get("asset_type") == "role"}
+        for sh in (seg.get("shots") or []):
+            refs = [r for r in (sh.get("refs") or []) if r]
+            if len(refs) < 2:
+                sh["stage_blueprint"] = None
+                continue
+            layout = self._layout_positions(len(refs))
+            blueprint = []
+            for idx, rname in enumerate(refs):
+                p = layout[idx]
+                blueprint.append({
+                    "role": rname,
+                    "position": p["position"],
+                    "facing": p["facing"],
+                    "gaze": "toward_partner" if len(refs) == 2 else "toward_center",
+                })
+            sh["stage_blueprint"] = {
+                "type": "multi_character", "count": len(refs), "positions": blueprint,
+            }
+
+    @staticmethod
+    def _layout_positions(n):
+        """2 人：左右对望；3 人：左/中/右；>3：近似环抱分布。返回 [{position,facing}, ...]。"""
+        if n == 2:
+            return [{"position": "left", "facing": "right(center)"},
+                    {"position": "right", "facing": "left(center)"}]
+        if n == 3:
+            return [{"position": "left", "facing": "center"},
+                    {"position": "center", "facing": "front"},
+                    {"position": "right", "facing": "center"}]
+        # >3：左右两翼 + 居中若干
+        out = []
+        for i in range(n):
+            if i == 0:
+                out.append({"position": "far_left", "facing": "center"})
+            elif i == n - 1:
+                out.append({"position": "far_right", "facing": "center"})
+            else:
+                out.append({"position": "center_%d" % i, "facing": "front"})
+        return out
 
     # -- 资产自动绑定（手册 §3.1.4 步骤4 / §3.1.5 阈值） -------------------------
     def _auto_bind(self, segments, asset_lib):
