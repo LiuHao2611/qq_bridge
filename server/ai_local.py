@@ -386,16 +386,32 @@ def ollama_unload():
 
 
 def _extract_json_block(text):
-    """从 LLM 输出中截取首个 JSON 数组/对象块（容错：忽略解释性文字）。"""
+    """从 LLM 输出中截取首个 JSON 数组/对象块（容错：忽略解释性文字）。
+
+    优先尝试提取 JSON 对象 `{}`（如资产提取），再尝试 JSON 数组 `[]`（如分场拆解），
+    避免对象内部包含数组时误把内层数组当作顶层结构。
+    """
     if not text:
         return None
     s = text.strip()
-    start, end = s.find("["), s.rfind("]")
-    if start >= 0 and end > start:
-        return s[start:end + 1]
+    # 优先对象
     start, end = s.find("{"), s.rfind("}")
     if start >= 0 and end > start:
-        return s[start:end + 1]
+        candidate = s[start:end + 1]
+        try:
+            json.loads(candidate)
+            return candidate
+        except Exception:
+            pass
+    # 再试数组
+    start, end = s.find("["), s.rfind("]")
+    if start >= 0 and end > start:
+        candidate = s[start:end + 1]
+        try:
+            json.loads(candidate)
+            return candidate
+        except Exception:
+            pass
     return None
 
 
@@ -491,21 +507,59 @@ def _normalize_split_segments(arr):
 # ----------------------------- 资产提取（Phase 1 · 一键从剧本提取） -----------------------------
 
 def _extract_assets_prompt(story):
+    example = json.dumps({
+        "roles": [
+            {
+                "name": "周岩",
+                "role_type": "protagonist",
+                "description": "高二男生，额角有一道循环中残留的旧疤，蓝白校服，眼神疲惫但执着，动作急促",
+                "stage_hint": "youth"
+            },
+            {
+                "name": "程晴",
+                "role_type": "protagonist",
+                "description": "高一女生，校服胸口暗红，气质安静，笑容浅淡，手中常拿《灌篮高手》单行本",
+                "stage_hint": "youth"
+            }
+        ],
+        "scenes": [
+            {
+                "name": "石巷周岩家卧室",
+                "description": "砖瓦平房，晨光从窗帘缝隙打入，煤炉已灭，搪瓷缸在桌上，墙上挂山水挂历"
+            },
+            {
+                "name": "永安中学操场",
+                "description": "红土跑道，蓝白校服群像做早操，广播大喇叭放《运动员进行曲》，红旗半展"
+            }
+        ],
+        "props": [
+            {"name": "北极星牌闹钟", "description": "90年代国产名牌闹钟，铃锤炸响，象征循环锚点"},
+            {"name": "山水挂历", "description": "5月18日被红圈标注，红圈处纸张已被描119次而磨穿"},
+            {"name": "永久牌自行车", "description": "老式的学生自行车，车钥匙被周岩抓起准备冲出家门"}
+        ]
+    }, ensure_ascii=False)
     return build_prompt(
         role="你是专业短剧资产整理助手，擅长从剧本/故事中识别并归类视觉资产",
         objective=(
-            "从下面剧本/故事中提取三类视觉资产，严格只输出一个 JSON 对象，不要任何解释文字：\n"
+            "从下面剧本/故事中提取三类视觉资产，严格只输出一个 JSON 对象，不要任何解释文字。\n\n"
+            "必须严格遵循的字段格式：\n"
             "  roles: [{name(中文人名), role_type(主角=protagonist/配角=supporting/反派=antagonist), "
-            "           description(50字内外貌/身份/气质), stage_hint(可选年龄阶段：childhood/juvenile/youth/middle_age/old_age)}]\n"
-            "  scenes: [{name(场景名), description(50字内环境/氛围/光线)}]\n"
-            "  props: [{name(道具名), description(30字内形态/作用)}]\n"
-            "剧本/故事：\n%s" % story[:12000]
+            "           description(30-80字，必须包含外貌/身份/气质/动作特征，不能空), "
+            "           stage_hint(可选年龄阶段：childhood/juvenile/youth/middle_age/old_age)}]\n"
+            "  scenes: [{name(场景名), description(40-80字，必须包含环境/氛围/光线/空间特征，不能空)}]\n"
+            "  props: [{name(道具名), description(30-60字，必须包含形态/作用/象征意义，不能空)}]\n\n"
+            "输出示例（注意：scenes 和 props 必须是对象数组，不能是字符串数组；description 不能为空）：\n"
+            "%s\n\n"
+            "剧本/故事：\n%s" % (example, story[:30000])
         ),
         constraints=[
             "严格只输出 JSON，不要 Markdown 代码块、不要解释",
-            "角色名必须是剧本中实际出现的人名，不得虚构",
-            "场景是地点/环境，不要把它列为道具",
-            "道具是具体物品，不要把角色或场景列为道具",
+            "角色名必须是剧本中实际出现的人名，不得虚构；不要漏掉有台词、动作或被明确描述的角色",
+            "角色 description 不能空，必须从剧本原文中提取外貌、性格、语气、身份、动作特征；禁止编造剧本没有的细节",
+            "角色年龄必须从身份/学段推断：中学生/高中生 stage_hint='youth'，不要把学生描述为中年/老年",
+            "场景是地点/环境，不要把它列为道具；场景 description 不能空，必须包含环境/氛围/光线；禁止编造剧本没有的场景",
+            "道具是具体物品，不要把角色或场景列为道具；道具 description 不能空，必须包含形态/作用；禁止把描写改编成不存在的物品",
+            "scenes 和 props 必须是对象数组（每个元素带 name + description），绝不能是字符串数组",
             "每个类别如果为空则返回空数组",
         ],
         invariants=[
@@ -517,7 +571,7 @@ def _extract_assets_prompt(story):
 
 
 def _normalize_extracted_assets(obj):
-    """把 LLM 提取结果规范化为标准结构，并去重/截断。"""
+    """把 LLM 提取结果规范化为标准结构，并去重/截断/兼容字符串数组。"""
     valid_role_types = {"protagonist", "supporting", "antagonist"}
     valid_stages = {"childhood", "juvenile", "youth", "middle_age", "old_age"}
     out = {"roles": [], "scenes": [], "props": []}
@@ -531,6 +585,14 @@ def _normalize_extracted_assets(obj):
         if not isinstance(arr, list):
             continue
         for item in arr:
+            # 兼容模型把 scenes/props 退化成字符串数组的情况
+            if isinstance(item, str):
+                name = _clean_name(item)
+                if not name or name.lower() in seen[key]:
+                    continue
+                seen[key].add(name.lower())
+                out[key].append({"name": name, "description": ""})
+                continue
             if not isinstance(item, dict):
                 continue
             name = _clean_name(item.get("name"))
@@ -560,44 +622,78 @@ def extract_assets_from_story(story, model_config=None):
     成功返回 {"roles": [...], "scenes": [...], "props": [...], "meta": {...}}；
     失败返回 {"roles": [], "scenes": [], "props": [], "meta": {"error": ...}}。
     """
+    trace_id = str(uuid.uuid4())[:8]
     model_config = model_config or _get_llm_model_config("create")
     provider = model_config.get("provider") or "local"
     model = model_config.get("model") or MODEL
-    meta = {"model": model, "source": "llm", "provider": provider}
+    meta = {"model": model, "source": "llm", "provider": provider, "trace_id": trace_id}
+    logger.info(json.dumps({
+        "event": "extract_assets_start", "trace_id": trace_id,
+        "story_chars": len(story or ""), "provider": provider, "model": model,
+    }, ensure_ascii=False))
     prompt = _extract_assets_prompt(story)
     start = time.time()
     raw = None
     try:
         if provider == "local":
-            if not ollama_available():
-                meta["error"] = "Ollama 服务未启动或目标模型 %s 未加载" % model
+            if not ollama_available(model=model):
+                available = ollama_list_models()
+                meta["error"] = "Ollama 服务未启动或目标模型 %s 未加载（可用模型：%s）" % (model, ", ".join(available) or "无")
+                logger.warning(json.dumps({
+                    "event": "extract_assets_model_unavailable", "trace_id": trace_id,
+                    "model": model, "available_models": available, "error": meta["error"],
+                }, ensure_ascii=False))
                 return {"roles": [], "scenes": [], "props": [], "meta": meta}
-            raw = ollama_chat(prompt)
+            raw = ollama_chat(prompt, purpose="create")
         else:
             raw, online_meta = _call_online_llm(prompt, model_config)
             meta.update(online_meta or {})
     except Exception as e:
         meta["error"] = "调用模型异常：%s" % e
         meta["duration_ms"] = int((time.time() - start) * 1000)
+        logger.error(json.dumps({
+            "event": "extract_assets_exception", "trace_id": trace_id,
+            "error": str(e), "duration_ms": meta["duration_ms"],
+        }, ensure_ascii=False))
         return {"roles": [], "scenes": [], "props": [], "meta": meta}
     meta["duration_ms"] = int((time.time() - start) * 1000)
+    meta["raw_preview"] = (raw or "")[:800]
+    logger.info(json.dumps({
+        "event": "extract_assets_model_returned", "trace_id": trace_id,
+        "duration_ms": meta["duration_ms"], "raw_chars": len(raw or ""),
+    }, ensure_ascii=False))
     if not raw:
         if not meta.get("error"):
             meta["error"] = "模型返回为空"
+        logger.warning(json.dumps({
+            "event": "extract_assets_empty_response", "trace_id": trace_id, "error": meta["error"],
+        }, ensure_ascii=False))
         return {"roles": [], "scenes": [], "props": [], "meta": meta}
-    meta["raw_preview"] = raw[:800]
     block = _extract_json_block(raw)
     if not block:
         meta["error"] = "无法从模型输出中解析 JSON 块"
+        logger.warning(json.dumps({
+            "event": "extract_assets_no_json_block", "trace_id": trace_id,
+            "raw_preview": meta["raw_preview"], "error": meta["error"],
+        }, ensure_ascii=False))
         return {"roles": [], "scenes": [], "props": [], "meta": meta}
     try:
         obj = json.loads(block)
     except Exception as e:
         meta["error"] = "JSON 解析失败：%s" % e
+        logger.warning(json.dumps({
+            "event": "extract_assets_json_parse_failed", "trace_id": trace_id,
+            "block_preview": block[:400], "error": str(e),
+        }, ensure_ascii=False))
         return {"roles": [], "scenes": [], "props": [], "meta": meta}
     out = _normalize_extracted_assets(obj)
     out["meta"] = meta
     meta["count"] = len(out["roles"]) + len(out["scenes"]) + len(out["props"])
+    logger.info(json.dumps({
+        "event": "extract_assets_done", "trace_id": trace_id,
+        "roles": len(out["roles"]), "scenes": len(out["scenes"]), "props": len(out["props"]),
+        "duration_ms": meta["duration_ms"], "model": model,
+    }, ensure_ascii=False))
     return out
 
 
@@ -617,10 +713,11 @@ def split_story_with_llm(story, model_config=None):
     raw = None
     try:
         if provider == "local":
-            if not ollama_available():
-                meta["error"] = "Ollama 服务未启动或目标模型 %s 未加载" % model
+            if not ollama_available(model=model):
+                available = ollama_list_models()
+                meta["error"] = "Ollama 服务未启动或目标模型 %s 未加载（可用模型：%s）" % (model, ", ".join(available) or "无")
                 return {"segments": None, "meta": meta}
-            raw = ollama_chat(prompt)
+            raw = ollama_chat(prompt, purpose="planning")
         else:
             raw, online_meta = _call_online_llm(prompt, model_config)
             meta.update(online_meta)

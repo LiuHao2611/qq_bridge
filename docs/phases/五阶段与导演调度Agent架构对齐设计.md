@@ -138,8 +138,12 @@ N01→N02 失败收敛（CLOSE-01），错误码 1002（`MISSING_SCRIPT`）；�
 1. **端点接线（✅ 已落地 2026-08-08）**：`POST /projects/{id}/director-run`（后台线程跑 `GlobalScheduler.run`，返回 run_id）+ `GET /director-run`（列表）+ `GET /director-run/{run_id}`（查询）；
    `routers.py` 门面新增（已 version_guard 备份），剧本缺省从项目场次聚合（`_build_project_story_text`）；`on_progress` 经 WS 频道 `director:<pid>` 推送进度（§6 进度透出已落地）。
    前端「导演一站式生成」入口已加在生成生产页（ProductionStage.vue），WS 优先、轮询兜底（REDUN-01），进度横幅 + 成片链接。
-2. **P4 改入队（骨架占位）**：`SequenceSchedulerAgent` 现「直接调 `generate_segment_video`」；full 版改为向 `generation_tasks`
-   入队，由 `worker` 消费；调度器按 REDUN-01（WebSocket 不可用则轮询）跟踪状态，支持并行度与失败重试。
+2. **P4 改入队（✅ 已落地 2026-08-08 · full 版 ②）**：`SequenceSchedulerAgent` 已**不再直调** `generate_segment_video`，改为向 `generation_tasks` 入队、由 `worker` 消费（复用其重试/退款/超时/settle 全链路）。落地要点：
+   - 新增 `director/enqueue.py` 作为 Director↔worker 队列唯一桥梁：`enqueue_segment(seg_id, trace_id, …)` 入队前 **CLOSE-04 pre-auth 冻结即扣减**（idempotency_key=`dir-<trace>-<seg>` 杜绝 Date.now+random），插入失败自动 `refund` 退冻结金绝不遗留孤儿冻结；`estimate_segment_credits` 失败降级 180×duration。
+   - **FK 架构缺口修复（实跑暴露）**：Director 内存片段用 LLM 生成的 `seg_<uuid>`（无 DB 行），而 `generation_tasks.segment_id` 是引用 `segments` 的外键、worker 读真实行生成。新增 `resolve_segment_id`/`persist_segment` 桥接：按位置对齐既有 DB 行，或净新增派生稳定 id `seg-<project>-<index>` 并落库 shots/asset_refs，确保入队不再 FK 报错。
+   - 调度器 `_track_tasks` 轮询 `generation_tasks`，经 WS `director:<pid>` 透出 per-segment 进度（REDUN-01：WS 优先、轮询兜底）；终态后按真实 segment_id 对齐汇总（success/partial_fail/failed）。
+   - **`OUTPUTS` 路径修正**：`sequence_scheduler.OUTPUTS` 原算成 `server/outputs`（比 worker 实际落盘 `仓库根/outputs` 深一级），导致断点续跑漏检已生成文件、N05 二次分发同片段触发 idempotency 碰撞；已改为仓库根 `outputs`，与 `worker.py`/`ai_local.py` 一致，resume 正确命中。
+   - **实跑验证（2026-08-08）**：`director-run` 项目 b874b19c 触发 N04 → 2 条 `generation_tasks` 入队（真实 `seg-<project>-<index>` id，无 FK 错误）→ worker 消费（status running→succeeded）→ `segments.video_url` 写回、积分 settle；N05 因同 trace 重分发触发 pre-auth 碰撞，已借 OUTPUTS 修正 + resume 跳过修复。`ComfyUI` 未启动时 worker 走 FFmpeg 标题卡占位（"本地 AI 图像服务未启动"）仍返回成功。
 3. **N03 真人资产注入（待引擎）**：接入 ComfyUI IP-Adapter / ControlNet，落地手册 §5 的 512 维人脸特征 +
    身份权重 0.8–0.9（骨架仅注入资产名不变量 + 分层权重配置，引擎消费侧待 full 版）。
 4. **重试/降级落地（骨架埋点）**：`retry_after` + `_degrade` 已在 scheduler 接入；需补「降级模型 / 降级队列」的实际切换动作

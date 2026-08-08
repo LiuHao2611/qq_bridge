@@ -3,7 +3,7 @@ import { reactive, ref, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useTheme } from '../composables/useTheme'
-import { getSettings, updateSettings, getLocalModels } from '../api'
+import { getSettings, updateSettings, getLocalModels, testModelConnection } from '../api'
 
 const router = useRouter()
 const LS_KEY = 'wn_settings'
@@ -27,6 +27,61 @@ const PRESET_TO_ACCENT = {
   gray: 'purple',
 }
 
+const DEFAULT_OLLAMA_URL = 'http://127.0.0.1:11434'
+const DEFAULT_COMFY_URL = 'http://127.0.0.1:8188'
+
+const buildDefaultModelSettings = (existing = {}) => ({
+  create: {
+    provider: existing.create?.provider || 'local',
+    local: {
+      baseUrl: existing.create?.local?.baseUrl || DEFAULT_OLLAMA_URL,
+      model: existing.create?.local?.model || 'qwen3.5:9b',
+    },
+    online: {
+      baseUrl: existing.create?.online?.baseUrl || '',
+      apiKey: existing.create?.online?.apiKey || '',
+      model: existing.create?.online?.model || '',
+    },
+  },
+  planning: {
+    provider: existing.planning?.provider || 'local',
+    local: {
+      baseUrl: existing.planning?.local?.baseUrl || DEFAULT_OLLAMA_URL,
+      model: existing.planning?.local?.model || 'qwen3.5:9b',
+    },
+    online: {
+      baseUrl: existing.planning?.online?.baseUrl || '',
+      apiKey: existing.planning?.online?.apiKey || '',
+      model: existing.planning?.online?.model || '',
+    },
+  },
+  video: {
+    provider: existing.video?.provider || 'local',
+    local: {
+      baseUrl: existing.video?.local?.baseUrl || DEFAULT_COMFY_URL,
+      model: existing.video?.local?.model || 'ComfyUI 本地视频工作流',
+      workflowPath: existing.video?.local?.workflowPath || '',
+    },
+    online: {
+      baseUrl: existing.video?.online?.baseUrl || '',
+      apiKey: existing.video?.online?.apiKey || '',
+      model: existing.video?.online?.model || '',
+    },
+  },
+  img: {
+    provider: existing.img?.provider || 'local',
+    local: {
+      baseUrl: existing.img?.local?.baseUrl || DEFAULT_COMFY_URL,
+      model: existing.img?.local?.model || 'ComfyUI SD1.5 本地',
+    },
+    online: {
+      baseUrl: existing.img?.online?.baseUrl || '',
+      apiKey: existing.img?.online?.apiKey || '',
+      model: existing.img?.online?.model || '',
+    },
+  },
+})
+
 const defaults = () => ({
   // 外观
   theme: 'dark',
@@ -34,11 +89,12 @@ const defaults = () => ({
   language: 'zh-CN',
   accent: 'purple',
   density: 'standard',
-  // AI 模型（个人本地版仅使用本地 Ollama / ComfyUI）
+  // AI 模型：本地/在线可切换 + 自定义路径（向后兼容旧字段）
   createModel: 'qwen3.5:9b',
   videoModel: 'ComfyUI 本地视频工作流',
   imgModel: 'ComfyUI SD1.5 本地',
   planningModel: 'qwen3.5:9b',
+  modelSettings: buildDefaultModelSettings(),
   defaultResolution: '720p',
   defaultRatio: '16:9',
   defaultDuration: 12,
@@ -78,6 +134,88 @@ const load = () => {
 const settings = reactive(load())
 const { set: setTheme, setPreset } = useTheme()
 
+// 把旧版平面字段（createModel/planningModel/videoModel/imgModel）迁移到新版 modelSettings
+const migrateLegacyModelSettings = () => {
+  const ms = settings.modelSettings
+  if (settings.createModel && !ms.create.local.model) {
+    ms.create.local.model = settings.createModel
+  }
+  if (settings.planningModel && !ms.planning.local.model) {
+    ms.planning.local.model = settings.planningModel
+  }
+  if (settings.videoModel && !ms.video.local.model) {
+    ms.video.local.model = settings.videoModel
+  }
+  if (settings.imgModel && !ms.img.local.model) {
+    ms.img.local.model = settings.imgModel
+  }
+  // 兼容此前可能只有 workflowPath 没有 model 的情况
+  if (!ms.video.local.model && ms.video.local.workflowPath) {
+    ms.video.local.model = ms.video.local.workflowPath
+  }
+}
+
+// 模型来源/测试状态
+const testStates = reactive({
+  create: { loading: false, result: '' },
+  planning: { loading: false, result: '' },
+  video: { loading: false, result: '' },
+  img: { loading: false, result: '' },
+})
+
+const MODEL_LABELS = {
+  create: '默认创作模型',
+  planning: '默认策划模型',
+  video: '默认视频模型',
+  img: '默认文生图',
+}
+
+const refreshLocalLLMLists = () => {
+  // 用 settings 中配置的 Ollama 地址拉取模型；失败则保持现有 fallback
+  const baseUrl = settings.modelSettings?.create?.local?.baseUrl || DEFAULT_OLLAMA_URL
+  getLocalModels().then(models => {
+    if (Array.isArray(models) && models.length) {
+      localLLMs.value = models
+      localPlanningModels.value = models
+    }
+  }).catch(() => {})
+}
+
+const runModelTest = async (key) => {
+  // 让当前聚焦的输入框/下拉先失焦，确保 allow-create/filterable 的 el-select 值已同步到 v-model
+  if (typeof document !== 'undefined' && document.activeElement) {
+    document.activeElement.blur()
+  }
+  // 等待 Vue 更新一次 tick
+  await new Promise(r => setTimeout(r, 50))
+  const st = testStates[key]
+  st.loading = true
+  st.result = ''
+  try {
+    const cfg = settings.modelSettings[key]
+    const payload = {
+      kind: key,
+      provider: cfg.provider,
+      local: cfg.local,
+      online: cfg.online,
+    }
+    const res = await testModelConnection(payload)
+    if (res?.code === 0) {
+      st.result = res.data?.ok ? `连接成功：${res.data.message || ''}` : `连接失败：${res.data?.message || '未知错误'}`
+      if (res.data?.ok) ElMessage.success(st.result)
+      else ElMessage.error(st.result)
+    } else {
+      st.result = `测试失败：${res?.message || '服务异常'}`
+      ElMessage.error(st.result)
+    }
+  } catch (e) {
+    st.result = `测试异常：${e.message || e}`
+    ElMessage.error(st.result)
+  } finally {
+    st.loading = false
+  }
+}
+
 const persist = () => {
   try { localStorage.setItem(LS_KEY, JSON.stringify({ ...settings })) } catch (e) {}
 }
@@ -91,6 +229,11 @@ watch(() => settings.accent, (v) => {
 const saveAll = async () => {
   persist()
   try {
+    // 同步旧字段，保证旧代码读取 createModel 等仍有效
+    settings.createModel = settings.modelSettings.create.local.model
+    settings.planningModel = settings.modelSettings.planning.local.model
+    settings.videoModel = settings.modelSettings.video.local.model
+    settings.imgModel = settings.modelSettings.img.local.model
     await updateSettings({ ...settings })
     ElMessage.success('设置已保存到本地与后端')
   } catch (e) {
@@ -214,6 +357,13 @@ onMounted(async () => {
   } catch (e) {
     console.warn('settings backend failed, use local', e.message)
   }
+
+  // 初始化 AI 模型配置：优先用后端 modelSettings，不存在则从旧字段迁移
+  settings.modelSettings = buildDefaultModelSettings(settings.modelSettings || {})
+  migrateLegacyModelSettings()
+
+  // 为本地 Ollama 模型选择器填充列表
+  refreshLocalLLMLists()
 })
 
 const checkUpdate = () => ElMessage(`当前版本 ${APP_VERSION} · 个人本地版通过 Git/版本管理器更新`)
@@ -223,11 +373,11 @@ const resetSettings = () => {
   ElMessage.success('已恢复默认设置')
 }
 
-// 本地模型选项
+// 本地模型选项（Ollama 列表会从 /models/local 动态拉取；ComfyUI 保持静态常用项 + 可自定义输入）
 const localLLMs = ref(['qwen3.5:9b', 'qwen2.5:7b', 'llama3.1:8b', '本地 Ollama 模型'])
 const localPlanningModels = ref(['qwen3.5:9b', 'qwen2.5:7b', 'llama3.1:8b', '本地 Ollama 模型'])
-const videoModels = ['ComfyUI 本地视频工作流', '本地 FFmpeg 合成']
-const imgModels = ['ComfyUI SD1.5 本地', 'ComfyUI SDXL 本地']
+const comfyVideoModels = ['ComfyUI 本地视频工作流', '本地 FFmpeg 合成']
+const comfyImgModels = ['ComfyUI SD1.5 本地', 'ComfyUI SDXL 本地']
 const resolutions = ['480p', '720p', '1080p', '2K', '4K']
 const ratios = ['16:9', '9:16', '1:1', '4:3', '21:9']
 const durations = [5, 8, 10, 12, 15]
@@ -286,30 +436,68 @@ const hotkeys = [
 
       <!-- AI 模型 -->
       <el-tab-pane label="AI 模型">
-        <div class="field"><label>默认创作模型</label>
-          <el-select v-model="settings.createModel" style="max-width:360px">
-            <el-option v-for="m in localLLMs" :key="m" :label="m" :value="m" />
-          </el-select>
-          <span class="muted" style="margin-left:8px">本地 Ollama</span>
+        <div class="model-cards">
+          <el-card v-for="key in ['create','planning','video','img']" :key="key" class="model-card" shadow="never">
+            <template #header>
+              <div class="mc-header">
+                <span class="mc-title">{{ MODEL_LABELS[key] }}</span>
+                <el-radio-group v-model="settings.modelSettings[key].provider" size="small">
+                  <el-radio-button value="local">本地</el-radio-button>
+                  <el-radio-button value="online">在线</el-radio-button>
+                </el-radio-group>
+              </div>
+            </template>
+
+            <div v-if="settings.modelSettings[key].provider === 'local'">
+              <div class="field"><label>服务地址</label>
+                <el-input v-model="settings.modelSettings[key].local.baseUrl" style="max-width:380px" :placeholder="key === 'create' || key === 'planning' ? 'http://127.0.0.1:11434' : 'http://127.0.0.1:8188'" />
+              </div>
+              <div v-if="key === 'create'" class="field"><label>模型</label>
+                <el-select v-model="settings.modelSettings.create.local.model" style="max-width:240px" filterable allow-create>
+                  <el-option v-for="m in localLLMs" :key="m" :label="m" :value="m" />
+                </el-select>
+                <el-button size="small" text @click="refreshLocalLLMLists">刷新模型列表</el-button>
+              </div>
+              <div v-else-if="key === 'planning'" class="field"><label>模型</label>
+                <el-select v-model="settings.modelSettings.planning.local.model" style="max-width:240px" filterable allow-create>
+                  <el-option v-for="m in localPlanningModels" :key="m" :label="m" :value="m" />
+                </el-select>
+                <el-button size="small" text @click="refreshLocalLLMLists">刷新模型列表</el-button>
+              </div>
+              <div v-else-if="key === 'video'" class="field"><label>工作流</label>
+                <el-select v-model="settings.modelSettings.video.local.model" style="max-width:280px" filterable allow-create>
+                  <el-option v-for="m in comfyVideoModels" :key="m" :label="m" :value="m" />
+                </el-select>
+              </div>
+              <div v-else-if="key === 'img'" class="field"><label>模型/工作流</label>
+                <el-select v-model="settings.modelSettings.img.local.model" style="max-width:280px" filterable allow-create>
+                  <el-option v-for="m in comfyImgModels" :key="m" :label="m" :value="m" />
+                </el-select>
+              </div>
+            </div>
+
+            <div v-else>
+              <div class="field"><label>API 地址</label>
+                <el-input v-model="settings.modelSettings[key].online.baseUrl" style="max-width:380px" placeholder="https://api.openai.com/v1" />
+              </div>
+              <div class="field"><label>API Key</label>
+                <el-input v-model="settings.modelSettings[key].online.apiKey" type="password" show-password style="max-width:380px" placeholder="sk-..." />
+              </div>
+              <div class="field"><label>模型名</label>
+                <el-input v-model="settings.modelSettings[key].online.model" style="max-width:280px" placeholder="gpt-4o-mini / seedance-2.0-pro" />
+              </div>
+            </div>
+
+            <div class="field" style="margin-bottom:0">
+              <label></label>
+              <el-button size="small" :loading="testStates[key].loading" @click="runModelTest(key)">
+                {{ testStates[key].loading ? '测试中…' : '测试连接' }}
+              </el-button>
+              <span v-if="testStates[key].result" class="muted test-result">{{ testStates[key].result }}</span>
+            </div>
+          </el-card>
         </div>
-        <div class="field"><label>默认策划模型</label>
-          <el-select v-model="settings.planningModel" style="max-width:360px">
-            <el-option v-for="m in localPlanningModels" :key="m" :label="m" :value="m" />
-          </el-select>
-          <span class="muted" style="margin-left:8px">本地 Ollama</span>
-        </div>
-        <div class="field"><label>默认视频模型</label>
-          <el-select v-model="settings.videoModel" style="max-width:360px">
-            <el-option v-for="m in videoModels" :key="m" :label="m" :value="m" />
-          </el-select>
-          <span class="muted" style="margin-left:8px">本地 ComfyUI</span>
-        </div>
-        <div class="field"><label>默认文生图</label>
-          <el-select v-model="settings.imgModel" style="max-width:360px">
-            <el-option v-for="m in imgModels" :key="m" :label="m" :value="m" />
-          </el-select>
-          <span class="muted" style="margin-left:8px">本地 ComfyUI</span>
-        </div>
+
         <div class="field"><label>默认参数</label>
           <el-select v-model="settings.defaultResolution" style="max-width:120px"><el-option v-for="r in resolutions" :key="r" :label="r" :value="r" /></el-select>
           <el-select v-model="settings.defaultRatio" style="max-width:110px;margin-left:8px"><el-option v-for="r in ratios" :key="r" :label="r" :value="r" /></el-select>
@@ -432,4 +620,12 @@ const hotkeys = [
 .hk-list { display: flex; flex-direction: column; gap: 8px; }
 .hk { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--txt); }
 .hk kbd { background: var(--card-2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; font-family: monospace; }
+
+.model-cards { display: flex; flex-direction: column; gap: 16px; margin-bottom: 24px; }
+.model-card { background: var(--card-2); border: 1px solid var(--line); }
+.model-card :deep(.el-card__header) { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.model-card :deep(.el-card__body) { padding: 16px; }
+.mc-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.mc-title { font-weight: 700; font-size: 14px; color: var(--txt); }
+.test-result { font-size: 13px; max-width: 420px; line-height: 1.4; }
 </style>

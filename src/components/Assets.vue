@@ -77,9 +77,18 @@ const extractDialog = reactive({
   dragOver: false,
   dragCounter: 0,
   uploadedFileName: '',
+  logs: [], // {time,level,msg} 提取过程实时日志
 })
 const selectedCandidates = ref({}) // { 'roles:林浩': true }
 const editedCandidates = ref({}) // { 'roles:林浩': {...} }
+
+const pushExtractLog = (msg, level = 'info') => {
+  extractDialog.logs.push({
+    time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+    level,
+    msg,
+  })
+}
 
 const openExtractDialog = async () => {
   extractDialog.open = true
@@ -94,6 +103,7 @@ const openExtractDialog = async () => {
   extractDialog.dragOver = false
   extractDialog.dragCounter = 0
   extractDialog.uploadedFileName = ''
+  extractDialog.logs = []
   selectedCandidates.value = {}
   editedCandidates.value = {}
   try {
@@ -214,14 +224,36 @@ const runExtract = async () => {
     if (!story) { toast('请粘贴剧本/故事文本'); return }
   }
   extractDialog.loading = true
+  extractDialog.logs = []
+  extractDialog.meta = {}
+  let elapsed = 0
+  const elapsedTimer = setInterval(() => {
+    elapsed++
+    // 每 5 秒更新一次等待提示，避免日志刷屏
+    if (elapsed % 5 === 0) {
+      pushExtractLog('模型推理中… 已等待 ' + elapsed + ' 秒（长文本可能需要 30~90 秒）')
+    }
+  }, 1000)
   try {
+    pushExtractLog('准备识别… 文本长度 ' + story.length + ' 字')
+    pushExtractLog('请求后端提取接口（项目ID: ' + pid + '），最长等待 120 秒')
     const res = await extractAssetsFromStory(pid, story)
+    clearInterval(elapsedTimer)
+    extractDialog.meta = res.meta || {}
+    const model = (res.meta || {}).model || 'unknown'
+    const provider = (res.meta || {}).provider || 'local'
+    pushExtractLog('模型返回（' + provider + '/' + model + '），正在解析候选资产…')
     extractDialog.candidates = {
       roles: res.roles || [],
       scenes: res.scenes || [],
       props: res.props || [],
     }
-    extractDialog.meta = res.meta || {}
+    const total = (extractDialog.candidates.roles || []).length
+      + (extractDialog.candidates.scenes || []).length
+      + (extractDialog.candidates.props || []).length
+    pushExtractLog('解析完成：识别 ' + total + ' 个候选（角色 ' + (extractDialog.candidates.roles || []).length
+      + ' / 场景 ' + (extractDialog.candidates.scenes || []).length
+      + ' / 道具 ' + (extractDialog.candidates.props || []).length + '）')
     // 默认全选；已存在的资产默认不选
     const next = {}
     ;['roles', 'scenes', 'props'].forEach((t) => {
@@ -233,11 +265,15 @@ const runExtract = async () => {
     editedCandidates.value = {}
     extractDialog.step = 'review'
     if ((res.meta || {}).error) {
+      pushExtractLog('模型提示：' + res.meta.error, 'warn')
       toast('提取完成（模型异常：' + res.meta.error + '）')
     }
   } catch (e) {
+    clearInterval(elapsedTimer)
+    pushExtractLog('提取失败：' + e.message, 'error')
     toast('提取失败：' + e.message)
   } finally {
+    clearInterval(elapsedTimer)
     extractDialog.loading = false
   }
 }
@@ -963,6 +999,21 @@ onMounted(load)
               <span class="link" @click="extractDialog.uploadedFileName = ''; extractDialog.pastedStory = ''">清除</span>
             </div>
           </div>
+
+          <!-- 实时日志 / 状态 -->
+          <div v-if="extractDialog.logs.length" class="extract-log-panel">
+            <div class="extract-log-head">
+              <span>🪵 运行日志</span>
+              <span class="link" @click="extractDialog.logs = []">清空</span>
+            </div>
+            <div class="extract-log-body">
+              <div v-for="(lg, idx) in extractDialog.logs" :key="idx" class="extract-log-line" :class="lg.level">
+                <span class="time">{{ lg.time }}</span>
+                <span class="msg">{{ lg.msg }}</span>
+              </div>
+            </div>
+          </div>
+
           <div class="modal-acts">
             <button class="btn sm ghost" @click="closeExtractDialog">取消</button>
             <button class="btn sm" :disabled="extractDialog.loading || (extractDialog.storySource === 'paste' && !extractDialog.pastedStory.trim())" @click="runExtract">
@@ -975,6 +1026,26 @@ onMounted(load)
         <div v-else-if="extractDialog.step === 'review'">
           <p class="muted" style="margin-bottom:12px">已识别 {{ (extractDialog.candidates.roles||[]).length }} 个角色、{{ (extractDialog.candidates.scenes||[]).length }} 个场景、{{ (extractDialog.candidates.props||[]).length }} 个道具。勾选需要创建的资产，可编辑名称与描述。</p>
           <div v-if="extractDialog.meta && extractDialog.meta.error" class="extract-error">⚠️ 模型提示：{{ extractDialog.meta.error }}（结果可能不完整）</div>
+
+          <!-- 实时日志（review 步骤仍可查看） -->
+          <div v-if="extractDialog.logs.length" class="extract-log-panel">
+            <div class="extract-log-head">
+              <span>🪵 运行日志</span>
+              <span class="link" @click="extractDialog.logs = []">清空</span>
+            </div>
+            <div class="extract-log-body">
+              <div v-for="(lg, idx) in extractDialog.logs" :key="idx" class="extract-log-line" :class="lg.level">
+                <span class="time">{{ lg.time }}</span>
+                <span class="msg">{{ lg.msg }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 模型原始返回预览（排查用） -->
+          <details v-if="extractDialog.meta && extractDialog.meta.raw_preview" class="extract-raw-preview">
+            <summary>查看模型原始返回（排查）</summary>
+            <pre>{{ extractDialog.meta.raw_preview }}</pre>
+          </details>
 
           <div class="extract-groups">
             <!-- 角色 -->
@@ -1239,6 +1310,17 @@ onMounted(load)
 .extract-file-tag { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; padding: 6px 10px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; font-size: 12px; color: var(--sub); }
 .extract-file-tag .link { color: var(--red); cursor: pointer; }
 .extract-error { background: rgba(255,176,32,.12); color: #ffb020; border: 1px solid rgba(255,176,32,.3); border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
+.extract-log-panel { background: rgba(0,0,0,.25); border: 1px solid var(--line); border-radius: 10px; margin-top: 12px; overflow: hidden; }
+.extract-log-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--bg-2); font-size: 12px; font-weight: 700; }
+.extract-log-head .link { font-size: 11px; color: var(--sub); cursor: pointer; }
+.extract-log-body { max-height: 160px; overflow-y: auto; padding: 8px 12px; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.extract-log-line { display: flex; gap: 10px; padding: 3px 0; color: var(--txt); }
+.extract-log-line .time { color: var(--sub); opacity: .8; white-space: nowrap; }
+.extract-log-line.warn .msg { color: #ffb020; }
+.extract-log-line.error .msg { color: #ff6b6b; }
+.extract-raw-preview { margin: 12px 0; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; }
+.extract-raw-preview summary { padding: 8px 12px; font-size: 12px; color: var(--sub); cursor: pointer; user-select: none; }
+.extract-raw-preview pre { margin: 0; padding: 10px 12px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: 11px; color: var(--sub); background: rgba(0,0,0,.2); }
 .extract-groups { max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
 .extract-group { background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
 .eg-head { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 14px; margin-bottom: 10px; }

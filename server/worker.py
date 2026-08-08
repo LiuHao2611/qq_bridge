@@ -149,6 +149,15 @@ def _serve_one(task):
             "seed": int(task.get("seed") if task.get("seed") is not None
                        else (segment or {}).get("seed", -1) or -1),
         }
+        # 透传 Director 入队时附加的镜头参数（first_frame/enable_tail_frame/priority_level 等）；
+        # 当前引擎仅消费 resolution/seed，其余为 full 版兼容预留（不破坏既有 dispatch 路径）。
+        try:
+            _tp = json.loads(task.get("params") or "{}") if task.get("params") else {}
+        except Exception:
+            _tp = {}
+        for _k in ("first_frame", "enable_tail_frame", "priority_level"):
+            if _k in _tp and _tp[_k] is not None:
+                gen_params[_k] = _tp[_k]
         level, note = _run_with_timeout(
             generate_segment_video,
             row_to_dict(segment) if segment else {"segment_id": task["segment_id"]},

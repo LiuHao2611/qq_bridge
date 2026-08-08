@@ -40,12 +40,29 @@ const directorStage = ref('')
 const directorOutput = ref('')
 const directorError = ref('')
 const _directorSubs = { unsub: null, timer: null }
+// per-segment 跟踪（full 版 ②：Director 入队后由 worker 消费，经 WS director:<pid> 透出）
+const directorSegments = ref({})  // seg_id -> {status, progress, video_url, task_id}
 
 function onDirectorEvent(event, data) {
   if (event === 'progress') {
     directorNode.value = data.node || ''
     directorStage.value = data.status || ''
     if (data.progress != null) directorProgress.value = Math.round(data.progress * 100)
+  } else if (event === 'segment') {
+    // Director 入队 → worker 消费 的逐片段状态（REDUN-01：WS 透出，轮询兜底见下）
+    const sid = data.segment_id
+    if (sid) {
+      const prev = directorSegments.value[sid] || {}
+      directorSegments.value = {
+        ...directorSegments.value,
+        [sid]: {
+          task_id: data.task_id || prev.task_id || null,
+          status: data.status || prev.status || '',
+          progress: data.progress != null ? Math.round(data.progress) : (prev.progress || 0),
+          video_url: data.video_url || prev.video_url || ''
+        }
+      }
+    }
   } else if (event === 'completed') {
     directorRunning.value = false
     directorOutput.value = data.final_output || ''
@@ -99,6 +116,7 @@ async function onDirectorRun() {
   directorStage.value = ''
   directorOutput.value = ''
   directorError.value = ''
+  directorSegments.value = {}
   try {
     const r = await directorRun(pid, {})
     directorRunId.value = r.run_id
@@ -376,6 +394,14 @@ onUnmounted(() => {
       <code>{{ directorRunId.slice(0, 12) }}</code>
       <span v-if="directorRunning" class="dn">{{ NODE_TXT[directorNode] || directorNode }} · {{ directorStage }}</span>
       <el-progress :percentage="directorProgress" :stroke-width="8" class="dn-prog" />
+      <div v-if="Object.keys(directorSegments).length" class="seg-progress">
+        <div v-for="(s, sid) in directorSegments" :key="sid" class="seg-row" :class="s.status">
+          <span class="sid">{{ sid.slice(0, 8) }}</span>
+          <span class="sst">{{ STATUS_TXT[s.status] || s.status }}</span>
+          <el-progress :percentage="s.progress || 0" :stroke-width="6" class="sp" />
+          <a v-if="s.video_url" :href="s.video_url" target="_blank" class="sout">视频</a>
+        </div>
+      </div>
       <a v-if="directorOutput" :href="directorOutput" target="_blank" class="out">查看成片</a>
       <span v-if="directorError" class="err">{{ directorError }}</span>
     </div>
@@ -453,6 +479,15 @@ onUnmounted(() => {
 .director-banner .dn-prog { flex: 1; min-width: 160px; max-width: 360px; }
 .director-banner .out { color: var(--blue); text-decoration: none; font-weight: 700; }
 .director-banner .err { color: var(--pink); }
+.seg-progress { flex-basis: 100%; display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.seg-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.seg-row .sid { font-family: monospace; color: var(--sub); }
+.seg-row .sst { width: 52px; color: var(--sub); }
+.seg-row.running .sst { color: var(--blue); }
+.seg-row.succeeded .sst { color: var(--green); }
+.seg-row.failed .sst { color: var(--pink); }
+.seg-row .sp { flex: 1; min-width: 120px; max-width: 280px; }
+.seg-row .sout { color: var(--blue); text-decoration: none; font-weight: 700; }
 .seg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
 .seg-card { display: flex; gap: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; flex-wrap: wrap; }
 .seg-thumb { flex: 0 0 84px; height: 84px; border-radius: 10px; background: linear-gradient(135deg, var(--pink), var(--pur)); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 24px; font-weight: 800; overflow: hidden; }
