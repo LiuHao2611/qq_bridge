@@ -1,0 +1,38 @@
+# 业务平台容器化部署（可选）：当本机 Docker 守护进程可用时使用。
+# 提供 backend / frontend 两个服务，版本回退 = 切换镜像 tag / git 版本后重新 build。
+# 注意：当前开发机 Docker 守护进程未启动，本文件仅作为「容器与服务」管理方式的落地模板。
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: manju_backend
+    restart: unless-stopped
+    ports:
+      - "7788:7788"
+    environment:
+      MANJU_DB_PATH: /data/app.db
+      MANJU_LOG_DIR: /data/logs
+    volumes:
+      - manju_data:/data
+      - ./outputs:/app/outputs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7788/api/v1/health', timeout=2).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: manju_frontend
+    restart: unless-stopped
+    ports:
+      - "8099:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  manju_data:

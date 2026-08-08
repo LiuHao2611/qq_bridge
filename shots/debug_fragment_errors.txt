@@ -1,0 +1,6 @@
+--- Console errors/warnings ---
+[error] Failed to load resource: the server responded with a status of 404 (Not Found)
+[warning] project load failed, falling back to mock 项目不存在
+
+--- Failed requests ---
+HTTP 404 http://localhost:8099/api/projects/demo-short

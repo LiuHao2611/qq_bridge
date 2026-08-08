@@ -1,0 +1,869 @@
+<script setup>
+import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
+import {
+  getProject, listAssets, listProjectAssets,
+  uploadGlobalAsset, uploadProjectAsset, uploadImage,
+  importRole, importScene, importProp,
+  updateAsset, deleteAsset,
+  listStagesWithPoses, addStage, delStage, addPose, delPose,
+} from '../api'
+import { toast } from '../store'
+import { splitVoice, joinVoice } from '../assetMeta'
+import ProjectFlowNav from './ProjectFlowNav.vue'
+import RoleEditorModal from './RoleEditorModal.vue'
+import {
+  ASSET_TAB_OPTIONS, ASSET_STAGE_OPTIONS, ASSET_POSE_OPTIONS, ASSET_ROLE_TYPE_OPTIONS,
+} from '../mock'
+
+const route = useRoute()
+const pid = route.params.id
+
+const TAB_MAP = Object.fromEntries(ASSET_TAB_OPTIONS.map((t) => [t.key, t.type]))
+const SCOPE = { project: '本集', global: '全集' }
+const STAGE_OPTS = ASSET_STAGE_OPTIONS
+const POSE_OPTS = ASSET_POSE_OPTIONS
+const ROLE_TYPE_OPTS = ASSET_ROLE_TYPE_OPTIONS
+
+const PLACEHOLDER = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0%25' stop-color='%2320242e'/><stop offset='100%25' stop-color='%233a3f4d'/></linearGradient></defs><rect width='200' height='200' fill='url(%23g)'/><text x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' fill='%236b7283' font-size='70'>🖼️</text></svg>"
+
+const project = reactive({ title: '我的项目', assets: { characters: [], scenes: [], props: [] } })
+const tab = ref('characters')
+const scope = ref('project') // project(本集) | global(全集)
+const preview = ref('')
+const busy = ref(false)
+const search = ref('')
+const tagFilter = ref('')
+
+// 角色阶段/姿势编辑面板
+const selectedRole = ref(null)
+const stages = ref([])
+const loadingStages = ref(false)
+const stageForm = reactive({ open: false, assetId: '', stage_name: 'youth', age: 25, file: null })
+const poseForm = reactive({ open: false, stageId: '', pose_name: 'front', file: null })
+
+// 上传元数据弹窗（单文件/批量）
+const uploadDialog = reactive({
+  open: false,
+  files: [], // { file, name, type, roleType, description, tags }
+  isBatch: false,
+  batchType: 'role',
+  batchRoleType: 'protagonist',
+})
+
+// 从全集导入弹窗
+const importDialog = reactive({
+  open: false,
+  loading: false,
+  keyword: '',
+  tab: 'characters',
+  items: [],
+})
+
+const isDragging = ref(false)
+
+// 角色卡 hover 三按钮：用 JS 状态驱动（比纯 CSS :hover 更稳，避免嵌套/指针事件导致不触发）
+const hoveredId = ref(null)
+
+// 小云雀式角色编辑弹窗
+const editorVisible = ref(false)
+const editingRole = ref(null)
+const onRoleSaved = (updated) => {
+  // 写回完整 description（含音色块），保证本地卡片与后端持久化一致
+  const fullDesc = updated.raw?.description ?? joinVoice(updated.prompt, updated.voice)
+  const patch = { ...updated, description: fullDesc }
+  const list = project.assets.characters
+  const idx = list.findIndex((a) => a.id === updated.id)
+  if (idx > -1) {
+    list[idx] = { ...list[idx], ...patch }
+  }
+  if (selectedRole.value && selectedRole.value.id === updated.id) {
+    selectedRole.value = { ...selectedRole.value, ...patch }
+  }
+}
+const openRoleEditor = (a) => {
+  if (a.type !== 'role') return
+  editingRole.value = a
+  editorVisible.value = true
+}
+
+const toCard = (a) => {
+  const tags = Array.isArray(a.tags) ? a.tags : []
+  const { desc } = splitVoice(a.description || '')
+  return {
+    id: a.asset_id,
+    name: a.name,
+    url: a.cover_url || PLACEHOLDER,
+    prompt: desc,
+    type: a.type,
+    isGlobal: a.is_global !== 0,
+    roleType: a.role_type,
+    hasFeature: a.type === 'role' && a.cover_url && !a.cover_url.includes('placeholder'),
+    tags,
+    raw: a,
+  }
+}
+
+const allList = computed(() => project.assets[tab.value] || [])
+const filteredList = computed(() => {
+  let arr = allList.value
+  const k = search.value.trim().toLowerCase()
+  if (k) {
+    arr = arr.filter((a) => a.name.toLowerCase().includes(k) || a.prompt.toLowerCase().includes(k))
+  }
+  const t = tagFilter.value.trim().toLowerCase()
+  if (t) {
+    arr = arr.filter((a) => a.tags.some((tag) => tag.toLowerCase().includes(t)))
+  }
+  return arr
+})
+
+const uniqueTags = computed(() => {
+  const set = new Set()
+  allList.value.forEach((a) => a.tags.forEach((t) => set.add(t)))
+  return Array.from(set).filter(Boolean).slice(0, 20)
+})
+
+const emptyStateTitle = computed(() => {
+  if (scope.value === 'global') return '全集暂无' + currentTabLabel.value
+  return '本集暂无' + currentTabLabel.value
+})
+const emptyStateDesc = computed(() => {
+  if (scope.value === 'global') {
+    return '切换到「本集」上传后再复用，或在此上传到全集作为跨项目共享资产。'
+  }
+  return '拖拽图片到下方区域，或点「上传素材」添加。角色可被子分镜 @引用，场景/道具用于分镜设定。'
+})
+const currentTabLabel = computed(() => ASSET_TAB_OPTIONS.find((t) => t.key === tab.value)?.label || '')
+
+const load = async () => {
+  try {
+    const p = await getProject(pid)
+    if (p && p.name) project.title = p.name
+  } catch (e) {
+    console.warn('project title load failed:', e.message)
+  }
+  await loadList()
+}
+
+const loadList = async () => {
+  busy.value = true
+  try {
+    const type = TAB_MAP[tab.value]
+    let items = []
+    if (scope.value === 'project') {
+      items = await listProjectAssets(pid, { type })
+    } else {
+      const all = await listAssets(type)
+      items = all.filter((a) => a.is_global !== 0)
+    }
+    project.assets.characters = items.filter((a) => a.type === 'role').map(toCard)
+    project.assets.scenes = items.filter((a) => a.type === 'scene').map(toCard)
+    project.assets.props = items.filter((a) => a.type === 'prop').map(toCard)
+  } catch (e) {
+    toast('资产库加载失败：' + e.message)
+  } finally {
+    busy.value = false
+  }
+}
+
+const save = async (item) => {
+  if (scope.value === 'global') { toast('全集资产请在「本集」中编辑'); return }
+  try {
+    const body = { name: item.name, description: item.prompt }
+    if (item.type === 'role' && item.roleType) body.role_type = item.roleType
+    await updateAsset(item.id, body)
+    toast('已保存')
+  } catch (e) {
+    toast('保存失败: ' + e.message)
+  }
+}
+
+const del = async (i) => {
+  if (scope.value === 'global') { toast('全集资产不可在本页删除（影响所有项目）'); return }
+  const item = filteredList.value[i]
+  if (!item) return
+  if (!confirm('确定删除本集资产「' + item.name + '」？\n关联的分镜 @引用 将失效。')) return
+  try {
+    await deleteAsset(item.id)
+    const idx = project.assets[tab.value].findIndex((a) => a.id === item.id)
+    if (idx > -1) project.assets[tab.value].splice(idx, 1)
+    if (selectedRole.value && selectedRole.value.id === item.id) selectedRole.value = null
+    toast('已删除')
+  } catch (e) {
+    toast('删除失败: ' + e.message)
+  }
+}
+
+// ---- 拖拽 / 点击上传 ----
+const onFileInput = (ev) => {
+  const files = Array.from(ev.target.files || [])
+  if (files.length) openUploadDialog(files)
+  ev.target.value = ''
+}
+
+const onDragOver = (ev) => {
+  ev.preventDefault()
+  isDragging.value = true
+}
+const onDragLeave = (ev) => {
+  ev.preventDefault()
+  isDragging.value = false
+}
+const onDrop = (ev) => {
+  ev.preventDefault()
+  isDragging.value = false
+  const files = Array.from(ev.dataTransfer.files || []).filter((f) => f.type.startsWith('image/'))
+  if (files.length) openUploadDialog(files)
+}
+
+const readFileDataUrl = (file) => new Promise((resolve) => {
+  const reader = new FileReader()
+  reader.onload = (e) => resolve(e.target.result)
+  reader.readAsDataURL(file)
+})
+
+const openUploadDialog = async (files) => {
+  const type = TAB_MAP[tab.value]
+  const enriched = await Promise.all(files.map(async (f) => ({
+    file: f,
+    preview: await readFileDataUrl(f),
+    name: (f.name || '素材').replace(/\.[^.]+$/, ''),
+    type,
+    roleType: 'protagonist',
+    description: '',
+    tags: [],
+  })))
+  uploadDialog.files = enriched
+  uploadDialog.isBatch = files.length > 1
+  uploadDialog.batchType = type
+  uploadDialog.batchRoleType = 'protagonist'
+  uploadDialog.open = true
+}
+
+const tagInput = ref('')
+const applyTag = (item) => {
+  const v = tagInput.value.trim()
+  if (!v) return
+  item.tags = Array.from(new Set([...(item.tags || []), v]))
+  tagInput.value = ''
+}
+const removeTag = (item, t) => {
+  item.tags = (item.tags || []).filter((x) => x !== t)
+}
+
+const submitUpload = async () => {
+  if (!uploadDialog.files.length) return
+  busy.value = true
+  let ok = 0
+  try {
+    for (const item of uploadDialog.files) {
+      const opts = {
+        name: item.name,
+        type: uploadDialog.isBatch ? uploadDialog.batchType : item.type,
+        roleType: (uploadDialog.isBatch ? uploadDialog.batchType : item.type) === 'role'
+          ? (uploadDialog.isBatch ? uploadDialog.batchRoleType : item.roleType)
+          : undefined,
+        description: item.description,
+        tags: item.tags,
+      }
+      let r
+      if (scope.value === 'project') {
+        r = await uploadProjectAsset(pid, item.file, opts)
+      } else {
+        r = await uploadGlobalAsset(item.file, opts)
+      }
+      if (r && r.asset) {
+        const typeKey = Object.keys(TAB_MAP).find((k) => TAB_MAP[k] === r.asset.type)
+        if (typeKey && project.assets[typeKey]) project.assets[typeKey].push(toCard(r.asset))
+        ok++
+      }
+    }
+    uploadDialog.open = false
+    toast(`已上传 ${ok} 个${currentTabLabel.value}` + (scope.value === 'project' ? '到本集' : '到全集'))
+    await loadList()
+    // 自动切到对应 tab（批量上传可能类型与本 tab 不一致）
+    if (uploadDialog.isBatch) {
+      const target = ASSET_TAB_OPTIONS.find((t) => t.type === uploadDialog.batchType)?.key
+      if (target) tab.value = target
+    }
+  } catch (e) {
+    toast('上传失败: ' + e.message)
+  } finally {
+    busy.value = false
+  }
+}
+
+// 一键复用：把全集资产深拷贝到本集
+const reuse = async (item) => {
+  if (scope.value !== 'global') return
+  busy.value = true
+  try {
+    let r
+    if (item.type === 'role') r = await importRole(item.id, pid)
+    else if (item.type === 'scene') r = await importScene(item.id, pid)
+    else r = await importProp(item.id, pid)
+    toast('已复用「' + (r?.name || item.name) + '」到本集')
+    await loadList()
+  } catch (e) {
+    toast('复用失败: ' + e.message)
+  } finally {
+    busy.value = false
+  }
+}
+
+// 从全集导入弹窗
+const openImportDialog = async () => {
+  importDialog.open = true
+  importDialog.loading = true
+  importDialog.keyword = ''
+  importDialog.tab = tab.value
+  importDialog.items = []
+  try {
+    const all = await listAssets(TAB_MAP[importDialog.tab])
+    importDialog.items = (all || []).filter((a) => a.is_global !== 0).map(toCard)
+  } catch (e) {
+    toast('全集库加载失败: ' + e.message)
+  } finally {
+    importDialog.loading = false
+  }
+}
+const filteredImportItems = computed(() => {
+  const k = importDialog.keyword.trim().toLowerCase()
+  if (!k) return importDialog.items
+  return importDialog.items.filter((a) => a.name.toLowerCase().includes(k) || a.prompt.toLowerCase().includes(k))
+})
+const switchImportTab = async (key) => {
+  importDialog.tab = key
+  importDialog.loading = true
+  try {
+    const all = await listAssets(TAB_MAP[key])
+    importDialog.items = (all || []).filter((a) => a.is_global !== 0).map(toCard)
+  } catch (e) {
+    toast('全集库加载失败: ' + e.message)
+  } finally {
+    importDialog.loading = false
+  }
+}
+const doImportFromDialog = async (item) => {
+  busy.value = true
+  try {
+    let r
+    if (item.type === 'role') r = await importRole(item.id, pid)
+    else if (item.type === 'scene') r = await importScene(item.id, pid)
+    else r = await importProp(item.id, pid)
+    toast('已导入「' + (r?.name || item.name) + '」到本集')
+    // 如果导入的类型与当前 tab 一致，刷新当前列表
+    const importedType = ASSET_TAB_OPTIONS.find((t) => t.type === r?.type)?.key
+    if (importedType && importedType === tab.value) {
+      await loadList()
+    } else if (importedType) {
+      tab.value = importedType
+      await loadList()
+    }
+  } catch (e) {
+    toast('导入失败: ' + e.message)
+  } finally {
+    busy.value = false
+  }
+}
+
+// ---- 角色阶段 / 姿势 ----
+const selectRole = async (a) => {
+  if (a.type !== 'role') return
+  if (selectedRole.value && selectedRole.value.id === a.id) { selectedRole.value = null; return }
+  selectedRole.value = a
+  await loadStages(a)
+}
+
+const loadStages = async (a) => {
+  loadingStages.value = true
+  try {
+    stages.value = await listStagesWithPoses(a.id)
+  } catch (e) {
+    toast('阶段加载失败: ' + e.message)
+    stages.value = []
+  } finally {
+    loadingStages.value = false
+  }
+}
+
+const openStageForm = (a) => {
+  stageForm.open = true
+  stageForm.assetId = a.id
+  stageForm.stage_name = 'youth'
+  stageForm.age = 25
+  stageForm.file = null
+}
+const onStageFile = (ev) => { stageForm.file = ev.target.files?.[0] || null }
+const submitStage = async () => {
+  if (!stageForm.file) { toast('请选择阶段参考照'); return }
+  busy.value = true
+  try {
+    const up = await uploadImage(stageForm.file)
+    await addStage(stageForm.assetId, {
+      stage_name: stageForm.stage_name,
+      age: Number(stageForm.age) || 25,
+      reference_image_url: up.url || '',
+    })
+    toast('已添加年龄阶段')
+    stageForm.open = false
+    await loadStages(selectedRole.value)
+  } catch (e) {
+    toast('添加阶段失败: ' + e.message)
+  } finally {
+    busy.value = false
+  }
+}
+const removeStage = async (st) => {
+  if (!confirm('删除该年龄阶段及其姿势？')) return
+  try {
+    await delStage(selectedRole.value.id, st.stage_id)
+    await loadStages(selectedRole.value)
+  } catch (e) {
+    toast('删除失败: ' + e.message)
+  }
+}
+
+const openPoseForm = (st) => {
+  poseForm.open = true
+  poseForm.stageId = st.stage_id
+  poseForm.pose_name = 'front'
+  poseForm.file = null
+}
+const onPoseFile = (ev) => { poseForm.file = ev.target.files?.[0] || null }
+const submitPose = async () => {
+  if (!poseForm.file) { toast('请选择姿势参考照'); return }
+  busy.value = true
+  try {
+    const up = await uploadImage(poseForm.file)
+    await addPose(poseForm.stageId, { pose_name: poseForm.pose_name, reference_image_url: up.url || '' })
+    toast('已添加姿势')
+    poseForm.open = false
+    await loadStages(selectedRole.value)
+  } catch (e) {
+    toast('添加姿势失败: ' + e.message)
+  } finally {
+    busy.value = false
+  }
+}
+const removePose = async (st, p) => {
+  try {
+    await delPose(st.stage_id, p.pose_id)
+    await loadStages(selectedRole.value)
+  } catch (e) {
+    toast('删除失败: ' + e.message)
+  }
+}
+
+watch([scope, tab], () => {
+  selectedRole.value = null
+  stages.value = []
+  search.value = ''
+  tagFilter.value = ''
+  loadList()
+})
+
+onMounted(load)
+</script>
+
+<template>
+  <div class="page">
+    <ProjectFlowNav :pid="pid" :step="1" />
+    <div class="page-head">
+      <div>
+        <h1>🖼 资产初始化 <span class="cold">（冷启动）</span></h1>
+        <p class="muted">{{ project.title }} · 上传角色定妆照 / 场景参考 / 道具图，系统预处理；全集可一键复用至本集</p>
+      </div>
+      <div class="head-actions">
+        <div class="tabs">
+          <div class="tab" :class="{ on: scope === 'project' }" @click="scope = 'project'">{{ SCOPE.project }}</div>
+          <div class="tab" :class="{ on: scope === 'global' }" @click="scope = 'global'">{{ SCOPE.global }}</div>
+        </div>
+        <div class="tabs">
+          <div v-for="t in ASSET_TAB_OPTIONS" :key="t.key" class="tab" :class="{ on: tab === t.key }" @click="tab = t.key">{{ t.label }}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 工具条 -->
+    <div class="toolbar">
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input v-model="search" class="search-input" placeholder="搜索资产名称 / 描述…" />
+      </div>
+      <div v-if="uniqueTags.length" class="tag-bar">
+        <span class="tag" :class="{ on: !tagFilter }" @click="tagFilter = ''">全部</span>
+        <span v-for="t in uniqueTags" :key="t" class="tag" :class="{ on: tagFilter === t }" @click="tagFilter = tagFilter === t ? '' : t">{{ t }}</span>
+      </div>
+      <div class="spacer"></div>
+      <label class="upload-inline" v-if="scope === 'project'">
+        ＋ 上传素材
+        <input type="file" multiple accept="image/*" style="display:none" @change="onFileInput" />
+      </label>
+      <label class="upload-inline" v-else>
+        ＋ 上传到全集
+        <input type="file" multiple accept="image/*" style="display:none" @change="onFileInput" />
+      </label>
+      <button v-if="scope === 'project'" class="btn import-btn" @click="openImportDialog">🌐 从全集导入</button>
+    </div>
+
+    <!-- 拖拽上传区（空状态 or 常驻快捷区） -->
+    <div
+      v-if="!filteredList.length && !busy"
+      class="drop-zone"
+      :class="{ drag: isDragging }"
+      @dragover="onDragOver"
+      @dragleave="onDragLeave"
+      @drop="onDrop"
+      @click="$event.target.querySelector('input')?.click()"
+    >
+      <div class="drop-inner">
+        <div class="drop-icon">📁</div>
+        <div class="drop-title">{{ emptyStateTitle }}</div>
+        <div class="drop-desc">{{ emptyStateDesc }}</div>
+        <label class="drop-btn">
+          选择图片上传
+          <input type="file" multiple accept="image/*" style="display:none" @change="onFileInput" />
+        </label>
+        <div v-if="scope === 'project'" class="drop-hint">支持 JPG / PNG / WEBP，角色定妆照将自动提取人脸特征向量</div>
+      </div>
+    </div>
+
+    <div
+      v-else
+      class="drop-hint-bar"
+      :class="{ drag: isDragging }"
+      @dragover="onDragOver"
+      @dragleave="onDragLeave"
+      @drop="onDrop"
+    >
+      <span>📤 拖拽图片到此处可批量上传</span>
+      <label class="link-upload">
+        选择文件
+        <input type="file" multiple accept="image/*" style="display:none" @change="onFileInput" />
+      </label>
+    </div>
+
+    <!-- 加载骨架 -->
+    <div v-if="busy && !filteredList.length" class="skeleton-grid">
+      <div v-for="n in 6" :key="n" class="skeleton-card">
+        <div class="skeleton-thumb"></div>
+        <div class="skeleton-line"></div>
+        <div class="skeleton-line short"></div>
+      </div>
+    </div>
+
+    <!-- 资产网格 -->
+    <div v-else class="asset-grid">
+      <div class="asset-card" v-for="(a, i) in filteredList" :key="a.id">
+        <div class="thumb-wrap" :class="{ draggable: a.type === 'role', 'role-hovered': hoveredId === a.id }" draggable="true" @mouseenter="hoveredId = a.id" @mouseleave="hoveredId = null" @dragstart="a.type === 'role' ? $event.dataTransfer.setData('text/asset', JSON.stringify({ id: a.id, name: a.name, type: a.type })) : null">
+          <img :src="a.url" loading="lazy" @click="preview = a.url" />
+          <!-- 角色卡片 hover 三按钮：拖动 / 编辑 / 预览 -->
+          <div v-if="a.type === 'role'" class="thumb-overlay role-overlay">
+            <button class="role-btn" title="拖动角色卡" @mousedown.stop>
+              <el-icon><Grid /></el-icon>
+            </button>
+            <button class="role-btn" title="编辑角色" @click.stop="openRoleEditor(a)">
+              <el-icon><EditPen /></el-icon>
+            </button>
+            <button class="role-btn" title="预览角色图" @click.stop="preview = a.url">
+              <el-icon><ZoomIn /></el-icon>
+            </button>
+          </div>
+          <!-- 非角色卡片保持原交互 -->
+          <div v-else class="thumb-overlay">
+            <button class="btn sm" @click="preview = a.url">预览</button>
+            <button v-if="scope === 'global'" class="btn sm" @click="reuse(a)">复用至本集</button>
+            <button v-else class="btn sm ghost" @click="del(i)">删除</button>
+          </div>
+          <span v-if="a.hasFeature" class="badge feature">特征已提取</span>
+          <span v-if="a.isGlobal" class="badge global">全集</span>
+          <span v-if="a.roleType" class="badge role" :class="a.roleType">{{ ROLE_TYPE_OPTS.find(o=>o.value===a.roleType)?.label || a.roleType }}</span>
+          <button v-if="a.type === 'role'" class="role-toggle" @click="selectRole(a)">
+            {{ (selectedRole && selectedRole.id === a.id) ? '收起阶段' : '阶段 / 姿势' }}
+          </button>
+        </div>
+        <div class="info">
+          <div class="name">
+            <input class="input" v-model="a.name" :disabled="scope === 'global'" @change="save(a)" placeholder="资产名称" />
+          </div>
+          <textarea class="input" v-model="a.prompt" :disabled="scope === 'global'" placeholder="提示词 / 描述…" @change="save(a)"></textarea>
+          <div v-if="a.tags.length" class="tag-row">
+            <span v-for="tag in a.tags.slice(0, 3)" :key="tag" class="asset-tag" :title="tag">{{ tag }}</span>
+          </div>
+        </div>
+      </div>
+      <div v-if="!filteredList.length && !busy" class="empty" style="grid-column: 1 / -1">
+        没有匹配「{{ search || tagFilter }}」的资产，换个关键词试试。
+      </div>
+    </div>
+
+    <!-- 角色多阶段 + 多姿势（KB §02/§04 §4.4.1） -->
+    <div v-if="selectedRole && tab === 'characters'" class="role-panel">
+      <div class="rp-head">
+        <div class="rp-title">🎭 {{ selectedRole.name }} · 年龄阶段与姿势</div>
+        <button class="btn sm" @click="openStageForm(selectedRole)">＋ 添加年龄阶段</button>
+      </div>
+      <div v-if="loadingStages" class="muted" style="padding:12px">加载阶段中…</div>
+      <div v-else-if="!stages.length" class="empty">该角色暂无年龄阶段，点「添加年龄阶段」上传参考照（如童年/青年/老年）。</div>
+      <div v-else class="stage-list">
+        <div class="stage-card" v-for="st in stages" :key="st.stage_id">
+          <div class="stage-head">
+            <span class="stage-name">{{ (STAGE_OPTS.find(o=>o.value===st.stage_name)||{label:st.stage_name}).label }}（{{ st.age }}岁）</span>
+            <button class="btn sm ghost" @click="removeStage(st)">删除阶段</button>
+          </div>
+          <div class="stage-img"><img :src="st.reference_image_url || PLACEHOLDER" @click="preview = st.reference_image_url" /></div>
+          <div class="pose-row">
+            <div class="pose-chip" v-for="p in (st.poses||[])" :key="p.pose_id">
+              <img :src="p.reference_image_url || PLACEHOLDER" @click="preview = p.reference_image_url" />
+              <span class="pose-label">{{ (POSE_OPTS.find(o=>o.value===p.pose_name)||{label:p.pose_name}).label }}</span>
+              <button class="pose-del" @click="removePose(st, p)">×</button>
+            </div>
+            <button class="pose-add" @click="openPoseForm(st)">＋ 姿势</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 上传元数据弹窗 -->
+    <div class="modal-mask" v-if="uploadDialog.open" @click="uploadDialog.open=false">
+      <div class="modal-box wide" @click.stop>
+        <h3>上传 {{ ASSET_TAB_OPTIONS.find(t=>t.type===(uploadDialog.isBatch?uploadDialog.batchType:uploadDialog.files[0]?.type))?.label }}</h3>
+        <!-- 批量设置 -->
+        <div v-if="uploadDialog.isBatch" class="batch-bar">
+          <label>统一类型</label>
+          <select v-model="uploadDialog.batchType" class="input">
+            <option v-for="t in ASSET_TAB_OPTIONS" :key="t.key" :value="t.type">{{ t.label }}</option>
+          </select>
+          <template v-if="uploadDialog.batchType === 'role'">
+            <label>统一角色定位</label>
+            <select v-model="uploadDialog.batchRoleType" class="input">
+              <option v-for="o in ROLE_TYPE_OPTS" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
+          </template>
+        </div>
+        <!-- 文件列表 -->
+        <div class="upload-file-list">
+          <div v-for="(item, idx) in uploadDialog.files" :key="idx" class="upload-file-row">
+            <div class="preview-thumb"><img v-if="item.preview" :src="item.preview" /></div>
+            <div class="file-fields">
+              <input v-model="item.name" class="input" placeholder="名称" />
+              <select v-if="!uploadDialog.isBatch" v-model="item.type" class="input">
+                <option v-for="t in ASSET_TAB_OPTIONS" :key="t.key" :value="t.type">{{ t.label }}</option>
+              </select>
+              <select v-if="(uploadDialog.isBatch ? uploadDialog.batchType : item.type) === 'role'" v-model="item.roleType" class="input">
+                <option v-for="o in ROLE_TYPE_OPTS" :key="o.value" :value="o.value">{{ o.label }}</option>
+              </select>
+              <input v-model="item.description" class="input" placeholder="描述 / 提示词" />
+              <div class="tag-editor">
+                <span v-for="t in item.tags" :key="t" class="asset-tag">{{ t }} <i @click="removeTag(item, t)">×</i></span>
+                <input v-model="tagInput" class="input tag-input" placeholder="回车添加标签" @keydown.enter.prevent="applyTag(item)" />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-acts">
+          <button class="btn sm ghost" @click="uploadDialog.open=false">取消</button>
+          <button class="btn sm" :disabled="busy" @click="submitUpload">{{ busy ? '上传中…' : '确认上传' }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 从全集导入弹窗 -->
+    <div class="modal-mask" v-if="importDialog.open" @click="importDialog.open=false">
+      <div class="modal-box wide" @click.stop>
+        <h3>🌐 从全集导入到本集</h3>
+        <div class="import-toolbar">
+          <div class="tabs">
+            <div v-for="t in ASSET_TAB_OPTIONS" :key="t.key" class="tab" :class="{ on: importDialog.tab === t.key }" @click="switchImportTab(t.key)">{{ t.label }}</div>
+          </div>
+          <div class="search-box" style="width:220px">
+            <span class="search-icon">🔍</span>
+            <input v-model="importDialog.keyword" class="search-input" placeholder="搜索全集资产…" />
+          </div>
+        </div>
+        <div v-if="importDialog.loading" class="muted" style="padding:20px;text-align:center">加载中…</div>
+        <div v-else-if="!filteredImportItems.length" class="empty">全集中没有匹配资产</div>
+        <div v-else class="import-grid">
+          <div v-for="a in filteredImportItems" :key="a.id" class="import-card">
+            <div class="import-thumb"><img :src="a.url" /></div>
+            <div class="import-name">{{ a.name }}</div>
+            <button class="btn sm" @click="doImportFromDialog(a)">导入</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 阶段表单 -->
+    <div class="modal-mask" v-if="stageForm.open" @click="stageForm.open=false">
+      <div class="modal-box" @click.stop>
+        <h3>添加年龄阶段</h3>
+        <label class="lbl">阶段</label>
+        <select v-model="stageForm.stage_name" class="input">
+          <option v-for="o in STAGE_OPTS" :key="o.value" :value="o.value">{{ o.label }}</option>
+        </select>
+        <label class="lbl">年龄</label>
+        <input class="input" type="number" v-model="stageForm.age" min="0" max="120" />
+        <label class="lbl">参考照</label>
+        <input type="file" accept="image/*" @change="onStageFile" />
+        <div class="modal-acts">
+          <button class="btn sm ghost" @click="stageForm.open=false">取消</button>
+          <button class="btn sm" :disabled="busy" @click="submitStage">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 姿势表单 -->
+    <div class="modal-mask" v-if="poseForm.open" @click="poseForm.open=false">
+      <div class="modal-box" @click.stop>
+        <h3>添加姿势</h3>
+        <label class="lbl">姿势</label>
+        <select v-model="poseForm.pose_name" class="input">
+          <option v-for="o in POSE_OPTS" :key="o.value" :value="o.value">{{ o.label }}</option>
+        </select>
+        <label class="lbl">参考照</label>
+        <input type="file" accept="image/*" @change="onPoseFile" />
+        <div class="modal-acts">
+          <button class="btn sm ghost" @click="poseForm.open=false">取消</button>
+          <button class="btn sm" :disabled="busy" @click="submitPose">保存</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-mask" v-if="preview" @click="preview = ''"><div class="modal"><img :src="preview" @click.stop /></div></div>
+
+    <!-- 角色编辑弹窗 -->
+    <RoleEditorModal v-model="editorVisible" :role="editingRole" @saved="onRoleSaved" @preview="preview = $event" />
+  </div>
+</template>
+
+<style scoped>
+.page { padding: 0 24px 24px; }
+.page-head { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 12px; gap: 12px; flex-wrap: wrap; }
+.page-head h1 { margin: 0; font-size: 20px; }
+.cold { font-size: 12px; color: var(--sub); font-weight: 400; }
+.muted { color: var(--sub); font-size: 13px; }
+.head-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.tabs { display: flex; gap: 6px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 4px; }
+.tab { padding: 6px 12px; border-radius: 8px; font-size: 13px; color: var(--sub); cursor: pointer; transition: .15s; white-space: nowrap; }
+.tab:hover { color: var(--txt); }
+.tab.on { background: var(--card-2); color: var(--txt); }
+
+.toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.spacer { flex: 1; }
+.search-box { position: relative; width: 260px; }
+.search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 12px; }
+.search-input { width: 100%; background: var(--card); color: var(--txt); border: 1px solid var(--line); border-radius: 10px; padding: 7px 12px 7px 30px; font-size: 13px; outline: none; }
+.search-input:focus { border-color: var(--pur); }
+.tag-bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.tag-bar .tag { font-size: 12px; padding: 4px 10px; border-radius: 20px; background: var(--card); border: 1px solid var(--line); color: var(--sub); cursor: pointer; transition: .15s; }
+.tag-bar .tag.on { background: var(--pur); color: #fff; border-color: var(--pur); }
+.upload-inline { background: var(--grad); color: #fff; border: 0; border-radius: 10px; padding: 8px 14px; font-size: 13px; font-weight: 700; cursor: pointer; }
+.upload-inline:hover { opacity: .9; }
+.import-btn { background: var(--card); border: 1px solid var(--line); color: var(--txt); }
+.import-btn:hover { border-color: var(--pur); color: var(--pur); }
+
+.drop-zone { border: 2px dashed var(--line); border-radius: 18px; padding: 48px 24px; text-align: center; cursor: pointer; transition: .2s; background: var(--card); }
+.drop-zone.drag { border-color: var(--pur); background: rgba(138,92,255,.08); }
+.drop-inner { max-width: 520px; margin: 0 auto; }
+.drop-icon { font-size: 48px; margin-bottom: 12px; }
+.drop-title { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+.drop-desc { color: var(--sub); font-size: 13px; margin-bottom: 18px; line-height: 1.6; }
+.drop-btn { display: inline-block; background: var(--grad); color: #fff; border-radius: 10px; padding: 10px 22px; font-size: 14px; font-weight: 700; cursor: pointer; }
+.drop-hint { color: var(--sub); font-size: 12px; margin-top: 14px; }
+.drop-hint-bar { border: 1px dashed var(--line); border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; color: var(--sub); font-size: 13px; transition: .2s; }
+.drop-hint-bar.drag { border-color: var(--pur); background: rgba(138,92,255,.06); }
+.link-upload { color: var(--blue); cursor: pointer; }
+
+.skeleton-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
+.skeleton-card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; padding: 10px; }
+.skeleton-thumb { aspect-ratio: 1; background: var(--bg-2); border-radius: 10px; animation: pulse 1.4s infinite; }
+.skeleton-line { height: 14px; background: var(--bg-2); border-radius: 6px; margin-top: 10px; animation: pulse 1.4s infinite; }
+.skeleton-line.short { width: 60%; }
+@keyframes pulse { 0% { opacity: .6 } 50% { opacity: 1 } 100% { opacity: .6 } }
+
+.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
+.asset-card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; transition: .15s; }
+.asset-card:hover { border-color: var(--pur); transform: translateY(-2px); }
+.thumb-wrap { position: relative; aspect-ratio: 1 / 1; background: var(--bg-2); }
+.thumb-wrap img { width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; }
+.thumb-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; background: rgba(8,9,14,.65); opacity: 0; transition: .15s; z-index: 2; }
+.asset-card:hover .thumb-overlay, .thumb-wrap.role-hovered .thumb-overlay { opacity: 1; }
+.thumb-overlay.role-overlay { background: transparent; align-items: flex-start; justify-content: flex-end; padding: 10px; gap: 8px; }
+.role-btn { width: 34px; height: 34px; border-radius: 10px; background: rgba(0,0,0,.55); color: #fff; border: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; backdrop-filter: blur(4px); transition: .15s; }
+.role-btn:hover { background: rgba(138,92,255,.9); transform: scale(1.05); }
+.thumb-wrap.draggable { cursor: grab; }
+.thumb-wrap.draggable:active { cursor: grabbing; }
+.badge { position: absolute; font-size: 10px; padding: 2px 7px; border-radius: 6px; font-weight: 700; }
+.badge.feature { left: 6px; bottom: 6px; background: rgba(138,92,255,.9); color: #fff; }
+.badge.global { right: 6px; top: 6px; background: rgba(0,0,0,.55); color: var(--txt); }
+.badge.role { left: 6px; top: 6px; }
+.badge.role.protagonist { background: rgba(255,77,141,.9); color: #fff; }
+.badge.role.supporting { background: rgba(77,159,255,.9); color: #fff; }
+.badge.role.antagonist { background: rgba(255,176,32,.9); color: #000; }
+.role-toggle { position: absolute; bottom: 6px; right: 6px; background: rgba(0,0,0,.6); color: #fff; border: 0; border-radius: 6px; font-size: 11px; padding: 3px 8px; cursor: pointer; }
+.role-toggle:hover { background: rgba(138,92,255,.9); }
+.info { padding: 10px 12px; }
+.info .name input { width: 100%; background: transparent; color: var(--txt); border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; font-size: 13px; }
+.info .name input:hover, .info .name input:focus { background: var(--bg-2); border-color: var(--line); outline: none; }
+.info textarea { width: 100%; background: transparent; color: var(--txt); border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; font-size: 12px; margin-top: 6px; resize: vertical; min-height: 44px; }
+.info textarea:hover, .info textarea:focus { background: var(--bg-2); border-color: var(--line); outline: none; }
+.tag-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.asset-tag { font-size: 10px; padding: 2px 8px; border-radius: 10px; background: var(--bg-2); color: var(--sub); border: 1px solid var(--line); max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asset-tag i { cursor: pointer; margin-left: 4px; }
+
+.btn { border: 0; border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
+.btn.sm { font-size: 12px; padding: 5px 10px; }
+.btn:not(.ghost) { background: var(--grad); color: #fff; font-weight: 700; }
+.btn.ghost { background: transparent; border: 1px solid var(--line); color: var(--sub); }
+.btn.ghost:hover { border-color: var(--pink); color: var(--pink); }
+.empty { text-align: center; color: var(--sub); padding: 50px 0; }
+.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.7); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.modal { max-width: 90vw; max-height: 90vh; }
+.modal img { max-width: 90vw; max-height: 90vh; border-radius: 12px; }
+
+.role-panel { margin-top: 20px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+.rp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.rp-title { font-size: 15px; font-weight: 700; }
+.stage-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+.stage-card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.stage-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.stage-name { font-weight: 700; font-size: 13px; }
+.stage-img { aspect-ratio: 16/9; background: var(--bg); border-radius: 8px; overflow: hidden; }
+.stage-img img { width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; }
+.pose-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+.pose-chip { position: relative; width: 64px; }
+.pose-chip img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; cursor: zoom-in; border: 1px solid var(--line); }
+.pose-label { position: absolute; bottom: 0; left: 0; right: 0; font-size: 10px; text-align: center; background: rgba(0,0,0,.6); color: #fff; border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; }
+.pose-del { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%; border: 0; background: rgba(255,80,80,.9); color: #fff; cursor: pointer; font-size: 11px; line-height: 1; }
+.pose-add { width: 64px; height: 64px; border-radius: 8px; border: 1px dashed var(--line); background: transparent; color: var(--sub); cursor: pointer; font-size: 12px; }
+.pose-add:hover { border-color: var(--pur); color: var(--pur); }
+
+.modal-box { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; width: 320px; max-height: 85vh; overflow-y: auto; }
+.modal-box.wide { width: 680px; }
+.modal-box h3 { margin: 0 0 16px; font-size: 16px; }
+.lbl { display: block; font-size: 12px; color: var(--sub); margin: 10px 0 4px; }
+.input { width: 100%; background: var(--bg-2); color: var(--txt); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-size: 13px; margin-bottom: 4px; outline: none; }
+.input:focus { border-color: var(--pur); }
+.modal-acts { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+
+.batch-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+.batch-bar label { font-size: 12px; color: var(--sub); }
+.batch-bar .input { width: auto; min-width: 120px; }
+
+.upload-file-list { max-height: 55vh; overflow-y: auto; }
+.upload-file-row { display: flex; gap: 12px; padding: 12px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; }
+.preview-thumb { width: 70px; height: 70px; flex: 0 0 70px; background: var(--bg); border-radius: 8px; overflow: hidden; }
+.preview-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.file-fields { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.tag-editor { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.tag-input { width: 100px; }
+
+.import-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.import-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; max-height: 420px; overflow-y: auto; }
+.import-card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px; text-align: center; }
+.import-thumb { aspect-ratio: 1; background: var(--bg); border-radius: 8px; overflow: hidden; margin-bottom: 8px; }
+.import-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.import-name { font-size: 12px; font-weight: 700; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>

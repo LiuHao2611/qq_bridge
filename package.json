@@ -1,0 +1,24 @@
+{
+  "name": "manju-workbench",
+  "version": "3.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --port 4173"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "element-plus": "^2.14.3",
+    "litegraph.js": "^0.7.13",
+    "vue": "^3.4.21",
+    "vue-router": "^4.3.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@vitejs/plugin-vue": "^5.0.4",
+    "playwright": "^1.62.1",
+    "vite": "^5.2.0"
+  }
+}

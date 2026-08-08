@@ -1,0 +1,71 @@
+openapi: 3.0.1
+info:
+  title: AI 漫剧工坊 - 视频生成工具
+  description: 本地一键生成漫剧视频（Ollama + 秋叶 ComfyUI + FFmpeg）。供 Dify 以「自定义工具(OpenAPI)」导入。
+  version: "1.0"
+servers:
+  - url: http://host.docker.internal:8099
+    description: 宿主机 manju_agent（Dify 容器内通过 host.docker.internal 访问）
+paths:
+  /api/dify/run:
+    post:
+      operationId: generateManjuVideo
+      summary: 生成漫剧视频
+      description: >-
+        传入剧本/主题或分镜 JSON，同步生成带字幕的漫剧视频，返回可访问的视频 URL。
+        script 与 scenes 二选一：传 scenes 则直接出图（分镜在 Dify 的 LLM 节点里可见可改）；
+        只传 script 则由本服务内部用 Ollama 拆镜。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                script:
+                  type: string
+                  description: 一句话主题或完整剧本文本（与 scenes 二选一）
+                mode:
+                  type: string
+                  enum: [simple, full]
+                  description: simple=主题自动构思剧情；full=直接拆镜（配合 script 使用）
+                scenes:
+                  type: array
+                  description: 可选，直接传分镜 JSON 数组（优先级高于 script）。每个含 scene_id/caption/prompt/negative_prompt/duration
+                  items:
+                    type: object
+                    properties:
+                      scene_id: {type: integer}
+                      caption: {type: string}
+                      prompt: {type: string}
+                      negative_prompt: {type: string}
+                      duration: {type: integer}
+                title:
+                  type: string
+                  description: 剧集标题（可选）
+                ckpt:
+                  type: string
+                  description: 底模文件名，如 Counterfeit-V3.0.safetensors / Realistic_Vision
+                animated:
+                  type: boolean
+                  description: 是否启用 AnimateDiff 真动画（需动画模型就位）
+                use_ip:
+                  type: boolean
+                  description: 是否启用 IP-Adapter 角色一致（需参考图，暂未接上传）
+              required: []
+      responses:
+        "200":
+          description: 视频生成成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  title: {type: string}
+                  video_url: {type: string, description: 可访问的视频 URL（http://localhost:8099/...）}
+                  run_dir: {type: string}
+                  scenes: {type: array}
+        "400":
+          description: 参数错误
+        "500":
+          description: 生成失败

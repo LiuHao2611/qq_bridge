@@ -1,0 +1,14 @@
+# 后端镜像：FastAPI + SQLite（零依赖标准库前端服务也在此仓，但后端只需 server/）。
+FROM python:3.13-slim
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    MANJU_DB_PATH=/data/app.db \
+    MANJU_LOG_DIR=/data/logs
+# 仅复制后端所需（server/ + 仓根作为 manju_agent 包，便于 web_app 等复用）
+COPY server/ ./server/
+COPY __init__.py ./__init__.py
+COPY pyproject.toml ./pyproject.toml
+RUN pip install --no-cache-dir fastapi uvicorn[standard] python-multipart httpx 2>/dev/null || true
+EXPOSE 7788
+CMD ["python", "server/main.py"]

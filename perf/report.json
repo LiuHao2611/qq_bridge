@@ -1,0 +1,133 @@
+{
+  "api_requests_total": 94,
+  "inflight_peak_overall": 5,
+  "longtasks_total": 0,
+  "nav_results": {
+    "首页": {
+      "load_time": 0.949
+    },
+    "项目": {
+      "load_time": 0.861
+    },
+    "任务": {
+      "load_time": 0.852
+    },
+    "文生图": {
+      "load_time": 1.35
+    },
+    "图生图": {
+      "load_time": 0.807
+    },
+    "创意": {
+      "load_time": 0.837
+    },
+    "素材库": {
+      "load_time": 0.76
+    },
+    "图生提示词": {
+      "load_time": 0.695
+    },
+    "历史": {
+      "load_time": 0.833
+    },
+    "会员": {
+      "load_time": 0.884
+    },
+    "消息": {
+      "load_time": 0.738
+    },
+    "帮助": {
+      "load_time": 0.746
+    },
+    "日志": {
+      "load_time": 0.788
+    },
+    "设置": {
+      "load_time": 1.09
+    }
+  },
+  "switch_report": [
+    {
+      "to": "/",
+      "switch_time": 10.826,
+      "inflight_peak_so_far": 5,
+      "longtasks_so_far": 0
+    },
+    {
+      "to": "/projects",
+      "switch_time": 10.786,
+      "inflight_peak_so_far": 5,
+      "longtasks_so_far": 0
+    },
+    {
+      "to": "/creative",
+      "switch_time": 10.817,
+      "inflight_peak_so_far": 5,
+      "longtasks_so_far": 0
+    },
+    {
+      "to": "/",
+      "switch_time": 10.885,
+      "inflight_peak_so_far": 5,
+      "longtasks_so_far": 0
+    },
+    {
+      "to": "/txt2img",
+      "switch_time": 11.198,
+      "inflight_peak_so_far": 5,
+      "longtasks_so_far": 0
+    },
+    {
+      "to": "/img2img",
+      "switch_time": 10.728,
+      "inflight_peak_so_far": 5,
+      "longtasks_so_far": 0
+    },
+    {
+      "to": "/txt2img",
+      "switch_time": 11.058,
+      "inflight_peak_so_far": 5,
+      "longtasks_so_far": 0
+    },
+    {
+      "to": "/settings",
+      "switch_time": 11.0,
+      "inflight_peak_so_far": 5,
+      "longtasks_so_far": 0
+    },
+    {
+      "to": "/txt2img",
+      "switch_time": 11.113,
+      "inflight_peak_so_far": 5,
+      "longtasks_so_far": 0
+    },
+    {
+      "to": "/logs",
+      "switch_time": 10.704,
+      "inflight_peak_so_far": 5,
+      "longtasks_so_far": 0
+    },
+    {
+      "to": "/txt2img",
+      "switch_time": 11.145,
+      "inflight_peak_so_far": 5,
+      "longtasks_so_far": 0
+    }
+  ],
+  "console_errors": [
+    "[warning] Deprecated API for given entry type.",
+    "[warning] task list backend failed, fallback to mock \"[object Object]\" is not valid JSON",
+    "[warning] Deprecated API for given entry type.",
+    "[warning] Deprecated API for given entry type.",
+    "[warning] Deprecated API for given entry type.",
+    "[warning] Deprecated API for given entry type.",
+    "[warning] Deprecated API for given entry type.",
+    "[warning] Deprecated API for given entry type.",
+    "[warning] Deprecated API for given entry type.",
+    "[warning] Deprecated API for given entry type.",
+    "[warning] Deprecated API for given entry type.",
+    "[warning] Deprecated API for given entry type.",
+    "[warning] Deprecated API for given entry type.",
+    "[warning] Deprecated API for given entry type."
+  ]
+}
