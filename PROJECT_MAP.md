@@ -84,7 +84,16 @@ D:\AI\manju_agent\
 | `common.py` | 公用：`ApiError`、`envelope`、`setup_logging`（`MANJU_LOG_DIR` 覆盖）、常量 |
 | `routers/`（目录） | 当前为空/占位；路由集中在 `routers.py` |
 | `_smoke_g2.py` / `_t2i_test.py` / `smoke_test.py` | 探针/测试脚本（非运行时） |
-| `_dis_all.py` / `_dis_pyc.py` / `_extract_pyc.py` / `_map_routes.py` / `_dis_imports.py` / `_dis_top*.py` / `_dis_module.py` / `_validate_facade.py`（均 `server/` 下） | **临时重建辅助脚本**：从 `.pyc` 逆向提取字符串/路由/反汇编以辅助重建 `routers.py`，重建校验通过后应删除（`__pycache__/dis_*.txt`、`route_map.txt`、`pyc_strings.txt` 同属临时产物） |
+| `_dis_all.py` / `_dis_pyc.py` / `_extract_pyc.py` / `_map_routes.py` / `_dis_imports.py` / `_dis_top*.py` / `_dis_module.py` / `_validate_facade.py`（均 `server/` 下） | **已删除（2026-08-08 清理）**：临时 PYC 逆向重建辅助脚本；重建校验通过后用 git 基线 + `version_guard` 兜底，不再需要。权威恢复产物已固化为 `server/_vendor/routers_compiled.cpython-313.pyc`（纳入 Git 版本控制）。 |
+| `server/_vendor/routers_compiled.cpython-313.pyc` | **权威恢复产物（Git 跟踪）**：原始 `routers.py` 编译副本，`routers.py` 门面优先从此加载（`__pycache__` 为回退）。即便 `routers.py` 源码被误清空，这里有 100% 等价的可运行后端，且 git 可回退到任意历史版本。 |
+| `version_guard.py`（仓库根） | **误改/误删兜底工具（2026-08-08 新增，Git 跟踪）**：`python version_guard.py backup <file>` 改动前自动快照到 `.backups/`，`restore <file>` 一键回退，`status` 查看 git 基线与备份份数。与 git 互不冲突，见下方「兜底回退」说明。 |
+
+> **🛡️ 兜底/回退保障机制（2026-08-08 建立，针对「误改/误删关键文件」）**
+> 项目此前**无版本控制**，任何关键文件被覆盖都无法恢复。现已建立三重保险：
+> 1. **Git 基线（主）**：`D:/AI/manju_agent` 已 `git init`，提交 `baseline-2026-08-08`（含全部源码 + `server/_vendor` 恢复副本）。任何文件被改坏，`git checkout baseline-2026-08-08 -- <file>` 或 `git revert` 即可回退。
+> 2. **version_guard 文件级快照（辅）**：改关键文件前先 `python version_guard.py backup server/routers.py`（会登记到 `.backups/`，已被 `.gitignore` 忽略不入库）；需要回退时 `python version_guard.py restore server/routers.py`。
+> 3. **pre-commit 钩子**：禁止把 `*.db` / 用户数据误提交进版本库（`.gitignore` 已排除，钩子为第二重保险）。
+> ⚠️ 约定：今后**改动 `routers.py` / `db.py` / `main.py` 等关键文件前，必须先用 `version_guard.py backup` 快照一次**；改动后若验证通过，再 `git add` + `git commit` 固化基线。
 
 ### 3.2 前端 `src/`
 | 文件 | 职责 |
