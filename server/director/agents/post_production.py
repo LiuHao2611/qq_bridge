@@ -8,7 +8,8 @@
   - **结构化品控（N06）**：文件存在 + 时长一致性（Σ镜头时长≈片段时长，误差≤0.5s §3.1.5）
     + 人脸相似度占位（full 版接人脸比对，阈值≥0.8 §3.4.5）；产出 quality_report / failed_shot_list
   - 输出 final_video_url / quality_report / failed_shot_list（对齐 §3.4.3）
-  - 转场按镜头类型自适应、全局后处理（人脸修复/降噪/锐化/帧率/调色）在 full 版 ComfyUI 阶段补全
+  - 项 ⑦ 已落地（本地 ffmpeg）：转场按镜头类型自适应（xfade）+ 全局后处理（帧率/降噪/锐化/调色），
+    由 ai_local.synthesize_project_video 承担；人脸修复仍需 ComfyUI/人脸引擎（full 版 deferred）。
 
 System 类错误（COMPOSITION_FAILED，5000+）：调度器按 §6 重试 1 次→告警人工介入。
 """
@@ -56,6 +57,11 @@ class PostProductionAgent(BaseAgent):
             "bgm": bool(ctx.params.get("bgm", False)),
             "subtitle": bool(ctx.params.get("subtitle", False)),
             "bgm_path": ctx.params.get("bgm_path") or "",
+            # 项 ⑦：转场（按镜头类型自适应）+ 全局后处理（帧率/降噪/锐化/调色），默认开启
+            "transitions": bool(ctx.params.get("transitions", True)),
+            "post_process": bool(ctx.params.get("post_process", True)),
+            "target_fps": int(ctx.params.get("target_fps") or 25),
+            "target_resolution": ctx.params.get("target_resolution") or "",
         }
         try:
             import ai_local

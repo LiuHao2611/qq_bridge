@@ -75,7 +75,7 @@
 | §3.3 分布式队列 / 并行 / 优先级队列 | ⚠️ 部分 | `priority_level` 透传记录；实际入队 worker + 并行由填充阶段接 `generation_tasks` |
 | §3.3 断点续跑 | ✅ 已补齐 | `SequenceScheduler` 检测已有成功片段则跳过 |
 | §3.4 自动化品控（人脸相似度≥0.8 / 场景匹配 / 时长） | ✅ 已补齐（结构） | `PostProduction._quality_check` 结构化报告 + `failed_shot_list`；人脸相似度占位（需比对算法，full 版） |
-| §3.4 转场按镜头类型 / 全局后处理（人脸修复/降噪/锐化/帧率） | ❌ 待 fill | 由 ComfyUI 后处理节点承担（full 版） |
+| §3.4 转场按镜头类型 / 全局后处理（人脸修复/降噪/锐化/帧率） | ✅ 已补齐（本地 ffmpeg） | 转场按 `shot_type` 自适应（xfade）+ 全局后处理（帧率/降噪 hqdn3d/锐化 unsharp/调色 eq），由 `ai_local.synthesize_project_video` 承担；人脸修复仍需 ComfyUI/人脸引擎（full 版 deferred） |
 | 设计逻辑「空间站位预规划（blocking）」 | ❌ 待 fill | 多人场景站位蓝图，需场景理解，full 版 |
 | §7.2 中间帧/尾帧参考图保留 7 天 | ✅ 已对齐 | `infra/storage` INTERMEDIATE_TTL_DAYS=7；尾帧落 outputs（本地中间存储） |
 
@@ -153,7 +153,7 @@ N01→N02 失败收敛（CLOSE-01），错误码 1002（`MISSING_SCRIPT`）；�
    `AgentContext` 新增 `use_fallback_model`/`degraded_priority` 字段并经 `child()` 透传；`enqueue.py` 新增 `FALLBACK_VIDEO_MODELS`/`DEGRADED_PRIORITY`；`SequenceSchedulerAgent` 入队时消费两标志。隔离自测全绿（MODEL/SCHEDULE 降级成功、降级后失败收敛、PARAMETER 不降级、降级模型/优先级透传至入队）。
 5. **进度透出（✅ 已落地 2026-08-08）**：per-segment 进度经 WS 频道 `director:<pid>` 透出（REDUN-01：WS 优先、轮询兜底），由 `ProductionStage.vue` 渲染片段级状态/进度条/成片链接横幅（#72–#74 落地，随 full 版 ② 一并交付）。
 6. **看门狗联动退款告警（✅ 已落地 2026-08-08）**：`GlobalScheduler._refund_pending_preauths` 在 `watchdog_timeout` / 用户终止 / 节点失败（AgentError + agent_failed）三条终态路径，按 `trace_id` 查本链路 `status='queued'` 的 `generation_tasks`，逐一 `points_engine.refund(pre_auth_id)` 退冻结金（CLOSE-04 资金兜底），并将未派发任务收敛为 `cancelled`（CLOSE-01），经 WS `director:<pid>` 透出 `alert` 告警 + `blog` WARN。安全边界：仅退 worker 从未派发的 `queued` 任务（其 pre_auth 仍是 `estimated` 冻结态），**绝不退 `succeeded`（已 settle）任务**——杜绝「用户白嫖成片」或重复退款；同 run 内 trace_id 去重 + refund 幂等双重保险。隔离自测全绿（WATCHDOG_REFUND_OK / IDEMPOTENT_OK / FUND_LOSS_GUARD_OK）。
-7. **转场 / 全局后处理（待引擎）**：按镜头类型的转场、人脸修复 / 降噪 / 锐化 / 帧率统一后处理（骨架 `synthesize_project_video` 委托层未含，等 full 版）。
+7. **转场 / 全局后处理（✅ 已落地 2026-08-08）**：`ai_local.synthesize_project_video` 新增转场（按 `shot_type` 自适应 xfade，映射见 `SHOT_TRANSITION_MAP`）+ 全局后处理（统一帧率/分辨率 + 降噪 hqdn3d + 锐化 unsharp + 调色 eq），`PostProductionAgent` 经 `options` 透传 `transitions`/`post_process`（默认开启）。实现用本地 ffmpeg（因 ComfyUI 在本环境不可用）；人脸修复仍需 ComfyUI/人脸引擎（full 版 deferred）。音频用 `adelay`+`amix` 对齐到 xfade 时间轴（本机构建 `acrossfade` 无 `offset` 支持，改用等效方案）。隔离自测全绿（TRANSITIONS_OK 时长=Σ−(N−1)D、fps/分辨率/音轨、PICK_TRANSITION_OK、PROBE_OK；关闭转场则纯 −c copy 拼接）。
 8. **自动化品控重生成闭环（骨架占位）**：`face_sim` 当前占位 None，`failed_shot_list` 产出但未自动触发重生成；等真人脸比对引擎接入后接回 SequenceScheduler 重投。
 9. **规则引擎二次校验（待 full 版）**：设计逻辑「非破坏性编辑 / 资产沉淀复用」原则对应的规则引擎二次校验节点，骨架未含。
 

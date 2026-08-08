@@ -288,6 +288,24 @@ def _resolve_ffmpeg():
 
 FFMPEG_BIN = _resolve_ffmpeg()
 
+
+def _resolve_ffprobe():
+    # 与 _resolve_ffmpeg 同策略：同级目录 / MANJU_APP_ROOT / PATH / 旧绝对路径。
+    _exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    _app_root = os.environ.get("MANJU_APP_ROOT") or _exe_dir
+    for cand in (
+        os.path.join(_exe_dir, "ffprobe.exe"),
+        os.path.join(_app_root, "ffprobe.exe"),
+        shutil.which("ffprobe") or "",
+        r"D:\AI\tools\ffmpeg\ffmpeg-8.1.2-essentials_build\bin\ffprobe.exe",
+    ):
+        if cand and os.path.isfile(cand):
+            return cand
+    return "ffprobe"  # 退回 PATH
+
+
+FFPROBE_BIN = _resolve_ffprobe()
+
 # CLOSE-03：出站网络调用（Ollama / ComfyUI）必须指数退避重试且有上限
 HTTP_MAX_RETRIES = 3
 HTTP_BACKOFF_BASE = 2.0  # 第 n 次重试等待 2^n 秒
@@ -1190,13 +1208,254 @@ def _build_srt(entries):
     return "\n".join(lines)
 
 
+# ============================================================
+# 项 ⑦：转场（按镜头类型自适应 xfade）+ 全局后处理（帧率/降噪/锐化/调色）
+# 用本地 ffmpeg 完成；人脸修复需 ComfyUI/人脸引擎，本地 deferred（见 docstring）。
+# ============================================================
+SHOT_TRANSITION_MAP = {
+    "extreme_close_up": "fade",
+    "close_up": "fade",
+    "medium_close": "fade",
+    "medium": "slideright",
+    "medium_full": "slideright",
+    "full": "slideleft",
+    "long": "fade",
+    "extreme_long": "fade",
+    "wide": "fade",
+}
+VALID_XFADE = {
+    "fade", "fadeblack", "fadewhite", "radial", "smoothleft", "smoothright",
+    "smoothup", "smoothdown", "rectcrop", "circlecrop", "circleclose", "circleopen",
+    "horzclose", "horzopen", "vertclose", "vertopen", "diagbl", "diagbr", "diagtl",
+    "diagtr", "hlslice", "hrslice", "vuslice", "vdslice", "hblur", "fadegrays",
+    "wipetl", "wipetr", "wipebl", "wipebr", "slideleft", "slideright", "slideup", "slidedown",
+}
+
+
+def _pick_transition(shot_type):
+    """按「出镜镜头类型」自适应选择转场（xfade 合法名），未知类型回退 fade。"""
+    t = SHOT_TRANSITION_MAP.get((shot_type or "").strip().lower())
+    if t and t in VALID_XFADE:
+        return t
+    return "fade"
+
+
+def _probe_clip(path):
+    """用 ffprobe 取时长/分辨率/fps/是否含音轨；失败返回 None。"""
+    try:
+        out = subprocess.run(
+            [FFPROBE_BIN, "-v", "error", "-show_entries",
+             "format=duration:stream=width,height,avg_frame_rate,codec_type",
+             "-of", "json", path],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=30)
+        info = json.loads(out.stdout.decode("utf-8", "ignore"))
+    except Exception:
+        return None
+    try:
+        dur = float((info.get("format") or {}).get("duration") or 0)
+    except Exception:
+        dur = 0.0
+    if dur <= 0:
+        return None
+    w = h = None
+    fps = None
+    has_audio = False
+    for st in (info.get("streams") or []):
+        if st.get("codec_type") == "video" and w is None:
+            try:
+                w = int(st.get("width") or 0)
+                h = int(st.get("height") or 0)
+            except Exception:
+                w = h = None
+            fr = st.get("avg_frame_rate") or ""
+            if fr and "/" in fr:
+                try:
+                    a, b = fr.split("/")
+                    fps = float(a) / float(b) if float(b) else None
+                except Exception:
+                    fps = None
+        elif st.get("codec_type") == "audio":
+            has_audio = True
+    return {"duration": dur, "width": w, "height": h, "fps": fps, "has_audio": has_audio}
+
+
+def _has_audio(path):
+    p = _probe_clip(path)
+    return bool(p and p["has_audio"])
+
+
+def _concat_copy_concat(concat_list, base_mp4):
+    """原 Step1：-c copy 拼接（无转场/后处理时的兜底路径）。返回是否成功产出。"""
+    try:
+        subprocess.run([FFMPEG_BIN, "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+                        "-c", "copy", base_mp4],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=300)
+    except Exception:
+        return False
+    return os.path.isfile(base_mp4)
+
+
+def _build_enhanced_base(clips, base_mp4, opts, temp_files):
+    """项 ⑦ 核心：转场（按镜头类型自适应 xfade）+ 全局后处理（帧率/降噪/锐化/调色）。
+    - 逐片段归一化：统一 fps/分辨率/yuv420p；可选 hqdn3d 降噪 + unsharp 锐化 + eq 调色；
+      保证每个片段都有音轨（无音轨补静音），便于 xfade 音频链对齐。
+    - 多片段用 xfade 视频链 + acrossfade 音频链串联；转场类型由出镜镜头 shot_type 决定。
+    任一环节失败返回 None，调用方回退 -c copy 拼接（REDUN-01）。
+    clips: list of (order, fpath, dur, narration, sub_entries, shot_type)
+    """
+    fps_target = int(opts.get("target_fps") or 25)
+    res_override = opts.get("target_resolution") or ""
+    do_post = bool(opts.get("post_process", True))
+    trans_dur = float(opts.get("transition_duration") or 0.6)
+
+    # 1) 探测每个片段以取得精确时长与统一分辨率基准
+    probed = []
+    for c in clips:
+        p = _probe_clip(c[1])
+        if not p:
+            logger.warning("转场后处理：片段探测失败，整体回退拼接: %s", c[1])
+            return None
+        probed.append(p)
+
+    # 目标分辨率：显式覆盖 > 首个片段分辨率；保证偶数
+    if res_override and "x" in res_override:
+        try:
+            tw, th = res_override.lower().split("x")
+            tw, th = int(tw), int(th)
+        except Exception:
+            tw = th = None
+    else:
+        tw, th = probed[0]["width"], probed[0]["height"]
+    if not tw or not th:
+        tw, th = 1280, 720
+    if tw % 2:
+        tw += 1
+    if th % 2:
+        th += 1
+
+    # 转场时长受最短片段约束
+    min_dur = min(p["duration"] for p in probed)
+    D = trans_dur
+    if D >= min_dur / 2.0 or D <= 0:
+        D = max(0.2, min(0.6, min_dur / 2.0 - 0.05))
+    D = round(D, 2)
+
+    # 2) 逐片段归一化（帧率/分辨率/像素格式）+ 可选后处理；保证都有音轨
+    norm_paths = []
+    for i, c in enumerate(clips):
+        p = probed[i]
+        vf = "fps=%d," % fps_target
+        vf += "scale=%d:%d:force_original_aspect_ratio=decrease," % (tw, th)
+        vf += "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p" % (tw, th)
+        if do_post:
+            vf += ",hqdn3d=3:2:4:3,unsharp=5:5:0.6:5:5:0.0,eq=contrast=1.03:saturation=1.06"
+        norm = os.path.join(OUTPUTS, "synth_norm_%s_%d.mp4" % (os.path.basename(base_mp4), i))
+        if p["has_audio"]:
+            fc = ("[0:v]%s[v];[0:a]aformat=sample_fmts=fltp:sample_rates=44100:"
+                  "channel_layouts=stereo[a]" % vf)
+            cmd = [FFMPEG_BIN, "-nostdin", "-y", "-i", c[1], "-filter_complex", fc,
+                   "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast",
+                   "-crf", "20", "-c:a", "aac", "-ar", "44100", norm]
+        else:
+            fc = ("[0:v]%s[v];[1:a]aformat=sample_fmts=fltp:sample_rates=44100:"
+                  "channel_layouts=stereo[a]" % vf)
+            cmd = [FFMPEG_BIN, "-nostdin", "-y", "-i", c[1],
+                   "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                   "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
+                   "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                   "-c:a", "aac", "-ar", "44100", "-shortest", norm]
+        try:
+            subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=300)
+        except Exception as e:
+            logger.warning("转场后处理：归一化失败 clip%d: %s", i, e)
+            return None
+        if not os.path.isfile(norm):
+            logger.warning("转场后处理：归一化未产出 clip%d", i)
+            return None
+        norm_paths.append(norm)
+        temp_files.append(norm)
+
+    # 重新探测归一化后时长（重编码可能轻微浮动），用于 xfade offset 计算
+    dur2 = []
+    for n in norm_paths:
+        p = _probe_clip(n)
+        if not p:
+            return None
+        dur2.append(p["duration"])
+
+    n = len(norm_paths)
+    # 3) 单片段：无需 xfade，直接采用归一化片段
+    if n == 1:
+        try:
+            os.replace(norm_paths[0], base_mp4)
+            temp_files.remove(norm_paths[0])
+        except Exception:
+            return None
+        return base_mp4
+
+    # 4) 多片段：xfade 视频链 + 音频按 xfade 时间轴对齐（本机构建 acrossfade 无 offset 支持，
+    #    改用 adelay 把各片段音轨偏移到对应转场起点再 amix，等效交叉淡入且时长与视频一致）
+    offsets = []
+    acc = dur2[0] - D
+    offsets.append(round(acc, 3))
+    for i in range(1, n - 1):
+        acc = acc + dur2[i] - D
+        offsets.append(round(acc, 3))
+
+    fc_parts = []
+    # 视频 xfade 链
+    prev_v = "0:v"
+    for i in range(1, n):
+        vtag = "v%d" % i if i < n - 1 else "vout"
+        t = _pick_transition(clips[i - 1][5])  # 出镜镜头类型决定转场
+        fc_parts.append("[%s][%d:v]xfade=transition=%s:duration=%.2f:offset=%.2f[%s]"
+                        % (prev_v, i, t, D, offsets[i - 1], vtag))
+        prev_v = vtag
+    # 音频：各片段音轨按 xfade 偏移 adelay 对齐后 amix（等效交叉淡入，时长与视频一致）
+    a_src = []
+    for i in range(n):
+        if i == 0:
+            a_src.append("[0:a]")
+        else:
+            ms = int(round(offsets[i - 1] * 1000))
+            tag = "ad%d" % i
+            fc_parts.append("[%d:a]adelay=delays=%d:all=1[%s]" % (i, ms, tag))
+            a_src.append("[%s]" % tag)
+    fc_parts.append("".join(a_src) + ("amix=inputs=%d:duration=longest[aout]" % n))
+    fc = ";".join(fc_parts)
+
+    cmd = [FFMPEG_BIN, "-nostdin", "-y"]
+    for np in norm_paths:
+        cmd += ["-i", np]
+    cmd += ["-filter_complex", fc, "-map", "[vout]", "-map", "[aout]", "-shortest",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "aac", "-ar", "44100", base_mp4]
+    try:
+        subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=600)
+    except Exception as e:
+        logger.warning("转场后处理：xfade 合成失败，回退拼接: %s", e)
+        return None
+    if not os.path.isfile(base_mp4):
+        logger.warning("转场后处理：xfade 未产出，回退拼接")
+        return None
+    return base_mp4
+
+
 def synthesize_project_video(project_id, out_path, options=None):
     """Phase 5（合成全集，KB §05）：把所有「已生成成功」片段拼接为完整 MP4，并按 options 叠加后期：
 
       - tts=True：收集各片段 shot.voiceover/dialogue 作为旁白，TTS 生成音轨并混流（REDUN-01 降级）
       - bgm=True 且提供 bgm_path：背景音乐循环铺底混流
       - subtitle=True：把各片段对话烧录为硬字幕（中文需字体，失败则降级跳过）
-    默认仅视频拼接（-c copy）。任一后期失败均优雅降级（REDUN-01），绝不阻断主流程。
+      - transitions=True（默认）：按「出镜镜头类型」自适应转场（xfade），见 _pick_transition（项 ⑦）
+      - post_process=True（默认）：全局后处理——统一帧率/分辨率 + 降噪(hqdn3d) + 锐化(unsharp) + 调色(eq)
+      - target_fps / target_resolution / transition_duration：可选微调
+    转场/后处理用本地 ffmpeg 完成；人脸修复需 ComfyUI/人脸引擎，本地 deferred。
+    任一后期失败均优雅降级（REDUN-01）：转场/后处理失败回退 -c copy 拼接，绝不阻断主流程。
     返回 (level, note)，与 generate_segment_video 约定一致。
     """
     import db
@@ -1206,6 +1465,11 @@ def synthesize_project_video(project_id, out_path, options=None):
     do_bgm = bool(options.get("bgm"))
     do_sub = bool(options.get("subtitle"))
     bgm_path = options.get("bgm_path") or ""
+    do_trans = bool(options.get("transitions", True))
+    do_pp = bool(options.get("post_process", True))
+    target_fps = int(options.get("target_fps") or 25)
+    target_resolution = options.get("target_resolution") or ""
+    trans_dur = float(options.get("transition_duration") or 0.6)
     temp_files = []  # OPS-01：收尾统一释放临时资源
 
     conn = db.get_conn()
@@ -1244,7 +1508,7 @@ def synthesize_project_video(project_id, out_path, options=None):
         c2 = db.get_conn()
         try:
             shots = db.fetch_all(c2,
-                'SELECT "index", duration, voiceover, dialogue FROM shots '
+                'SELECT "index", duration, voiceover, dialogue, shot_type FROM shots '
                 'WHERE segment_id=? ORDER BY "index" ASC', (s["segment_id"],))
         finally:
             c2.close()
@@ -1252,7 +1516,10 @@ def synthesize_project_video(project_id, out_path, options=None):
         sub_start = cursor
         seg_dur = dur
         n = len(shots) or 1
+        rep_shot_type = ""
         for j, sh in enumerate(shots):
+            if not rep_shot_type and sh.get("shot_type"):
+                rep_shot_type = sh.get("shot_type")
             txt = (sh.get("voiceover") or sh.get("dialogue") or "").strip()
             if txt:
                 parts.append(txt)
@@ -1263,7 +1530,8 @@ def synthesize_project_video(project_id, out_path, options=None):
                 sub_start += float(sh.get("duration") or (seg_dur / n))
         if parts:
             narration = "。".join(parts)
-        clips.append((s.get("index") or 0, fpath, dur, narration, sub_entries))
+        # 项 ⑦：clips 元组第 6 项为「出镜镜头类型」，供转场自适应选择
+        clips.append((s.get("index") or 0, fpath, dur, narration, sub_entries, rep_shot_type))
         cursor += dur
 
     if not clips:
@@ -1274,24 +1542,27 @@ def synthesize_project_video(project_id, out_path, options=None):
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     concat_list = os.path.join(OUTPUTS, "synth_concat_%s.txt" % project_id)
     with open(concat_list, "w", encoding="utf-8") as f:
-        for _, c, _, _, _ in clips:
+        for _, c, _, _, _, _ in clips:
             f.write("file '%s'\n" % c.replace("\\", "/"))
     temp_files.append(concat_list)
 
     # Step 1：基础视频拼接（含原声）
     base_mp4 = out_path + ".base.mp4"
     temp_files.append(base_mp4)
-    try:
-        subprocess.run([FFMPEG_BIN, "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
-                        "-c", "copy", base_mp4],
-                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, timeout=300)
-    except subprocess.TimeoutExpired:
-        return "fail", "FFmpeg 合成全集超时（300s）"
-    except Exception as e:
-        return "fail", "FFmpeg 合成全集失败: %s" % e
-    if not os.path.isfile(base_mp4):
-        return "fail", "合成全集基础视频未生成"
+    enhanced = False
+    # Step 1：转场 + 全局后处理（项 ⑦）；不可用则回退 -c copy 拼接（REDUN-01）
+    if (do_trans or do_pp) and clips:
+        eb = _build_enhanced_base(clips, base_mp4, {
+            "target_fps": target_fps, "target_resolution": target_resolution,
+            "post_process": do_pp, "transition_duration": trans_dur,
+        }, temp_files)
+        if eb and os.path.isfile(eb):
+            enhanced = True
+            logger.info("合成全集：转场/后处理已应用（enhanced=True, transitions=%s, post_process=%s）",
+                        do_trans, do_pp)
+    if not enhanced:
+        if not _concat_copy_concat(concat_list, base_mp4):
+            return "fail", "合成全集基础视频未生成"
 
     audio_final = None
     srt_path = None
@@ -1300,7 +1571,7 @@ def synthesize_project_video(project_id, out_path, options=None):
         if do_tts:
             seg_audios = []
             cc = 0.0
-            for _, _, dur, narration, _ in clips:
+            for _, _, dur, narration, _, _ in clips:
                 if narration:
                     seg_wav = os.path.join(OUTPUTS, "synth_tts_%s_%d.wav" % (project_id, len(seg_audios)))
                     if _tts_to_file(narration, seg_wav) and os.path.isfile(seg_wav):
@@ -1359,7 +1630,7 @@ def synthesize_project_video(project_id, out_path, options=None):
         # Step 4：硬字幕（REDUN-01 降级）
         if do_sub:
             all_subs = []
-            for _, _, _, _, sub_entries in clips:
+            for _, _, _, _, sub_entries, _ in clips:
                 all_subs.extend(sub_entries)
             if all_subs:
                 srt_path = os.path.join(OUTPUTS, "synth_sub_%s.srt" % project_id)
@@ -1368,7 +1639,7 @@ def synthesize_project_video(project_id, out_path, options=None):
                 temp_files.append(srt_path)
 
         # Step 5：最终封装
-        need_reencode = bool(srt_path)  # 字幕烧录必须重编码
+        base_audio = _has_audio(base_mp4)
         if srt_path:
             vf = "subtitles='%s'" % srt_path.replace("\\", "/").replace(":", "\\:")
             cmd = [FFMPEG_BIN, "-nostdin", "-y", "-i", base_mp4]
@@ -1376,7 +1647,11 @@ def synthesize_project_video(project_id, out_path, options=None):
                 cmd += ["-i", audio_final]
                 cmd += ["-filter_complex", "[0:v]%s[v]" % vf, "-map", "[v]", "-map", "1:a:0"]
             else:
-                cmd += ["-filter_complex", "[0:v]%s[v]" % vf, "-map", "[v]", "-map", "0:a:0"]
+                # 基础视频无音轨时仅烧录视频（避免 -map 0:a:0 因缺音轨失败，REDUN-01）
+                if base_audio:
+                    cmd += ["-filter_complex", "[0:v]%s[v]" % vf, "-map", "[v]", "-map", "0:a:0"]
+                else:
+                    cmd += ["-filter_complex", "[0:v]%s[v]" % vf, "-map", "[v]"]
             cmd += ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-movflags", "+faststart", out_path]
             try:
                 subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -1390,9 +1665,12 @@ def synthesize_project_video(project_id, out_path, options=None):
                                 "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", out_path],
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL, timeout=300)
-            else:
-                os.replace(base_mp4, out_path)  # 仅视频拼接：直接采用基础拼接结果
-                temp_files.remove(base_mp4)
+            elif os.path.isfile(base_mp4):
+                os.replace(base_mp4, out_path)  # 基础拼接结果（含/不含音轨均可）
+                try:
+                    temp_files.remove(base_mp4)
+                except Exception:
+                    pass
     finally:
         # OPS-01：释放所有临时文件（基础视频/音频/SRT/列表），仅保留最终 out_path
         for tf in temp_files:
@@ -1405,6 +1683,8 @@ def synthesize_project_video(project_id, out_path, options=None):
     if not os.path.isfile(out_path):
         return "fail", "合成全集视频文件未生成"
     extras = []
+    if enhanced:
+        extras.append("转场/后处理")
     if do_tts and audio_final:
         extras.append("旁白")
     if do_bgm and bgm_path and os.path.isfile(bgm_path):
