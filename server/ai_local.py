@@ -33,18 +33,26 @@ MODEL = os.environ.get("MANJU_OLLAMA_MODEL", "qwen3.5:9b")
 def ollama_available():
     """检查 Ollama 可用且目标模型已加载（不仅检查 API 存活，还验证模型存在）。"""
     try:
-        with urllib.request.urlopen(OLLAMA_URL + "/api/tags", timeout=3) as r:
-            if r.status != 200:
-                return False
-            data = json.loads(r.read().decode("utf-8", "ignore"))
-            models = [m.get("name", "") for m in data.get("models", [])]
-            if MODEL not in models:
-                logger.warning("[ollama] API 存活但模型 %s 未加载（可用模型: %s）"
-                               % (MODEL, models or "无"))
-                return False
-            return True
+        models = ollama_list_models()
+        if MODEL not in models:
+            logger.warning("[ollama] API 存活但模型 %s 未加载（可用模型: %s）"
+                           % (MODEL, models or "无"))
+            return False
+        return True
     except Exception:
         return False
+
+
+def ollama_list_models():
+    """返回 Ollama 本地已加载模型名列表；服务不可用时返回 []（不抛错）。"""
+    try:
+        with urllib.request.urlopen(OLLAMA_URL + "/api/tags", timeout=3) as r:
+            if r.status != 200:
+                return []
+            data = json.loads(r.read().decode("utf-8", "ignore"))
+            return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+    except Exception:
+        return []
 
 
 def comfy_available():
@@ -301,17 +309,9 @@ def _extract_json_block(text):
     return None
 
 
-def split_story_with_llm(story):
-    """Phase 2：用本地 Qwen 把长故事拆为场次（含角色/场景/分镜）。
-
-    成功返回 {"segments": [...], "meta": {...}}；失败返回 {"segments": None, "meta": {...}}。
-    meta 含 model/raw_preview/duration_ms/error，供前端展示推理过程与回退原因。
-    """
-    meta = {"model": MODEL, "source": "llm"}
-    if not ollama_available():
-        meta["error"] = "Ollama 服务未启动或目标模型 %s 未加载" % MODEL
-        return {"segments": None, "meta": meta}
-    prompt = build_prompt(
+def _split_story_prompt(story):
+    """构造分场提示词，本地/在线模型共用。"""
+    return build_prompt(
         role="你是一个专业短剧编剧 / 分场导演",
         objective=(
             "把下面长故事拆成若干个「场次」，严格输出 JSON 数组。每个元素字段：\n"
@@ -330,30 +330,53 @@ def split_story_with_llm(story):
             "保留原始情节先后顺序",
         ],
     )
+
+
+def _call_online_llm(prompt, model_config):
+    """调用 OpenAI 兼容在线 API；返回 (raw_text, meta_dict)。失败 raw_text=None。"""
+    meta = {"provider": model_config.get("provider", "openai-compatible")}
+    api_base = (model_config.get("apiBase") or model_config.get("api_base") or "").rstrip("/")
+    api_key = model_config.get("apiKey") or model_config.get("api_key") or ""
+    model = model_config.get("model") or ""
+    if not api_base:
+        meta["error"] = "未配置在线模型 API 地址"
+        return None, meta
+    if not model:
+        meta["error"] = "未配置在线模型名"
+        return None, meta
+    url = api_base + "/chat/completions"
+    payload = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.6,
+    }).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = "Bearer " + api_key
     start = time.time()
     try:
-        raw = ollama_chat(prompt)
-    except Exception as e:
-        meta["error"] = "调用 Ollama 异常：%s" % e
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=120) as r:
+            body = json.loads(r.read().decode("utf-8", "ignore"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "ignore")[:500]
+        meta["error"] = "在线模型请求被拒(%s): %s" % (e.code, detail)
         meta["duration_ms"] = int((time.time() - start) * 1000)
-        return {"segments": None, "meta": meta}
-    meta["duration_ms"] = int((time.time() - start) * 1000)
-    if not raw:
-        meta["error"] = "模型返回为空"
-        return {"segments": None, "meta": meta}
-    meta["raw_preview"] = raw[:800]
-    block = _extract_json_block(raw)
-    if not block:
-        meta["error"] = "无法从模型输出中解析 JSON 块"
-        return {"segments": None, "meta": meta}
-    try:
-        arr = json.loads(block)
+        return None, meta
     except Exception as e:
-        meta["error"] = "JSON 解析失败：%s" % e
-        return {"segments": None, "meta": meta}
+        meta["error"] = "调用在线模型异常：%s" % e
+        meta["duration_ms"] = int((time.time() - start) * 1000)
+        return None, meta
+    meta["duration_ms"] = int((time.time() - start) * 1000)
+    choices = body.get("choices") or []
+    raw = (choices[0].get("message", {}).get("content") if choices and isinstance(choices[0], dict) else "")
+    return raw, meta
+
+
+def _normalize_split_segments(arr):
+    """把 LLM 返回的 JSON 数组规范化为标准 segment 结构。"""
     if not isinstance(arr, list) or not arr:
-        meta["error"] = "解析结果为空或非数组"
-        return {"segments": None, "meta": meta}
+        return None, "解析结果为空或非数组"
     out = []
     for i, seg in enumerate(arr[:30]):
         if not isinstance(seg, dict):
@@ -372,8 +395,170 @@ def split_story_with_llm(story):
         seg["characters"] = seg.get("characters") or []
         seg["shots"] = shots
         out.append(seg)
-    meta["count"] = len(out)
-    return {"segments": out, "meta": meta}
+    return out, None
+
+
+# ----------------------------- 资产提取（Phase 1 · 一键从剧本提取） -----------------------------
+
+def _extract_assets_prompt(story):
+    return build_prompt(
+        role="你是专业短剧资产整理助手，擅长从剧本/故事中识别并归类视觉资产",
+        objective=(
+            "从下面剧本/故事中提取三类视觉资产，严格只输出一个 JSON 对象，不要任何解释文字：\n"
+            "  roles: [{name(中文人名), role_type(主角=protagonist/配角=supporting/反派=antagonist), "
+            "           description(50字内外貌/身份/气质), stage_hint(可选年龄阶段：childhood/juvenile/youth/middle_age/old_age)}]\n"
+            "  scenes: [{name(场景名), description(50字内环境/氛围/光线)}]\n"
+            "  props: [{name(道具名), description(30字内形态/作用)}]\n"
+            "剧本/故事：\n%s" % story[:12000]
+        ),
+        constraints=[
+            "严格只输出 JSON，不要 Markdown 代码块、不要解释",
+            "角色名必须是剧本中实际出现的人名，不得虚构",
+            "场景是地点/环境，不要把它列为道具",
+            "道具是具体物品，不要把角色或场景列为道具",
+            "每个类别如果为空则返回空数组",
+        ],
+        invariants=[
+            "不新增故事里未出现过的角色、场景或道具",
+            "role_type 必须是 protagonist/supporting/antagonist 之一",
+            "stage_hint 如提供，必须是 childhood/juvenile/youth/middle_age/old_age 之一",
+        ],
+    )
+
+
+def _normalize_extracted_assets(obj):
+    """把 LLM 提取结果规范化为标准结构，并去重/截断。"""
+    valid_role_types = {"protagonist", "supporting", "antagonist"}
+    valid_stages = {"childhood", "juvenile", "youth", "middle_age", "old_age"}
+    out = {"roles": [], "scenes": [], "props": []}
+    seen = {"roles": set(), "scenes": set(), "props": set()}
+
+    def _clean_name(n):
+        return re.sub(r'[\s@\[\]{}<>",:;]+', "", str(n or "")).strip()[:64]
+
+    for key in ("roles", "scenes", "props"):
+        arr = obj.get(key) if isinstance(obj, dict) else None
+        if not isinstance(arr, list):
+            continue
+        for item in arr:
+            if not isinstance(item, dict):
+                continue
+            name = _clean_name(item.get("name"))
+            if not name or name.lower() in seen[key]:
+                continue
+            seen[key].add(name.lower())
+            desc = str(item.get("description") or "").strip()[:256]
+            entry = {"name": name, "description": desc}
+            if key == "roles":
+                rt = str(item.get("role_type") or "supporting").strip().lower()
+                entry["role_type"] = rt if rt in valid_role_types else "supporting"
+                sh = str(item.get("stage_hint") or "").strip().lower()
+                if sh in valid_stages:
+                    entry["stage_hint"] = sh
+            out[key].append(entry)
+    # 上限保护
+    out["roles"] = out["roles"][:20]
+    out["scenes"] = out["scenes"][:20]
+    out["props"] = out["props"][:30]
+    return out
+
+
+def extract_assets_from_story(story, model_config=None):
+    """Phase 1：从剧本/故事文本中提取角色、场景、道具候选。
+
+    model_config: 同 split_story_with_llm，支持 local / openai-compatible。
+    成功返回 {"roles": [...], "scenes": [...], "props": [...], "meta": {...}}；
+    失败返回 {"roles": [], "scenes": [], "props": [], "meta": {"error": ...}}。
+    """
+    model_config = model_config or {}
+    provider = model_config.get("provider") or "local"
+    model = model_config.get("model") or MODEL
+    meta = {"model": model, "source": "llm", "provider": provider}
+    prompt = _extract_assets_prompt(story)
+    start = time.time()
+    raw = None
+    try:
+        if provider == "local":
+            if not ollama_available():
+                meta["error"] = "Ollama 服务未启动或目标模型 %s 未加载" % model
+                return {"roles": [], "scenes": [], "props": [], "meta": meta}
+            raw = ollama_chat(prompt)
+        else:
+            raw, online_meta = _call_online_llm(prompt, model_config)
+            meta.update(online_meta or {})
+    except Exception as e:
+        meta["error"] = "调用模型异常：%s" % e
+        meta["duration_ms"] = int((time.time() - start) * 1000)
+        return {"roles": [], "scenes": [], "props": [], "meta": meta}
+    meta["duration_ms"] = int((time.time() - start) * 1000)
+    if not raw:
+        if not meta.get("error"):
+            meta["error"] = "模型返回为空"
+        return {"roles": [], "scenes": [], "props": [], "meta": meta}
+    meta["raw_preview"] = raw[:800]
+    block = _extract_json_block(raw)
+    if not block:
+        meta["error"] = "无法从模型输出中解析 JSON 块"
+        return {"roles": [], "scenes": [], "props": [], "meta": meta}
+    try:
+        obj = json.loads(block)
+    except Exception as e:
+        meta["error"] = "JSON 解析失败：%s" % e
+        return {"roles": [], "scenes": [], "props": [], "meta": meta}
+    out = _normalize_extracted_assets(obj)
+    out["meta"] = meta
+    meta["count"] = len(out["roles"]) + len(out["scenes"]) + len(out["props"])
+    return out
+
+
+def split_story_with_llm(story, model_config=None):
+    """Phase 2：用本地 Ollama 或在线模型把长故事拆为场次（含角色/场景/分镜）。
+
+    model_config: dict，可选字段 provider/local/openai-compatible、model、apiBase、apiKey。
+    成功返回 {"segments": [...], "meta": {...}}；失败返回 {"segments": None, "meta": {...}}。
+    meta 含 model/raw_preview/duration_ms/provider/error，供前端展示推理过程与回退原因。
+    """
+    model_config = model_config or {}
+    provider = model_config.get("provider") or "local"
+    model = model_config.get("model") or MODEL
+    meta = {"model": model, "source": "llm", "provider": provider}
+    prompt = _split_story_prompt(story)
+    start = time.time()
+    raw = None
+    try:
+        if provider == "local":
+            if not ollama_available():
+                meta["error"] = "Ollama 服务未启动或目标模型 %s 未加载" % model
+                return {"segments": None, "meta": meta}
+            raw = ollama_chat(prompt)
+        else:
+            raw, online_meta = _call_online_llm(prompt, model_config)
+            meta.update(online_meta)
+    except Exception as e:
+        meta["error"] = "调用模型异常：%s" % e
+        meta["duration_ms"] = int((time.time() - start) * 1000)
+        return {"segments": None, "meta": meta}
+    meta["duration_ms"] = int((time.time() - start) * 1000)
+    if not raw:
+        if not meta.get("error"):
+            meta["error"] = "模型返回为空"
+        return {"segments": None, "meta": meta}
+    meta["raw_preview"] = raw[:800]
+    block = _extract_json_block(raw)
+    if not block:
+        meta["error"] = "无法从模型输出中解析 JSON 块"
+        return {"segments": None, "meta": meta}
+    try:
+        arr = json.loads(block)
+    except Exception as e:
+        meta["error"] = "JSON 解析失败：%s" % e
+        return {"segments": None, "meta": meta}
+    segs, err = _normalize_split_segments(arr)
+    if err:
+        meta["error"] = err
+        return {"segments": None, "meta": meta}
+    meta["count"] = len(segs)
+    return {"segments": segs, "meta": meta}
 
 
 def build_segment_prompt(segment, shots, asset_infos):

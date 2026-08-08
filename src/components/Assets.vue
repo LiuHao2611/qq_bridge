@@ -2,11 +2,12 @@
 import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import {
-  getProject, listAssets, listProjectAssets,
+  getProject, listAssets, listProjectAssets, listSegments,
   uploadGlobalAsset, uploadProjectAsset, uploadImage,
   importRole, importScene, importProp,
   updateAsset, deleteAsset,
   listStagesWithPoses, addStage, delStage, addPose, delPose,
+  extractAssetsFromStory, batchCreateProjectAssets,
 } from '../api'
 import { toast } from '../store'
 import { splitVoice, joinVoice } from '../assetMeta'
@@ -15,6 +16,7 @@ import RoleEditorModal from './RoleEditorModal.vue'
 import {
   ASSET_TAB_OPTIONS, ASSET_STAGE_OPTIONS, ASSET_POSE_OPTIONS, ASSET_ROLE_TYPE_OPTIONS,
 } from '../mock'
+import { parseDocx } from '../parseDocx'
 
 const route = useRoute()
 const pid = route.params.id
@@ -59,6 +61,219 @@ const importDialog = reactive({
   tab: 'characters',
   items: [],
 })
+
+// 从剧本一键提取资产
+const extractDialog = reactive({
+  open: false,
+  step: 'source', // source | review | done
+  loading: false,
+  storySource: 'project', // project | paste
+  pastedStory: '',
+  segmentCount: 0,
+  candidates: { roles: [], scenes: [], props: [] },
+  meta: {},
+  createdCount: 0,
+  skippedNames: [],
+  dragOver: false,
+  dragCounter: 0,
+  uploadedFileName: '',
+})
+const selectedCandidates = ref({}) // { 'roles:林浩': true }
+const editedCandidates = ref({}) // { 'roles:林浩': {...} }
+
+const openExtractDialog = async () => {
+  extractDialog.open = true
+  extractDialog.step = 'source'
+  extractDialog.storySource = 'project'
+  extractDialog.pastedStory = ''
+  extractDialog.segmentCount = 0
+  extractDialog.candidates = { roles: [], scenes: [], props: [] }
+  extractDialog.meta = {}
+  extractDialog.createdCount = 0
+  extractDialog.skippedNames = []
+  extractDialog.dragOver = false
+  extractDialog.dragCounter = 0
+  extractDialog.uploadedFileName = ''
+  selectedCandidates.value = {}
+  editedCandidates.value = {}
+  try {
+    const segs = await listSegments(pid)
+    extractDialog.segmentCount = (segs || []).length
+  } catch (e) {
+    console.warn('load segments count failed:', e.message)
+  }
+}
+
+const closeExtractDialog = () => {
+  extractDialog.open = false
+}
+
+const extractFileInput = ref(null)
+const pickExtractFile = () => extractFileInput.value?.click()
+const onExtractFileInput = (e) => {
+  const f = e.target.files && e.target.files[0]
+  if (f) readExtractScriptFile(f)
+  e.target.value = '' // 允许重复选择同一文件
+}
+
+const onExtractDragEnter = (e) => {
+  e.preventDefault()
+  extractDialog.dragCounter++
+  extractDialog.dragOver = true
+}
+const onExtractDragOver = (e) => {
+  e.preventDefault()
+}
+const onExtractDragLeave = (e) => {
+  extractDialog.dragCounter--
+  if (extractDialog.dragCounter <= 0) {
+    extractDialog.dragCounter = 0
+    extractDialog.dragOver = false
+  }
+}
+const onExtractDrop = (e) => {
+  e.preventDefault()
+  extractDialog.dragCounter = 0
+  extractDialog.dragOver = false
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]
+  if (f) readExtractScriptFile(f)
+}
+
+const readExtractScriptFile = async (file) => {
+  const name = (file.name || '').toLowerCase()
+  try {
+    if (name.endsWith('.docx')) {
+      const buf = await file.arrayBuffer()
+      const text = await parseDocx(buf)
+      if (!text.trim()) throw new Error('未从 .docx 中解析出任何文本')
+      extractDialog.pastedStory = text.trim()
+      extractDialog.uploadedFileName = file.name
+      toast(`已导入剧本：${file.name}（${text.length} 字）`)
+      return
+    }
+    const supported = ['.txt', '.md', '.srt']
+    if (!supported.some((ext) => name.endsWith(ext))) {
+      throw new Error('仅支持 .txt / .md / .srt / .docx 文件')
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      let text = String(reader.result || '')
+      if (name.endsWith('.srt')) {
+        text = text.split(/\r?\n/)
+          .filter((l) => !/^\d+$/.test(l.trim()) && !/-->/.test(l))
+          .join('\n')
+      }
+      extractDialog.pastedStory = text.trim()
+      extractDialog.uploadedFileName = file.name
+      toast(`已导入剧本：${file.name}（${text.length} 字）`)
+    }
+    reader.onerror = () => toast('文件读取失败，请重试')
+    reader.readAsText(file, 'utf-8')
+  } catch (e) {
+    toast('剧本导入失败：' + (e.message || '未知错误'))
+  }
+}
+
+const isExistingAssetName = (name) => {
+  const k = String(name).trim().toLowerCase()
+  if (!k) return false
+  return [...project.assets.characters, ...project.assets.scenes, ...project.assets.props].some((a) => a.name.toLowerCase() === k)
+}
+
+const candidateKey = (type, name) => type + ':' + name
+
+const isCandidateSelected = (type, name) => !!selectedCandidates.value[candidateKey(type, name)]
+
+const toggleCandidate = (type, name) => {
+  const key = candidateKey(type, name)
+  selectedCandidates.value[key] = !selectedCandidates.value[key]
+}
+
+const toggleGroup = (type, items, on) => {
+  items.forEach((it) => {
+    selectedCandidates.value[candidateKey(type, it.name)] = on
+  })
+}
+
+const getCandidate = (type, name, raw) => {
+  const key = candidateKey(type, name)
+  return editedCandidates.value[key] || { ...raw }
+}
+
+const updateCandidate = (type, oldName, field, value) => {
+  const key = candidateKey(type, oldName)
+  const cur = editedCandidates.value[key] || { ...extractDialog.candidates[type].find((x) => x.name === oldName) }
+  cur[field] = value
+  editedCandidates.value[key] = cur
+}
+
+const runExtract = async () => {
+  let story = ''
+  if (extractDialog.storySource === 'paste') {
+    story = extractDialog.pastedStory.trim()
+    if (!story) { toast('请粘贴剧本/故事文本'); return }
+  }
+  extractDialog.loading = true
+  try {
+    const res = await extractAssetsFromStory(pid, story)
+    extractDialog.candidates = {
+      roles: res.roles || [],
+      scenes: res.scenes || [],
+      props: res.props || [],
+    }
+    extractDialog.meta = res.meta || {}
+    // 默认全选；已存在的资产默认不选
+    const next = {}
+    ;['roles', 'scenes', 'props'].forEach((t) => {
+      (extractDialog.candidates[t] || []).forEach((it) => {
+        next[candidateKey(t, it.name)] = !isExistingAssetName(it.name)
+      })
+    })
+    selectedCandidates.value = next
+    editedCandidates.value = {}
+    extractDialog.step = 'review'
+    if ((res.meta || {}).error) {
+      toast('提取完成（模型异常：' + res.meta.error + '）')
+    }
+  } catch (e) {
+    toast('提取失败：' + e.message)
+  } finally {
+    extractDialog.loading = false
+  }
+}
+
+const submitBatchCreate = async () => {
+  const assets = []
+  ;['roles', 'scenes', 'props'].forEach((t) => {
+    const type = t === 'roles' ? 'role' : t === 'scenes' ? 'scene' : 'prop'
+    extractDialog.candidates[t].forEach((it) => {
+      if (!isCandidateSelected(t, it.name)) return
+      const cur = getCandidate(t, it.name, it)
+      const name = (cur.name || it.name).trim()
+      if (!name) return
+      assets.push({
+        name,
+        type,
+        role_type: type === 'role' ? (cur.role_type || it.role_type || 'supporting') : undefined,
+        description: cur.description || it.description || '',
+        tags: [],
+      })
+    })
+  })
+  if (!assets.length) { toast('请至少选择一个资产'); return }
+  extractDialog.loading = true
+  try {
+    const res = await batchCreateProjectAssets(pid, assets)
+    extractDialog.createdCount = res.count || 0
+    extractDialog.skippedNames = res.skipped || []
+    extractDialog.step = 'done'
+    await loadList()
+  } catch (e) {
+    toast('批量创建失败：' + e.message)
+  } finally {
+    extractDialog.loading = false
+  }
+}
 
 const isDragging = ref(false)
 
@@ -505,6 +720,7 @@ onMounted(load)
         ＋ 上传到全集
         <input type="file" multiple accept="image/*" style="display:none" @change="onFileInput" />
       </label>
+      <button v-if="scope === 'project'" class="btn import-btn" @click="openExtractDialog">📝 从剧本提取</button>
       <button v-if="scope === 'project'" class="btn import-btn" @click="openImportDialog">🌐 从全集导入</button>
     </div>
 
@@ -695,6 +911,143 @@ onMounted(load)
       </div>
     </div>
 
+    <!-- 从剧本提取资产弹窗 -->
+    <div class="modal-mask" v-if="extractDialog.open" @click="closeExtractDialog">
+      <div class="modal-box wide extract-box" @click.stop>
+        <h3>📝 从剧本一键提取资产</h3>
+
+        <!-- 步骤 1：选择剧本来源 -->
+        <div v-if="extractDialog.step === 'source'">
+          <p class="muted" style="margin-bottom:12px">AI 将从剧本/故事中识别角色、场景、道具，供你确认后批量创建为本集资产。</p>
+          <div class="extract-source">
+            <label class="extract-option" :class="{ on: extractDialog.storySource === 'project' }">
+              <input type="radio" value="project" v-model="extractDialog.storySource" />
+              <div>
+                <div class="opt-title">使用项目已导入的场次/分镜</div>
+                <div class="opt-desc">共 {{ extractDialog.segmentCount }} 个场次；将读取所有片段的场景描述与分镜文本进行分析</div>
+              </div>
+            </label>
+            <label class="extract-option" :class="{ on: extractDialog.storySource === 'paste' }">
+              <input type="radio" value="paste" v-model="extractDialog.storySource" />
+              <div>
+                <div class="opt-title">粘贴剧本/故事全文</div>
+                <div class="opt-desc">适用于尚未进行分场拆解的项目</div>
+              </div>
+            </label>
+          </div>
+          <div v-if="extractDialog.storySource === 'paste'" style="margin-top:12px">
+            <div class="extract-drop">
+              <textarea
+                v-model="extractDialog.pastedStory"
+                class="extract-story"
+                :class="{ over: extractDialog.dragOver }"
+                placeholder="在此粘贴完整剧本或故事…"
+                @dragenter.prevent="onExtractDragEnter"
+                @dragover.prevent="onExtractDragOver"
+                @dragleave.prevent="onExtractDragLeave"
+                @drop.prevent="onExtractDrop"
+              ></textarea>
+              <div v-if="!extractDialog.pastedStory.trim() && !extractDialog.dragOver" class="extract-drop-hint">
+                <span>📎 拖入 .txt / .md / .srt / .docx 文件到此处</span>
+                <span class="sub">或直接粘贴文本</span>
+              </div>
+              <div v-if="extractDialog.dragOver" class="extract-drop-hint over">松开即可导入</div>
+            </div>
+            <input ref="extractFileInput" type="file" accept=".txt,.md,.srt,.docx" style="display:none" @change="onExtractFileInput" />
+            <div class="extract-formats">
+              <span>支持格式：txt / markdown / srt（自动剔除时间轴） / docx（纯前端 OOXML 解压）</span>
+              <span class="link" @click="pickExtractFile">点击选择文件</span>
+            </div>
+            <div v-if="extractDialog.uploadedFileName" class="extract-file-tag">
+              <span>📄 {{ extractDialog.uploadedFileName }}</span>
+              <span class="link" @click="extractDialog.uploadedFileName = ''; extractDialog.pastedStory = ''">清除</span>
+            </div>
+          </div>
+          <div class="modal-acts">
+            <button class="btn sm ghost" @click="closeExtractDialog">取消</button>
+            <button class="btn sm" :disabled="extractDialog.loading || (extractDialog.storySource === 'paste' && !extractDialog.pastedStory.trim())" @click="runExtract">
+              {{ extractDialog.loading ? '提取中…' : '开始提取' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 步骤 2：确认/编辑候选 -->
+        <div v-else-if="extractDialog.step === 'review'">
+          <p class="muted" style="margin-bottom:12px">已识别 {{ (extractDialog.candidates.roles||[]).length }} 个角色、{{ (extractDialog.candidates.scenes||[]).length }} 个场景、{{ (extractDialog.candidates.props||[]).length }} 个道具。勾选需要创建的资产，可编辑名称与描述。</p>
+          <div v-if="extractDialog.meta && extractDialog.meta.error" class="extract-error">⚠️ 模型提示：{{ extractDialog.meta.error }}（结果可能不完整）</div>
+
+          <div class="extract-groups">
+            <!-- 角色 -->
+            <div class="extract-group" v-if="extractDialog.candidates.roles.length">
+              <div class="eg-head">
+                <span>🎭 角色（{{ extractDialog.candidates.roles.length }}）</span>
+                <span class="link" @click="toggleGroup('roles', extractDialog.candidates.roles, true)">全选</span>
+                <span class="link" @click="toggleGroup('roles', extractDialog.candidates.roles, false)">取消</span>
+              </div>
+              <div v-for="it in extractDialog.candidates.roles" :key="'r_'+it.name" class="extract-row" :class="{ dup: isExistingAssetName(getCandidate('roles', it.name, it).name || it.name) }">
+                <input type="checkbox" :checked="isCandidateSelected('roles', it.name)" @change="toggleCandidate('roles', it.name)" />
+                <input class="input" :value="getCandidate('roles', it.name, it).name || it.name" @input="updateCandidate('roles', it.name, 'name', $event.target.value)" placeholder="角色名" />
+                <select class="input" :value="getCandidate('roles', it.name, it).role_type || it.role_type || 'supporting'" @change="updateCandidate('roles', it.name, 'role_type', $event.target.value)">
+                  <option v-for="o in ROLE_TYPE_OPTS" :key="o.value" :value="o.value">{{ o.label }}</option>
+                </select>
+                <input class="input" :value="getCandidate('roles', it.name, it).description || it.description" @input="updateCandidate('roles', it.name, 'description', $event.target.value)" placeholder="描述/身份" />
+                <span v-if="isExistingAssetName(getCandidate('roles', it.name, it).name || it.name)" class="dup-tag">已存在</span>
+              </div>
+            </div>
+
+            <!-- 场景 -->
+            <div class="extract-group" v-if="extractDialog.candidates.scenes.length">
+              <div class="eg-head">
+                <span>🏞️ 场景（{{ extractDialog.candidates.scenes.length }}）</span>
+                <span class="link" @click="toggleGroup('scenes', extractDialog.candidates.scenes, true)">全选</span>
+                <span class="link" @click="toggleGroup('scenes', extractDialog.candidates.scenes, false)">取消</span>
+              </div>
+              <div v-for="it in extractDialog.candidates.scenes" :key="'s_'+it.name" class="extract-row" :class="{ dup: isExistingAssetName(getCandidate('scenes', it.name, it).name || it.name) }">
+                <input type="checkbox" :checked="isCandidateSelected('scenes', it.name)" @change="toggleCandidate('scenes', it.name)" />
+                <input class="input" :value="getCandidate('scenes', it.name, it).name || it.name" @input="updateCandidate('scenes', it.name, 'name', $event.target.value)" placeholder="场景名" />
+                <input class="input" :value="getCandidate('scenes', it.name, it).description || it.description" @input="updateCandidate('scenes', it.name, 'description', $event.target.value)" placeholder="环境/氛围" />
+                <span v-if="isExistingAssetName(getCandidate('scenes', it.name, it).name || it.name)" class="dup-tag">已存在</span>
+              </div>
+            </div>
+
+            <!-- 道具 -->
+            <div class="extract-group" v-if="extractDialog.candidates.props.length">
+              <div class="eg-head">
+                <span>🧰 道具（{{ extractDialog.candidates.props.length }}）</span>
+                <span class="link" @click="toggleGroup('props', extractDialog.candidates.props, true)">全选</span>
+                <span class="link" @click="toggleGroup('props', extractDialog.candidates.props, false)">取消</span>
+              </div>
+              <div v-for="it in extractDialog.candidates.props" :key="'p_'+it.name" class="extract-row" :class="{ dup: isExistingAssetName(getCandidate('props', it.name, it).name || it.name) }">
+                <input type="checkbox" :checked="isCandidateSelected('props', it.name)" @change="toggleCandidate('props', it.name)" />
+                <input class="input" :value="getCandidate('props', it.name, it).name || it.name" @input="updateCandidate('props', it.name, 'name', $event.target.value)" placeholder="道具名" />
+                <input class="input" :value="getCandidate('props', it.name, it).description || it.description" @input="updateCandidate('props', it.name, 'description', $event.target.value)" placeholder="形态/作用" />
+                <span v-if="isExistingAssetName(getCandidate('props', it.name, it).name || it.name)" class="dup-tag">已存在</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-acts">
+            <button class="btn sm ghost" @click="extractDialog.step = 'source'">上一步</button>
+            <button class="btn sm" :disabled="extractDialog.loading" @click="submitBatchCreate">
+              {{ extractDialog.loading ? '创建中…' : '确认创建本集资产' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- 步骤 3：完成 -->
+        <div v-else-if="extractDialog.step === 'done'">
+          <div class="extract-done">
+            <div class="done-icon">✅</div>
+            <div class="done-title">成功创建 {{ extractDialog.createdCount }} 个本集资产</div>
+            <div v-if="extractDialog.skippedNames.length" class="muted">已跳过重复：{{ extractDialog.skippedNames.join('、') }}</div>
+          </div>
+          <div class="modal-acts">
+            <button class="btn sm" @click="closeExtractDialog">完成</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 阶段表单 -->
     <div class="modal-mask" v-if="stageForm.open" @click="stageForm.open=false">
       <div class="modal-box" @click.stop>
@@ -866,4 +1219,37 @@ onMounted(load)
 .import-thumb { aspect-ratio: 1; background: var(--bg); border-radius: 8px; overflow: hidden; margin-bottom: 8px; }
 .import-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .import-name { font-size: 12px; font-weight: 700; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 从剧本提取 */
+.extract-box { width: 760px; max-height: 82vh; }
+.extract-source { display: flex; flex-direction: column; gap: 10px; }
+.extract-option { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border-radius: 10px; border: 1px solid var(--line); cursor: pointer; transition: .15s; }
+.extract-option.on { border-color: var(--pur); background: rgba(138,92,255,.08); }
+.extract-option input { margin-top: 3px; }
+.opt-title { font-weight: 700; font-size: 14px; }
+.opt-desc { font-size: 12px; color: var(--sub); margin-top: 2px; }
+.extract-story { width: 100%; min-height: 160px; background: var(--bg-2); color: var(--txt); border: 1px solid var(--line); border-radius: 10px; padding: 12px; font-size: 13px; resize: vertical; }
+.extract-story.over { border-color: var(--blue); background: rgba(59,130,246,.08); }
+.extract-drop { position: relative; }
+.extract-drop-hint { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; color: var(--sub); font-size: 13px; text-align: center; gap: 4px; padding: 12px; }
+.extract-drop-hint .sub { font-size: 12px; opacity: .8; }
+.extract-drop-hint.over { color: var(--blue); font-weight: 700; }
+.extract-formats { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; font-size: 11px; color: var(--sub); opacity: .85; }
+.extract-formats .link { color: var(--blue); cursor: pointer; }
+.extract-file-tag { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; padding: 6px 10px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; font-size: 12px; color: var(--sub); }
+.extract-file-tag .link { color: var(--red); cursor: pointer; }
+.extract-error { background: rgba(255,176,32,.12); color: #ffb020; border: 1px solid rgba(255,176,32,.3); border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
+.extract-groups { max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+.extract-group { background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.eg-head { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 14px; margin-bottom: 10px; }
+.eg-head .link { font-size: 12px; color: var(--blue); cursor: pointer; }
+.extract-row { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 8px; transition: .15s; }
+.extract-row:hover { background: var(--card); }
+.extract-row.dup { opacity: .75; }
+.extract-row input[type="checkbox"] { flex: 0 0 16px; accent-color: var(--pur); }
+.extract-row .input { flex: 1; min-width: 0; }
+.dup-tag { font-size: 10px; color: #ffb020; background: rgba(255,176,32,.12); padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
+.extract-done { text-align: center; padding: 30px 0; }
+.done-icon { font-size: 48px; margin-bottom: 10px; }
+.done-title { font-size: 16px; font-weight: 700; }
 </style>

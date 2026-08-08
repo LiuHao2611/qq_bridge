@@ -118,11 +118,11 @@ export const ASSET_TAB_OPTIONS = [
   { key: 'props', label: '道具', type: 'prop' },
 ]
 export const ASSET_STAGE_OPTIONS = [
-  { value: 'childhood', label: '童年' },
-  { value: 'juvenile', label: '少年' },
-  { value: 'youth', label: '青年' },
-  { value: 'middle_age', label: '中年' },
-  { value: 'old_age', label: '老年' },
+  { value: 'childhood', label: '童年期' },
+  { value: 'juvenile', label: '少年期' },
+  { value: 'youth', label: '青年期' },
+  { value: 'middle_age', label: '中年期' },
+  { value: 'old_age', label: '老年期' },
 ]
 export const ASSET_POSE_OPTIONS = [
   { value: 'front', label: '正面' },
@@ -181,28 +181,28 @@ export const mockProject = {
       id: 'c1', name: '林夏', relation: '主角',
       desc: '25 岁，刑侦支队新人，敏锐却冲动。',
       thumb: '', stages: [
-        { age: '18', desc: '警校毕业，初入职场' },
-        { age: '23', desc: '首次独立办案' },
-        { age: '25', desc: '卷入都市迷局' },
+        { stage_id: 'c1s1', stage_name: 'juvenile', age: 18, reference_image_url: '', poses: [] },
+        { stage_id: 'c1s2', stage_name: 'youth', age: 23, reference_image_url: '', poses: [] },
+        { stage_id: 'c1s3', stage_name: 'youth', age: 25, reference_image_url: '', poses: [] },
       ],
     },
     {
       id: 'c2', name: '顾沉', relation: '主角',
       desc: '32 岁，神秘投资人，亦正亦邪。',
       thumb: '', stages: [
-        { age: '28', desc: '回国创业' },
-        { age: '32', desc: '布局迷局' },
+        { stage_id: 'c2s1', stage_name: 'youth', age: 28, reference_image_url: '', poses: [] },
+        { stage_id: 'c2s2', stage_name: 'middle_age', age: 32, reference_image_url: '', poses: [] },
       ],
     },
     {
       id: 'c3', name: '老周', relation: '配角',
       desc: '50 岁，林夏的师父，老刑警。',
-      thumb: '', stages: [{ age: '50', desc: '即将退休' }],
+      thumb: '', stages: [{ stage_id: 'c3s1', stage_name: 'middle_age', age: 50, reference_image_url: '', poses: [] }],
     },
     {
       id: 'c4', name: '苏蔓', relation: '配角',
       desc: '27 岁，咖啡馆老板，关键证人。',
-      thumb: '', stages: [{ age: '27', desc: '目击者' }],
+      thumb: '', stages: [{ stage_id: 'c4s1', stage_name: 'youth', age: 27, reference_image_url: '', poses: [] }],
     },
   ],
   assets: {
@@ -284,9 +284,9 @@ export const mockMemoir = {
     voice_narration: '那年我二十岁，以为一辈子就在鱼摊上过完了。',
   },
   characters: [
-    { id: 'mc1', name: '青年启强', relation: '主角', thumb: '', stages: [{ age: '20', desc: '卖鱼少年' }, { age: '35', desc: '家族新贵' }] },
-    { id: 'mc2', name: '晚年启强', relation: '主角', thumb: '', stages: [{ age: '65', desc: '归乡老人' }] },
-    { id: 'mc3', name: '阿菊', relation: '配角', thumb: '', stages: [{ age: '22', desc: '青梅竹马' }] },
+    { id: 'mc1', name: '青年启强', relation: '主角', thumb: '', stages: [{ stage_id: 'mcs1', stage_name: 'youth', age: 20, reference_image_url: '', poses: [] }, { stage_id: 'mcs2', stage_name: 'middle_age', age: 35, reference_image_url: '', poses: [] }] },
+    { id: 'mc2', name: '晚年启强', relation: '主角', thumb: '', stages: [{ stage_id: 'mcs3', stage_name: 'old_age', age: 65, reference_image_url: '', poses: [] }] },
+    { id: 'mc3', name: '阿菊', relation: '配角', thumb: '', stages: [{ stage_id: 'mcs4', stage_name: 'youth', age: 22, reference_image_url: '', poses: [] }] },
   ],
   // 指导板分镜表
   scenes: [

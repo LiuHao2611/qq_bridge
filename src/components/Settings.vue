@@ -3,37 +3,53 @@ import { reactive, ref, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useTheme } from '../composables/useTheme'
-import { getSettings, updateSettings } from '../api'
+import { getSettings, updateSettings, getLocalModels } from '../api'
 
 const router = useRouter()
 const LS_KEY = 'wn_settings'
 const APP_PREFIX = 'wn_'
+const APP_VERSION = 'v1.3.0'
+
+// 主题色圆点映射到 style.css 的配色预设（与 useTheme 的 VALID_PRESETS 对齐）
+const ACCENT_TO_PRESET = {
+  purple: '',
+  pink: 'splice',
+  blue: 'blue',
+  green: 'green',
+  orange: 'gradient',
+}
+const PRESET_TO_ACCENT = {
+  '': 'purple',
+  splice: 'pink',
+  blue: 'blue',
+  green: 'green',
+  gradient: 'orange',
+  gray: 'purple',
+}
 
 const defaults = () => ({
   // 外观
-  theme: 'dark',            // dark / light / auto
-  fontSize: 14,             // 12-20px
+  theme: 'dark',
+  fontSize: 14,
   language: 'zh-CN',
   accent: 'purple',
-  density: 'standard',      // compact / standard / loose
-  // AI 模型
-  createModel: '创作旗舰 Pro',
-  videoModel: 'Seedance 2.0 Pro',
-  imgModel: 'SDXL 本地',
-  planningModel: 'Gemini 3.5 Flash',
+  density: 'standard',
+  // AI 模型（个人本地版仅使用本地 Ollama / ComfyUI）
+  createModel: 'qwen3.5:9b',
+  videoModel: 'ComfyUI 本地视频工作流',
+  imgModel: 'ComfyUI SD1.5 本地',
+  planningModel: 'qwen3.5:9b',
   defaultResolution: '720p',
   defaultRatio: '16:9',
   defaultDuration: 12,
-  safetyLevel: 'standard', // strict / standard / loose
-  quality: 'standard',     // draft / standard / hd
+  safetyLevel: 'standard',
+  quality: 'standard',
   // 存储
   storagePath: '%APPDATA%/wanneng-drama/',
   autoCleanupDays: 30,
   maxSizeGb: 50,
-  mediaQuality: 'keep',     // keep / compress / ondemand
-  // 网络
-  proxyOn: false,
-  proxyAddr: '',
+  mediaQuality: 'keep',
+  // 网络（仅本地后端连接参数）
   apiHost: '127.0.0.1',
   apiPort: 7788,
   timeoutS: 120,
@@ -44,14 +60,10 @@ const defaults = () => ({
   quietStart: '22:00',
   quietEnd: '08:00',
   notifyTask: true,
-  notifyCredits: true,
   notifySystem: true,
-  notifyActivity: true,
-  // 快捷键 / 备份 / 隐私
+  // 备份
   autoBackup: true,
   backupKeepDays: 30,
-  dataLocal: 'force',       // default / force
-  uploadMask: false,
   logRetentionDays: 90,
 })
 
@@ -64,24 +76,29 @@ const load = () => {
 }
 
 const settings = reactive(load())
-const { set: setTheme } = useTheme()
+const { set: setTheme, setPreset } = useTheme()
 
 const persist = () => {
   try { localStorage.setItem(LS_KEY, JSON.stringify({ ...settings })) } catch (e) {}
 }
 watch(settings, persist, { deep: true })
 watch(() => settings.theme, setTheme)
+watch(() => settings.accent, (v) => {
+  const preset = ACCENT_TO_PRESET[v] ?? ''
+  setPreset(preset)
+})
 
 const saveAll = async () => {
   persist()
   try {
     await updateSettings({ ...settings })
-    ElMessage.success('设置已保存')
+    ElMessage.success('设置已保存到本地与后端')
   } catch (e) {
     ElMessage.warning('后端保存失败，已保留本地设置')
   }
 }
 
+// 真实清除本应用 localStorage
 const clearCache = () => {
   const keys = []
   for (let i = 0; i < localStorage.length; i++) {
@@ -90,51 +107,127 @@ const clearCache = () => {
   }
   keys.forEach(k => localStorage.removeItem(k))
   Object.assign(settings, defaults())
-  ElMessage.success('已清理本地缓存（演示）')
+  ElMessage.success('已清理本地缓存')
 }
 
-// 网络测速模拟
+// 导出当前设置（及部分运行信息）为 JSON
+const exportData = () => {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    version: APP_VERSION,
+    settings: { ...settings },
+    userAgent: navigator.userAgent,
+  }
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'manju_settings_' + Date.now() + '.json'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  ElMessage.success('已导出设置到本地 JSON')
+}
+
+// 本地备份：导出设置 JSON（个人版无云端备份，以本地导出作为备份补偿）
+const backupNow = () => {
+  const payload = {
+    backupAt: new Date().toISOString(),
+    version: APP_VERSION,
+    settings: { ...settings },
+  }
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'manju_backup_' + Date.now() + '.json'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  ElMessage.success('已创建本地备份文件')
+}
+
+// 真实网络测速：ping 本地后端 /health
 const speedProgress = ref(0)
 const speedIng = ref(false)
+const speedResult = ref('')
 let timer = null
-const runSpeedTest = () => {
+const PING_COUNT = 5
+const runSpeedTest = async () => {
   if (speedIng.value) return
   speedIng.value = true
   speedProgress.value = 0
-  timer = setInterval(() => {
-    speedProgress.value += Math.floor(Math.random() * 9) + 5
-    if (speedProgress.value >= 100) {
-      speedProgress.value = 100
-      clearInterval(timer); timer = null
-      speedIng.value = false
-      ElMessage.success('延迟 23ms / 下行 120Mbps（演示）')
+  speedResult.value = ''
+  const latencies = []
+  const baseUrl = `http://${settings.apiHost}:${settings.apiPort}`
+  for (let i = 0; i < PING_COUNT; i++) {
+    const start = performance.now()
+    try {
+      await fetch(baseUrl + '/api/v1/health', { method: 'GET', cache: 'no-store' })
+      latencies.push(Math.round(performance.now() - start))
+    } catch (e) {
+      latencies.push(null)
     }
-  }, 220)
+    speedProgress.value = Math.round(((i + 1) / PING_COUNT) * 100)
+    await new Promise(r => setTimeout(r, 180))
+  }
+  speedIng.value = false
+  const valid = latencies.filter(x => x !== null)
+  if (!valid.length) {
+    speedResult.value = '无法连接到本地后端，请检查 API 服务器地址'
+    ElMessage.error(speedResult.value)
+  } else {
+    const avg = Math.round(valid.reduce((a, b) => a + b, 0) / valid.length)
+    const min = Math.min(...valid)
+    const max = Math.max(...valid)
+    speedResult.value = `平均延迟 ${avg}ms / 最低 ${min}ms / 最高 ${max}ms`
+    ElMessage.success(speedResult.value)
+  }
 }
 onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 
 onMounted(async () => {
+  // 拉取本地 Ollama 模型列表，填充创作/策划模型下拉
+  try {
+    const models = await getLocalModels()
+    if (Array.isArray(models) && models.length) {
+      localLLMs.value = models
+      localPlanningModels.value = models
+    }
+  } catch (e) {
+    // 保持 fallback 静态列表
+  }
+
+  // 同步后端保存的设置（本地主题/主题色选择优先）
   try {
     const backend = await getSettings()
     if (backend && typeof backend === 'object') {
-      // 保留本地主题选择，其余字段后端优先
-      const theme = settings.theme
+      const preserved = { theme: settings.theme, accent: settings.accent }
       Object.assign(settings, backend)
-      settings.theme = theme
+      settings.theme = preserved.theme
+      const validAccents = accents.map(a => a.key)
+      settings.accent = validAccents.includes(backend.accent) ? backend.accent : preserved.accent
+      setPreset(ACCENT_TO_PRESET[settings.accent] ?? '')
     }
   } catch (e) {
     console.warn('settings backend failed, use local', e.message)
   }
 })
 
-const checkUpdate = () => ElMessage('已是最新版本 v1.3.0（演示）')
+const checkUpdate = () => ElMessage(`当前版本 ${APP_VERSION} · 个人本地版通过 Git/版本管理器更新`)
 const goHelp = () => router.push('/help')
-const resetSettings = () => { Object.assign(settings, defaults()); ElMessage.success('已恢复默认设置（演示）') }
+const resetSettings = () => {
+  Object.assign(settings, defaults())
+  ElMessage.success('已恢复默认设置')
+}
 
-const createModels = ['创作旗舰 Pro', 'Flash·短', 'Flash·长', 'Max']
-const videoModels = ['Seedance 2.0 Mini', 'Seedance 2.0 Pro', '可灵1.6', '即梦3.0', 'Vidu Q3']
-const imgModels = ['SDXL 本地', 'GPT-Image-2 2K']
-const planningModels = ['Gemini 3.5 Flash', 'Gemini 3.5 Pro', 'GPT-4o']
+// 本地模型选项
+const localLLMs = ref(['qwen3.5:9b', 'qwen2.5:7b', 'llama3.1:8b', '本地 Ollama 模型'])
+const localPlanningModels = ref(['qwen3.5:9b', 'qwen2.5:7b', 'llama3.1:8b', '本地 Ollama 模型'])
+const videoModels = ['ComfyUI 本地视频工作流', '本地 FFmpeg 合成']
+const imgModels = ['ComfyUI SD1.5 本地', 'ComfyUI SDXL 本地']
 const resolutions = ['480p', '720p', '1080p', '2K', '4K']
 const ratios = ['16:9', '9:16', '1:1', '4:3', '21:9']
 const durations = [5, 8, 10, 12, 15]
@@ -153,9 +246,9 @@ const hotkeys = [
     <div class="page-head">
       <div>
         <h1>设置</h1>
-        <span class="muted">偏好会保存在本机浏览器，刷新后仍生效（个人版·本地）</span>
+        <span class="muted">偏好会保存在本机浏览器与后端，刷新后仍生效（个人版·本地）</span>
       </div>
-      <button class="btn" @click="saveAll">保存设置</button>
+      <el-button type="primary" @click="saveAll">保存设置</el-button>
     </div>
 
     <el-tabs type="border-card" class="set-tabs">
@@ -173,7 +266,7 @@ const hotkeys = [
         </div>
         <div class="field"><label>语言</label>
           <el-select v-model="settings.language" style="max-width:220px">
-            <el-option label="简体中文" value="zh-CN" /><el-option label="English" value="en-US" /><el-option label="日本語" value="ja-JP" />
+            <el-option label="简体中文" value="zh-CN" />
           </el-select>
         </div>
         <div class="field"><label>主题色</label>
@@ -184,7 +277,9 @@ const hotkeys = [
         </div>
         <div class="field"><label>界面密度</label>
           <el-radio-group v-model="settings.density">
-            <el-radio value="compact">紧凑</el-radio><el-radio value="standard">标准</el-radio><el-radio value="loose">宽松</el-radio>
+            <el-radio value="compact">紧凑</el-radio>
+            <el-radio value="standard">标准</el-radio>
+            <el-radio value="loose">宽松</el-radio>
           </el-radio-group>
         </div>
       </el-tab-pane>
@@ -192,24 +287,28 @@ const hotkeys = [
       <!-- AI 模型 -->
       <el-tab-pane label="AI 模型">
         <div class="field"><label>默认创作模型</label>
-          <el-select v-model="settings.createModel" style="max-width:320px">
-            <el-option v-for="m in createModels" :key="m" :label="m" :value="m" />
+          <el-select v-model="settings.createModel" style="max-width:360px">
+            <el-option v-for="m in localLLMs" :key="m" :label="m" :value="m" />
           </el-select>
-        </div>
-        <div class="field"><label>默认视频模型</label>
-          <el-select v-model="settings.videoModel" style="max-width:320px">
-            <el-option v-for="m in videoModels" :key="m" :label="m" :value="m" />
-          </el-select>
-        </div>
-        <div class="field"><label>默认文生图</label>
-          <el-select v-model="settings.imgModel" style="max-width:320px">
-            <el-option v-for="m in imgModels" :key="m" :label="m" :value="m" />
-          </el-select>
+          <span class="muted" style="margin-left:8px">本地 Ollama</span>
         </div>
         <div class="field"><label>默认策划模型</label>
-          <el-select v-model="settings.planningModel" style="max-width:320px">
-            <el-option v-for="m in planningModels" :key="m" :label="m" :value="m" />
+          <el-select v-model="settings.planningModel" style="max-width:360px">
+            <el-option v-for="m in localPlanningModels" :key="m" :label="m" :value="m" />
           </el-select>
+          <span class="muted" style="margin-left:8px">本地 Ollama</span>
+        </div>
+        <div class="field"><label>默认视频模型</label>
+          <el-select v-model="settings.videoModel" style="max-width:360px">
+            <el-option v-for="m in videoModels" :key="m" :label="m" :value="m" />
+          </el-select>
+          <span class="muted" style="margin-left:8px">本地 ComfyUI</span>
+        </div>
+        <div class="field"><label>默认文生图</label>
+          <el-select v-model="settings.imgModel" style="max-width:360px">
+            <el-option v-for="m in imgModels" :key="m" :label="m" :value="m" />
+          </el-select>
+          <span class="muted" style="margin-left:8px">本地 ComfyUI</span>
         </div>
         <div class="field"><label>默认参数</label>
           <el-select v-model="settings.defaultResolution" style="max-width:120px"><el-option v-for="r in resolutions" :key="r" :label="r" :value="r" /></el-select>
@@ -247,10 +346,6 @@ const hotkeys = [
 
       <!-- 网络 -->
       <el-tab-pane label="网络">
-        <div class="field"><label>启用代理</label><el-switch v-model="settings.proxyOn" /></div>
-        <div class="field"><label>代理地址</label>
-          <el-input v-model="settings.proxyAddr" placeholder="如 http://127.0.0.1:7890" :disabled="!settings.proxyOn" style="max-width:360px" />
-        </div>
         <div class="field"><label>API 服务器</label>
           <el-input v-model="settings.apiHost" style="max-width:200px" /><span class="muted" style="margin:0 6px">:</span>
           <el-input-number v-model="settings.apiPort" :min="1" :max="65535" controls-position="right" style="width:140px" />
@@ -261,10 +356,11 @@ const hotkeys = [
         <div class="field"><label>并发数</label>
           <el-input-number v-model="settings.concurrency" :min="1" :max="10" /><span class="muted" style="margin-left:8px">同时进行的生成任务（个人版单任务）</span>
         </div>
-        <div class="field" style="align-items:flex-start"><label>网络测速</label>
+        <div class="field" style="align-items:flex-start"><label>后端测速</label>
           <div style="flex:1">
             <el-button type="primary" :loading="speedIng" @click="runSpeedTest">{{ speedIng ? '测速中…' : '开始测速' }}</el-button>
             <el-progress :percentage="speedProgress" :stroke-width="10" style="max-width:360px;margin-top:12px" :status="speedProgress >= 100 ? 'success' : ''" />
+            <div v-if="speedResult" style="margin-top:8px;font-size:13px;color:var(--txt)">{{ speedResult }}</div>
           </div>
         </div>
       </el-tab-pane>
@@ -280,9 +376,7 @@ const hotkeys = [
         </div>
         <div class="field"><label>接收类型</label>
           <el-checkbox v-model="settings.notifyTask">任务</el-checkbox>
-          <el-checkbox v-model="settings.notifyCredits">积分</el-checkbox>
           <el-checkbox v-model="settings.notifySystem">系统</el-checkbox>
-          <el-checkbox v-model="settings.notifyActivity">活动</el-checkbox>
         </div>
       </el-tab-pane>
 
@@ -293,7 +387,7 @@ const hotkeys = [
             <div v-for="h in hotkeys" :key="h.k" class="hk"><kbd>{{ h.k }}</kbd><span>{{ h.d }}</span></div>
           </div>
         </div>
-        <div class="field"><label>恢复默认</label><el-button class="btn ghost" @click="resetSettings">恢复默认设置</el-button></div>
+        <div class="field"><label>恢复默认</label><el-button @click="resetSettings">恢复默认设置</el-button></div>
       </el-tab-pane>
 
       <!-- 备份 -->
@@ -302,24 +396,11 @@ const hotkeys = [
         <div class="field"><label>保留时长</label>
           <el-select v-model="settings.backupKeepDays" style="max-width:160px"><el-option :value="7" label="7 天" /><el-option :value="30" label="30 天" /><el-option :value="90" label="90 天" /></el-select>
         </div>
-        <div class="field"><label>一键备份</label><el-button @click="ElMessage.success('已创建本地备份（演示）')">立即备份</el-button></div>
-      </el-tab-pane>
-
-      <!-- 隐私 -->
-      <el-tab-pane label="隐私">
-        <div class="field"><label>数据本地化</label>
-          <el-radio-group v-model="settings.dataLocal"><el-radio value="default">默认</el-radio><el-radio value="force">强制本机</el-radio></el-radio-group>
-        </div>
-        <div class="field"><label>上传脱敏</label><el-switch v-model="settings.uploadMask" /></div>
         <div class="field"><label>日志保留</label>
           <el-select v-model="settings.logRetentionDays" style="max-width:160px"><el-option :value="30" label="30 天" /><el-option :value="90" label="90 天" /><el-option :value="365" label="365 天" /></el-select>
         </div>
-        <div class="field"><label>导出数据</label><el-button @click="ElMessage.success('已导出我的数据（演示）')">导出我的数据</el-button></div>
-        <div class="field"><label>清除全部</label>
-          <el-popconfirm title="确认清除所有本地数据？此操作不可恢复" confirm-button-text="清除" cancel-button-text="取消" @confirm="clearCache">
-            <template #reference><el-button type="danger" plain>一键清除所有数据</el-button></template>
-          </el-popconfirm>
-        </div>
+        <div class="field"><label>一键备份</label><el-button @click="backupNow">立即备份</el-button></div>
+        <div class="field"><label>导出数据</label><el-button type="primary" plain @click="exportData">导出我的数据</el-button></div>
       </el-tab-pane>
 
       <!-- 关于 -->
@@ -328,10 +409,10 @@ const hotkeys = [
           <div style="width:56px;height:56px;border-radius:14px;background:var(--grad);display:flex;align-items:center;justify-content:center;font-size:28px;color:#fff">◆</div>
           <div>
             <div style="font-size:18px;font-weight:800">万能短剧 · AI 创作平台</div>
-            <div class="muted">版本 v1.3.0 · 个人版（永久免费）</div>
+            <div class="muted">版本 {{ APP_VERSION }} · 个人本地版</div>
           </div>
         </div>
-        <p style="line-height:1.8;color:var(--txt)">本平台为本地演示版，所有生成能力均为模拟，不涉及真实后端调用。你可以自由体验创意工坊、导演工作台与各类素材管理功能。</p>
+        <p style="line-height:1.8;color:var(--txt)">本平台为个人本地版，所有 AI 能力均运行在本机：Ollama 本地大模型负责剧本拆解与提示词润色，ComfyUI 本地工作流负责图像/视频生成，FFmpeg 负责最终合成。数据保存在本地 SQLite，无需云端 Key。</p>
         <p class="muted" style="line-height:1.8">开源协议：基于 Apache-2.0 授权，仅供学习与非商业用途。图标与示例素材版权归各自权利人所有。</p>
         <div style="display:flex;gap:12px;margin-top:16px">
           <el-button @click="checkUpdate">检查更新</el-button>

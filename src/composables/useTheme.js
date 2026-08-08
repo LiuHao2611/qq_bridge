@@ -2,14 +2,12 @@ import { ref, computed } from 'vue'
 
 const LS_KEY = 'wn_settings'
 const PRESET_KEY = 'manju_theme'
-// 后台 manju_admin 的 API 端口（8910）；8099 前台从此拉取主题总开关
-const REMOTE = 'http://127.0.0.1:8910/api/theme'
 
 const VALID_PRESETS = ['', 'gray', 'green', 'blue', 'gradient', 'splice']
 const VALID_MODES = ['dark', 'light', 'auto']
 const PRESET_CLASSES = ['t-gray', 't-green', 't-blue', 't-gradient', 't-splice']
 
-/* ---------- 明暗模式（原逻辑保留，兼容 TopBar / Settings） ---------- */
+/* ---------- 明暗模式 ---------- */
 const readMode = () => {
   try {
     const raw = localStorage.getItem(LS_KEY)
@@ -62,8 +60,8 @@ const persistPreset = (preset) => {
 }
 
 /* ---------- 状态 ---------- */
-const theme = ref(readMode())    // 明暗模式（dark/light/auto）
-const preset = ref(readPreset()) // 配色预设（gray/green/blue/gradient/splice/''）
+const theme = ref(readMode())
+const preset = ref(readPreset())
 
 // 先按本地值应用，避免首屏闪烁
 if (typeof window !== 'undefined') {
@@ -72,37 +70,6 @@ if (typeof window !== 'undefined') {
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (theme.value === 'auto') applyMode('auto')
   })
-}
-
-/* ---------- 远程同步（从后台 8910 拉取并应用，后台为总开关） ---------- */
-let timer = null
-const syncRemoteTheme = async () => {
-  try {
-    const res = await fetch(REMOTE, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      cache: 'no-store',
-    })
-    if (!res.ok) return
-    const json = await res.json()
-    const data = json && json.data ? json.data : null
-    if (!data) return
-    const newPreset = VALID_PRESETS.includes(data.preset) ? data.preset : ''
-    const newMode = VALID_MODES.includes(data.mode) ? data.mode : 'dark'
-    if (newPreset !== preset.value) { preset.value = newPreset; applyPreset(newPreset) }
-    if (newMode !== theme.value) { theme.value = newMode; applyMode(newMode) }
-    persistPreset(newPreset)
-    persistMode(newMode)
-  } catch (e) {
-    // 后台未连接时静默保留本地值（不破坏前台）
-  }
-}
-
-export function initRemoteTheme(pollMs = 5000) {
-  if (typeof window === 'undefined') return
-  syncRemoteTheme()
-  if (timer) clearInterval(timer)
-  timer = setInterval(syncRemoteTheme, pollMs)
 }
 
 export function useTheme() {
@@ -120,5 +87,5 @@ export function useTheme() {
     preset.value = p; applyPreset(p); persistPreset(p)
   }
 
-  return { theme, preset, isDark, set, setPreset, toggle, syncRemoteTheme, initRemoteTheme }
+  return { theme, preset, isDark, set, setPreset, toggle }
 }

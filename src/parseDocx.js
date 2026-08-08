@@ -5,26 +5,63 @@
 // - CLOSE-02：解析失败必须显式抛错并向上透传，禁止静默返回空文本冒充成功。
 // 实现：用浏览器/Node 内置 DecompressionStream('deflate-raw') 解压 ZIP 条目，
 // 再解析 word/document.xml 的 <w:t> 文本，按段落 <w:p> 换行、<w:br>/<w:tab> 转义。
+// 兼容性增强（2026-08-08）：
+// - 文件头 PK 校验，识别旧版 .doc（OLE）伪装的 .docx；
+// - 支持通过 [Content_Types].xml 定位 document.xml（非标准路径/更名容错）；
+// - deflate 解压失败时回退到 deflate（容错部分生成器带 zlib 包装）；
+// - 文本解码健康检查：UTF-8 出现大量替换字符时尝试 GB18030；
+// - 输出健康检查：乱码比例过高时显式抛错。
 
 export async function parseDocx(arrayBuffer) {
   if (typeof DecompressionStream === 'undefined') {
     throw new Error('当前浏览器不支持 DecompressionStream，无法解析 .docx')
   }
   const buf = new Uint8Array(arrayBuffer)
+
+  // 文件头校验：.docx 必须是 ZIP（PK\x03\x04 或 PK\x05\x06）
+  const sig = buf.length >= 4 ? dvGetUint32(buf, 0) : 0
+  if (sig !== 0x04034b50 && sig !== 0x06054b50) {
+    // OLE2/.doc 文件头 0xD0CF11E0
+    if (sig === 0xe011cfd0) {
+      throw new Error('检测到旧版 Word .doc（OLE）格式，请使用 .docx 文件后再试')
+    }
+    throw new Error('不是有效的 .docx 文件（缺少 ZIP 文件头）')
+  }
+
   const entries = readZipEntries(buf)
   if (!entries.length) throw new Error('.docx 内未找到任何压缩条目')
 
-  // 优先正文 document.xml，其次 word/ 下任一 xml（兼容极少数缺 document.xml 的情况）
-  const docEntry = entries.find((e) => e.name === 'word/document.xml')
+  // 优先通过 [Content_Types].xml 定位主文档（容错非标准路径/更名）
+  let docPath = 'word/document.xml'
+  const ctEntry = entries.find((e) => e.name === '[Content_Types].xml')
+  if (ctEntry) {
+    try {
+      const ctXml = await inflateEntry(ctEntry, buf)
+      const m = ctXml.match(/PartName="([^"]+)"[^>]*ContentType="[^"]*wordprocessingml\.document\.main\+xml"/)
+        || ctXml.match(/ContentType="[^"]*wordprocessingml\.document\.main\+xml"[^>]*PartName="([^"]+)"/)
+      if (m && m[1]) docPath = m[1].replace(/^\//, '')
+    } catch { /* 忽略 Content_Types 解析失败，回退默认值 */ }
+  }
+
+  const docEntry = entries.find((e) => e.name === docPath)
   const fallback = entries.find(
-    (e) => e.name.endsWith('.xml') && /(^|\/)word\//.test(e.name) && e.name !== 'word/document.xml'
+    (e) => e.name.endsWith('.xml') && /(^|\/)word\//.test(e.name) && e.name !== docPath
   )
   const target = docEntry || fallback
-  if (!target) throw new Error('.docx 内未找到 word/document.xml')
+  if (!target) throw new Error('.docx 内未找到 ' + docPath + ' 或 word/ 下任何 XML')
 
   const xml = await inflateEntry(target, buf)
-  if (!xml) throw new Error('.docx 解压后内容为空')
-  return docxXmlToText(xml)
+  if (!xml || !xml.trim()) throw new Error('.docx 解压后内容为空')
+
+  const text = docxXmlToText(xml)
+  if (!text.trim()) throw new Error('未从 .docx 中解析出任何文本')
+
+  // 健康检查：若替换字符/控制字符占比过高，认为解码失败
+  const badRatio = measureGarbage(text)
+  if (badRatio > 0.15) {
+    throw new Error('.docx 文本解码异常（乱码比例 ' + Math.round(badRatio * 100) + '%），文件可能损坏或非标准格式')
+  }
+  return text
 }
 
 // 读取 ZIP 中央目录，返回条目元信息（名称 / 压缩方式 / 压缩大小 / 本地头偏移）
@@ -74,16 +111,50 @@ async function inflateEntry(entry, buf) {
   } else {
     throw new Error('不支持的 ZIP 压缩方式: ' + entry.method)
   }
-  return new TextDecoder('utf-8').decode(bytes)
+  return decodeText(bytes)
 }
 
 async function inflateRaw(data) {
-  const ds = new DecompressionStream('deflate-raw')
-  const writer = ds.writable.getWriter()
-  writer.write(data)
-  writer.close()
-  const ab = await new Response(ds.readable).arrayBuffer()
-  return new Uint8Array(ab)
+  // 优先 raw deflate（标准 ZIP），失败时回退 zlib wrapped deflate（容错）
+  for (const type of ['deflate-raw', 'deflate']) {
+    try {
+      const ds = new DecompressionStream(type)
+      const writer = ds.writable.getWriter()
+      writer.write(data)
+      writer.close()
+      const ab = await new Response(ds.readable).arrayBuffer()
+      return new Uint8Array(ab)
+    } catch (e) {
+      if (type === 'deflate-raw') continue
+      throw e
+    }
+  }
+}
+
+function decodeText(bytes) {
+  // 优先 UTF-8；若替换字符比例高，则尝试 GB18030（兼容中文 Windows 生成器）
+  const utf8 = new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+  if (measureGarbage(utf8) < 0.05) return utf8
+  try {
+    const gb = new TextDecoder('gb18030', { fatal: false }).decode(bytes)
+    if (measureGarbage(gb) < measureGarbage(utf8)) return gb
+  } catch { /* GB18030 不支持时忽略 */ }
+  return utf8
+}
+
+function dvGetUint32(buf, offset) {
+  return new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getUint32(offset, true)
+}
+
+function measureGarbage(text) {
+  // 统计 U+FFFD（替换字符）和异常控制字符（C0 控制字符，不含换行制表）比例
+  let bad = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    if (c === 0xfffd) { bad++; continue }
+    if (c < 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d) bad++
+  }
+  return text.length ? bad / text.length : 0
 }
 
 function docxXmlToText(xml) {

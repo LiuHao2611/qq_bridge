@@ -1,13 +1,16 @@
 <script setup>
-import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProject } from '../composables/useProject'
 import { useHotkeys } from '../composables/useHotkeys'
+import { useAutoSave } from '../composables/useAutoSave'
 import { toast } from '../store'
+import { ElMessageBox } from 'element-plus'
 import { aiPolish, estimatePoints, preAuthPoints, regenerateSegment, exportSegment, updateProject, createAsset, synthesizeProject } from '../api'
 import ProjectFlowNav from './ProjectFlowNav.vue'
 import AssetRichInput from './AssetRichInput.vue'
 import RoleEditorModal from './RoleEditorModal.vue'
+import AssetStageManager from './AssetStageManager.vue'
 import {
   OPTION_RESOLUTIONS, OPTION_RATIOS, OPTION_DURATIONS,
   SHOT_TYPE_OPTIONS, CAMERA_MOVEMENT_OPTIONS, CAMERA_ANGLE_OPTIONS, FOCAL_LENGTH_OPTIONS,
@@ -22,18 +25,23 @@ const MODEL_OPTIONS = [
   { value: 'jimeng-video-3.0', label: '即梦视频 3.0' },
   { value: 'vidu-q3', label: 'Vidu Q3' },
 ]
-const PRESET_OPTIONS = [
-  { value: 'pro', label: '创作旗舰 Pro' },
-  { value: 'flash-short', label: '创作旗舰 Flash·短' },
-  { value: 'flash-long', label: '创作旗舰 Flash·长' },
-  { value: 'max', label: '创作旗舰 Max' },
-]
+// 预设套餐：把时长上限、速度档位、默认模型、能力权限、画质策略、积分系数打包
+// 设计依据：降低用户决策成本；套餐与底层模型是「包含关系」，模型只是执行引擎之一
+const PRESET_CONFIG = {
+  pro: { value: 'pro', label: '创作旗舰 Pro', slogan: '画质优先 · 标准时长', speed: 'quality', speedLabel: '标准', durationMax: 10, defaultDuration: 8, defaultModel: 'seedance-2.0-pro', allowedModels: ['seedance-2.0-pro', 'seedance-2.0-mini'], features: ['人脸修复', '画面防抖', '色彩增强'], priceFactor: 1.0, desc: '均衡画质与速度，适合日常创作。', color: '#4d9fff', tags: ['画质优先', '标准队列'] },
+  'flash-short': { value: 'flash-short', label: '创作旗舰 Flash·短', slogan: '极速出片 · 短片段', speed: 'fast', speedLabel: '极速', durationMax: 6, defaultDuration: 5, defaultModel: 'seedance-2.0-mini', allowedModels: ['seedance-2.0-mini', 'kling-1.6'], features: ['快速队列', '精简后处理'], priceFactor: 0.6, desc: '低价快速验证创意，适合测试脚本。', color: '#00d68f', tags: ['极速', '低价'] },
+  'flash-long': { value: 'flash-long', label: '创作旗舰 Flash·长', slogan: '极速出片 · 长片段', speed: 'fast', speedLabel: '极速', durationMax: 12, defaultDuration: 12, defaultModel: 'seedance-2.0-pro', allowedModels: ['seedance-2.0-pro', 'seedance-2.0-mini', 'kling-1.6'], features: ['高速队列', '长片段支持'], priceFactor: 1.3, desc: '快速生成长片段，适合短视频快节奏创作。', color: '#ffb020', tags: ['极速', '长片段'] },
+  max: { value: 'max', label: '创作旗舰 Max', slogan: '旗舰画质 · 全能力', speed: 'quality', speedLabel: '旗舰', durationMax: 15, defaultDuration: 12, defaultModel: 'seedance-2.0-pro', allowedModels: ['seedance-2.0-pro', 'vidu-q3'], features: ['人脸修复', '超分辨率', '画面防抖', '色彩增强', '高清分辨率', '真人资产化增强', '返回尾帧'], priceFactor: 2.0, desc: '最高画质与稳定性，专业出片首选。', color: '#ff4d8d', tags: ['旗舰', '全能力'] },
+}
+const PRESET_LIST = Object.values(PRESET_CONFIG)
 const modelLabel = (v) => MODEL_OPTIONS.find((o) => o.value === v)?.label || v
-const presetLabel = (v) => PRESET_OPTIONS.find((o) => o.value === v)?.label || v
+const presetLabel = (v) => PRESET_CONFIG[v]?.label || v
+const presetCfg = computed(() => PRESET_CONFIG[p.value?.preset_id] || PRESET_CONFIG['flash-long'])
 
 const route = useRoute()
 const router = useRouter()
 const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
+const PLACEHOLDER = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0%25' stop-color='%2320242e'/><stop offset='100%25' stop-color='%233a3f4d'/></linearGradient></defs><rect width='200' height='200' fill='url(%23g)'/><text x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' fill='%236b7283' font-size='70'>🖼️</text></svg>"
 const { project: p, load, save, generate, pollTask, switchSegment, addSegment, removeSegment, refreshAssets } = useProject(route.params.id, 'short')
 
 onMounted(load)
@@ -70,6 +78,14 @@ watch(() => p.value, normalizeProject, { immediate: true })
 // ---- 顶部参数 ----
 const activeChapter = computed(() => p.value?.chapters.find((c) => c.id === activeChapterId.value) || null)
 const activeSeq = computed(() => (p.value ? p.value.chapters.findIndex((c) => c.id === activeChapterId.value) : -1) + 1)
+const prevChapter = () => {
+  const idx = p.value ? p.value.chapters.findIndex((c) => c.id === activeChapterId.value) : -1
+  if (idx > 0) activeChapterId.value = p.value.chapters[idx - 1].id
+}
+const nextChapter = () => {
+  const idx = p.value ? p.value.chapters.findIndex((c) => c.id === activeChapterId.value) : -1
+  if (idx >= 0 && idx < p.value.chapters.length - 1) activeChapterId.value = p.value.chapters[idx + 1].id
+}
 const activeScenes = computed(() =>
   p.value ? p.value.scenes.filter((s) => s.chapter_id === activeChapterId.value) : []
 )
@@ -118,14 +134,26 @@ const estimatedCredits = computed(() => {
   const dur = Number(p.value.duration) || 0
   const res = RES_COEF[p.value.resolution] ?? 1.0
   const aud = p.value.audio ? 1.2 : 1.0
-  return Math.ceil(base * dur * res * aud)
+  const factor = presetCfg.value.priceFactor ?? 1.0
+  return Math.ceil(base * dur * res * aud * factor)
 })
 
-// 模型说明条（随 AI 模型切换的动态文案，spec §3.1）
+// 模型说明条：套餐 vs 模型的关系，spec §3.1
 const modelHint = computed(() => {
   if (!p.value) return ''
-  return `${modelLabel(p.value.ai_model)}：标准视频生成模型，按分镜参数与资产引用生成视频。`
+  const cfg = presetCfg.value
+  const model = modelLabel(p.value.ai_model)
+  return `当前套餐「${cfg.label}」：${cfg.desc} 已启用 ${cfg.features.slice(0, 3).join('、')}。底层模型「${model}」仅为执行引擎，时长上限、速度档位、积分单价由套餐决定。`
 })
+
+// 切换预设时自动对齐：模型必须落在套餐可用列表内，时长不得超过套餐上限
+watch(() => p.value?.preset_id, (id, oldId) => {
+  if (!p.value || !id || id === oldId) return
+  const cfg = PRESET_CONFIG[id]
+  if (!cfg || oldId === undefined) return
+  if (!cfg.allowedModels.includes(p.value.ai_model)) p.value.ai_model = cfg.defaultModel
+  if ((p.value.duration || 0) > cfg.durationMax) p.value.duration = cfg.defaultDuration
+}, { flush: 'post' })
 
 // 视频状态（知识库配色：紫=已生成 / 橙=生成中 / 红=失败 / 灰=待生成）
 const vstat = computed(() => {
@@ -217,6 +245,13 @@ const openCreateAsset = (type) => {
   assetForm.description = ''
   assetDialogVisible.value = true
 }
+// 已填内容时点遮罩/× 关闭：二次确认防丢稿
+const beforeAssetDialogClose = (done) => {
+  if (assetForm.name || assetForm.description) {
+    ElMessageBox.confirm('新建资产有未提交内容，关闭后将丢失。确定关闭？', '未保存内容', { confirmButtonText: '丢弃', cancelButtonText: '继续填写', type: 'warning' })
+      .then(() => done()).catch(() => {})
+  } else { done() }
+}
 const confirmCreateAsset = async () => {
   const name = (assetForm.name || '').trim()
   if (!name) { toast('请填写资产名称'); return }
@@ -254,6 +289,18 @@ const openRoleEditor = (c) => {
 const onRoleSaved = async () => {
   try { await refreshAssets() } catch (e) { /* 忽略刷新异常，弹窗已提示成功 */ }
 }
+
+// 左侧资产卡展开/收起：角色、场景、道具都支持展开阶段/变体内联横条
+const expandedAssets = reactive({})
+const toggleAssetExpand = (a) => { expandedAssets[a.id] = !expandedAssets[a.id] }
+// 阶段/姿势增删后刷新资产库，使左侧折叠态计数与列表保持最新
+const onStageChanged = async () => {
+  try { await refreshAssets() } catch (e) { /* 忽略刷新异常 */ }
+}
+// 场景/道具阶段编辑弹窗（角色仍走 RoleEditorModal）
+const assetStagePanel = reactive({ open: false, asset: null })
+const openAssetStagePanel = (a) => { assetStagePanel.open = true; assetStagePanel.asset = a }
+const closeAssetStagePanel = () => { assetStagePanel.open = false; assetStagePanel.asset = null }
 
 // ---- 资产库接线：分镜引用资产选择器（BR-009 上限 9） ----
 const refDialogVisible = ref(false)
@@ -457,6 +504,15 @@ const closeDescModal = () => {
   descModalShot.value = null
   descModalText.value = ''
 }
+// 点击遮罩/ESC/× 关闭时：若画面描述有未保存修改，二次确认（防误关丢稿）
+const beforeDescModalClose = (done) => {
+  const s = descModalShot.value
+  const orig = s ? (s.description || '') : ''
+  if (descModalText.value !== orig) {
+    ElMessageBox.confirm('画面描述有未保存的修改，关闭后将丢失。确定关闭？', '未保存修改', { confirmButtonText: '丢弃修改', cancelButtonText: '继续编辑', type: 'warning' })
+      .then(() => done()).catch(() => {})
+  } else { done() }
+}
 const saveDescModal = () => {
   const s = descModalShot.value
   if (!s) return
@@ -480,11 +536,23 @@ const onBack = () => router.push('/projects')
 const onSave = async () => {
   // Phase 3：保存前把画外音 / 对白里的 @提及 同步进 refs（驱动多模态资产注入）
   ;(p.value?.scenes || []).forEach((s) => syncMentionRefs(s))
-  if (br003Mismatch.value) { toast('分镜时长之和不等于片段时长，无法保存（BR-003）'); return }
-  if (br009Exceed.value) { toast('片段资产引用最多 9 个（BR-009）'); return }
-  await save({ title: p.value.title })
-  dirty.value = false
+  if (br003Mismatch.value) { toast('分镜时长之和不等于片段时长，无法保存（BR-003）'); return false }
+  if (br009Exceed.value) { toast('片段资产引用最多 9 个（BR-009）'); return false }
+  const ok = await save({ title: p.value.title })
+  if (ok) dirty.value = false
+  return ok
 }
+// 自动保存（spec §2.1 状态机延伸）：内容变更后防抖保存，状态可见、失败显式提示（CLOSE-02）
+const autoSaveEnabled = ref(!USE_MOCK)
+const { status: saveStatus } = useAutoSave({ dirty, save: onSave, enabled: autoSaveEnabled, delay: 1500 })
+// 兜底：离开页面时若仍有未保存修改则提示（自动保存已覆盖绝大多数场景）
+const _beforeUnload = (e) => {
+  if (autoSaveEnabled.value && dirty.value && saveStatus.value !== 'saved') {
+    e.preventDefault(); e.returnValue = ''
+  }
+}
+window.addEventListener('beforeunload', _beforeUnload)
+onUnmounted(() => window.removeEventListener('beforeunload', _beforeUnload))
 const onSyncAll = async () => {
   if (!p.value) return
   const pid = p.value.id
@@ -611,7 +679,20 @@ const onDeleteChapter = async (ch) => {
 }
 const onAddScene = () => {
   if (!p.value || !activeChapterId.value) return
-  p.value.scenes.push({ scene_id: 'sc' + (p.value.scenes.length + 1), chapter_id: activeChapterId.value, no: activeScenes.value.length + 1, caption: '新分镜', description: '', prompt: '', negative_prompt: '', duration: 4, shot_type: 'medium', camera_angle: 'eye_level', camera_movement: 'static', focal_length: '35mm', thumb: '', voiceover: '', dialogue: '', refs: [], setting: '' })
+  const id = 'sc' + (p.value.scenes.length + 1)
+  p.value.scenes.push({ scene_id: id, chapter_id: activeChapterId.value, no: activeScenes.value.length + 1, caption: '新分镜', description: '', prompt: '', negative_prompt: '', duration: 4, shot_type: 'medium', camera_angle: 'eye_level', camera_movement: 'static', focal_length: '35mm', thumb: '', voiceover: '', dialogue: '', refs: [], setting: '' })
+}
+
+// 分镜高级参数折叠：默认收起，只保留核心文案/引用外露
+const advancedOpen = reactive({})
+const toggleAdvanced = (id) => { advancedOpen[id] = !advancedOpen[id] }
+const shotParamSummary = (s) => {
+  const st = SHOT_TYPE_OPTIONS.find((o) => o.value === s.shot_type)
+  const ca = CAMERA_ANGLE_OPTIONS.find((o) => o.value === s.camera_angle)
+  const cm = CAMERA_MOVEMENT_OPTIONS.find((o) => o.value === s.camera_movement)
+  const fl = FOCAL_LENGTH_OPTIONS.find((o) => o.value === s.focal_length)
+  const parts = [st?.label, ca?.label, cm?.label, fl?.label].filter(Boolean)
+  return parts.join(' · ') || '默认镜头参数'
 }
 // 对当前片段的分镜按数组顺序重排序号（no = 索引+1），保证顺序与索引一致
 const reindexActive = () => {
@@ -666,12 +747,38 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
         <span class="tsub">{{ p.subtitle }}</span>
       </div>
       <div class="fparams">
-        <div class="fgrp"><label>预设</label>
-          <el-select v-model="p.preset_id" size="small" style="width:160px">
-            <el-option v-for="o in PRESET_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+        <div class="fgrp preset-grp"><label>生成套餐</label>
+          <el-select v-model="p.preset_id" size="small" style="width:200px" popper-class="preset-dropdown">
+            <template #prefix><span class="preset-dot" :style="{ background: presetCfg.color }"></span></template>
+            <el-option v-for="cfg in PRESET_LIST" :key="cfg.value" :label="cfg.label" :value="cfg.value">
+              <div class="preset-option">
+                <div class="preset-option-head">
+                  <span class="preset-dot" :style="{ background: cfg.color }"></span>
+                  <span class="preset-option-title">{{ cfg.label }}</span>
+                  <span class="preset-tags"><el-tag v-for="t in cfg.tags" :key="t" size="small" effect="plain">{{ t }}</el-tag></span>
+                </div>
+                <div class="preset-option-meta">{{ cfg.slogan }} · 单段≤{{ cfg.durationMax }}s · 积分系数 {{ cfg.priceFactor }}x</div>
+              </div>
+            </el-option>
           </el-select>
+          <el-popover placement="bottom" :width="320" trigger="hover">
+            <template #reference>
+              <span class="preset-info-icon">ⓘ</span>
+            </template>
+            <div class="preset-detail">
+              <div class="preset-detail-title" :style="{ color: presetCfg.color }">{{ presetCfg.label }}</div>
+              <div class="preset-detail-slogan">{{ presetCfg.slogan }}</div>
+              <div class="preset-detail-line"><b>速度档位：</b>{{ presetCfg.speedLabel }}</div>
+              <div class="preset-detail-line"><b>单段时长上限：</b>{{ presetCfg.durationMax }} 秒</div>
+              <div class="preset-detail-line"><b>默认模型：</b>{{ modelLabel(presetCfg.defaultModel) }}</div>
+              <div class="preset-detail-line"><b>可用模型：</b>{{ presetCfg.allowedModels.map(modelLabel).join('、') }}</div>
+              <div class="preset-detail-line"><b>积分系数：</b>{{ presetCfg.priceFactor }}x</div>
+              <div class="preset-detail-line"><b>画质策略：</b>{{ presetCfg.features.join('、') }}</div>
+              <div class="preset-detail-desc">{{ presetCfg.desc }}</div>
+            </div>
+          </el-popover>
         </div>
-        <div class="fgrp"><label>模型</label>
+        <div class="fgrp"><label>底层模型</label>
           <el-select v-model="p.ai_model" size="small" style="width:170px">
             <el-option v-for="o in MODEL_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
           </el-select>
@@ -734,12 +841,20 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
         <div v-if="br009Exceed" class="br-bar bad">⚠ BR-009：片段资产引用 {{ segRefCount }} 个，超过上限 9 个</div>
         <div v-else class="br-bar ok">资产引用 {{ segRefCount }}/9（BR-009）</div>
         <template v-if="assetTab === '角色'">
-          <div v-for="c in p.characters" :key="c.id" class="char-card" draggable="true" :title="'拖拽到右侧分镜文本可插入 @[' + c.name + '] 引用'" @dragstart="onAssetDragStart($event, c, 'character')">
-            <div class="name">{{ c.name }} <span class="role-badge" :class="c.relation === '配角' ? 'supporting' : 'lead'">{{ c.relation }}</span></div>
-            <div class="meta">{{ c.desc }}</div>
-            <div class="stages-line">{{ c.stages.length }} 个阶段</div>
-            <div class="age-pills">
-              <span v-for="st in c.stages" :key="st.age" class="pill">{{ st.age }}岁</span>
+          <div v-for="c in p.characters" :key="c.id" class="char-card" :class="{ expanded: expandedAssets[c.id] }" draggable="true" :title="'拖拽到右侧分镜文本可插入 @[' + c.name + '] 引用'" @dragstart="onAssetDragStart($event, c, 'character')">
+            <div class="char-row">
+              <img class="char-thumb" :src="c.thumb || PLACEHOLDER" />
+              <div class="char-info">
+                <div class="char-title">{{ c.name }} <span class="role-badge" :class="c.relation === '配角' ? 'supporting' : 'lead'">{{ c.relation }}</span></div>
+                <div class="char-meta">{{ c.desc }}</div>
+                <div class="stage-toggle" @click.stop="toggleAssetExpand(c)">
+                  <span class="chev" :class="{ open: expandedAssets[c.id] }">▸</span>
+                  {{ c.relation }} · {{ (c.stages?.length || 0) }}个阶段
+                </div>
+              </div>
+            </div>
+            <div v-if="expandedAssets[c.id]" class="stage-strip-host">
+              <AssetStageManager :asset-id="c.id" :initial-stages="c.stages" type="role" mode="strip" @changed="onStageChanged" />
             </div>
             <div class="drag-hint">⠿ 拖入提示词</div>
             <!-- 小云雀式角色卡片 hover 三按钮：拖动 / 编辑 / 预览 -->
@@ -752,29 +867,83 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
           <button class="add-line" @click="openCreateAsset('role')">＋ 新建角色</button>
         </template>
         <template v-else-if="assetTab === '场景'">
-          <div class="asset-grid-mini">
-            <div v-for="a in p.assets.scenes" :key="a.id" class="asset-mini" draggable="true" :title="'拖拽到右侧分镜文本可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'scene')"><span class="tag">{{ a.name }}</span><span class="drag-hint">⠿</span></div>
+          <div v-for="a in p.assets.scenes" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧分镜文本可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'scene')">
+            <div class="char-row">
+              <img class="char-thumb" :src="a.thumb || PLACEHOLDER" />
+              <div class="char-info">
+                <div class="char-title">{{ a.name }} <span class="type-badge scene">场景</span></div>
+                <div class="stage-toggle" @click.stop="toggleAssetExpand(a)">
+                  <span class="chev" :class="{ open: expandedAssets[a.id] }">▸</span>
+                  {{ (a.stages?.length || 0) }}个阶段
+                </div>
+              </div>
+            </div>
+            <div v-if="expandedAssets[a.id]" class="stage-strip-host">
+              <AssetStageManager :asset-id="a.id" :initial-stages="a.stages" type="scene" mode="strip" @changed="onStageChanged" />
+            </div>
+            <div class="drag-hint">⠿ 拖入提示词</div>
+            <div class="thumb-overlay role-overlay">
+              <button class="role-btn" title="拖动场景卡" @mousedown.stop><el-icon><Grid /></el-icon></button>
+              <button class="role-btn" title="编辑阶段" @click.stop="openAssetStagePanel(a)"><el-icon><EditPen /></el-icon></button>
+              <button class="role-btn" title="预览场景图" @click.stop="previewRoleImg = a.thumb || ''"><el-icon><ZoomIn /></el-icon></button>
+            </div>
           </div>
+          <button class="add-line" @click="openCreateAsset('scene')">＋ 新建场景</button>
         </template>
         <template v-else>
-          <div class="asset-grid-mini">
-            <div v-for="a in p.assets.props" :key="a.id" class="asset-mini" draggable="true" :title="'拖拽到右侧分镜文本可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'prop')"><span class="tag">{{ a.name }}</span><span class="drag-hint">⠿</span></div>
+          <div v-for="a in p.assets.props" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧分镜文本可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'prop')">
+            <div class="char-row">
+              <img class="char-thumb" :src="a.thumb || PLACEHOLDER" />
+              <div class="char-info">
+                <div class="char-title">{{ a.name }} <span class="type-badge prop">道具</span></div>
+                <div class="stage-toggle" @click.stop="toggleAssetExpand(a)">
+                  <span class="chev" :class="{ open: expandedAssets[a.id] }">▸</span>
+                  {{ (a.stages?.length || 0) }}个阶段
+                </div>
+              </div>
+            </div>
+            <div v-if="expandedAssets[a.id]" class="stage-strip-host">
+              <AssetStageManager :asset-id="a.id" :initial-stages="a.stages" type="prop" mode="strip" @changed="onStageChanged" />
+            </div>
+            <div class="drag-hint">⠿ 拖入提示词</div>
+            <div class="thumb-overlay role-overlay">
+              <button class="role-btn" title="拖动道具卡" @mousedown.stop><el-icon><Grid /></el-icon></button>
+              <button class="role-btn" title="编辑阶段" @click.stop="openAssetStagePanel(a)"><el-icon><EditPen /></el-icon></button>
+              <button class="role-btn" title="预览道具图" @click.stop="previewRoleImg = a.thumb || ''"><el-icon><ZoomIn /></el-icon></button>
+            </div>
           </div>
+          <button class="add-line" @click="openCreateAsset('prop')">＋ 新建道具</button>
         </template>
       </div>
 
       <!-- 中：片段编辑 -->
       <div class="col col-mid">
-        <div class="chapter-tabs">
-          <div v-for="(c, ci) in p.chapters" :key="c.id" class="ch" :class="{ on: activeChapterId === c.id }" @click="activeChapterId = c.id">
-            <span class="ch-txt">片段 {{ ci + 1 }} · {{ c.title }}</span>
-            <el-popconfirm title="确认删除该片段？" confirm-button-text="删除" cancel-button-text="取消" @confirm="onDeleteChapter(c)">
+        <div class="segment-header">
+          <div class="seg-nav-arrows">
+            <el-button size="small" text :disabled="activeSeq <= 1" @click="prevChapter">←</el-button>
+            <el-dropdown trigger="click" @command="(id) => activeChapterId = id">
+              <span class="seg-current">片段 {{ activeSeq }} / {{ p.chapters.length }} · {{ activeChapter?.title || '未命名' }}</span>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    v-for="(c, ci) in p.chapters"
+                    :key="c.id"
+                    :command="c.id"
+                    :class="{ active: activeChapterId === c.id }"
+                  >片段 {{ ci + 1 }} · {{ c.title }}</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <el-button size="small" text :disabled="activeSeq >= p.chapters.length" @click="nextChapter">→</el-button>
+          </div>
+          <div class="seg-actions">
+            <el-popconfirm v-if="activeChapter" title="确认删除当前片段？" confirm-button-text="删除" cancel-button-text="取消" @confirm="onDeleteChapter(activeChapter)">
               <template #reference>
-                <span class="ch-del" @click.stop title="删除片段">×</span>
+                <el-button size="small" text type="danger">删除</el-button>
               </template>
             </el-popconfirm>
+            <el-button size="small" type="primary" @click="onAddChapter">＋ 新增片段</el-button>
           </div>
-          <div class="add" @click="onAddChapter">＋</div>
         </div>
 
         <div v-if="activeChapter" class="editor">
@@ -788,12 +957,10 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
           <div v-if="br003Mismatch" class="br-bar bad">⚠ BR-003：分镜时长之和 {{ shotSum }}s ≠ 片段时长 {{ p.duration }}s</div>
           <div v-else class="br-bar ok">分镜时长之和 {{ shotSum }}s = 片段时长 {{ p.duration }}s（BR-003）</div>
 
-          <!-- 场景设定（spec §3.3 segment.scene_description） -->
-          <div class="field-row">
-            <span class="flabel">场景设定</span>
-            <div class="caps">
-              <el-input v-model="p.scene_description" type="textarea" :autosize="{ minRows: 1, maxRows: 2 }" size="small" placeholder="描述本片段的时空、环境、基调…" style="width:100%" />
-            </div>
+          <!-- 场景设定（spec §3.3 segment.scene_description）：用于生成提示词，保留但弱化 -->
+          <div class="seg-scene-setting">
+            <span class="seg-scene-label">场景设定</span>
+            <el-input v-model="p.scene_description" size="small" placeholder="本片段整体时空/环境/基调，将注入生成提示词…" maxlength="240" show-word-limit />
           </div>
 
           <!-- 分镜块 -->
@@ -813,52 +980,68 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
                 </el-popconfirm>
               </div>
             </div>
-            <div class="shot-grid">
-              <div class="sg"><label>景别</label>
-                <el-select v-model="s.shot_type" size="small" style="width:100%">
-                  <el-option v-for="o in SHOT_TYPE_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
-                </el-select>
-              </div>
-              <div class="sg"><label>机位</label>
-                <el-select v-model="s.camera_angle" size="small" style="width:100%">
-                  <el-option v-for="o in CAMERA_ANGLE_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
-                </el-select>
-              </div>
-              <div class="sg"><label>运镜</label>
-                <el-select v-model="s.camera_movement" size="small" style="width:100%">
-                  <el-option v-for="o in CAMERA_MOVEMENT_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
-                </el-select>
-              </div>
-              <div class="sg"><label>焦段</label>
-                <el-select v-model="s.focal_length" size="small" style="width:100%">
-                  <el-option v-for="o in FOCAL_LENGTH_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
-                </el-select>
-              </div>
-              <div class="sg"><label>时长(s)</label><el-input-number v-model="s.duration" :min="1" :max="30" size="small" style="width:100%" /></div>
-            </div>
             <div class="sg full drop-field description-field" :class="{ 'drop-active': dropActive === dropKey(s, 'description') }" @dragover.prevent="onFieldDragOver" @dragenter="onFieldDragEnter($event, dropKey(s, 'description'))" @dragleave="onFieldDragLeave($event, dropKey(s, 'description'))">
               <label>画面描述 <span class="drag-tip">可拖入左侧资产</span><span class="desc-expand" title="展开编辑" @click.stop="openDescModal(s)">⛶ 展开编辑</span></label>
               <AssetRichInput v-model="s.description" :assets="richInputAssets" :min-rows="3" :fixed-height="true" placeholder="输入画面描述，拖入左侧资产自动插入 @[资产名] 引用标记" @drop-asset="(a) => onPromptDrop(s, a)" @change="(text) => { syncMentionRefs(s, { field: 'description', value: text }); s.prompt = text }" @remove-asset="(e) => onChipRemoved(s, e && e.name)" />
             </div>
-            <div class="sg full drop-field" :class="{ 'drop-active': dropActive === dropKey(s, 'voiceover') }" @dragover.prevent="onFieldDragOver" @dragenter="onFieldDragEnter($event, dropKey(s, 'voiceover'))" @dragleave="onFieldDragLeave($event, dropKey(s, 'voiceover'))" @drop="onFieldDrop($event, s, 'voiceover')"><label>画外音（输入 @ 或拖入资产引用）</label>
-              <el-mention v-model="s.voiceover" :options="mentionOptions" :prefix="['@']" placeholder="输入 @ 引用角色 / 场景，或拖入左侧资产…" type="textarea" :autosize="{ minRows: 1, maxRows: 2 }" size="small" @update:modelValue="(v) => syncMentionRefs(s, { field: 'voiceover', value: v })" @change="syncMentionRefs(s)" />
+            <div class="shot-voice-row">
+              <div class="sg drop-field" :class="{ 'drop-active': dropActive === dropKey(s, 'voiceover') }" @dragover.prevent="onFieldDragOver" @dragenter="onFieldDragEnter($event, dropKey(s, 'voiceover'))" @dragleave="onFieldDragLeave($event, dropKey(s, 'voiceover'))" @drop="onFieldDrop($event, s, 'voiceover')"><label>画外音</label>
+                <el-mention v-model="s.voiceover" :options="mentionOptions" :prefix="['@']" placeholder="输入 @ 引用角色 / 场景，或拖入左侧资产…" type="textarea" :autosize="{ minRows: 1, maxRows: 2 }" size="small" @update:modelValue="(v) => syncMentionRefs(s, { field: 'voiceover', value: v })" @change="syncMentionRefs(s)" />
+              </div>
+              <div class="sg drop-field" :class="{ 'drop-active': dropActive === dropKey(s, 'dialogue') }" @dragover.prevent="onFieldDragOver" @dragenter="onFieldDragEnter($event, dropKey(s, 'dialogue'))" @dragleave="onFieldDragLeave($event, dropKey(s, 'dialogue'))" @drop="onFieldDrop($event, s, 'dialogue')"><label>台词 / 对白</label>
+                <el-mention v-model="s.dialogue" :options="mentionOptions" :prefix="['@']" placeholder="输入 @ 引用角色 / 场景，或拖入左侧资产…" type="textarea" :autosize="{ minRows: 1, maxRows: 2 }" size="small" @update:modelValue="(v) => syncMentionRefs(s, { field: 'dialogue', value: v })" @change="syncMentionRefs(s)" />
+              </div>
             </div>
-            <div class="sg full drop-field" :class="{ 'drop-active': dropActive === dropKey(s, 'dialogue') }" @dragover.prevent="onFieldDragOver" @dragenter="onFieldDragEnter($event, dropKey(s, 'dialogue'))" @dragleave="onFieldDragLeave($event, dropKey(s, 'dialogue'))" @drop="onFieldDrop($event, s, 'dialogue')"><label>台词 / 对白（输入 @ 或拖入资产引用）</label>
-              <el-mention v-model="s.dialogue" :options="mentionOptions" :prefix="['@']" placeholder="输入 @ 引用角色 / 场景，或拖入左侧资产…" type="textarea" :autosize="{ minRows: 1, maxRows: 2 }" size="small" @update:modelValue="(v) => syncMentionRefs(s, { field: 'dialogue', value: v })" @change="syncMentionRefs(s)" />
-            </div>
-            <div class="sg full"><label>反向提示词 negative_prompt</label><el-input v-model="s.negative_prompt" size="small" placeholder="不希望出现的元素，如 blurry, extra hands, watermark…" /></div>
-            <div class="sg full drop-field" :class="{ 'drop-active': dropActive === dropKey(s, 'setting') }" @dragover.prevent="onFieldDragOver" @dragenter="onFieldDragEnter($event, dropKey(s, 'setting'))" @dragleave="onFieldDragLeave($event, dropKey(s, 'setting'))" @drop="onFieldDrop($event, s, 'setting')"><label>镜头设定 setting <span class="drag-tip">可拖入左侧资产</span></label><el-input v-model="s.setting" type="textarea" :autosize="{ minRows: 1, maxRows: 2 }" size="small" placeholder="本分镜的时空、环境、基调等设定…" /></div>
             <div class="shot-refs">
-              <span class="refs-label">引用的资产：</span>
+              <span class="refs-label">引用资产：</span>
               <span v-for="r in s.refs" :key="r" class="asset-tag" :class="assetKind(r)">{{ assetName(r) }} <span class="x" @click="removeRef(s, r)">×</span></span>
               <span v-if="!s.refs.length" class="muted">无</span>
-              <span class="ref-add" @click="openRefPicker(s)">＋ 引用资产</span>
-              <span class="ref-count">已引用 {{ s.refs.length }} 个</span>
+              <span class="ref-add" @click="openRefPicker(s)">＋</span>
+              <span class="ref-count">{{ s.refs.length }}/9</span>
+            </div>
+            <div class="shot-adv-toggle" @click="toggleAdvanced(s.scene_id)">
+              <span>{{ advancedOpen[s.scene_id] ? '收起' : '展开' }} 镜头与生成参数</span>
+              <span class="shot-adv-summary">{{ shotParamSummary(s) }}</span>
+              <span class="shot-adv-chev">{{ advancedOpen[s.scene_id] ? '▲' : '▼' }}</span>
+            </div>
+            <div v-if="advancedOpen[s.scene_id]" class="shot-advanced">
+              <div class="shot-grid">
+                <div class="sg"><label>景别</label>
+                  <el-select v-model="s.shot_type" size="small" style="width:100%">
+                    <el-option v-for="o in SHOT_TYPE_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+                  </el-select>
+                </div>
+                <div class="sg"><label>机位</label>
+                  <el-select v-model="s.camera_angle" size="small" style="width:100%">
+                    <el-option v-for="o in CAMERA_ANGLE_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+                  </el-select>
+                </div>
+                <div class="sg"><label>运镜</label>
+                  <el-select v-model="s.camera_movement" size="small" style="width:100%">
+                    <el-option v-for="o in CAMERA_MOVEMENT_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+                  </el-select>
+                </div>
+                <div class="sg"><label>焦段</label>
+                  <el-select v-model="s.focal_length" size="small" style="width:100%">
+                    <el-option v-for="o in FOCAL_LENGTH_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+                  </el-select>
+                </div>
+                <div class="sg"><label>时长(s)</label><el-input-number v-model="s.duration" :min="1" :max="30" size="small" style="width:100%" /></div>
+              </div>
+              <div class="sg full"><label>反向提示词</label><el-input v-model="s.negative_prompt" size="small" placeholder="不希望出现的元素，如 blurry, extra hands, watermark…" /></div>
+              <div class="sg full drop-field" :class="{ 'drop-active': dropActive === dropKey(s, 'setting') }" @dragover.prevent="onFieldDragOver" @dragenter="onFieldDragEnter($event, dropKey(s, 'setting'))" @dragleave="onFieldDragLeave($event, dropKey(s, 'setting'))" @drop="onFieldDrop($event, s, 'setting')"><label>镜头设定 <span class="drag-tip">可拖入左侧资产</span></label><el-input v-model="s.setting" type="textarea" :autosize="{ minRows: 1, maxRows: 2 }" size="small" placeholder="本分镜的时空、环境、基调等设定…" /></div>
             </div>
           </div>
           <button class="add-line" @click="onAddScene">＋ 新增分镜</button>
 
           <div class="ws-actions">
+            <span class="save-state" :class="saveStatus">
+              <i v-if="saveStatus==='saving' || saveStatus==='pending'" class="dot spin" />
+              <i v-else-if="saveStatus==='saved'" class="dot ok" />
+              <i v-else-if="saveStatus==='error'" class="dot bad" />
+              <i v-else class="dot" />
+              <span>{{ { saving: '保存中…', pending: '待保存…', saved: '已自动保存', error: '保存失败' }[saveStatus] || '自动保存开启' }}</span>
+            </span>
             <el-button size="small" @click="onCancel">取消</el-button>
             <el-button size="small" type="primary" @click="onSave">保存</el-button>
             <el-button size="small" @click="onPolish">AI 润色</el-button>
@@ -925,7 +1108,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
   <div v-else class="page"><div class="empty">加载中…</div></div>
 
     <!-- 新建资产弹窗 -->
-    <el-dialog v-model="assetDialogVisible" title="新建资产" width="440px" append-to-body>
+    <el-dialog v-model="assetDialogVisible" title="新建资产" width="440px" append-to-body :before-close="beforeAssetDialogClose">
       <div class="form-row">
         <label>类型</label>
         <el-radio-group v-model="assetForm.type">
@@ -981,7 +1164,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
     </el-dialog>
 
     <!-- 画面描述大弹窗编辑（带左侧资产库） -->
-    <el-dialog v-model="descModalVisible" title="编辑画面描述" width="90%" top="5vh" append-to-body class="desc-modal" destroy-on-close :close-on-click-modal="false">
+    <el-dialog v-model="descModalVisible" title="编辑画面描述" width="90%" top="5vh" append-to-body class="desc-modal" destroy-on-close :before-close="beforeDescModalClose">
       <div class="desc-modal-body">
         <div class="desc-modal-assets">
           <h3>资产库 <span class="add-asset" title="新建资产" @click="openCreateAsset(assetTab === '角色' ? 'role' : assetTab === '场景' ? 'scene' : 'prop')">＋</span></h3>
@@ -991,12 +1174,20 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
           <div v-if="br009Exceed" class="br-bar bad">⚠ BR-009：片段资产引用 {{ segRefCount }} 个，超过上限 9 个</div>
           <div v-else class="br-bar ok">资产引用 {{ segRefCount }}/9（BR-009）</div>
           <template v-if="assetTab === '角色'">
-            <div v-for="c in p.characters" :key="c.id" class="char-card" draggable="true" :title="'拖拽到右侧编辑器可插入 @[' + c.name + '] 引用'" @dragstart="onAssetDragStart($event, c, 'character')">
-              <div class="name">{{ c.name }} <span class="role-badge" :class="c.relation === '配角' ? 'supporting' : 'lead'">{{ c.relation }}</span></div>
-              <div class="meta">{{ c.desc }}</div>
-              <div class="stages-line">{{ c.stages.length }} 个阶段</div>
-              <div class="age-pills">
-                <span v-for="st in c.stages" :key="st.age" class="pill">{{ st.age }}岁</span>
+            <div v-for="c in p.characters" :key="c.id" class="char-card" :class="{ expanded: expandedAssets[c.id] }" draggable="true" :title="'拖拽到右侧编辑器可插入 @[' + c.name + '] 引用'" @dragstart="onAssetDragStart($event, c, 'character')">
+              <div class="char-row">
+                <img class="char-thumb" :src="c.thumb || PLACEHOLDER" />
+                <div class="char-info">
+                  <div class="char-title">{{ c.name }} <span class="role-badge" :class="c.relation === '配角' ? 'supporting' : 'lead'">{{ c.relation }}</span></div>
+                  <div class="char-meta">{{ c.desc }}</div>
+                  <div class="stage-toggle" @click.stop="toggleAssetExpand(c)">
+                    <span class="chev" :class="{ open: expandedAssets[c.id] }">▸</span>
+                    {{ c.relation }} · {{ (c.stages?.length || 0) }}个阶段
+                  </div>
+                </div>
+              </div>
+              <div v-if="expandedAssets[c.id]" class="stage-strip-host">
+                <AssetStageManager :asset-id="c.id" :initial-stages="c.stages" type="role" mode="strip" @changed="onStageChanged" />
               </div>
               <div class="drag-hint">⠿ 拖入编辑器</div>
               <!-- 小云雀式角色卡片 hover 三按钮：拖动 / 编辑 / 预览 -->
@@ -1009,14 +1200,52 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
             <button class="add-line" @click="openCreateAsset('role')">＋ 新建角色</button>
           </template>
           <template v-else-if="assetTab === '场景'">
-            <div class="asset-grid-mini">
-              <div v-for="a in p.assets.scenes" :key="a.id" class="asset-mini" draggable="true" :title="'拖拽到右侧编辑器可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'scene')"><span class="tag">{{ a.name }}</span><span class="drag-hint">⠿</span></div>
+            <div v-for="a in p.assets.scenes" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧编辑器可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'scene')">
+              <div class="char-row">
+                <img class="char-thumb" :src="a.thumb || PLACEHOLDER" />
+                <div class="char-info">
+                  <div class="char-title">{{ a.name }} <span class="type-badge scene">场景</span></div>
+                  <div class="stage-toggle" @click.stop="toggleAssetExpand(a)">
+                    <span class="chev" :class="{ open: expandedAssets[a.id] }">▸</span>
+                    {{ (a.stages?.length || 0) }}个阶段
+                  </div>
+                </div>
+              </div>
+              <div v-if="expandedAssets[a.id]" class="stage-strip-host">
+                <AssetStageManager :asset-id="a.id" :initial-stages="a.stages" type="scene" mode="strip" @changed="onStageChanged" />
+              </div>
+              <div class="drag-hint">⠿ 拖入编辑器</div>
+              <div class="thumb-overlay role-overlay">
+                <button class="role-btn" title="拖动场景卡" @mousedown.stop><el-icon><Grid /></el-icon></button>
+                <button class="role-btn" title="编辑阶段" @click.stop="openAssetStagePanel(a)"><el-icon><EditPen /></el-icon></button>
+                <button class="role-btn" title="预览场景图" @click.stop="previewRoleImg = a.thumb || ''"><el-icon><ZoomIn /></el-icon></button>
+              </div>
             </div>
+            <button class="add-line" @click="openCreateAsset('scene')">＋ 新建场景</button>
           </template>
           <template v-else>
-            <div class="asset-grid-mini">
-              <div v-for="a in p.assets.props" :key="a.id" class="asset-mini" draggable="true" :title="'拖拽到右侧编辑器可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'prop')"><span class="tag">{{ a.name }}</span><span class="drag-hint">⠿</span></div>
+            <div v-for="a in p.assets.props" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧编辑器可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'prop')">
+              <div class="char-row">
+                <img class="char-thumb" :src="a.thumb || PLACEHOLDER" />
+                <div class="char-info">
+                  <div class="char-title">{{ a.name }} <span class="type-badge prop">道具</span></div>
+                  <div class="stage-toggle" @click.stop="toggleAssetExpand(a)">
+                    <span class="chev" :class="{ open: expandedAssets[a.id] }">▸</span>
+                    {{ (a.stages?.length || 0) }}个阶段
+                  </div>
+                </div>
+              </div>
+              <div v-if="expandedAssets[a.id]" class="stage-strip-host">
+                <AssetStageManager :asset-id="a.id" :initial-stages="a.stages" type="prop" mode="strip" @changed="onStageChanged" />
+              </div>
+              <div class="drag-hint">⠿ 拖入编辑器</div>
+              <div class="thumb-overlay role-overlay">
+                <button class="role-btn" title="拖动道具卡" @mousedown.stop><el-icon><Grid /></el-icon></button>
+                <button class="role-btn" title="编辑阶段" @click.stop="openAssetStagePanel(a)"><el-icon><EditPen /></el-icon></button>
+                <button class="role-btn" title="预览道具图" @click.stop="previewRoleImg = a.thumb || ''"><el-icon><ZoomIn /></el-icon></button>
+              </div>
             </div>
+            <button class="add-line" @click="openCreateAsset('prop')">＋ 新建道具</button>
           </template>
         </div>
         <div class="desc-modal-editor">
@@ -1034,7 +1263,18 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
     <div class="modal-mask" v-if="previewRoleImg" @click="previewRoleImg = ''"><div class="modal"><img :src="previewRoleImg" @click.stop /></div></div>
 
     <!-- 小云雀式角色编辑弹窗 -->
-    <RoleEditorModal v-model="editorVisible" :role="editingRole" @saved="onRoleSaved" @preview="previewRoleImg = $event" />
+    <RoleEditorModal v-model="editorVisible" :role="editingRole" @saved="onRoleSaved" @stagesChanged="onStageChanged" @preview="previewRoleImg = $event" />
+
+    <!-- 场景/道具阶段编辑弹窗（角色走 RoleEditorModal） -->
+    <el-dialog v-model="assetStagePanel.open" title="编辑阶段 / 变体" width="820px" top="8vh" append-to-body destroy-on-close>
+      <AssetStageManager
+        v-if="assetStagePanel.asset"
+        :asset-id="assetStagePanel.asset.id"
+        :type="assetStagePanel.asset.type"
+        mode="panel"
+        @changed="onStageChanged"
+      />
+    </el-dialog>
 </template>
 
 <style scoped>
@@ -1051,6 +1291,24 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
 .fgrp label { font-size: 12px; color: var(--sub); }
 .credits-tag { font-size: 12px; font-weight: 700; color: var(--pur); background: rgba(138,92,255,.15); border: 1px solid rgba(138,92,255,.4); border-radius: 10px; padding: 5px 12px; }
 
+/* 套餐选择器：降低决策成本，把速度/时长/模型/价格/画质策略打包展示 */
+.preset-grp { align-items: center; }
+.preset-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+.preset-info-icon { font-size: 14px; color: var(--sub); cursor: pointer; margin-left: 2px; user-select: none; }
+.preset-info-icon:hover { color: var(--pur); }
+.preset-option { padding: 6px 0; }
+.preset-option-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.preset-option-title { font-weight: 700; color: var(--txt); }
+.preset-tags { display: flex; gap: 4px; margin-left: auto; }
+.preset-option-meta { font-size: 12px; color: var(--sub); margin-top: 4px; }
+.preset-detail { font-size: 13px; color: var(--txt); }
+.preset-detail-title { font-size: 15px; font-weight: 800; margin-bottom: 6px; }
+.preset-detail-slogan { color: var(--sub); margin-bottom: 10px; }
+.preset-detail-line { margin-bottom: 6px; }
+.preset-detail-line b { color: var(--sub); font-weight: 600; }
+.preset-detail-desc { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--sub); line-height: 1.5; }
+:global(.preset-dropdown .el-select-dropdown__item) { height: auto; padding: 8px 16px; }
+
 .hint-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 18px; padding: 8px 18px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 13px; color: var(--sub); }
 .hint-text { flex: 1; color: var(--pur); }
 .hint-bar label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
@@ -1065,15 +1323,27 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
 .add-asset { margin-left: auto; cursor: pointer; color: var(--sub); font-size: 15px; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; }
 .add-asset:hover { color: var(--txt); background: var(--card-2); }
 
-.char-card { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
-.char-card .name { font-weight: 700; font-size: 14px; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.char-card, .asset-card { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; cursor: grab; transition: box-shadow .15s, border-color .15s, transform .05s; }
+.char-card:active, .asset-card:active { cursor: grabbing; }
+.char-card:hover, .asset-card:hover { border-color: var(--pur); box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+.char-row { display: flex; gap: 10px; align-items: flex-start; }
+.char-thumb { width: 48px; height: 64px; object-fit: cover; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); flex: 0 0 auto; }
+.asset-card .char-thumb { width: 64px; height: 48px; }
+.char-info { flex: 1; min-width: 0; }
+.char-title { font-weight: 700; font-size: 14px; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.char-meta { font-size: 12px; color: var(--sub); margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .role-badge { font-size: 10px; padding: 1px 7px; border-radius: 8px; font-weight: 600; }
 .role-badge.lead { background: rgba(255,77,141,.18); color: #ff9cc1; }
 .role-badge.supporting { background: rgba(139,147,167,.18); color: #b3bacb; }
-.char-card .meta { font-size: 12px; color: var(--sub); margin-top: 4px; }
-.stages-line { font-size: 11px; color: var(--sub); margin-top: 6px; }
-.age-pills { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
-.age-pills .pill { font-size: 10px; padding: 2px 7px; border-radius: 8px; background: var(--card-2); color: var(--sub); border: 1px solid var(--line); }
+.type-badge { font-size: 10px; padding: 1px 7px; border-radius: 8px; font-weight: 600; }
+.type-badge.scene { background: rgba(77,159,255,.18); color: #8fc5ff; }
+.type-badge.prop { background: rgba(255,176,32,.18); color: #ffd47a; }
+/* 资产卡可展开阶段区：点击展开内联阶段横条 */
+.stage-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--sub); margin-top: 6px; cursor: pointer; user-select: none; transition: color .15s; }
+.stage-toggle:hover { color: var(--pur); }
+.stage-toggle .chev { display: inline-block; transition: transform .15s ease; font-size: 10px; }
+.stage-toggle .chev.open { transform: rotate(90deg); }
+.stage-strip-host { margin-top: 8px; }
 /* 小云雀式角色卡片 hover 三按钮：覆盖层默认透明且不拦截拖拽，hover 时显示圆角按钮 */
 .thumb-overlay { position: absolute; inset: 0; display: flex; align-items: flex-start; justify-content: flex-end; gap: 8px; padding: 10px; opacity: 0; transition: .15s; z-index: 2; pointer-events: none; }
 .char-card:hover .thumb-overlay { opacity: 1; }
@@ -1101,7 +1371,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
 .call-asset { background: var(--card); border: 1px solid var(--line); color: var(--sub); border-radius: 10px; padding: 5px 12px; cursor: pointer; font-size: 12px; font-weight: 600; transition: .15s; }
 .call-asset:hover { color: var(--txt); border-color: var(--pur); background: var(--card-2); }
 
-.shot-block { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+.shot-block { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 10px; }
 .shot-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .idx { display: inline-flex; width: 24px; height: 24px; align-items: center; justify-content: center; background: var(--pink); color: #fff; border-radius: 6px; font-weight: 700; font-size: 12px; }
 .shot-cap { flex: 1; background: transparent; border: 0; border-bottom: 1px solid var(--line); color: var(--txt); font-size: 14px; font-weight: 700; outline: none; }
@@ -1121,6 +1391,31 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
 .form-row > label { width: 56px; flex: none; color: var(--sub); font-size: 13px; }
 .small { font-size: 12px; }
 
+/* 场景设定：保留业务字段，但弱化为紧凑单行 */
+.seg-scene-setting { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.seg-scene-label { font-size: 12px; color: var(--sub); flex: 0 0 auto; }
+.seg-scene-setting .el-input { flex: 1; }
+
+/* 自动保存状态指示 */
+.save-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--sub); margin-right: auto; }
+.save-state .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sub); opacity: .5; }
+.save-state .dot.ok { background: var(--green); opacity: 1; }
+.save-state .dot.bad { background: #ff7a7a; opacity: 1; }
+.save-state.saved { color: var(--green); }
+.save-state.error { color: #ff7a7a; }
+.save-state.saving .dot, .save-state.pending .dot { background: var(--pur); opacity: 1; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 分镜核心文案并排，减少纵向占用 */
+.shot-voice-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px; }
+
+/* 高级参数折叠条 */
+.shot-adv-toggle { display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 6px 10px; border-radius: 8px; background: var(--bg-2); border: 1px dashed var(--line); font-size: 12px; color: var(--sub); cursor: pointer; transition: .15s; }
+.shot-adv-toggle:hover { border-color: var(--pur); color: var(--txt); background: var(--panel); }
+.shot-adv-summary { flex: 1; font-size: 11px; color: var(--sub); opacity: .85; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shot-adv-chev { font-size: 10px; }
+.shot-advanced { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+
 .preview-box { background: var(--bg); border-radius: 12px; overflow: hidden; aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; }
 .preview-box .pv { width: 100%; height: 100%; }
 .preview-box .empty { color: var(--sub); font-size: 13px; text-align: center; padding: 20px; line-height: 1.8; }
@@ -1132,23 +1427,25 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
 .mt { margin-top: 12px; }
 .log { margin: 0; max-height: 160px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.6; color: var(--txt); }
 
-.frag-nav { flex: 0 0 auto; border-top: 1px solid var(--line); background: var(--panel); padding: 10px 18px; display: flex; align-items: center; gap: 16px; }
-.nav-stats { display: flex; gap: 14px; font-size: 12px; color: var(--sub); flex: 0 0 auto; }
-.nav-thumbs { display: flex; gap: 10px; overflow-x: auto; flex: 1; }
-.nav-th { flex: 0 0 auto; width: 96px; cursor: pointer; border: 2px solid transparent; border-radius: 10px; padding: 4px; }
+.frag-nav { flex: 0 0 auto; border-top: 1px solid var(--line); background: var(--panel); padding: 8px 14px; display: flex; align-items: center; gap: 12px; }
+.nav-stats { display: flex; gap: 10px; font-size: 11px; color: var(--sub); flex: 0 0 auto; }
+.nav-thumbs { display: flex; gap: 8px; overflow-x: auto; flex: 1; }
+.nav-th { flex: 0 0 auto; width: 72px; cursor: pointer; border: 2px solid transparent; border-radius: 8px; padding: 3px; }
 .nav-th.on { border-color: var(--pur); }
-.nth-ph { position: relative; height: 50px; border-radius: 8px; background: linear-gradient(135deg, var(--card-2), var(--card)); display: flex; align-items: center; justify-content: center; color: var(--sub); font-size: 13px; font-weight: 700; }
-.nth-badge { position: absolute; right: 4px; bottom: 4px; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; }
+.nth-ph { position: relative; height: 36px; border-radius: 6px; background: linear-gradient(135deg, var(--card-2), var(--card)); display: flex; align-items: center; justify-content: center; color: var(--sub); font-size: 12px; font-weight: 700; }
+.nth-badge { position: absolute; right: 3px; bottom: 3px; width: 14px; height: 14px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 700; }
 .nth-badge.ok { background: var(--green); color: #06210f; }
 .nth-badge.pending { background: var(--card-2); color: var(--sub); }
-.nth-name { font-size: 11px; color: var(--sub); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nth-dur { font-size: 10px; color: var(--sub); }
-.nav-th.add .nth-ph { border: 1px dashed var(--line); background: transparent; color: var(--sub); font-size: 20px; }
+.nth-name { font-size: 10px; color: var(--sub); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nth-dur { font-size: 9px; color: var(--sub); }
+.nav-th.add .nth-ph { border: 1px dashed var(--line); background: transparent; color: var(--sub); font-size: 16px; }
 
-/* 片段 tab 标题与删除按钮 */
-.ch-txt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ch-del { margin-left: 6px; color: var(--sub); font-weight: 700; cursor: pointer; opacity: .5; padding: 0 5px; border-radius: 6px; line-height: 1; }
-.ch-del:hover { color: #ff7a7a; background: rgba(255,122,122,.16); opacity: 1; }
+/* 片段顶部导航：当前片段 + 左右切换 + 下拉跳转 + 操作 */
+.segment-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--card); border-bottom: 1px solid var(--line); gap: 12px; }
+.seg-nav-arrows { display: flex; align-items: center; gap: 6px; }
+.seg-current { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 700; color: var(--txt); cursor: pointer; padding: 5px 12px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); transition: .15s; }
+.seg-current:hover { border-color: var(--pur); background: var(--card-2); }
+.seg-actions { display: flex; align-items: center; gap: 8px; }
 /* 底栏缩略图删除按钮（hover 显现，避免误删） */
 .nth-del { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: #fff; background: rgba(0,0,0,.45); cursor: pointer; opacity: 0; transition: .15s; }
 .nth-ph:hover .nth-del { opacity: 1; }
@@ -1158,11 +1455,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
 .frag .asset-tag.prop { background: rgba(254,243,199,.15); color: #f5d97a; border-color: rgba(254,243,199,.4); }
 
 /* 资产卡片可拖拽 + 拖入提示 */
-.char-card, .asset-mini { cursor: grab; transition: box-shadow .15s, border-color .15s, transform .05s; }
-.char-card:active, .asset-mini:active { cursor: grabbing; }
 .drag-hint { font-size: 10px; color: var(--sub); margin-top: 6px; opacity: .65; }
-.asset-mini { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.asset-mini .drag-hint { margin-top: 0; }
 /* 可放置的文本域：默认虚线描边提示，拖拽悬停高亮 */
 .drop-field { border: 1px dashed transparent; border-radius: 10px; padding: 6px; margin: 0 -6px 8px; transition: box-shadow .15s, border-color .15s, background .15s; }
 .drop-field .drag-tip { font-size: 10px; color: var(--sub); font-weight: 400; margin-left: 6px; opacity: .7; }

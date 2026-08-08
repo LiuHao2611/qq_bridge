@@ -1,9 +1,10 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { useProject } from '../composables/useProject'
 import { toast } from '../store'
-import { splitStory, createSegment, putShots } from '../api'
+import { splitStory, createSegment, putShots, getLocalModels } from '../api'
 import { parseDocx } from '../parseDocx'
 import ProjectFlowNav from './ProjectFlowNav.vue'
 
@@ -11,8 +12,6 @@ const route = useRoute()
 const router = useRouter()
 const pid = route.params.id
 const { project: p, load } = useProject(pid, 'short')
-
-onMounted(load)
 
 const story = ref('')
 const loading = ref(false)
@@ -26,8 +25,173 @@ const lastSelectedIndex = ref(-1)
 const splitLogs = ref([])
 const splitElapsed = ref(0)
 const logBody = ref(null)
+const logCollapsed = ref(false)
 let elapsedTimer = null
 let pendingTimers = []
+
+const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
+
+// ---- 策划页草稿自动保存（localStorage 兜底）----
+// 策划页内容仅在 doImport 时落库（createSegment + putShots），导入前 story 文本仅存内存。
+// 为避免误关页面丢失原始剧本：防抖写 localStorage + 挂载时提示恢复（双保险）。
+// CLOSE-02：草稿写入失败显式提示，不静默。
+const DRAFT_KEY = 'manju_planning_draft_' + pid
+const draftAvailable = ref(false)
+const pendingDraft = ref(null)
+const draftSavedAt = ref(0)
+let draftTimer = null
+function persistDraft() {
+  if (USE_MOCK) return
+  try {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ story: story.value, ts: Date.now() }))
+    draftSavedAt.value = Date.now()
+  } catch (e) {
+    toast('草稿保存失败：' + (e.message || '未知错误'))
+  }
+}
+function scheduleDraft() {
+  if (draftTimer) clearTimeout(draftTimer)
+  draftTimer = setTimeout(persistDraft, 1200)
+}
+function clearDraft() {
+  try { localStorage.removeItem(DRAFT_KEY) } catch { /* ignore */ }
+}
+function checkDraft() {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY)
+    if (!raw) return
+    const d = JSON.parse(raw)
+    if (d && typeof d.story === 'string' && d.story.trim() && d.story !== story.value) {
+      pendingDraft.value = d
+      draftAvailable.value = true
+    }
+  } catch { /* ignore */ }
+}
+function restoreDraft() {
+  if (pendingDraft.value) {
+    story.value = pendingDraft.value.story
+    draftSavedAt.value = Date.now()
+    draftAvailable.value = false
+    pendingDraft.value = null
+    toast('已恢复上次未导入的草稿')
+  }
+}
+function discardDraft() {
+  clearDraft()
+  draftAvailable.value = false
+  pendingDraft.value = null
+  toast('已丢弃草稿')
+}
+watch(story, () => { if (!USE_MOCK) scheduleDraft() }, { flush: 'post' })
+
+// ---- AI 分场模型选择（本地 Ollama / 在线 OpenAI 兼容）----
+const LS_MODEL_KEY = 'manju_split_model_config'
+function loadModelConfig() {
+  try {
+    const raw = localStorage.getItem(LS_MODEL_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch { /* ignore */ }
+  return { provider: 'local', model: '', apiBase: '', apiKey: '' }
+}
+const modelConfig = ref(loadModelConfig())
+const localModels = ref([])
+const loadingModels = ref(false)
+const onlineDialogVisible = ref(false)
+
+const currentModelLabel = computed(() => {
+  if (modelConfig.value.provider === 'local') {
+    const m = modelConfig.value.model || '本地模型'
+    return '🖥️ ' + m
+  }
+  return '🌐 ' + (modelConfig.value.model || '在线模型')
+})
+
+const modelSelectorOptions = computed(() => {
+  const opts = []
+  if (localModels.value.length) {
+    opts.push({ label: '本地模型', options: localModels.value.map((m) => ({ value: 'local:' + m, label: m })) })
+  }
+  opts.push({ label: '在线模型', options: [{ value: '__online__', label: '⚙️ 配置在线模型…' }] })
+  return opts
+})
+
+const modelSelectorValue = computed({
+  get: () => {
+    const cfg = modelConfig.value
+    if (cfg.provider === 'local') return 'local:' + (cfg.model || '')
+    return 'online:' + cfg.model
+  },
+  set: (val) => onModelChange(val),
+})
+
+async function refreshLocalModels() {
+  loadingModels.value = true
+  try {
+    localModels.value = await getLocalModels()
+    if (modelConfig.value.provider === 'local' && !modelConfig.value.model && localModels.value.length) {
+      modelConfig.value.model = localModels.value[0]
+      saveModelConfig()
+    }
+  } catch (e) {
+    localModels.value = []
+  } finally {
+    loadingModels.value = false
+  }
+}
+function saveModelConfig() {
+  try { localStorage.setItem(LS_MODEL_KEY, JSON.stringify(modelConfig.value)) } catch { /* ignore */ }
+}
+function onModelChange(val) {
+  if (val === '__online__') {
+    onlineDialogVisible.value = true
+    return
+  }
+  const [provider, ...rest] = String(val || '').split(':')
+  const model = rest.join(':')
+  if (provider === 'local' && model) {
+    modelConfig.value = { provider: 'local', model, apiBase: '', apiKey: '' }
+    saveModelConfig()
+  }
+}
+function beforeOnlineClose(done) {
+  const c = modelConfig.value
+  const dirty = c.apiBase || c.apiKey || c.model
+  if (!dirty) { done(); return }
+  ElMessageBox.confirm('在线模型配置尚未保存，确定关闭？', '提示', {
+    confirmButtonText: '放弃并关闭',
+    cancelButtonText: '继续编辑',
+    type: 'warning',
+  }).then(() => done()).catch(() => {})
+}
+function applyOnlineConfig() {
+  const cfg = modelConfig.value
+  if (!cfg.apiBase || !cfg.model) {
+    toast('请填写在线模型的 API 地址和模型名')
+    return
+  }
+  cfg.provider = 'openai-compatible'
+  saveModelConfig()
+  onlineDialogVisible.value = false
+}
+function buildSplitPayload() {
+  const cfg = modelConfig.value
+  const payload = { story: story.value.trim() }
+  if (cfg.provider !== 'local' || cfg.model) {
+    payload.model_config = {
+      provider: cfg.provider,
+      model: cfg.model,
+      apiBase: cfg.apiBase,
+      apiKey: cfg.apiKey,
+    }
+  }
+  return payload
+}
+
+onMounted(() => {
+  load()
+  refreshLocalModels()
+  checkDraft()
+})
 
 const canSplit = computed(() => (story.value || '').trim().length >= 20)
 const selectedFiltered = computed(() => filteredSegments.value.filter((s) => selected.value.includes(s._id)))
@@ -61,6 +225,7 @@ const clearProgress = () => {
 const startProgress = () => {
   splitLogs.value = []
   splitElapsed.value = 0
+  logCollapsed.value = false
   pendingTimers.forEach(clearTimeout)
   pendingTimers = []
   logStep('开始 AI 自动分场…')
@@ -69,6 +234,11 @@ const startProgress = () => {
   pendingTimers.push(setTimeout(() => logStep('正在将故事文本发送给本地 Qwen 模型…'), 600))
   pendingTimers.push(setTimeout(() => logStep('模型正在推理分场结构，请稍候…'), 1200))
 }
+const toggleLog = () => { logCollapsed.value = !logCollapsed.value }
+const clearLogs = () => {
+  splitLogs.value = []
+  splitElapsed.value = 0
+}
 
 const doSplit = async () => {
   if (!canSplit.value) { toast('故事文本太短，请至少输入 20 字'); return }
@@ -76,14 +246,16 @@ const doSplit = async () => {
   startProgress()
   const t0 = Date.now()
   try {
-    const res = await splitStory(pid, { story: story.value.trim() })
+    const res = await splitStory(pid, buildSplitPayload(), { signal: AbortSignal.timeout(120000) })
     const duration = Date.now() - t0
     const source = res.source || 'regex'
     const meta = res.meta || {}
     const model = meta.model || 'qwen3.5:9b'
     if (source === 'llm') {
-      logStep(`✅ 本地模型完成分场，耗时 ${duration}ms，共 ${res.count || 0} 个场次`)
+      const isOnline = (meta.provider || modelConfig.value.provider) !== 'local'
+      logStep(`✅ ${isOnline ? '在线' : '本地'}模型完成分场，耗时 ${duration}ms，共 ${res.count || 0} 个场次`)
       logStep(`🤖 推理模型：${model}（模型耗时 ${meta.duration_ms ?? duration}ms）`)
+      if (isOnline) logStep(`🌐 API：${modelConfig.value.apiBase}`)
       if (meta.raw_preview) {
         const prev = String(meta.raw_preview)
         logStep('📝 模型原始输出预览：' + (prev.length > 240 ? prev.slice(0, 240) + '…' : prev))
@@ -186,6 +358,7 @@ const doImport = async () => {
         await putShots(pid, seg.segment_id || seg.id, shots)
       }
     }
+    clearDraft()
     toast(`已导入 ${toImport.length} 个片段，进入分镜编排`)
     router.push('/projects/' + pid + '/editor')
   } catch (e) {
@@ -265,6 +438,14 @@ onBeforeUnmount(() => {
   <div v-if="p" class="planning">
     <ProjectFlowNav :pid="pid" :step="2" />
 
+    <div v-if="draftAvailable" class="draft-banner">
+      <span class="draft-tip">💡 检测到上次未导入的剧本草稿，是否恢复？</span>
+      <div class="draft-actions">
+        <el-button size="small" type="primary" @click="restoreDraft">恢复草稿</el-button>
+        <el-button size="small" text @click="discardDraft">丢弃</el-button>
+      </div>
+    </div>
+
     <div class="plan-head">
       <button class="back" @click="$router.push('/projects')">← 返回项目中心</button>
       <div class="ftitle">
@@ -300,10 +481,28 @@ onBeforeUnmount(() => {
           <span class="muted">支持拖入&nbsp;.txt&nbsp;/&nbsp;.md&nbsp;/&nbsp;.srt&nbsp;/&nbsp;.docx</span>
         </div>
         <div class="story-foot">
-          <span class="muted">已输入 {{ story.length }} 字</span>
-          <el-button type="primary" :disabled="!canSplit || loading" :loading="loading" @click="doSplit">
-            ✨ AI 自动分场
-          </el-button>
+          <span class="muted">已输入 {{ story.length }} 字<span v-if="draftSavedAt"> · 草稿已自动保存</span></span>
+          <div class="split-actions">
+            <el-select
+              v-model="modelSelectorValue"
+              size="small"
+              placeholder="选择模型"
+              style="width: 170px"
+              :loading="loadingModels"
+            >
+              <el-option-group v-for="g in modelSelectorOptions" :key="g.label" :label="g.label">
+                <el-option
+                  v-for="opt in g.options"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-option-group>
+            </el-select>
+            <el-button type="primary" :disabled="!canSplit || loading" :loading="loading" @click="doSplit">
+              ✨ AI 自动分场
+            </el-button>
+          </div>
         </div>
         <input ref="fileInput" type="file" accept=".txt,.md,.srt,.text,.docx" hidden @change="onFileInput" />
         <div v-if="dragOver" class="drop-mask">松开鼠标，导入剧本文本</div>
@@ -401,18 +600,40 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="splitLogs.length" class="split-log">
-      <div class="log-head">
-        <span>🧠 推理进度</span>
-        <span v-if="loading" class="muted">已运行 {{ splitElapsed }} 秒</span>
+    <div v-if="splitLogs.length" class="split-log" :class="{ collapsed: logCollapsed }">
+      <div class="log-head" @click="toggleLog">
+        <span>🧠 推理进度 <span v-if="logCollapsed" class="muted">（{{ splitLogs.length }} 条）</span></span>
+        <div class="log-actions">
+          <el-button size="small" text @click.stop="toggleLog">{{ logCollapsed ? '展开' : '最小化' }}</el-button>
+          <el-button size="small" text @click.stop="clearLogs">清空</el-button>
+          <span v-if="!logCollapsed && loading" class="muted">已运行 {{ splitElapsed }} 秒</span>
+        </div>
       </div>
-      <div ref="logBody" class="log-body">
+      <div v-show="!logCollapsed" ref="logBody" class="log-body">
         <div v-for="(log, i) in splitLogs" :key="i" class="log-line">
           <span class="log-time">[{{ log.time }}]</span>
           <span class="log-msg">{{ log.msg }}</span>
         </div>
       </div>
     </div>
+
+    <el-dialog v-model="onlineDialogVisible" title="配置在线模型" width="480px" align-center :before-close="beforeOnlineClose">
+      <el-form label-width="90px">
+        <el-form-item label="API 地址">
+          <el-input v-model="modelConfig.apiBase" placeholder="https://api.openai.com/v1" />
+        </el-form-item>
+        <el-form-item label="API Key">
+          <el-input v-model="modelConfig.apiKey" type="password" placeholder="sk-..." show-password />
+        </el-form-item>
+        <el-form-item label="模型名">
+          <el-input v-model="modelConfig.model" placeholder="gpt-4o-mini / qwen-turbo 等" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button size="small" @click="onlineDialogVisible = false">取消</el-button>
+        <el-button size="small" type="primary" @click="applyOnlineConfig">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
   <div v-else class="planning"><div class="loading">加载中…</div></div>
 </template>
@@ -447,6 +668,7 @@ h3 { font-size: 13px; color: var(--sub); text-transform: uppercase; letter-spaci
 .result-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
 .result-stats { font-size: 12px; }
 .story-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; }
+.split-actions { display: flex; align-items: center; gap: 8px; }
 .muted { color: var(--sub); font-size: 12px; }
 .empty-tip { color: var(--sub); font-size: 13px; padding: 40px 0; text-align: center; border: 1px dashed var(--line); border-radius: 12px; }
 .result-stack { flex: 1; display: flex; flex-direction: column; min-height: 0; }
@@ -498,6 +720,14 @@ h3 { font-size: 13px; color: var(--sub); text-transform: uppercase; letter-spaci
 .shot-dur { color: var(--sub); background: var(--card); padding: 2px 8px; border-radius: 20px; }
 .loading { padding: 40px; text-align: center; color: var(--sub); }
 
+.draft-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: rgba(138, 92, 255, .12); border: 1px solid rgba(138, 92, 255, .4);
+  color: var(--txt); border-radius: 10px; padding: 10px 14px; margin: 0 16px 14px; font-size: 13px;
+}
+.draft-tip { color: var(--pur); }
+.draft-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+
 /* 推理进度日志面板（底部实时打印 AI 分场过程） */
 .split-log {
   margin: 12px 16px 16px;
@@ -512,7 +742,10 @@ h3 { font-size: 13px; color: var(--sub); text-transform: uppercase; letter-spaci
   font-size: 13px; font-weight: 700; color: var(--txt);
   background: var(--card);
   border-bottom: 1px solid var(--line);
+  cursor: pointer;
 }
+.split-log.collapsed .log-head { border-bottom: 0; }
+.log-actions { display: flex; align-items: center; gap: 6px; }
 .log-body {
   max-height: 220px; overflow-y: auto;
   padding: 8px 12px;

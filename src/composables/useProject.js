@@ -2,7 +2,7 @@ import { ref, nextTick } from 'vue'
 import {
   getProject, listSegments, getSegment, createSegment, updateProject, updateSegment, putShots, putAssetRefs,
   deleteSegment, generateSegment, estimatePoints, preAuthPoints, getTask,
-  listAssets,
+  listAssets, listStagesWithPoses,
 } from '../api'
 import { mockProject, mockMemoir, normalizeShotEnums } from '../mock'
 import { toast } from '../store'
@@ -16,6 +16,24 @@ const safeJson = (v, fallback = {}) => {
   if (v == null || v === '') return fallback
   if (typeof v === 'object') return v
   try { return JSON.parse(v) } catch { return fallback }
+}
+
+// 为所有资产并行加载阶段 + 姿势（KB §02 character_stages / character_poses 已泛化到 asset_id 维度）
+const loadAssetStages = async (assets) => {
+  if (!Array.isArray(assets) || !assets.length) return assets
+  const stageMap = new Map()
+  await Promise.all(
+    assets.map(async (a) => {
+      try {
+        const items = await listStagesWithPoses(a.asset_id)
+        stageMap.set(a.asset_id, Array.isArray(items) ? items : [])
+      } catch (e) {
+        console.warn('load stages for', a.asset_id, e.message)
+        stageMap.set(a.asset_id, [])
+      }
+    })
+  )
+  return assets.map((a) => ({ ...a, stages: stageMap.get(a.asset_id) || [] }))
 }
 
 const applyActiveSegment = (p, activeSeg, shots) => {
@@ -67,6 +85,17 @@ const applyActiveSegment = (p, activeSeg, shots) => {
 // 资产映射（角色/场景/道具）抽出，供首屏 toFrontend 与 refreshAssets 复用
 const applyAssets = (project, assets = []) => {
   const list = assets || []
+  const toStage = (s) => ({
+    stage_id: s.stage_id,
+    stage_name: s.stage_name,
+    age: s.age ?? '',
+    reference_image_url: s.reference_image_url || '',
+    poses: Array.isArray(s.poses) ? s.poses.map((p) => ({
+      pose_id: p.pose_id,
+      pose_name: p.pose_name,
+      reference_image_url: p.reference_image_url || '',
+    })) : [],
+  })
   project.characters = list.filter((a) => a.type === 'role').map((a) => {
     const { desc, voice } = splitVoice(a.description || '')
     return {
@@ -76,13 +105,13 @@ const applyAssets = (project, assets = []) => {
       desc,
       voice,
       thumb: a.cover_url || '',
-      stages: (safeJson(a.stages, [])).map((s) => ({ age: String(s?.age ?? ''), desc: s?.stage_name || '' })),
+      stages: (a.stages || []).map(toStage),
     }
   })
   project.assets = {
-    scenes: list.filter((a) => a.type === 'scene').map((a) => ({ id: a.asset_id, name: a.name, type: 'scene', thumb: a.cover_url || '' })),
+    scenes: list.filter((a) => a.type === 'scene').map((a) => ({ id: a.asset_id, name: a.name, type: 'scene', thumb: a.cover_url || '', stages: (a.stages || []).map(toStage) })),
     images: [],
-    props: list.filter((a) => a.type === 'prop').map((a) => ({ id: a.asset_id, name: a.name, type: 'prop', thumb: a.cover_url || '' })),
+    props: list.filter((a) => a.type === 'prop').map((a) => ({ id: a.asset_id, name: a.name, type: 'prop', thumb: a.cover_url || '', stages: (a.stages || []).map(toStage) })),
   }
 }
 
@@ -167,7 +196,8 @@ export function useProject(id, kind) {
       const activeSegId2 = activeSegId || segments[0].segment_id
       const segWithShots = await getSegment(id, activeSegId2)
       const assets = await listAssets()
-      project.value = toFrontend(p, segments, segWithShots, assets, kind)
+      const assetsWithStages = await loadAssetStages(assets)
+      project.value = toFrontend(p, segments, segWithShots, assetsWithStages, kind)
     } catch (e) {
       console.warn('project load failed, falling back to mock', e.message)
       toast('后端加载失败，使用演示数据')
@@ -246,7 +276,8 @@ export function useProject(id, kind) {
     if (USE_MOCK || !project.value) return
     try {
       const assets = await listAssets()
-      applyAssets(project.value, assets)
+      const assetsWithStages = await loadAssetStages(assets)
+      applyAssets(project.value, assetsWithStages)
       await nextTick()
     } catch (e) {
       console.warn('refresh assets failed', e.message)
@@ -295,8 +326,10 @@ export function useProject(id, kind) {
       }))
       await putShots(pid, sid, shots)
       toast('已保存')
+      return true
     } catch (e) {
       toast('保存失败: ' + (e.message || e))
+      return false
     }
   }
 

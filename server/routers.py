@@ -19,6 +19,8 @@ import os
 import sys
 import importlib.util
 import logging
+import json
+import time
 
 logger = logging.getLogger("routers")
 
@@ -42,8 +44,9 @@ from routers_compiled import *  # noqa: F401,F403
 from fastapi import Request  # noqa: F401
 import re  # noqa: F401
 from common import ok, ApiError  # noqa: F401
-from ai_local import split_story_with_llm  # noqa: F401
+from ai_local import split_story_with_llm, ollama_list_models, extract_assets_from_story  # noqa: F401
 from routers_compiled import _body, _redistribute_durations  # noqa: F401
+from db import get_conn, fetch_all, uid, SINGLE_USER_ID, log_operation  # noqa: F401
 
 # ======================================================================
 # 定点覆盖区（START）
@@ -73,9 +76,10 @@ async def split_story(project_id: str, req: Request):
     if not text:
         raise ApiError("INVALID_PARAMS", "story 不能为空")
 
+    model_config = b.get("model_config") or {}
     meta = {}
     try:
-        result = split_story_with_llm(text) or {}
+        result = split_story_with_llm(text, model_config) or {}
         segs = result.get("segments")
         meta = result.get("meta") or {}
         source = meta.get("source") or ("llm" if segs else "regex")
@@ -195,6 +199,209 @@ def _regex_fallback_segments(text):
         _redistribute_durations(seg["duration"], seg["shots"])
         segments.append(seg)
     return segments
+
+
+@api.get("/models/local")
+async def list_local_models():
+    """返回本地 Ollama 已加载模型列表，供「AI 自动分场」模型选择器使用。"""
+    return ok({"models": ollama_list_models()})
+
+
+# --- settings: 修复 /settings 被旧实现占用为 Dify 配置的问题，改为读写 settings 表 ---
+_SETTINGS_PATH = "/settings"
+_SETTINGS_FULL = (getattr(api, "prefix", "") or "") + _SETTINGS_PATH
+for _i in range(len(api.routes) - 1, -1, -1):
+    _rp = getattr(api.routes[_i], "path", None)
+    if _rp in (_SETTINGS_FULL, _SETTINGS_PATH):
+        del api.routes[_i]
+
+
+def _parse_setting_value(v):
+    try:
+        return json.loads(v)
+    except Exception:
+        return v
+
+
+# 服务端内部配置键，不应作为用户设置暴露给设置页（如 Dify、内部开关等）
+_INTERNAL_SETTING_PREFIXES = ("dify_",)
+
+
+def _is_user_setting_key(k):
+    return isinstance(k, str) and not k.startswith(_INTERNAL_SETTING_PREFIXES)
+
+
+@api.get(_SETTINGS_PATH)
+async def get_settings():
+    """返回全部用户设置（key/value，value 自动 JSON 反序列化），过滤服务端内部配置。"""
+    conn = get_conn()
+    try:
+        rows = fetch_all(conn, "SELECT key, value FROM settings")
+        return ok({"settings": {r["key"]: _parse_setting_value(r["value"]) for r in rows if _is_user_setting_key(r["key"])}})
+    finally:
+        conn.close()
+
+
+@api.patch(_SETTINGS_PATH)
+async def update_settings(req: Request):
+    """增量更新用户设置；请求体为 key/value 字典，value 会被 JSON 序列化存储。"""
+    b = await _body(req)
+    if not isinstance(b, dict):
+        raise ApiError("INVALID_PARAMS", "请求体必须是对象")
+    conn = get_conn()
+    try:
+        now = int(time.time())
+        for k, v in b.items():
+            if not _is_user_setting_key(k):
+                continue
+            try:
+                stored = json.dumps(v, ensure_ascii=False)
+            except Exception:
+                stored = str(v)
+            conn.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (k, stored, now),
+            )
+        conn.commit()
+        rows = fetch_all(conn, "SELECT key, value FROM settings")
+        return ok({"settings": {r["key"]: _parse_setting_value(r["value"]) for r in rows if _is_user_setting_key(r["key"])}})
+    finally:
+        conn.close()
+
+
+# --- 资产初始化：从剧本一键提取 + 批量创建（Phase 1 闭环） ---
+
+def _build_project_story_text(conn, project_id):
+    """把项目下已导入的场次/分镜文本合并为供 LLM 分析的剧本文本。"""
+    segs = fetch_all(conn, 'SELECT segment_id, title, scene_description FROM segments WHERE project_id=? ORDER BY "index"', (project_id,))
+    parts = []
+    for s in segs:
+        header = "# %s" % (s.get("title") or "片段")
+        body = (s.get("scene_description") or "").strip()
+        seg_text = "\n".join([x for x in [header, body] if x])
+        shots = fetch_all(conn, 'SELECT description, voiceover, dialogue FROM shots WHERE segment_id=? ORDER BY "index"', (s.get("segment_id"),))
+        shot_texts = []
+        for sh in shots:
+            txt = " ".join([sh.get("description") or "", sh.get("voiceover") or "", sh.get("dialogue") or ""]).strip()
+            if txt:
+                shot_texts.append(txt)
+        if shot_texts:
+            seg_text += "\n" + "\n".join(shot_texts)
+        if seg_text.strip():
+            parts.append(seg_text)
+    return "\n\n".join(parts)
+
+
+_EXTRACT_PATH = "/projects/{project_id}/extract-assets"
+@api.post(_EXTRACT_PATH)
+async def extract_assets(project_id: str, req: Request):
+    """从项目已有场次/分镜或用户提供的 story 中提取角色/场景/道具候选。
+
+    请求体：{story?: string, model_config?: {...}}
+    返回：{roles, scenes, props, meta}
+    """
+    b = await _body(req)
+    story = (b.get("story") or "").strip()
+    if not story:
+        conn = get_conn()
+        try:
+            story = _build_project_story_text(conn, project_id)
+        finally:
+            conn.close()
+    if not story:
+        raise ApiError("NO_STORY", "项目中暂无场次/分镜，请在请求体提供 story 文本")
+    model_config = b.get("model_config") or {}
+    result = extract_assets_from_story(story, model_config)
+    # 即使 LLM 失败也把 meta.error 返回给前端，前端可提示用户
+    return ok(result)
+
+
+_BATCH_ASSET_PATH = "/projects/{project_id}/assets/batch"
+@api.post(_BATCH_ASSET_PATH)
+async def batch_create_project_assets(project_id: str, req: Request):
+    """批量创建本集资产（is_global=0）。
+
+    请求体：{assets: [{name, type, role_type?, description?, tags?}]}
+    幂等：同一 project_id 下同名资产（忽略大小写）会被跳过。
+    返回：{created:[...], skipped:[...], count}
+    """
+    b = await _body(req)
+    assets = b.get("assets")
+    if not isinstance(assets, list) or not assets:
+        raise ApiError("INVALID_PARAMS", "assets 必须是数组")
+
+    valid_types = {"role", "scene", "prop"}
+    valid_role_types = {"protagonist", "supporting", "antagonist"}
+    clean = []
+    for a in assets:
+        if not isinstance(a, dict):
+            continue
+        name = str(a.get("name") or "").strip()[:128]
+        t = str(a.get("type") or "").strip().lower()
+        if not name or t not in valid_types:
+            continue
+        rt = str(a.get("role_type") or "").strip().lower()
+        entry = {
+            "name": name,
+            "type": t,
+            "role_type": rt if t == "role" and rt in valid_role_types else None,
+            "description": str(a.get("description") or "").strip()[:512],
+            "tags": [],
+        }
+        tags = a.get("tags")
+        if isinstance(tags, list):
+            entry["tags"] = [str(x).strip()[:32] for x in tags if str(x).strip()][:10]
+        clean.append(entry)
+    if not clean:
+        raise ApiError("INVALID_PARAMS", "没有有效的资产可创建")
+
+    conn = get_conn()
+    created = []
+    skipped = []
+    try:
+        existing_rows = fetch_all(conn, "SELECT name FROM assets WHERE project_id=? AND is_global=0", (project_id,))
+        existing = {r["name"].lower() for r in existing_rows if r.get("name")}
+        now = int(time.time())
+        for entry in clean:
+            if entry["name"].lower() in existing:
+                skipped.append(entry["name"])
+                continue
+            aid = uid()
+            params = {
+                "asset_id": aid,
+                "user_id": SINGLE_USER_ID,
+                "name": entry["name"],
+                "type": entry["type"],
+                "description": entry["description"],
+                "tags": json.dumps(entry["tags"], ensure_ascii=False) if entry["tags"] else None,
+                "is_global": 0,
+                "project_id": project_id,
+                "created_at": now,
+                "updated_at": now,
+            }
+            if entry["role_type"]:
+                params["role_type"] = entry["role_type"]
+            cols = list(params.keys())
+            placeholders = ",".join("?" * len(cols))
+            conn.execute("INSERT INTO assets (%s) VALUES (%s)" % (",".join(cols), placeholders), tuple(params.values()))
+            created.append({
+                "asset_id": aid,
+                "name": entry["name"],
+                "type": entry["type"],
+                "role_type": entry["role_type"],
+                "description": entry["description"],
+            })
+            existing.add(entry["name"].lower())
+            log_operation(conn, "asset_create", object_type="asset", object_id=aid,
+                          object_name=entry["name"], diff={"type": entry["type"], "source": "batch_extract"})
+        conn.commit()
+    except Exception as e:
+        logger.exception("[assets/batch] 批量创建资产失败")
+        raise ApiError("BATCH_CREATE_FAILED", "批量创建资产失败：%s" % e)
+    finally:
+        conn.close()
+    return ok({"created": created, "skipped": skipped, "count": len(created)})
 
 
 # ======================================================================

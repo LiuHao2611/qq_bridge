@@ -84,7 +84,15 @@ export const restoreProject = (id) => post('/projects/' + id + '/restore')
 // 后端信封 data 字段为 items（与 /projects、/memoirs 一致），此前误读 r.segments 导致永远返回 []
 export const listSegments = (pid) => get('/projects/' + pid + '/segments').then((r) => r.items || r.segments || [])
 export const createSegment = (pid, body) => post('/projects/' + pid + '/segments', body).then((r) => r.segment)
-export const splitStory = (pid, body) => post('/projects/' + pid + '/split-story', body)
+// model_config 可选：{ provider:'local'|'openai-compatible', model, apiBase, apiKey }
+export const splitStory = (pid, body, opts = {}) =>
+  apiV1('/projects/' + pid + '/split-story', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    ...opts,
+  })
+export const getLocalModels = () => get('/models/local').then((r) => r.models || [])
 export const getSegment = (pid, sid) => get('/projects/' + pid + '/segments/' + sid).then((r) => ({ segment: r.segment, shots: r.shots || [] }))
 export const updateSegment = (pid, sid, body) => patch('/projects/' + pid + '/segments/' + sid, body).then((r) => r.segment)
 export const putShots = (pid, sid, shots) => put('/projects/' + pid + '/segments/' + sid + '/shots', { shots }).then((r) => r.shots || [])
@@ -119,6 +127,12 @@ export const listAssets = (type) => {
 export const createAsset = (body) => post('/assets', body).then((r) => r.asset)
 export const updateAsset = (id, body) => patch('/assets/' + id, body).then((r) => r.asset)
 export const deleteAsset = (id) => del('/assets/' + id)
+
+// ---- Phase 1 一键从剧本提取 + 批量创建本集资产 ----
+export const extractAssetsFromStory = (pid, story, modelConfig) =>
+  post('/projects/' + pid + '/extract-assets', { story, model_config: modelConfig }).then((r) => r || { roles: [], scenes: [], props: [], meta: {} })
+export const batchCreateProjectAssets = (pid, assets) =>
+  post('/projects/' + pid + '/assets/batch', { assets }).then((r) => r || { created: [], skipped: [], count: 0 })
 
 // ---- Phase 1 真实文件上传（全局资产 / 本集资产）----
 // uploadGlobalAsset: POST /assets/upload → 全局资产（is_global=1），跨项目复用

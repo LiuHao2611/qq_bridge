@@ -1,18 +1,23 @@
 <script setup>
-import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { updateAsset, uploadImage, listStagesWithPoses } from '../api'
 import { toast } from '../store'
 import { splitVoice, joinVoice } from '../assetMeta'
+import { useAutoSave } from '../composables/useAutoSave'
+import { ElMessageBox } from 'element-plus'
 import {
-  ASSET_STAGE_OPTIONS, ASSET_POSE_OPTIONS, ASSET_ROLE_TYPE_OPTIONS,
+  ASSET_STAGE_OPTIONS, ASSET_ROLE_TYPE_OPTIONS,
 } from '../mock'
+import AssetStageManager from './AssetStageManager.vue'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
   role: { type: Object, default: null },
 })
-const emit = defineEmits(['update:modelValue', 'saved', 'preview'])
+const emit = defineEmits(['update:modelValue', 'saved', 'preview', 'stagesChanged'])
+
+const onStagesChanged = () => emit('stagesChanged')
 
 const router = useRouter()
 
@@ -25,7 +30,9 @@ const visible = computed({
 
 const busy = ref(false)
 const stages = ref([])
-const loadingStages = ref(false)
+const dirty = ref(false)
+let suppressDirty = true
+const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 
 const form = reactive({
   id: '',
@@ -46,38 +53,51 @@ const resetForm = () => {
   stages.value = []
 }
 
-const stageLabel = (name) => ASSET_STAGE_OPTIONS.find((o) => o.value === name)?.label || name
-const poseLabel = (name) => ASSET_POSE_OPTIONS.find((o) => o.value === name)?.label || name
-
 const loadStages = async (role) => {
   if (!role || !role.id) return
-  loadingStages.value = true
   try {
     stages.value = await listStagesWithPoses(role.id)
   } catch (e) {
     console.warn('load stages failed', e)
     stages.value = []
-  } finally {
-    loadingStages.value = false
   }
 }
 
+// 把 role 映射进表单（打开/切换角色时调用）
+const loadRoleIntoForm = (r) => {
+  if (!r) return
+  form.id = r.id
+  form.name = r.name || ''
+  form.roleType = r.roleType || 'protagonist'
+  const fullDesc = r.raw?.description ?? r.description ?? r.prompt ?? ''
+  const parsed = splitVoice(fullDesc)
+  form.description = parsed.desc
+  form.voice = r.voice ?? parsed.voice ?? ''
+  form.coverUrl = r.url || r.raw?.cover_url || PLACEHOLDER
+  loadStages(r)
+}
+
 watch(() => props.role, (r) => {
-  if (r) {
-    form.id = r.id
-    form.name = r.name || ''
-    form.roleType = r.roleType || 'protagonist'
-    // 设定与音色共生于 description：优先从完整 raw.description 拆出，否则用 prompt/description 兜底
-    const fullDesc = r.raw?.description ?? r.description ?? r.prompt ?? ''
-    const parsed = splitVoice(fullDesc)
-    form.description = parsed.desc
-    form.voice = r.voice ?? parsed.voice ?? ''
-    form.coverUrl = r.url || r.raw?.cover_url || PLACEHOLDER
-    loadStages(r)
-  } else {
-    resetForm()
-  }
+  suppressDirty = true
+  if (r) loadRoleIntoForm(r)
+  else resetForm()
+  nextTick(() => { suppressDirty = false; dirty.value = false })
 }, { immediate: true })
+
+// 打开弹窗时始终用最新 role 刷新，避免残留上次编辑
+watch(visible, (v) => {
+  if (v) {
+    suppressDirty = true
+    if (props.role) loadRoleIntoForm(props.role)
+    nextTick(() => { suppressDirty = false })
+    dirty.value = false
+  } else {
+    dirty.value = false
+  }
+})
+
+// 表单变更 → 标记 dirty（自动保存据此触发）
+watch(form, () => { if (!suppressDirty) dirty.value = true }, { deep: true })
 
 const onCoverUpload = async (ev) => {
   const file = ev.target.files?.[0]
@@ -110,11 +130,11 @@ const goCanvas = () => {
   router.push('/canvas?asset_id=' + encodeURIComponent(form.id))
 }
 
-const save = async () => {
-  if (!form.name.trim()) { toast('角色名称不能为空'); return }
+// 真实持久化（不关闭弹窗，供自动保存与手动保存共用）
+const persist = async () => {
+  if (!form.name.trim()) { toast('角色名称不能为空'); return false }
   busy.value = true
   try {
-    // 设定 + 音色合并写回 description（后端无独立音色列）
     const fullDesc = joinVoice(form.description, form.voice)
     const body = {
       name: form.name.trim(),
@@ -124,20 +144,33 @@ const save = async () => {
     }
     const r = await updateAsset(form.id, body)
     emit('saved', { ...props.role, name: form.name.trim(), prompt: form.description, voice: form.voice, roleType: form.roleType, url: form.coverUrl, raw: r })
-    visible.value = false
-    toast('角色已保存')
+    return true
   } catch (e) {
     toast('保存失败: ' + e.message)
+    return false
   } finally {
     busy.value = false
   }
+}
+const save = async () => {
+  const ok = await persist()
+  if (ok) { visible.value = false; toast('角色已保存') }
+}
+// 自动保存：内容变更防抖落库，状态可见、失败显式提示
+const { status: saveStatus } = useAutoSave({ dirty, save: persist, enabled: ref(!USE_MOCK), delay: 1500 })
+// 点遮罩/ESC/× 关闭：有未保存修改则二次确认（防误关丢稿）
+const beforeClose = (done) => {
+  if (dirty.value) {
+    ElMessageBox.confirm('角色有未保存的修改，关闭后将丢失。确定关闭？', '未保存修改', { confirmButtonText: '丢弃修改', cancelButtonText: '继续编辑', type: 'warning' })
+      .then(() => done()).catch(() => {})
+  } else { done() }
 }
 
 const roleTypeLabel = computed(() => ASSET_ROLE_TYPE_OPTIONS.find((o) => o.value === form.roleType)?.label || form.roleType)
 </script>
 
 <template>
-  <el-dialog v-model="visible" title="编辑角色" width="860px" top="8vh" class="role-editor-dialog" :close-on-click-modal="false" destroy-on-close>
+  <el-dialog v-model="visible" title="编辑角色" width="860px" top="8vh" class="role-editor-dialog" destroy-on-close :before-close="beforeClose">
     <div class="role-editor-body" v-loading="busy">
       <!-- 左侧：角色大图 -->
       <div class="re-left">
@@ -182,17 +215,14 @@ const roleTypeLabel = computed(() => ASSET_ROLE_TYPE_OPTIONS.find((o) => o.value
 
         <div class="re-row">
           <label class="re-label">参考图 / 年龄阶段</label>
-          <div v-if="loadingStages" class="re-muted">加载中…</div>
-          <div v-else-if="!stages.length" class="re-muted">暂无阶段参考照，可在卡片上点击「阶段 / 姿势」添加。</div>
-          <div v-else class="re-stage-list">
-            <div v-for="st in stages" :key="st.stage_id" class="re-stage-chip">
-              <img :src="st.reference_image_url || PLACEHOLDER" @click="emit('preview', st.reference_image_url || PLACEHOLDER)" />
-              <span class="re-stage-name">{{ stageLabel(st.stage_name) }} · {{ st.age }}岁</span>
-              <div v-if="st.poses?.length" class="re-pose-row">
-                <img v-for="p in st.poses" :key="p.pose_id" :src="p.reference_image_url || PLACEHOLDER" :title="poseLabel(p.pose_name)" @click="emit('preview', p.reference_image_url || PLACEHOLDER)" />
-              </div>
-            </div>
-          </div>
+          <AssetStageManager
+            :asset-id="form.id"
+            :initial-stages="stages"
+            type="role"
+            mode="panel"
+            title="角色全部年龄阶段（含姿势）"
+            @changed="onStagesChanged"
+          />
         </div>
 
         <div class="re-row re-actions-inline">
@@ -212,6 +242,7 @@ const roleTypeLabel = computed(() => ASSET_ROLE_TYPE_OPTIONS.find((o) => o.value
           <el-icon><EditPen /></el-icon> 去画布编辑
         </el-button>
         <div class="re-footer-right">
+          <span class="re-autosave" :class="saveStatus">{{ { saving: '保存中…', saved: '已自动保存', error: '保存失败' }[saveStatus] || '自动保存开启' }}</span>
           <el-button @click="visible = false">取消</el-button>
           <el-button type="primary" :loading="busy" @click="save">保存</el-button>
         </div>
@@ -241,17 +272,14 @@ const roleTypeLabel = computed(() => ASSET_ROLE_TYPE_OPTIONS.find((o) => o.value
 .re-role-badge.supporting { background: rgba(77,159,255,.18); color: #4d9fff; }
 .re-role-badge.antagonist { background: rgba(255,176,32,.18); color: #ffb020; }
 
-.re-stage-list { display: flex; gap: 10px; flex-wrap: wrap; }
-.re-stage-chip { width: 96px; }
-.re-stage-chip > img { width: 96px; height: 96px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); cursor: zoom-in; }
-.re-stage-name { display: block; font-size: 11px; color: var(--sub); margin-top: 4px; }
-.re-pose-row { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
-.re-pose-row img { width: 28px; height: 28px; object-fit: cover; border-radius: 4px; border: 1px solid var(--line); cursor: zoom-in; }
 .re-muted { color: var(--sub); font-size: 12px; }
 
 .re-actions-inline { display: flex; gap: 10px; margin-top: auto; }
 .re-footer { display: flex; justify-content: space-between; align-items: center; width: 100%; }
-.re-footer-right { display: flex; gap: 10px; }
+.re-footer-right { display: flex; gap: 10px; align-items: center; }
+.re-autosave { font-size: 12px; color: var(--sub); }
+.re-autosave.saved { color: var(--green); }
+.re-autosave.error { color: #ff7a7a; }
 </style>
 
 <style>
