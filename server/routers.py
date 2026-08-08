@@ -481,3 +481,112 @@ async def batch_create_project_assets(project_id: str, req: Request):
 # ======================================================================
 # 定点覆盖区（END）
 # ======================================================================
+
+# ======================================================================
+# Director Agent Core 端点（full 版接线：POST /projects/{id}/director-run）
+# ======================================================================
+import threading  # noqa: E402
+from realtime import publish as ws_publish  # noqa: E402
+from director.scheduler import GlobalScheduler  # noqa: E402
+
+# 进程内运行态表（骨架阶段：内存态，重启即丢；full 版可落 director_runs 表）
+_DIRECTOR_RUNS = {}
+_DIRECTOR_LOCK = threading.Lock()
+
+
+def _director_on_progress(project_id, run_id, node_id, status, progress, info):
+    """on_progress 回调：把节点进度经现有 WS 网关推送（§6 进度透出 / REDUN-01）。"""
+    ws_publish("director:%s" % project_id, "progress", {
+        "run_id": run_id, "node": node_id, "status": status,
+        "progress": progress, "info": info,
+    })
+
+
+@api.post("/projects/{project_id}/director-run")
+async def director_run(project_id: str, req: Request):
+    """导演一站式生成入口（N01→N09 全链路编排）。
+
+    请求体（均可选）：
+      - story: 覆盖用剧本文本；缺省则从本项目已导入场次/分镜聚合（_build_project_story_text）
+      - model_config: 透传给 ai_local（Ollama/ComfyUI/在线 本地或在线切换）
+      - start_node: 断点续跑起点（默认 N01）
+    返回：{ run_id, status: 'running', trace_id }；进度经 WS 频道 director:<project_id> 推送。
+    """
+    b = await _body(req)
+    # 剧本：优先用请求体，否则聚合项目已导入场次/分镜
+    story = (b.get("story") or "").strip()
+    if not story:
+        conn = get_conn()
+        try:
+            story = _build_project_story_text(conn, project_id)
+        finally:
+            conn.close()
+    params = {"story": story}
+    if b.get("model_config"):
+        params["model_config"] = b["model_config"]
+
+    run_id = uid()
+    trace_id = "DR-%s" % run_id  # 与 run_id 同源，便于关联
+
+    def _worker():
+        scheduler = GlobalScheduler()
+        try:
+            result = scheduler.run(
+                project_id, user_id=SINGLE_USER_ID, params=params,
+                start_node=b.get("start_node") or "N01",
+                trace_id=trace_id,
+                on_progress=lambda node_id, status, progress, info:
+                    _director_on_progress(project_id, run_id, node_id, status, progress, info),
+            )
+            snap = result.to_dict()
+            with _DIRECTOR_LOCK:
+                _DIRECTOR_RUNS[run_id] = {
+                    "status": "done" if result.ok else "failed",
+                    "project_id": project_id, "trace_id": trace_id,
+                    "final_output": result.final_output,
+                    "snapshot": snap, "created_at": int(time.time()),
+                }
+            ws_publish("director:%s" % project_id, "completed", {
+                "run_id": run_id, "ok": result.ok,
+                "final_output": result.final_output,
+                "node_status": snap.get("node_status"),
+            })
+        except Exception as e:  # 兜底：任何未捕获异常都收敛为 error，不静默吞（CLOSE-02）
+            logger.exception("[director-run] 未捕获异常 run_id=%s", run_id)
+            with _DIRECTOR_LOCK:
+                _DIRECTOR_RUNS[run_id] = {
+                    "status": "error", "project_id": project_id,
+                    "trace_id": trace_id, "error": str(e),
+                    "created_at": int(time.time()),
+                }
+            ws_publish("director:%s" % project_id, "error", {"run_id": run_id, "error": str(e)})
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    with _DIRECTOR_LOCK:
+        _DIRECTOR_RUNS[run_id] = {
+            "status": "running", "project_id": project_id,
+            "trace_id": trace_id, "created_at": int(time.time()),
+        }
+    return ok({"run_id": run_id, "status": "running", "trace_id": trace_id})
+
+
+@api.get("/projects/{project_id}/director-run")
+async def director_runs_list(project_id: str):
+    """列出该项目下的导演运行记录（内存态）。"""
+    with _DIRECTOR_LOCK:
+        items = [
+            {"run_id": k, **v} for k, v in _DIRECTOR_RUNS.items()
+            if v.get("project_id") == project_id
+        ]
+    return ok({"runs": items})
+
+
+@api.get("/projects/{project_id}/director-run/{run_id}")
+async def director_run_status(project_id: str, run_id: str):
+    """查询单次导演运行的进度/结果。"""
+    with _DIRECTOR_LOCK:
+        r = _DIRECTOR_RUNS.get(run_id)
+    if not r or r.get("project_id") != project_id:
+        raise ApiError("NOT_FOUND", "run_id 不存在或不属于该项目")
+    return ok(r)

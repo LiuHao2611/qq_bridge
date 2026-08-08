@@ -15,9 +15,13 @@ class ApiError extends Error {
 }
 
 function _withTimeout(opts, ms = 30000) {
-  if (opts && !opts.signal && typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
-    opts.signal = AbortSignal.timeout(ms)
+  if (!opts) return opts
+  // 允许调用方通过 opts.timeout 覆盖默认超时
+  const targetMs = opts.timeout || ms
+  if (!opts.signal && typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
+    opts.signal = AbortSignal.timeout(targetMs)
   }
+  delete opts.timeout
   return opts
 }
 
@@ -50,7 +54,7 @@ export function apiV1(path, opts = {}) {
 }
 
 export const get = (path, opts = {}) => apiV1(path, { method: 'GET', ...opts })
-export const post = (path, body) => apiV1(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+export const post = (path, body, opts = {}) => apiV1(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), ...opts })
 export const put = (path, body) => apiV1(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 export const patch = (path, body) => apiV1(path, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
 export const del = (path) => apiV1(path, { method: 'DELETE' })
@@ -107,6 +111,17 @@ export const exportSegment = (pid, sid, fmt) => post('/projects/' + pid + '/segm
 export const synthesizeProject = (pid, preAuthId, options = {}) =>
   post('/synthesize', { project_id: pid, pre_auth_id: preAuthId, options })
 
+// ---- Director Agent Core 一站式生成（N01→N09 全链路编排）----
+// POST 启动后台编排，返回 { run_id, status:'running', trace_id }；进度经 WS 频道 director:<pid> 推送
+export const directorRun = (pid, body = {}) =>
+  post('/projects/' + pid + '/director-run', body)
+// GET 列出项目下的运行记录（内存态）
+export const directorRuns = (pid) =>
+  get('/projects/' + pid + '/director-run')
+// GET 查询单次运行的进度/结果
+export const directorRunStatus = (pid, runId) =>
+  get('/projects/' + pid + '/director-run/' + runId)
+
 // ---- Phase 4 生产视图（KB §5.6 模块五 AI视频生成 / §18 WebSocket / §06 Webhook）----
 // 生产视图：片段列表 + 各自最新生成任务（分发与实时监看的数据源）
 export const getProduction = (pid) =>
@@ -130,7 +145,7 @@ export const deleteAsset = (id) => del('/assets/' + id)
 
 // ---- Phase 1 一键从剧本提取 + 批量创建本集资产 ----
 export const extractAssetsFromStory = (pid, story, modelConfig) =>
-  post('/projects/' + pid + '/extract-assets', { story, model_config: modelConfig }).then((r) => r || { roles: [], scenes: [], props: [], meta: {} })
+  post('/projects/' + pid + '/extract-assets', { story, model_config: modelConfig }, { timeout: 120000 }).then((r) => r || { roles: [], scenes: [], props: [], meta: {} })
 export const batchCreateProjectAssets = (pid, assets) =>
   post('/projects/' + pid + '/assets/batch', { assets }).then((r) => r || { created: [], skipped: [], count: 0 })
 
@@ -195,6 +210,7 @@ export const markNotificationRead = (id) => post('/notifications/' + id + '/read
 // ---- 设置 / 首页 ----
 export const getSettings = () => get('/settings').then((r) => r.settings || {})
 export const updateSettings = (body) => patch('/settings', body).then((r) => r.settings || {})
+export const testModelConnection = (body) => post('/models/test', body)
 export const getDashboard = () => get('/home/dashboard').then((r) => r.dashboard || {})
 
 // ---- 健康检查 ----

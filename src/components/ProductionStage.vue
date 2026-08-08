@@ -10,8 +10,9 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   getProduction, inferenceHealth, estimatePoints, preAuthPoints, getTask,
   generateSegment, regenerateSegment, cancelTask, retryTask, synthesizeProject,
+  directorRun, directorRunStatus,
 } from '../api'
-import { subscribeTask, wsConnected, connectWs } from '../ws'
+import { subscribeTask, subscribe, wsConnected, connectWs } from '../ws'
 import { toast } from '../store'
 import { fmtTime } from '../api'
 import ProjectFlowNav from './ProjectFlowNav.vue'
@@ -28,6 +29,86 @@ const loading = ref(false)
 const expandedId = ref('')
 const synthTaskId = ref('')
 const synthStatus = ref('')
+
+// Director Agent Core 一站式生成（N01→N09）
+const NODE_TXT = { N01: '接收任务', N02: '剧本解析', N03: '视觉设定', N04: '任务分发', N05: '分镜生成', N06: '质量检查', N07: '音频合成', N08: '视频合成', N09: '成片输出' }
+const directorRunId = ref('')
+const directorRunning = ref(false)
+const directorProgress = ref(0)
+const directorNode = ref('')
+const directorStage = ref('')
+const directorOutput = ref('')
+const directorError = ref('')
+const _directorSubs = { unsub: null, timer: null }
+
+function onDirectorEvent(event, data) {
+  if (event === 'progress') {
+    directorNode.value = data.node || ''
+    directorStage.value = data.status || ''
+    if (data.progress != null) directorProgress.value = Math.round(data.progress * 100)
+  } else if (event === 'completed') {
+    directorRunning.value = false
+    directorOutput.value = data.final_output || ''
+    directorProgress.value = 100
+    toast('导演生成完成 🎬')
+    stopDirectorWatch()
+    loadProd()
+  } else if (event === 'error') {
+    directorRunning.value = false
+    directorError.value = data.error || '未知错误'
+    toast('导演生成失败: ' + directorError.value)
+    stopDirectorWatch()
+  }
+}
+
+function startDirectorWatch(runId) {
+  const channel = 'director:' + pid
+  if (wsConnected()) {
+    _directorSubs.unsub = subscribe(channel, onDirectorEvent)
+  } else {
+    // REDUN-01 轮询兜底：WS 不可用时轮询运行态
+    _directorSubs.timer = setInterval(async () => {
+      try {
+        const r = await directorRunStatus(pid, runId)
+        if (r.status !== 'running') {
+          if (r.status === 'done') { directorRunning.value = false; directorOutput.value = r.final_output || ''; directorProgress.value = 100; toast('导演生成完成 🎬') }
+          else { directorRunning.value = false; directorError.value = r.error || (r.snapshot && r.snapshot.errors && JSON.stringify(r.snapshot.errors)) || '失败'; toast('导演生成失败') }
+          stopDirectorWatch(); loadProd()
+        } else if (r.snapshot && r.snapshot.node_status) {
+          const ns = r.snapshot.node_status
+          const last = Object.keys(ns).reverse().find((k) => ns[k] === 'running' || ns[k] === 'done')
+          if (last) { directorNode.value = last; directorStage.value = ns[last] }
+          const doneN = Object.values(ns).filter((v) => v === 'done').length
+          directorProgress.value = Math.round((doneN / 9) * 100)
+        }
+      } catch { /* ignore */ }
+    }, 3000)
+  }
+}
+
+function stopDirectorWatch() {
+  if (_directorSubs.unsub) { try { _directorSubs.unsub() } catch { /* noop */ }; _directorSubs.unsub = null }
+  if (_directorSubs.timer) { clearInterval(_directorSubs.timer); _directorSubs.timer = null }
+}
+
+async function onDirectorRun() {
+  if (directorRunning.value) { toast('导演生成进行中，请稍候'); return }
+  directorRunning.value = true
+  directorProgress.value = 0
+  directorNode.value = ''
+  directorStage.value = ''
+  directorOutput.value = ''
+  directorError.value = ''
+  try {
+    const r = await directorRun(pid, {})
+    directorRunId.value = r.run_id
+    toast('已启动导演一站式生成')
+    startDirectorWatch(r.run_id)
+  } catch (e) {
+    directorRunning.value = false
+    toast('启动失败: ' + (e.message || e))
+  }
+}
 
 const STATUS_TXT = { queued: '排队中', running: '生成中', retrying: '重试中', succeeded: '已完成', failed: '失败', cancelled: '已取消' }
 const SEG_STATUS_TXT = { draft: '草稿', saved: '已保存', generating: '生成中', succeeded: '已完成', failed: '失败', cancelled: '已取消' }
@@ -244,6 +325,7 @@ onUnmounted(() => {
   subs.forEach((fn) => { try { fn() } catch {} })
   polls.forEach((t) => clearInterval(t))
   subs.clear(); polls.clear()
+  stopDirectorWatch()
 })
 </script>
 
@@ -257,6 +339,7 @@ onUnmounted(() => {
         <p class="muted">第四阶段 · 任务分发与异步 AI 推理（生产阶段）。将分镜分发给推理引擎，实时监看生成进度与结果。</p>
       </div>
       <div class="ops">
+        <el-button type="success" @click="onDirectorRun" :loading="directorRunning">🎬 导演一站式生成</el-button>
         <el-button type="primary" @click="dispatchAll">一键分发全部</el-button>
         <el-button @click="onSynthesize">合成全集</el-button>
         <el-button text @click="loadProd">刷新</el-button>
@@ -285,6 +368,16 @@ onUnmounted(() => {
       <el-tag size="small" :type="synthStatus === 'succeeded' ? 'success' : (synthStatus === 'failed' ? 'danger' : 'warning')">
         {{ mapDisp(synthStatus).t }}
       </el-tag>
+    </div>
+
+    <!-- Director Agent Core 一站式生成进度横幅 -->
+    <div v-if="directorRunId" class="director-banner" :class="directorRunning ? 'running' : (directorOutput ? 'done' : 'failed')">
+      <span class="lab">🎬 导演一站式生成</span>
+      <code>{{ directorRunId.slice(0, 12) }}</code>
+      <span v-if="directorRunning" class="dn">{{ NODE_TXT[directorNode] || directorNode }} · {{ directorStage }}</span>
+      <el-progress :percentage="directorProgress" :stroke-width="8" class="dn-prog" />
+      <a v-if="directorOutput" :href="directorOutput" target="_blank" class="out">查看成片</a>
+      <span v-if="directorError" class="err">{{ directorError }}</span>
     </div>
 
     <div v-if="loading" class="empty">加载中…</div>
@@ -350,6 +443,16 @@ onUnmounted(() => {
 .synth-banner.failed { border-left-color: var(--pink); }
 .synth-banner.succeeded { border-left-color: var(--green); }
 .synth-banner code { background: var(--card-2); padding: 1px 6px; border-radius: 5px; }
+.director-banner { display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--pur); border-radius: 10px; padding: 8px 14px; margin-bottom: 12px; font-size: 13px; flex-wrap: wrap; }
+.director-banner.running { border-left-color: var(--blue); }
+.director-banner.done { border-left-color: var(--green); }
+.director-banner.failed { border-left-color: var(--pink); }
+.director-banner .lab { font-weight: 700; }
+.director-banner code { background: var(--card-2); padding: 1px 6px; border-radius: 5px; }
+.director-banner .dn { color: var(--sub); font-size: 12px; }
+.director-banner .dn-prog { flex: 1; min-width: 160px; max-width: 360px; }
+.director-banner .out { color: var(--blue); text-decoration: none; font-weight: 700; }
+.director-banner .err { color: var(--pink); }
 .seg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
 .seg-card { display: flex; gap: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; flex-wrap: wrap; }
 .seg-thumb { flex: 0 0 84px; height: 84px; border-radius: 10px; background: linear-gradient(135deg, var(--pink), var(--pur)); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 24px; font-weight: 800; overflow: hidden; }

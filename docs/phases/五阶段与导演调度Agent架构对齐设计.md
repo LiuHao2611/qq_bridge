@@ -135,8 +135,9 @@ N01→N02 失败收敛（CLOSE-01），错误码 1002（`MISSING_SCRIPT`）；�
 >
 > 剩余待 full 版落地的项（标注「骨架占位」= 已留接口/埋点，等引擎接入）：
 
-1. **端点接线（骨架占位）**：新增 `POST /projects/{id}/director-run`，构造 `AgentContext` 调 `GlobalScheduler.run`；
-   前端项目中心加「导演一站式生成」入口（骨架未改 `routers.py`/`main.py`，等 full 版接线）。
+1. **端点接线（✅ 已落地 2026-08-08）**：`POST /projects/{id}/director-run`（后台线程跑 `GlobalScheduler.run`，返回 run_id）+ `GET /director-run`（列表）+ `GET /director-run/{run_id}`（查询）；
+   `routers.py` 门面新增（已 version_guard 备份），剧本缺省从项目场次聚合（`_build_project_story_text`）；`on_progress` 经 WS 频道 `director:<pid>` 推送进度（§6 进度透出已落地）。
+   前端「导演一站式生成」入口已加在生成生产页（ProductionStage.vue），WS 优先、轮询兜底（REDUN-01），进度横幅 + 成片链接。
 2. **P4 改入队（骨架占位）**：`SequenceSchedulerAgent` 现「直接调 `generate_segment_video`」；full 版改为向 `generation_tasks`
    入队，由 `worker` 消费；调度器按 REDUN-01（WebSocket 不可用则轮询）跟踪状态，支持并行度与失败重试。
 3. **N03 真人资产注入（待引擎）**：接入 ComfyUI IP-Adapter / ControlNet，落地手册 §5 的 512 维人脸特征 +

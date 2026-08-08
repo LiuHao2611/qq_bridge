@@ -73,7 +73,8 @@ class GlobalScheduler:
         blog("-", "scheduler", "run_cancelled", level="warning")
 
     # -- 主入口 ---------------------------------------------------------------
-    def run(self, project_id, user_id=None, params=None, start_node="N01", trace_id=None):
+    def run(self, project_id, user_id=None, params=None, start_node="N01",
+            trace_id=None, on_progress=None):
         trace_id = trace_id or ("DR-%s" % uuid.uuid4().hex[:16])
         ctx = AgentContext(trace_id=trace_id, project_id=project_id,
                            user_id=user_id, params=params or {})
@@ -82,8 +83,10 @@ class GlobalScheduler:
              project_id=project_id, start_node=start_node, node_count=len(DAG_NODES))
         started = time.time()
         upstream = {}  # 扁平累积各 Agent 语义输出（segments/enhanced/clips/output_path）
+        order = topological_order()
+        total = len(order)
 
-        for node_id in topological_order():
+        for idx, node_id in enumerate(order):
             if node_id < start_node:   # 跳过早于起点的节点（N01<N02<... 单字符比较）
                 continue
 
@@ -103,10 +106,12 @@ class GlobalScheduler:
                 result.node_status[node_id] = NodeStatus.SKIPPED
                 blog(trace_id, "scheduler", "node_skipped", level="warning",
                      node=node_id, reason="predecessors_not_done", pending=pending_preds)
+                self._emit_progress(on_progress, idx, total, node_id, "skipped")
                 continue
 
             result.node_status[node_id] = NodeStatus.RUNNING
             blog(trace_id, "scheduler", "node_enter", level="info", node=node_id, agent=node.agent)
+            self._emit_progress(on_progress, idx, total, node_id, "running")
 
             # 看门狗（OPS-04）
             if time.time() - started > WATCHDOG_SECS:
@@ -125,6 +130,8 @@ class GlobalScheduler:
                                       "message": e.message})
                 blog(trace_id, "scheduler", "node_failed", level="error",
                      node=node_id, key=e.key, code=e.code)
+                self._emit_progress(on_progress, idx, total, node_id, "failed",
+                                    info={"key": e.key, "code": e.code})
                 break
 
             # 处理 AgentResult（可能 partial_fail / failed）
@@ -136,6 +143,8 @@ class GlobalScheduler:
                                       "message": (res.error or {}).get("message") or "agent returned failed"})
                 blog(trace_id, "scheduler", "node_failed", level="error",
                      node=node_id, reason="agent_failed")
+                self._emit_progress(on_progress, idx, total, node_id, "failed",
+                                    info={"reason": "agent_failed"})
                 break
             if res.status == "partial_fail":
                 # BRANCH_RULES：部分分镜失败仍继续（失败片段在 N08 跳过并告警）
@@ -147,10 +156,22 @@ class GlobalScheduler:
             if node_id == "N09":
                 result.final_output = res.data.get("final_output")
             blog(trace_id, "scheduler", "node_done", level="info", node=node_id)
+            self._emit_progress(on_progress, idx, total, node_id, "done")
 
         blog(trace_id, "scheduler", "run_finish", level="info",
              ok=result.ok, final_output=result.final_output)
         return result
+
+    # -- 进度透出（§6 进度透出：复用 ws_publish 经 WebSocket / 轮询推前端） --------
+    def _emit_progress(self, cb, idx, total, node_id, status, info=None):
+        if not callable(cb):
+            return
+        try:
+            cb(node_id=node_id, status=status,
+               progress=round((idx + 1) / max(1, total), 3),
+               info=info or {})
+        except Exception:
+            pass  # 进度回调失败不得影响主链路
 
     # -- 节点执行 + 重试/降级 -------------------------------------------------
     def _run_node(self, node, ctx, upstream, trace_id):
