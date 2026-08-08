@@ -20,6 +20,8 @@ import urllib.error
 import logging
 import sys
 
+import comfy_env  # 秋葉 ComfyUI 根目录 + 权重自动发现（手册 §5.1/§5.2）
+
 logger = logging.getLogger("ai_local")
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -88,20 +90,55 @@ def _get_comfy_url():
 
 
 def _get_comfy_checkpoint():
-    """返回 settings 中配置的 ComfyUI 基础模型（checkpoint）文件名。
+    """返回 ComfyUI 基础模型（checkpoint）文件名。
 
-    用户在设置页「文生图 / 视频」的本地配置里填写 `local.checkpoint`（如
-    `Realistic_Vision_V6.0_NV_B1_fp16.safetensors`）即可切换底模，无需改代码；
-    未配置时回退全局常量 COMFY_CKPT（AGENTS.md §08 设计意图：秋葉 ComfyUI + Realistic_Vision SD1.5）。
+    优先用 settings 中「文生图 / 视频」本地配置填写的 `local.checkpoint`（用户修改权重入口）；
+    未显式指定时扫描 models/checkpoints 自动挑首个 *.safetensors/*.ckpt/*.pt；
+    都没有 → 抛清晰错误指明去 checkpoints 目录放底模（如 Realistic_Vision SD1.5）。
     """
+    explicit = None
     ms = _load_model_settings()
     for purpose in ("video", "img"):
         cfg = ms.get(purpose, {})
         if cfg.get("provider") == "local":
             ckpt = cfg.get("local", {}).get("checkpoint")
             if ckpt and isinstance(ckpt, str) and ckpt.strip():
-                return ckpt.strip()
-    return COMFY_CKPT
+                explicit = ckpt.strip()
+                break
+    return comfy_env.discover_weight(
+        "checkpoints", ["*.safetensors", "*.ckpt", "*.pt"],
+        explicit=explicit, what="底模(checkpoint) 权重")
+
+
+def _get_comfy_ipadapter():
+    """返回 IP-Adapter 权重文件名（手册 §5.2 身份特征注入）。
+
+    扫描 models/ipadapter 自动挑首个 *.safetensors；都没有 → 清晰报错
+    指明放入 IP-Adapter 权重（如 ip-adapter_sd15.safetensors / ip-adapter-plus-face）。
+    """
+    return comfy_env.discover_weight(
+        "ipadapter", ["*.safetensors", "*.bin"], what="IP-Adapter 权重")
+
+
+def _get_comfy_clip_vision():
+    """返回 CLIP-ViT 权重文件名（IP-Adapter 的 clip_vision 依赖）。
+
+    扫描 models/clip_vision 自动挑首个 *.safetensors；都没有 → 清晰报错。
+    """
+    return comfy_env.discover_weight(
+        "clip_vision", ["*.safetensors"], what="CLIP-ViT(clip_vision) 权重")
+
+
+def _get_comfy_controlnet(control_type="depth"):
+    """返回 ControlNet 权重文件名（场景构图约束，手册 §3 场景参考图约束）。
+
+    control_type: depth / canny / openpose / lineart。扫描 models/controlnet
+    自动挑首个匹配 *<type>* 的文件；都没有 → 清晰报错。
+    """
+    patterns = ["*%s*.pth" % control_type, "*%s*.safetensors" % control_type,
+                "*.pth", "*.safetensors"]
+    return comfy_env.discover_weight(
+        "controlnet", patterns, what="ControlNet(%s) 权重" % control_type)
 
 
 def _get_llm_model_config(purpose="create"):
@@ -913,7 +950,7 @@ def _comfy_run(wf, timeout, output_dir=None):
     被 _comfy_text2img / _comfy_text2img_with_ipadapter 复用，避免重复轮询逻辑。
     """
     if output_dir is None:
-        output_dir = r"D:\AI\ComfyUI-aki-v3\ComfyUI\output"
+        output_dir = comfy_env.get_comfy_output_dir()
     os.makedirs(output_dir, exist_ok=True)
     payload = json.dumps({"prompt": wf, "client_id": "manju_local"}).encode("utf-8")
 
@@ -949,7 +986,11 @@ def _comfy_run(wf, timeout, output_dir=None):
                     for im in (node_out.get("images") or []):
                         fn = im.get("filename")
                         if fn:
-                            p = os.path.join(output_dir, fn)
+                            sub = im.get("subfolder")
+                            if sub:
+                                p = os.path.join(output_dir, sub, fn)
+                            else:
+                                p = os.path.join(output_dir, fn)
                             if os.path.isfile(p):
                                 return p
                 raise RuntimeError("ComfyUI 执行完成但未产出图像文件")
@@ -1007,6 +1048,8 @@ def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name, weight=0.85,
         raise RuntimeError("ComfyUI 未启动")
     if seed is None or int(seed) < 0:
         seed = random.randint(0, 2 ** 31 - 1)
+    ip_name = _get_comfy_ipadapter()
+    cv_name = _get_comfy_clip_vision()
     wf = {
         "3": {"class_type": "KSampler", "inputs": {
             "seed": int(seed), "steps": steps, "cfg": float(cfg),
@@ -1020,16 +1063,20 @@ def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name, weight=0.85,
         "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_seg_ip"}},
         "10": {"class_type": "IPAdapter", "inputs": {
             "ipadapter": ["11", 0], "clip_vision": ["12", 0],
-            "image": ["13", 0], "model": ["4", 0], "weight": float(weight)}},
-        "11": {"class_type": "IPAdapterModelLoader", "inputs": {"ipadapter_name": "ip-adapter_sd15.safetensors"}},
-        "12": {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": "CLIP-ViT-H-14-laion2B-s32B-b4K.safetensors"}},
+            "image": ["13", 0], "model": ["4", 0],
+            "weight": float(weight),
+            "start_at": 0.0, "end_at": 1.0, "weight_type": "standard"}},
+        "11": {"class_type": "IPAdapterModelLoader", "inputs": {"ipadapter_file": ip_name}},
+        "12": {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": cv_name}},
         "13": {"class_type": "LoadImage", "inputs": {"image": ref_comfy_name}},
     }
     # 风格路：第二路 IP-Adapter（全局风格参考图），链式接在身份路之后
     if style_comfy_name:
         wf["20"] = {"class_type": "IPAdapter", "inputs": {
             "ipadapter": ["11", 0], "clip_vision": ["12", 0],
-            "image": ["23", 0], "model": ["10", 0], "weight": float(style_weight)}}
+            "image": ["23", 0], "model": ["10", 0],
+            "weight": float(style_weight),
+            "start_at": 0.0, "end_at": 1.0, "weight_type": "standard"}}
         wf["23"] = {"class_type": "LoadImage", "inputs": {"image": style_comfy_name}}
         wf["3"]["inputs"]["model"] = ["20", 0]
     return _comfy_run(wf, timeout)
@@ -1167,7 +1214,7 @@ def _comfy_text2img_with_controlnet(prompt, ref_comfy_name, control_type="depth"
         "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_seg_cn"}},
         "10": {"class_type": "LoadImage", "inputs": {"image": ref_comfy_name}},
         "11": {"class_type": pre, "inputs": {"image": ["10", 0]}},
-        "12": {"class_type": "ControlNetLoader", "inputs": {"control_net_name": "control_v11p_sd15_%s.pth" % control_type}},
+        "12": {"class_type": "ControlNetLoader", "inputs": {"control_net_name": _get_comfy_controlnet(control_type)}},
         "13": {"class_type": "ControlNetApply", "inputs": {
             "conditioning": ["6", 0], "control_net": ["12", 0], "image": ["11", 0], "strength": float(weight)}},
         "14": {"class_type": "ControlNetApply", "inputs": {

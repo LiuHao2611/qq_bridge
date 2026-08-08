@@ -17,7 +17,10 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+_REPO_PARENT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, _REPO_PARENT)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # server/ 确保可 import comfy_env
+import comfy_env
 
 FACE_VECTOR_DIM = 512
 
@@ -44,6 +47,37 @@ def _require_numpy():
             code="FACE_RUNTIME_MISSING") from e
 
 
+def _insightface_root():
+    """定位 insightface 模型根目录（含 models/buffalo_l）。
+
+    优先级（用户已授权修改权重路径，2026-08-09）：
+      1) 环境变量 INSIGHTFACE_MODELS（直接指向 insightface 根）
+      2) 秋葉 ComfyUI models/insightface（标准 aki 布局：.../models/insightface/models/buffalo_l）
+      3) 秋葉 ComfyUI models/（兜底）
+      4) 默认 ~/.insightface
+    命中「<root>/models/buffalo_l」存在的目录即用；否则回退首个存在目录让 FaceAnalysis 报清晰错误。
+    """
+    bases = []
+    env = os.environ.get("INSIGHTFACE_MODELS")
+    if env and os.path.isdir(env):
+        bases.append(env)
+    root = comfy_env.get_comfy_root()
+    bases.append(os.path.join(root, "models", "insightface"))
+    bases.append(os.path.join(root, "models"))
+    bases.append(os.path.expanduser("~/.insightface"))
+    for b in bases:
+        if b and os.path.isdir(os.path.join(b, "models", "buffalo_l")):
+            return b
+    # 兼容非标准布局：某 base 直接含 buffalo_l
+    for b in bases:
+        if b and os.path.isdir(b) and os.path.isdir(os.path.join(b, "buffalo_l")):
+            return b
+    for b in bases:
+        if b and os.path.isdir(b):
+            return b
+    return bases[0] if bases else None
+
+
 def _load_insightface():
     """惰性加载 insightface FaceAnalysis；缺失或模型未就绪时抛 FeatureUnavailable。"""
     try:
@@ -54,8 +88,8 @@ def _load_insightface():
             "未安装 insightface（需 insightface + onnxruntime）。请先安装后再提取人脸特征。",
             code="FACE_RUNTIME_MISSING",
         ) from e
-    # 允许通过环境变量指定模型根目录（默认 ~/.insightface）；秋葉整合包可指向其 models/insightface
-    root = os.environ.get("INSIGHTFACE_MODELS")
+    # 自动定位 buffalo_l：环境变量 > 秋葉 ComfyUI models/insightface > ~/.insightface
+    root = _insightface_root()
     try:
         app = FaceAnalysis(name="buffalo_l", root=root) if root else FaceAnalysis(name="buffalo_l")
         app.prepare(ctx_id=0, det_size=(640, 640))
