@@ -78,7 +78,7 @@ D:\AI\manju_agent\
 | `module_manager.py` | **服务/模块版本管理器**：业务模块快照/回退（落盘 `versions/<key>/<version>/`）、灰度开关（`module_flags` 表）、服务探针、经 `launcher.py` 启停 backend/frontend；`_run_frontend_build` 支持 `MANJU_FRONTEND_DIR` 并异步执行避免阻塞事件循环（2026-08-07 新增/修订） |
 | `launcher.py` | **受管服务启动器**：backend(7788)/frontend(8099) 的 start/stop/restart/status；PID/日志目录支持 `MANJU_RUN_DIR`/`MANJU_LOG_DIR` 覆盖以绕过工作区文件锁；透传 `MANJU_FRONTEND_DIR` 给 web_app（2026-08-07 新增/修订） |
 | `worker.py` | 异步生成 worker：状态机、`recover()` 崩溃恢复、30min 看门狗(OPS-04)、`VIDEO_TIMEOUT` 线程池超时(CLOSE-05)、`_emit` 结构化日志(LOG-01/03)、退款 |
-| `ai_local.py` | 本地推理/合成：`synthesize_project_video`（P5 拼接+TTS/BGM/字幕 REDUN-01）、视频生成调用；**2026-08-08 增强**：新增 `ollama_list_models`、分场提示词复用、`_call_online_llm` 调用 OpenAI 兼容在线 API，`split_story_with_llm` 支持 `model_config` 本地/在线切换；**2026-08-08 新增** `extract_assets_from_story`/`_extract_assets_prompt`/`_normalize_extracted_assets`：遵守 §09 build_prompt 四段模板（role/objective/constraints/invariants），从剧本文本提取角色/场景/道具候选并规范化(去重/截断 roles≤20 scenes≤20 props≤30/role_type 默认 supporting/stage_hint 校验)，Ollama 未启动返回 meta.error 优雅降级；**同日新增 settings 读取层** `_load_model_settings`/`_get_ollama_url`/`_get_comfy_url`/`_get_llm_model_config`，Ollama/ComfyUI 地址从 settings 读取可自定义，`ollama_available`/`ollama_list_models`/`comfy_available` 使用动态 URL，`ollama_chat` 按 purpose(create/planning/extract) 自动选择本地 Ollama 或在线 OpenAI 兼容 API，`split_story_with_llm`/`extract_assets_from_story` 无 model_config 时默认读取 settings `extract_assets_from_story`/`_extract_assets_prompt`/`_normalize_extracted_assets`：遵守 §09 build_prompt 四段模板（role/objective/constraints/invariants），从剧本文本提取角色/场景/道具候选并规范化(去重/截断 roles≤20 scenes≤20 props≤30/role_type 默认 supporting/stage_hint 校验)，Ollama 未启动返回 meta.error 优雅降级 |
+| `ai_local.py` | 本地推理/合成：`synthesize_project_video`（P5 拼接+TTS/BGM/字幕 REDUN-01）、视频生成调用；**2026-08-08 增强**：新增 `ollama_list_models`、分场提示词复用、`_call_online_llm` 调用 OpenAI 兼容在线 API，`split_story_with_llm` 支持 `model_config` 本地/在线切换；**2026-08-08 新增** `extract_assets_from_story`/`_extract_assets_prompt`/`_normalize_extracted_assets`：遵守 §09 build_prompt 四段模板（role/objective/constraints/invariants），从剧本文本提取角色/场景/道具候选并规范化(去重/截断 roles≤20 scenes≤20 props≤30/role_type 默认 supporting/stage_hint 校验)，Ollama 未启动返回 meta.error 优雅降级；**同日新增 settings 读取层** `_load_model_settings`/`_get_ollama_url`/`_get_comfy_url`/`_get_llm_model_config`，Ollama/ComfyUI 地址从 settings 读取可自定义，`ollama_available`/`ollama_list_models`/`comfy_available` 使用动态 URL，`ollama_chat` 按 purpose(create/planning/extract) 自动选择本地 Ollama 或在线 OpenAI 兼容 API，`split_story_with_llm`/`extract_assets_from_story` 无 model_config 时默认读取 settings；**2026-08-08 修复**：`ollama_available()` 调用补上 `model` 参数并指定 `purpose`，避免设置模型与全局默认 `MODEL` 不一致导致误判未加载；`_extract_json_block` 优先尝试 JSON 对象 `{}` 再尝试数组 `[]`，修复对象内含数组时被误截为内层数组的 JSON 解析失败 |
 | `points_engine.py` | 积分引擎：`reconcile_points`（启动对账 CLOSE-04）、扣减/冻结/退款 |
 | `realtime.py` | **§18 WebSocket 网关**：`publish` / `handle_ws` / `connection_count`；token/通道/心跳/事件 |
 | `memoir_routes.py` | 回忆录模块路由（独立功能，AGENT_SPEC_15） |
@@ -227,14 +227,14 @@ C:/Users/L/.workbuddy/binaries/python/envs/default/Scripts/python.exe launcher.p
 
 ### 9.1 架构（两层纯 PyInstaller，无 NSIS/Inno）
 - **Layer1（应用包 / onedir）**：`build/dist/ManjuAgent/ManjuAgent.exe` + `_internal/`（含 Python 运行时、应用全部模块、随包 `ffmpeg.exe`、前端 `frontend/dist`、路由 `.pyc`）。
-- **Layer2（安装器 / onefile）**：`build/dist/Setup.exe`，把整个 Layer1 目录作为 datas 嵌入；运行时解压到 `%LOCALAPPDATA%\ManjuAgent`，并在**桌面 + 开始菜单**创建快捷方式，弹窗询问是否立即启动。无需管理员权限。
+- **Layer2（安装器 / onefile）**：`build/dist/Setup.exe`，把整个 Layer1 目录作为 datas 嵌入；运行时弹「选择安装目录」对话框（默认优先 `D:\ManjuAgent`，可改任意盘，**不再强制 C 盘/%LOCALAPPDATA%**），解压到用户所选目录，并在**桌面 + 开始菜单**创建快捷方式，弹窗询问是否立即启动。无需管理员权限。数据/日志随安装目录走（`安装根/data`、`安装根/logs`），整体自包含。
 - 入口 `build/launcher_app.py`：默认启动**系统托盘父进程**，拉起 `backend(7788)` / `frontend(8099)` 两个子进程；支持 `--mode backend|frontend` 单进程模式（验证/调试用）。启动后自动开浏览器 `http://127.0.0.1:8099/`，并探测 Ollama(:11434)/ComfyUI(:8188)，缺失时弹窗引导（这二者为外部 HTTP 服务，**不可打包**，需用户自备）。
 
 ### 9.2 冻结相关源码（位于 `build/`，已 `git add -f` 强制跟踪；`build/dist`、`build/work`、`build/ffmpeg.exe` 仍被 .gitignore 忽略）
 | 文件 | 用途 |
 |---|---|
 | `build/launcher_app.py` | 冻结版入口：托盘 + 子进程管理 + 路径/环境变量初始化 + Ollama/ComfyUI 探测 |
-| `build/installer.py` | Layer2 安装器：解压 Layer1 → `%LOCALAPPDATA%\ManjuAgent` + 建快捷方式 + 询问启动（`MANJU_SILENT_INSTALL=1` 静默模式，跳过弹窗） |
+| `build/installer.py` | Layer2 安装器：弹「选择文件夹」对话框（默认优先 `D:\ManjuAgent`，可改任意盘）→ 解压 Layer1 到所选目录 + 建快捷方式 + 询问启动（`MANJU_SILENT_INSTALL=1` 静默装到默认盘） |
 | `build/manju_agent.spec` | Layer1 onedir 规格（pathex 含仓库根 + `server/`；datas：`server/_vendor`、`frontend/dist`、`ffmpeg.exe`、`manju_tray.png`） |
 | `build/installer.spec` | Layer2 onefile 规格（datas 嵌入 `build/dist/ManjuAgent`） |
 | `build/make_icon.py` | 生成 `manju_icon.ico` / `manju_tray.png`（纯 PIL 绘制） |
@@ -253,18 +253,18 @@ server/.venv/Scripts/python.exe -m PyInstaller build/installer.spec --noconfirm 
 # 4) 交付
 cp build/dist/Setup.exe D:/AI/ManjuAgent_Setup.exe
 ```
-> ⚠️ 本机 WorkBuddy 安全删除钩子会拦截 `os.remove`/`--clean`，故重建前用 `mv` 把旧的 `build/dist/ManjuAgent`、`build/work*` 移走，不要直接用 `--clean` 或 `rm`。
+> ⚠️ 本机 WorkBuddy 安全删除钩子会拦截 `os.remove`/`--clean`，故重建前用 `mv` 把旧的 `build/dist/ManjuAgent`、`build/work*` 移走，不要直接用 `--clean` 或 `rm`。⚠️ PyInstaller 须在「关闭沙箱」下运行（Bash 工具开 `dangerouslyDisableSandbox`），否则沙箱会在分析阶段静默杀进程（EXIT=1 无 traceback）——与 Python 微版本无关。
 
 ### 9.4 运行时环境与路径（均可用 MANJU_* 覆盖，见 `build/launcher_app.py:setup_env`）
 - `MANJU_APP_ROOT`：安装根（PyInstaller 6.x onedir 实为 `_internal` 目录，`sys._MEIPASS`）；`manju_agent.BASE` 默认取此值。
-- `MANJU_DB_PATH`：可写 SQLite，默认 `%LOCALAPPDATA%\ManjuAgent\data\app.db`。
-- `MANJU_LOG_DIR`：日志，默认 `%LOCALAPPDATA%\ManjuAgent\logs`。
+- `MANJU_DB_PATH`：可写 SQLite，默认 `安装根/data/app.db`（安装根 = 用户所选目录下的 `ManjuAgent` 文件夹，即 `_internal` 的父目录）。
+- `MANJU_LOG_DIR`：日志，默认 `安装根/logs`。
 - `MANJU_FRONTEND_DIR`：前端产物，默认 `安装根/frontend/dist`。
 - 安装根注入 `PATH` 以命中随包 `ffmpeg.exe`（代码中多处 `subprocess.run(["ffmpeg", ...])` 用裸命令）。
 
 ### 9.5 验收（已实测）
 - Layer1 子进程：`8099` 返回 SPA(200)、`7788/api/v1/health` 返回 `{code:0,status:"active"}`，8099 反代后端正常。
-- 安装器：`MANJU_SILENT_INSTALL=1` 静默解压到 `%LOCALAPPDATA%\ManjuAgent`，桌面/开始菜单 `.lnk` 均指向 `…\ManjuAgent\ManjuAgent.exe`，安装副本同样可起 8099/7788。
+- 安装器：`MANJU_SILENT_INSTALL=1` 静默装到默认 `D:\ManjuAgent`，桌面/开始菜单 `.lnk` 均指向 `…\ManjuAgent\ManjuAgent.exe`，安装副本同样可起 8099/7788；普通双击弹「选择安装目录」对话框（默认 D:，可改任意盘）。
 
 ### 9.6 已知取舍
 - **Ollama/ComfyUI 不打包**：外部 HTTP 服务，安装器仅检测+引导；二者未运行则 AI 生成功能不可用，但应用本身可启动。

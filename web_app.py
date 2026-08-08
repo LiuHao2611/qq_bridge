@@ -972,31 +972,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, json.dumps({"error": str(e)}))
 
 
-_frontend_srv = None  # 供冻结版托盘优雅关停
-
-
-def run_frontend(host=HOST, port=PORT):
-    """启动前端网关（在线程内调用）；返回 server 实例便于关停。"""
-    global _frontend_srv
-    _frontend_srv = ThreadingHTTPServer((host, port), Handler)
-    logger.info(">> AI 漫剧工坊 v2 已启动: http://localhost:%d (logs -> %s)" % (port, _log_path))
+def main():
+    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    logger.info(">> AI 漫剧工坊 v2 已启动: http://localhost:%d (logs -> %s)" % (PORT, _log_path))
     try:
-        _frontend_srv.serve_forever()
+        srv.serve_forever()
     except KeyboardInterrupt:
         logger.info(">> 已停止")
-    return _frontend_srv
-
-
-def stop_frontend():
-    """优雅关停前端网关（冻结版托盘退出用）。"""
-    global _frontend_srv
-    if _frontend_srv is not None:
-        try:
-            _frontend_srv.shutdown()
-            _frontend_srv.server_close()
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":
-    run_frontend()
+    main()

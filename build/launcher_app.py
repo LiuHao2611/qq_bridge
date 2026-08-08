@@ -7,11 +7,12 @@
   ManjuAgent.exe --mode frontend -> 仅启动前端网关 (0.0.0.0:8099)
 
 路径策略（与知识库 MANJU_* 覆盖变量一致）：
-  - MANJU_APP_ROOT  安装根（含 server/ frontend/dist ffmpeg.exe），默认 = exe 所在目录
-  - MANJU_DB_PATH   可写 SQLite（默认 %LOCALAPPDATA%/ManjuAgent/data/app.db）
-  - MANJU_LOG_DIR   日志目录（默认 %LOCALAPPDATA%/ManjuAgent/logs）
+  - MANJU_APP_ROOT  安装根（含 server/ frontend/dist ffmpeg.exe），冻结时 = _internal
+  - MANJU_DB_PATH   可写 SQLite（默认 安装根/data/app.db —— 随安装路径走，不强制 C 盘）
+  - MANJU_LOG_DIR   日志目录（默认 安装根/logs）
   - MANJU_FRONTEND_DIR 前端产物目录（默认 安装根/frontend/dist）
   - 安装根加入 PATH，使 subprocess.run(["ffmpeg", ...]) 能命中随包 ffmpeg.exe
+  - 数据/日志落在「用户自选的安装目录」下，从而支持装到任意盘。
 """
 import os
 import sys
@@ -40,11 +41,24 @@ def _local_appdata():
     return os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
 
 
+def _install_dir(app_root):
+    """安装根目录（用户自选）：冻结时 = _internal 的父目录（即 ManjuAgent 文件夹），
+    开发态 = 仓库根。数据/日志默认放在安装根下，避免强制落到 C 盘。"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(app_root)  # app_root=_MEIPASS=.../ManjuAgent/_internal
+    return app_root
+
+
 def setup_env(app_root):
-    """在导入业务模块之前设置好所有 MANJU_* 覆盖变量，并扩展 PATH。"""
+    """在导入业务模块之前设置好所有 MANJU_* 覆盖变量，并扩展 PATH。
+
+    数据目录(MANJU_DB_PATH)与日志目录(MANJU_LOG_DIR)默认放在「安装根目录」下，
+    而非强制 %LOCALAPPDATA%，从而尊重安装器给出的自定义路径（可装在任意盘）。
+    """
     os.environ.setdefault("MANJU_APP_ROOT", app_root)
-    data_dir = os.path.join(_local_appdata(), APP_NAME, "data")
-    log_dir = os.path.join(_local_appdata(), APP_NAME, "logs")
+    inst = _install_dir(app_root)
+    data_dir = os.path.join(inst, "data")
+    log_dir = os.path.join(inst, "logs")
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
     os.environ.setdefault("MANJU_DB_PATH", os.path.join(data_dir, "app.db"))
@@ -78,7 +92,8 @@ def run_frontend(app_root):
         import web_app as _web_mod
     else:
         _web_mod = _load_module("manju_web_app", os.path.join(app_root, "web_app.py"))
-    _web_mod.run_frontend()
+    # 基线 web_app 提供 main() 启动网关；冻结版托盘以 PID 管理子进程，无需 run_frontend/stop_frontend
+    _web_mod.main()
 
 
 # ----------------------------- 服务探测（Ollama/ComfyUI） -----------------------------
