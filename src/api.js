@@ -306,6 +306,14 @@ export const addPose = (stageId, body) =>
 export const delPose = (stageId, poseId) =>
   del('/asset-stages/' + stageId + '/poses/' + poseId)
 
+// ---- 真人资产 512 维身份特征向量（手册 §5.1 / §5.3，Layer 3 资产调用接口）----
+export const getAssetFaceVectors = (assetId) =>
+  get('/assets/' + assetId + '/face-vectors').then((r) => r.vectors || {})
+export const getStageFaceVector = (assetId, stageId) =>
+  get('/assets/' + assetId + '/stages/' + stageId + '/face-vector').then((r) => r)
+export const extractStageFaceVector = (assetId, stageId) =>
+  post('/assets/' + assetId + '/stages/' + stageId + '/face-vector/extract').then((r) => r)
+
 // ---- §09 API-05 通知删除 ----
 export const deleteNotification = (id) => del('/notifications/' + id)
 

@@ -58,7 +58,8 @@ class VisualControlAgent(BaseAgent):
         aspect_ratio = gparams.get("aspect_ratio") or ctx.params.get("aspect_ratio") or "16:9"
         seed_strategy = gparams.get("seed_strategy") or ctx.params.get("seed_strategy") or "fixed"
         style = ctx.params.get("visual_style", "cinematic")
-        enable_real_asset = bool(gparams.get("enable_real_asset", False))
+        # 优先读嵌套 global_params；前端参数面板以扁平键下发时回退到 ctx.params（§3.2.2 两种形态都支持）
+        enable_real_asset = bool(gparams.get("enable_real_asset", ctx.params.get("enable_real_asset", False)))
 
         # ------------------------------------------------------------------
         # N03-① 真人资产 512 维特征向量拉取 / 提取（手册 §5.1 / §5.2）

@@ -43,6 +43,25 @@ const _directorSubs = { unsub: null, timer: null }
 // per-segment 跟踪（full 版 ②：Director 入队后由 worker 消费，经 WS director:<pid> 透出）
 const directorSegments = ref({})  // seg_id -> {status, progress, video_url, task_id}
 
+// Director 参数配置（手册 §3.2/§3.3/§3.4 输入）：经 directorRun 透传给各子 Agent
+const directorParams = reactive({
+  resolution: '720p',
+  aspect_ratio: '16:9',
+  model_id: '',
+  seed_strategy: 'inherit',        // fixed | random | inherit（§3.2.5 跨镜继承+微扰）
+  enable_real_asset: true,         // N03 真人资产 512 维特征注入（§3.2.2 / §5.1）
+  enable_tail_frame: true,         // N04 首尾帧锚定（§3.3.5 默认开启）
+  priority_level: 0,               // N04 算力队列优先级（§3.3.2）
+  enable_quality_check: true,      // N06 自动化品控（§3.4.2）
+  face_restore: 'GFPGAN',          // N08 人脸修复：'' | 'GFPGAN' | 'CodeFormer'（§3.4.4）
+  tts: true, bgm: false, subtitle: true,
+  transitions: true, post_process: true,
+  target_fps: 25, target_resolution: '',
+})
+const showDirectorParams = ref(false)
+// Director 运行结果快照（N03 风格参考图 / N06 品控报告，手册 §3.2.2 输出 / §3.4.5）
+const directorResult = ref(null)   // { global_style_ref, quality_report, quality_alerts, failed_shot_list }
+
 function onDirectorEvent(event, data) {
   if (event === 'progress') {
     directorNode.value = data.node || ''
@@ -69,6 +88,7 @@ function onDirectorEvent(event, data) {
     directorProgress.value = 100
     toast('导演生成完成 🎬')
     stopDirectorWatch()
+    loadDirectorResult(directorRunId.value)   // 拉取快照：N03 风格参考图 + N06 品控报告
     loadProd()
   } else if (event === 'error') {
     directorRunning.value = false
@@ -88,7 +108,7 @@ function startDirectorWatch(runId) {
       try {
         const r = await directorRunStatus(pid, runId)
         if (r.status !== 'running') {
-          if (r.status === 'done') { directorRunning.value = false; directorOutput.value = r.final_output || ''; directorProgress.value = 100; toast('导演生成完成 🎬') }
+          if (r.status === 'done') { directorRunning.value = false; directorOutput.value = r.final_output || ''; directorProgress.value = 100; directorResult.value = r.snapshot || null; toast('导演生成完成 🎬') }
           else { directorRunning.value = false; directorError.value = r.error || (r.snapshot && r.snapshot.errors && JSON.stringify(r.snapshot.errors)) || '失败'; toast('导演生成失败') }
           stopDirectorWatch(); loadProd()
         } else if (r.snapshot && r.snapshot.node_status) {
@@ -117,8 +137,9 @@ async function onDirectorRun() {
   directorOutput.value = ''
   directorError.value = ''
   directorSegments.value = {}
+  directorResult.value = null
   try {
-    const r = await directorRun(pid, {})
+    const r = await directorRun(pid, { ...directorParams })
     directorRunId.value = r.run_id
     toast('已启动导演一站式生成')
     startDirectorWatch(r.run_id)
@@ -128,8 +149,29 @@ async function onDirectorRun() {
   }
 }
 
+// 拉取一次导演运行快照：N03 风格参考图 + N06 品控报告（手册 §3.2.2/§3.4.5，Layer 3 状态推送）
+async function loadDirectorResult(runId) {
+  if (!runId) return
+  try {
+    const r = await directorRunStatus(pid, runId)
+    directorResult.value = r.snapshot || null
+    if (r.final_output) directorOutput.value = r.final_output
+  } catch { /* ignore */ }
+}
+
 const STATUS_TXT = { queued: '排队中', running: '生成中', retrying: '重试中', succeeded: '已完成', failed: '失败', cancelled: '已取消' }
 const SEG_STATUS_TXT = { draft: '草稿', saved: '已保存', generating: '生成中', succeeded: '已完成', failed: '失败', cancelled: '已取消' }
+
+// N06 品控报告（逐片段 face_sim/duration/file/pass）+ N03 风格参考图（§3.4.5 / §3.2.2 输出）
+const qrReports = computed(() =>
+  (directorResult.value && directorResult.value.quality_report && directorResult.value.quality_report.reports) || [])
+const qrFailed = computed(() => (directorResult.value && directorResult.value.failed_shot_list) || [])
+const qrAlerts = computed(() => (directorResult.value && directorResult.value.quality_alerts) || [])
+const styleRefName = computed(() => {
+  const p = directorResult.value && directorResult.value.global_style_ref
+  return p ? p.split(/[\\/]/).pop() : ''
+})
+const FACE_SIM_THRESHOLD = 0.8   // 手册 §3.4.5
 
 const mapDisp = (s) => {
   if (!s) return { k: 'queued', t: '排队中' }
@@ -358,6 +400,7 @@ onUnmounted(() => {
       </div>
       <div class="ops">
         <el-button type="success" @click="onDirectorRun" :loading="directorRunning">🎬 导演一站式生成</el-button>
+        <el-button text @click="showDirectorParams = !showDirectorParams">⚙ 参数</el-button>
         <el-button type="primary" @click="dispatchAll">一键分发全部</el-button>
         <el-button @click="onSynthesize">合成全集</el-button>
         <el-button text @click="loadProd">刷新</el-button>
@@ -378,6 +421,63 @@ onUnmounted(() => {
         <span class="role">{{ wsConnected() ? '实时' : '轮询兜底' }}</span>
       </div>
     </div>
+
+    <!-- Director 参数配置面板（手册 §3.2/§3.3/§3.4 输入） -->
+    <el-collapse-transition>
+      <div v-if="showDirectorParams" class="dir-params">
+        <div class="dp-head">导演生成参数 <span class="muted">（下发至 N03 视觉统筹 / N04 时序 / N06 品控 / N08 合成）</span></div>
+        <div class="dp-grid">
+          <label>分辨率
+            <select v-model="directorParams.resolution">
+              <option>480p</option><option>720p</option><option>1080p</option>
+            </select>
+          </label>
+          <label>画幅比例
+            <select v-model="directorParams.aspect_ratio">
+              <option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option>
+            </select>
+          </label>
+          <label>seed 策略
+            <select v-model="directorParams.seed_strategy">
+              <option value="fixed">fixed 固定</option>
+              <option value="random">random 随机</option>
+              <option value="inherit">inherit 跨镜继承+微扰</option>
+            </select>
+          </label>
+          <label>首尾帧锚定(N04)
+            <input type="checkbox" v-model="directorParams.enable_tail_frame" />
+          </label>
+          <label>队列优先级
+            <input type="number" v-model.number="directorParams.priority_level" min="-10" max="10" />
+          </label>
+          <label>真人资产 512维(N03)
+            <input type="checkbox" v-model="directorParams.enable_real_asset" />
+          </label>
+          <label>品控校验(N06)
+            <input type="checkbox" v-model="directorParams.enable_quality_check" />
+          </label>
+          <label>人脸修复(N08)
+            <select v-model="directorParams.face_restore">
+              <option value="">关闭</option>
+              <option value="GFPGAN">GFPGAN</option>
+              <option value="CodeFormer">CodeFormer</option>
+            </select>
+          </label>
+          <label>TTS 配音
+            <input type="checkbox" v-model="directorParams.tts" />
+          </label>
+          <label>字幕
+            <input type="checkbox" v-model="directorParams.subtitle" />
+          </label>
+          <label>转场
+            <input type="checkbox" v-model="directorParams.transitions" />
+          </label>
+          <label>全局后处理
+            <input type="checkbox" v-model="directorParams.post_process" />
+          </label>
+        </div>
+      </div>
+    </el-collapse-transition>
 
     <!-- 合成全集进度横幅 -->
     <div v-if="synthTaskId" class="synth-banner" :class="synthStatus">
@@ -404,6 +504,32 @@ onUnmounted(() => {
       </div>
       <a v-if="directorOutput" :href="directorOutput" target="_blank" class="out">查看成片</a>
       <span v-if="directorError" class="err">{{ directorError }}</span>
+    </div>
+
+    <!-- Director 品控报告 + 风格参考图（N06 §3.4.5 / N03 §3.2.2 输出，Layer 3 状态推送闭环） -->
+    <div v-if="directorResult" class="director-quality">
+      <h3>导演品控报告</h3>
+      <div v-if="styleRefName" class="style-ref">
+        <span class="lbl">N03 全局风格参考图：</span>
+        <img :src="'/file?name=' + encodeURIComponent(styleRefName)" alt="style ref" />
+      </div>
+      <div v-if="qrAlerts.length" class="qc-alerts">
+        <div v-for="(a, i) in qrAlerts" :key="i" class="qc-alert">⚠ {{ a.reason || a.message || JSON.stringify(a) }}</div>
+      </div>
+      <table v-if="qrReports.length" class="qc-table">
+        <thead><tr><th>片段</th><th>文件</th><th>时长一致</th><th>人脸相似度(≥{{ FACE_SIM_THRESHOLD }})</th><th>结论</th></tr></thead>
+        <tbody>
+          <tr v-for="rep in qrReports" :key="rep.segment_id" :class="rep.pass ? 'ok' : 'bad'">
+            <td>{{ rep.title || (rep.segment_id || '').slice(0, 8) }}</td>
+            <td>{{ rep.file_ok ? '✓' : '✗' }}</td>
+            <td>{{ rep.duration_ok ? '✓' : ('✗ +' + rep.duration_error + 's') }}</td>
+            <td>{{ rep.face_sim == null ? '—' : rep.face_sim.toFixed(3) }}<span v-if="rep.engine_missing" class="muted"> (引擎缺)</span></td>
+            <td>{{ rep.pass ? '通过' : '不合格' }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-if="qrFailed.length" class="qc-failed">跳过并告警的失败片段：{{ qrFailed.length }} 个（N08 合成时自动跳过）</div>
+      <div v-if="!qrReports.length && !styleRefName && !qrAlerts.length" class="muted">本次运行未产出可展示的品控数据。</div>
     </div>
 
     <div v-if="loading" class="empty">加载中…</div>
@@ -504,4 +630,19 @@ onUnmounted(() => {
 .seg-task .err { color: var(--pink); }
 .seg-ops { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
 .empty { padding: 40px; text-align: center; color: var(--sub); }
+.dir-params { background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--pur); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; }
+.dir-params .dp-head { font-weight: 700; margin-bottom: 8px; }
+.dir-params .dp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px 16px; }
+.dir-params label { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--sub); }
+.dir-params label select, .dir-params label input[type=number] { width: 96px; background: var(--card-2); color: var(--txt); border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; }
+.director-quality { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+.director-quality h3 { margin: 0 0 8px; font-size: 14px; }
+.director-quality .style-ref { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 12px; }
+.director-quality .style-ref img { max-height: 120px; border-radius: 8px; border: 1px solid var(--line); }
+.director-quality .qc-alert { color: var(--pink); font-size: 12px; margin: 2px 0; }
+.director-quality .qc-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+.director-quality .qc-table th, .director-quality .qc-table td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
+.director-quality .qc-table tr.ok td:last-child { color: var(--green); }
+.director-quality .qc-table tr.bad td:last-child { color: var(--pink); font-weight: 700; }
+.director-quality .qc-failed { color: var(--pink); font-size: 12px; margin-top: 6px; }
 </style>

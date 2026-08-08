@@ -657,7 +657,7 @@ const submitStage = async () => {
       age: Number(stageForm.age) || 25,
       reference_image_url: up.url || '',
     })
-    toast('已添加年龄阶段')
+    toast('已添加阶段')
     stageForm.open = false
     await loadStages(selectedRole.value)
   } catch (e) {
@@ -667,7 +667,7 @@ const submitStage = async () => {
   }
 }
 const removeStage = async (st) => {
-  if (!confirm('删除该年龄阶段及其姿势？')) return
+  if (!confirm('删除该阶段及其姿势？')) return
   try {
     await delStage(selectedRole.value.id, st.stage_id)
     await loadStages(selectedRole.value)
@@ -854,11 +854,11 @@ onMounted(load)
     <!-- 角色多阶段 + 多姿势（KB §02/§04 §4.4.1） -->
     <div v-if="selectedRole && tab === 'characters'" class="role-panel">
       <div class="rp-head">
-        <div class="rp-title">🎭 {{ selectedRole.name }} · 年龄阶段与姿势</div>
-        <button class="btn sm" @click="openStageForm(selectedRole)">＋ 添加年龄阶段</button>
+        <div class="rp-title">🎭 {{ selectedRole.name }} · 阶段与姿势</div>
+        <button class="btn sm" @click="openStageForm(selectedRole)">＋ 添加阶段</button>
       </div>
       <div v-if="loadingStages" class="muted" style="padding:12px">加载阶段中…</div>
-      <div v-else-if="!stages.length" class="empty">该角色暂无年龄阶段，点「添加年龄阶段」上传参考照（如童年/青年/老年）。</div>
+      <div v-else-if="!stages.length" class="empty">该角色暂无阶段，点「添加阶段」上传参考照（如童年/青年/老年）。</div>
       <div v-else class="stage-list">
         <div class="stage-card" v-for="st in stages" :key="st.stage_id">
           <div class="stage-head">
@@ -1122,7 +1122,7 @@ onMounted(load)
     <!-- 阶段表单 -->
     <div class="modal-mask" v-if="stageForm.open" @click="stageForm.open=false">
       <div class="modal-box" @click.stop>
-        <h3>添加年龄阶段</h3>
+        <h3>添加阶段</h3>
         <label class="lbl">阶段</label>
         <select v-model="stageForm.stage_name" class="input">
           <option v-for="o in STAGE_OPTS" :key="o.value" :value="o.value">{{ o.label }}</option>

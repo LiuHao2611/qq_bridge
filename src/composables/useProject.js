@@ -2,7 +2,7 @@ import { ref, nextTick } from 'vue'
 import {
   getProject, listSegments, getSegment, createSegment, updateProject, updateSegment, putShots, putAssetRefs,
   deleteSegment, generateSegment, estimatePoints, preAuthPoints, getTask,
-  listAssets, listStagesWithPoses,
+  listProjectAssets, listStagesWithPoses,
 } from '../api'
 import { mockProject, mockMemoir, normalizeShotEnums } from '../mock'
 import { toast } from '../store'
@@ -195,7 +195,7 @@ export function useProject(id, kind) {
       }
       const activeSegId2 = activeSegId || segments[0].segment_id
       const segWithShots = await getSegment(id, activeSegId2)
-      const assets = await listAssets()
+      const assets = await listProjectAssets(id)
       const assetsWithStages = await loadAssetStages(assets)
       project.value = toFrontend(p, segments, segWithShots, assetsWithStages, kind)
     } catch (e) {
@@ -275,7 +275,7 @@ export function useProject(id, kind) {
   const refreshAssets = async () => {
     if (USE_MOCK || !project.value) return
     try {
-      const assets = await listAssets()
+      const assets = await listProjectAssets(id)
       const assetsWithStages = await loadAssetStages(assets)
       applyAssets(project.value, assetsWithStages)
       await nextTick()

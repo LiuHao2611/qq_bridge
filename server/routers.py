@@ -521,7 +521,13 @@ async def director_run(project_id: str, req: Request):
             story = _build_project_story_text(conn, project_id)
         finally:
             conn.close()
-    params = {"story": story}
+    # 透传前端 Director 参数配置面板下发的全部生产参数（手册 §3.2/§3.3/§3.4）：
+    # resolution/aspect_ratio/seed_strategy/enable_real_asset(N03)、enable_tail_frame/
+    # priority_level(N04)、face_restore/enable_quality_check/target_*(N06/N08)、
+    # tts/bgm/subtitle/transitions/post_process(N06/N08 合成)。
+    # 禁止低配：原实现仅透传 story+model_config，导致全局参数被丢弃、N03/N04/N06 拿不到配置。
+    params = dict(b) if isinstance(b, dict) else {}
+    params["story"] = story
     if b.get("model_config"):
         params["model_config"] = b["model_config"]
 
@@ -590,3 +596,109 @@ async def director_run_status(project_id: str, run_id: str):
     if not r or r.get("project_id") != project_id:
         raise ApiError("NOT_FOUND", "run_id 不存在或不属于该项目")
     return ok(r)
+
+
+# ======================================================================
+# 真人资产 512 维身份特征向量：提取 / 状态查询（手册 §5.1 / §5.3）
+# Layer 3 资产调用接口需向前端暴露「是否已提取 512 维系向量 + 触发预提取」，
+# 以便用户确认真人资产化权限（缺引擎/无脸 → 诚实报错，不静默跳过身份锁定）。
+# ======================================================================
+FACE_VECTOR_DIM = 512
+_OUTPUTS = os.path.join(os.path.dirname(_SERVER_DIR), "outputs")
+
+
+def _resolve_asset_local_file(c):
+    """把资产参考图 URL/路径解析为本地可读文件；找不到返回 None。"""
+    if not c:
+        return None
+    if os.path.isfile(c):
+        return c
+    name = None
+    if "name=" in c:
+        from urllib.parse import parse_qs, urlparse
+        name = (parse_qs(urlparse(c).query).get("name") or [None])[0]
+    else:
+        name = os.path.basename(c)
+    if name:
+        for base in (_OUTPUTS, os.path.join(_OUTPUTS, "assets"),
+                     os.path.join(_OUTPUTS, "assets", "originals")):
+            p = os.path.join(base, os.path.basename(name))
+            if os.path.isfile(p):
+                return p
+    return None
+
+
+def _resolve_stage_ref_images(stage_id):
+    """收集某阶段(含其姿势)的本地参考图路径列表，供 insightface 提取 512 维向量。"""
+    conn = get_conn()
+    try:
+        rows = fetch_all(conn,
+            "SELECT s.reference_image_url, a.asset_path, a.cover_path "
+            "FROM asset_stages s JOIN assets a ON a.asset_id=s.asset_id "
+            "WHERE s.stage_id=?", (stage_id,))
+        s = rows[0] if rows else None
+        urls = []
+        if s:
+            urls += [s.get("reference_image_url"), s.get("asset_path"), s.get("cover_path")]
+        poses = fetch_all(conn, "SELECT reference_image_url FROM asset_poses WHERE stage_id=?", (stage_id,))
+        for p in poses:
+            urls.append(p.get("reference_image_url"))
+    finally:
+        conn.close()
+    out = []
+    for u in urls:
+        fp = _resolve_asset_local_file(u)
+        if fp:
+            out.append(fp)
+    return out
+
+
+@api.get("/assets/{asset_id}/face-vectors")
+async def get_asset_face_vectors(asset_id: str):
+    """批量返回该角色资产下每个阶段的 512 维向量状态（前端一次拉取渲染徽标）。"""
+    conn = get_conn()
+    try:
+        rows = fetch_all(conn,
+            "SELECT stage_id, face_vector FROM asset_stages WHERE asset_id=?", (asset_id,))
+    finally:
+        conn.close()
+    vectors = {}
+    for r in rows:
+        has = bool(r.get("face_vector"))
+        vectors[r["stage_id"]] = {"has_vector": has, "dim": FACE_VECTOR_DIM if has else 0}
+    return ok({"asset_id": asset_id, "vectors": vectors})
+
+
+@api.get("/assets/{asset_id}/stages/{stage_id}/face-vector")
+async def get_stage_face_vector(asset_id: str, stage_id: str):
+    """查询单个阶段的 512 维向量状态。"""
+    try:
+        import features
+        vec = features.load_face_vector(stage_id)
+    except Exception:
+        vec = None
+    return ok({"stage_id": stage_id, "has_vector": vec is not None,
+               "dim": FACE_VECTOR_DIM if vec is not None else 0})
+
+
+@api.post("/assets/{asset_id}/stages/{stage_id}/face-vector/extract")
+async def extract_stage_face_vector(asset_id: str, stage_id: str):
+    """预提取并落库某阶段的 512 维身份特征向量（手册 §5.1）。
+
+    缺引擎(insightface/onnxruntime)/无脸 → 诚实抛 FeatureUnavailable 错误码，
+    由前端清晰告知用户需放入 buffalo_l 权重，禁止静默跳过身份锁定。
+    """
+    imgs = _resolve_stage_ref_images(stage_id)
+    if not imgs:
+        raise ApiError("FACE_NO_IMAGE",
+                       "该阶段无可解析的参考图（请先在资产编辑中上传参考照）")
+    try:
+        import features
+        vec = features.extract_face_vector(imgs)   # 多图取均值；无脸/缺引擎 → 抛错
+        stored = features.store_face_vector(stage_id, vec)
+    except Exception as e:
+        code = getattr(e, "code", "FACE_EXTRACT_FAILED")
+        raise ApiError(code, str(e))
+    if not stored:
+        raise ApiError("FACE_STORE_FAILED", "512 维向量提取成功但落库失败")
+    return ok({"stage_id": stage_id, "has_vector": True, "dim": FACE_VECTOR_DIM})

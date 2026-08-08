@@ -6,7 +6,7 @@ import { useHotkeys } from '../composables/useHotkeys'
 import { useAutoSave } from '../composables/useAutoSave'
 import { toast } from '../store'
 import { ElMessageBox } from 'element-plus'
-import { aiPolish, estimatePoints, preAuthPoints, regenerateSegment, exportSegment, updateProject, createAsset, synthesizeProject } from '../api'
+import { aiPolish, estimatePoints, preAuthPoints, regenerateSegment, exportSegment, updateProject, batchCreateProjectAssets, synthesizeProject } from '../api'
 import ProjectFlowNav from './ProjectFlowNav.vue'
 import AssetRichInput from './AssetRichInput.vue'
 import RoleEditorModal from './RoleEditorModal.vue'
@@ -232,8 +232,11 @@ const chapterStatus = (ch) => {
   return done ? { cls: 'ok', icon: '✓' } : { cls: 'pending', icon: '⏳' }
 }
 
-const assetTab = ref('角色')
+const assetTab = ref('')
 const assetTabs = ['角色', '场景', '道具']
+// 资产库三按钮：选中其一→只显示该类；都不选→三类全显示
+const toggleAssetTab = (t) => { assetTab.value = assetTab.value === t ? '' : t }
+const activeAssetType = computed(() => assetTab.value || '角色')
 
 // ---- 资产库接线：新建资产弹窗 ----
 const assetDialogVisible = ref(false)
@@ -256,12 +259,13 @@ const confirmCreateAsset = async () => {
   const name = (assetForm.name || '').trim()
   if (!name) { toast('请填写资产名称'); return }
   try {
-    await createAsset({
+    await batchCreateProjectAssets(route.params.id, [{
       name,
       type: assetForm.type,
       role_type: assetForm.type === 'role' ? assetForm.role_type : undefined,
       description: assetForm.description,
-    })
+      tags: [],
+    }])
     await refreshAssets() // 即时反映到左侧资产库与分镜引用候选
     assetDialogVisible.value = false
     toast('已创建资产：' + name)
@@ -834,13 +838,13 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
     <div class="frag-body">
       <!-- 左：资产库 -->
       <div class="col col-left">
-        <h3>资产库 <span class="add-asset" title="新建资产" @click="openCreateAsset(assetTab === '角色' ? 'role' : assetTab === '场景' ? 'scene' : 'prop')">＋</span></h3>
+        <h3>资产库 <span class="add-asset" title="新建资产" @click="openCreateAsset(activeAssetType === '角色' ? 'role' : activeAssetType === '场景' ? 'scene' : 'prop')">＋</span></h3>
         <div class="asset-tabs">
-          <div v-for="t in assetTabs" :key="t" class="t" :class="{ on: assetTab === t }" @click="assetTab = t">{{ t }}</div>
+          <div v-for="t in assetTabs" :key="t" class="t" :class="{ on: assetTab === t }" @click="toggleAssetTab(t)">{{ t }}</div>
         </div>
         <div v-if="br009Exceed" class="br-bar bad">⚠ BR-009：片段资产引用 {{ segRefCount }} 个，超过上限 9 个</div>
         <div v-else class="br-bar ok">资产引用 {{ segRefCount }}/9（BR-009）</div>
-        <template v-if="assetTab === '角色'">
+        <template v-if="assetTab === '' || assetTab === '角色'">
           <div v-for="c in p.characters" :key="c.id" class="char-card" :class="{ expanded: expandedAssets[c.id] }" draggable="true" :title="'拖拽到右侧分镜文本可插入 @[' + c.name + '] 引用'" @dragstart="onAssetDragStart($event, c, 'character')">
             <div class="char-row">
               <img class="char-thumb" :src="c.thumb || PLACEHOLDER" />
@@ -866,7 +870,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
           </div>
           <button class="add-line" @click="openCreateAsset('role')">＋ 新建角色</button>
         </template>
-        <template v-else-if="assetTab === '场景'">
+        <template v-if="assetTab === '' || assetTab === '场景'">
           <div v-for="a in p.assets.scenes" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧分镜文本可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'scene')">
             <div class="char-row">
               <img class="char-thumb" :src="a.thumb || PLACEHOLDER" />
@@ -890,7 +894,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
           </div>
           <button class="add-line" @click="openCreateAsset('scene')">＋ 新建场景</button>
         </template>
-        <template v-else>
+        <template v-if="assetTab === '' || assetTab === '道具'">
           <div v-for="a in p.assets.props" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧分镜文本可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'prop')">
             <div class="char-row">
               <img class="char-thumb" :src="a.thumb || PLACEHOLDER" />
@@ -1167,13 +1171,13 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
     <el-dialog v-model="descModalVisible" title="编辑画面描述" width="90%" top="5vh" append-to-body class="desc-modal" destroy-on-close :before-close="beforeDescModalClose">
       <div class="desc-modal-body">
         <div class="desc-modal-assets">
-          <h3>资产库 <span class="add-asset" title="新建资产" @click="openCreateAsset(assetTab === '角色' ? 'role' : assetTab === '场景' ? 'scene' : 'prop')">＋</span></h3>
+          <h3>资产库 <span class="add-asset" title="新建资产" @click="openCreateAsset(activeAssetType === '角色' ? 'role' : activeAssetType === '场景' ? 'scene' : 'prop')">＋</span></h3>
           <div class="asset-tabs">
-            <div v-for="t in assetTabs" :key="t" class="t" :class="{ on: assetTab === t }" @click="assetTab = t">{{ t }}</div>
+            <div v-for="t in assetTabs" :key="t" class="t" :class="{ on: assetTab === t }" @click="toggleAssetTab(t)">{{ t }}</div>
           </div>
           <div v-if="br009Exceed" class="br-bar bad">⚠ BR-009：片段资产引用 {{ segRefCount }} 个，超过上限 9 个</div>
           <div v-else class="br-bar ok">资产引用 {{ segRefCount }}/9（BR-009）</div>
-          <template v-if="assetTab === '角色'">
+          <template v-if="assetTab === '' || assetTab === '角色'">
             <div v-for="c in p.characters" :key="c.id" class="char-card" :class="{ expanded: expandedAssets[c.id] }" draggable="true" :title="'拖拽到右侧编辑器可插入 @[' + c.name + '] 引用'" @dragstart="onAssetDragStart($event, c, 'character')">
               <div class="char-row">
                 <img class="char-thumb" :src="c.thumb || PLACEHOLDER" />
@@ -1199,7 +1203,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
             </div>
             <button class="add-line" @click="openCreateAsset('role')">＋ 新建角色</button>
           </template>
-          <template v-else-if="assetTab === '场景'">
+          <template v-if="assetTab === '' || assetTab === '场景'">
             <div v-for="a in p.assets.scenes" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧编辑器可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'scene')">
               <div class="char-row">
                 <img class="char-thumb" :src="a.thumb || PLACEHOLDER" />
@@ -1223,7 +1227,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
             </div>
             <button class="add-line" @click="openCreateAsset('scene')">＋ 新建场景</button>
           </template>
-          <template v-else>
+          <template v-if="assetTab === '' || assetTab === '道具'">
             <div v-for="a in p.assets.props" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧编辑器可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'prop')">
               <div class="char-row">
                 <img class="char-thumb" :src="a.thumb || PLACEHOLDER" />

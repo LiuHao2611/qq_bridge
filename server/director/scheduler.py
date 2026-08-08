@@ -47,12 +47,19 @@ class DirectorRunResult:
         self.ok = True
 
     def to_dict(self):
+        n03 = self.node_data.get("N03") or {}
+        n06 = self.node_data.get("N06") or {}
         return {
             "trace_id": self.trace_id,
             "ok": self.ok,
             "final_output": self.final_output,
             "node_status": {k: v.value for k, v in self.node_status.items()},
             "errors": self.errors,
+            # Layer 3 透出：N03 风格参考图 / N06 品控报告（手册 §3.2.2 输出 / §3.4.5）
+            "global_style_ref": n03.get("global_style_ref") or "",
+            "quality_report": n06.get("quality_report") or {},
+            "quality_alerts": n06.get("quality_alerts") or [],
+            "failed_shot_list": n06.get("failed_shot_list") or [],
         }
 
 
