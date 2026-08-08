@@ -222,6 +222,7 @@ C:/Users/L/.workbuddy/binaries/python/envs/default/Scripts/python.exe launcher.p
 ---
 
 ## 9. 打包与分发（exe 安装器）· 2026-08-08
+> ⚠️ **每次打包前必读**：`build/打包规范.md`（前置检查 / 构建命令 / 验证清单 / 已知坑速查）。任何打包相关代码或路径变动须同步回写该规范与本 §9。
 > 目标：把本机项目打包成「可安装 + 直接运行」的 exe，尽量整合运行环境；交付物 `D:\AI\ManjuAgent_Setup.exe`（自解压式单文件安装器）。
 
 ### 9.1 架构（两层纯 PyInstaller，无 NSIS/Inno）
