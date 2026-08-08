@@ -1,4 +1,5 @@
 # PROJECT_MAP.md · 项目知识地图（唯一索引）
+**最后更新**：2026-08-08
 
 > 🔴 **强制约定（MUST）**
 > 1. **找文件先查本索引**：以后任何"找源码 / 找文档 / 找实现"都必须**先查本文件**，按「路径」定位后再读取，**禁止凭记忆或全局搜索直接翻文件**。
@@ -11,7 +12,7 @@
 - **名称**：万能短剧 AI 创作平台（个人本地版 · `personal_local_only`）
 - **定位**：短剧 / AI 视频生成工具，五阶段流水线（资产库 → 分场拆解 → 分镜编排 → 异步生成 → 合成全集）
 - **技术栈**：前端 Vue3 + Vite + Element Plus；后端 FastAPI + SQLite + 本地文件；**不依赖任何云端 Key**
-- **运行时端口**：后端 `127.0.0.1:7788`（纯 API）；前端 `web_app.py` `0.0.0.0:8099`（托管 `frontend/dist` + 反代 `/api/v1`）；外部 ComfyUI `:8188`、Ollama `:11434`
+- **运行时端口**：后端 `127.0.0.1:7788`（纯 API）；前端服务 `web_app.py`（仓库根 `D:\AI\manju_agent\web_app.py`）`0.0.0.0:8099`（托管 `MANJU_FRONTEND_DIR`，**默认** `frontend/dist` + 反代 `/api/v1`）；外部 ComfyUI `:8188`、Ollama `:11434`
 - **关联后台系统 `manju_admin`**：用户前台 `http://127.0.0.1:8900`（Vite dev，反代 `/api`→`127.0.0.1:8910`）；后台 API `127.0.0.1:8910`（FastAPI，`theme.config.json` 持久化主题）；**主题跨系统同步**：后台改主题 → 8099 前台每 5s 拉取 `GET /api/theme` 并应用（详见 §8）。
 - **知识库基准**：IMA《万能短剧AI创作平台-开发手册》kb_id `7491002965175219`（§08 纪律、§09 补全）
 
@@ -22,7 +23,7 @@
 D:\AI\manju_agent\
 ├── PROJECT_MAP.md            ← 本文件（唯一索引）
 ├── AGENTS.md                 ← §08 Agent 开发纪律（规则书，最高约束力）
-├── frontend/dist/            ← 前端构建产物（web_app.py 默认托管；原"不可覆盖锁"已消失，可直接构建于此）
+├── frontend/dist/            ← 前端构建产物（**非服务目录**：web_app 实际托管 `MANJU_FRONTEND_DIR`；因安全删除钩子会拦截删旧 dist 文件导致重建失败，构建产物统一输出到 `MANJU_FRONTEND_DIR` / `C:/Users/L/AppData/Local/Temp/manju_dist_fixed`）
 ├── server/                   ← 后端（FastAPI）
 ├── src/                      ← 前端源码（Vue3）
 ├── docs/                     ← 文档（含 phases/ 原子模块）
@@ -73,7 +74,7 @@ D:\AI\manju_agent\
 |---|---|
 | `main.py` | FastAPI 入口；注册 `/ws`；startup `init_db→reconcile_points→worker_start`；CLOSE-02/03 请求日志中间件 + 异常 handler；`/file` 静态回传 |
 | `db.py` | SQLite 连接（`MANJU_DB_PATH` 覆盖）、`_SCHEMA`、`_migrate`（幂等加列）、`init_db`、`uid/now_ms`、`row_to_dict`、`fetch_one/all`、`log_operation` |
-| `routers.py` | 主 API 路由：项目/片段/资产/阶段/姿势、上传、合成、**生产视图**、**§06 Webhook `/callbacks/inference`**、**§06 `/inference/health`**、**服务/模块管理器**（`/system/services`、`/modules` 系列）；**2026-08-08 修复 `split_story` 分镜时长之和 ≠ 片段时长（BR-003）导致「导入场次失败」**：新增 `_redistribute_durations`，LLM/正则两路均摊时长使之和正好等于片段时长；**同日修复 `patch_asset`/`patch_template`/`patch_project`/`patch_segment` 参数顺序错位 bug（CLOSE-02 级静默失效）**：旧写法 `params.append(id)` 后接 `+[int(time.time())]` 会把 id 绑到 `updated_at=?`、时间戳绑到 `WHERE id=?`，导致 UPDATE 匹配 0 行、PATCH 返回 code:0 但数据不变；改为 `params + [int(time.time()), id]` 严格对齐占位符。**⚠️ 2026-08-08 重建（重要）**：`routers.py` 源码曾被误清空，运行期唯一权威产物是 `__pycache__/routers_compiled.cpython-313.pyc`（由原始 `routers.cpython-313.pyc` 拷出独立留存，含上述全部修复）。现采用「**门面 + 定点覆盖**」策略——`routers.py` 通过 `importlib` 从 `.pyc` 载入已编译模块 `routers_compiled` 并 `from routers_compiled import *` 复用其 `api`（全部 90+ 端点路由）与所有 handler/helper，行为 100% 等价于已验证产物；仅 `split_story` 被**定点覆盖**（删除旧路由后以新实现重注册），适配 `ai_local.split_story_with_llm` 新的 `{segments, meta}` 契约：返回 `data={segments, count, source, meta}`，`meta` 含 `model/duration_ms/raw_preview/error`，供前端底部「推理进度」面板实时展示模型是否真正被调用及回退原因。**`.pyc`（即 `__pycache__/routers_compiled.cpython-313.pyc`，由原始 `routers.cpython-313.pyc` 拷出独立留存，避免被主缓存覆盖）为运行期唯一权威产物，禁止删除**；未来改其它端点请把实现从 `routers_compiled` 平移为明文并删除旧路由重注册 |
+| `routers.py` | 主 API 路由：项目/片段/资产/阶段/姿势、上传、合成、**生产视图**、**§06 Webhook `/callbacks/inference`**、**§06 `/inference/health`**、**服务/模块管理器**（`/system/services`、`/modules` 系列）；**2026-08-08 修复 `split_story` 分镜时长之和 ≠ 片段时长（BR-003）导致「导入场次失败」**：新增 `_redistribute_durations`，LLM/正则两路均摊时长使之和正好等于片段时长；**同日修复 `patch_asset`/`patch_template`/`patch_project`/`patch_segment` 参数顺序错位 bug（CLOSE-02 级静默失效）**：旧写法 `params.append(id)` 后接 `+[int(time.time())]` 会把 id 绑到 `updated_at=?`、时间戳绑到 `WHERE id=?`，导致 UPDATE 匹配 0 行、PATCH 返回 code:0 但数据不变；改为 `params + [int(time.time()), id]` 严格对齐占位符。**⚠️ 2026-08-08 重建（重要）**：`routers.py` 源码曾被误清空，运行期唯一权威产物是 `__pycache__/routers_compiled.cpython-313.pyc`（由原始 `routers.cpython-313.pyc` 拷出独立留存，含上述全部修复）。现采用「**门面 + 定点覆盖**」策略——`routers.py` 通过 `importlib` 从 `.pyc` 载入已编译模块 `routers_compiled` 并 `from routers_compiled import *` 复用其 `api`（全部 90+ 端点路由）与所有 handler/helper，行为 100% 等价于已验证产物；仅 `split_story` 被**定点覆盖**（删除旧路由后以新实现重注册），适配 `ai_local.split_story_with_llm` 新的 `{segments, meta}` 契约：返回 `data={segments, count, source, meta}`，`meta` 含 `model/duration_ms/raw_preview/error`，供前端底部「推理进度」面板实时展示模型是否真正被调用及回退原因。**`.pyc`（即 `__pycache__/routers_compiled.cpython-313.pyc`，由原始 `routers.cpython-313.pyc` 拷出独立留存，避免被主缓存覆盖）（权威产物已固化为 `server/_vendor/routers_compiled.cpython-313.pyc` 并 Git 跟踪，见本表末行与下方「兜底回退」；`__pycache__` 同名副本仅回退、可删）**；未来改其它端点请把实现从 `routers_compiled` 平移为明文并删除旧路由重注册 |
 | `module_manager.py` | **服务/模块版本管理器**：业务模块快照/回退（落盘 `versions/<key>/<version>/`）、灰度开关（`module_flags` 表）、服务探针、经 `launcher.py` 启停 backend/frontend；`_run_frontend_build` 支持 `MANJU_FRONTEND_DIR` 并异步执行避免阻塞事件循环（2026-08-07 新增/修订） |
 | `launcher.py` | **受管服务启动器**：backend(7788)/frontend(8099) 的 start/stop/restart/status；PID/日志目录支持 `MANJU_RUN_DIR`/`MANJU_LOG_DIR` 覆盖以绕过工作区文件锁；透传 `MANJU_FRONTEND_DIR` 给 web_app（2026-08-07 新增/修订） |
 | `worker.py` | 异步生成 worker：状态机、`recover()` 崩溃恢复、30min 看门狗(OPS-04)、`VIDEO_TIMEOUT` 线程池超时(CLOSE-05)、`_emit` 结构化日志(LOG-01/03)、退款 |
@@ -83,10 +84,12 @@ D:\AI\manju_agent\
 | `memoir_routes.py` | 回忆录模块路由（独立功能，AGENT_SPEC_15） |
 | `common.py` | 公用：`ApiError`、`envelope`、`setup_logging`（`MANJU_LOG_DIR` 覆盖）、常量 |
 | `routers/`（目录） | 当前为空/占位；路由集中在 `routers.py` |
-| `_smoke_g2.py` / `_t2i_test.py` / `smoke_test.py` | 探针/测试脚本（非运行时） |
+| `smoke_test.py` | 探针/冒烟测试脚本（非运行时） |
+| `_smoke_g2.py` / `_t2i_test.py` | **残留临时脚本（2026-08-08 清理时因 safe-delete 钩子拦截未删成，无害）**：上一轮 PYC 逆向重建辅助脚本；建议手动删除。权威恢复产物已固化为 `server/_vendor/routers_compiled.cpython-313.pyc` |
 | `_dis_all.py` / `_dis_pyc.py` / `_extract_pyc.py` / `_map_routes.py` / `_dis_imports.py` / `_dis_top*.py` / `_dis_module.py` / `_validate_facade.py`（均 `server/` 下） | **已删除（2026-08-08 清理）**：临时 PYC 逆向重建辅助脚本；重建校验通过后用 git 基线 + `version_guard` 兜底，不再需要。权威恢复产物已固化为 `server/_vendor/routers_compiled.cpython-313.pyc`（纳入 Git 版本控制）。 |
 | `server/_vendor/routers_compiled.cpython-313.pyc` | **权威恢复产物（Git 跟踪）**：原始 `routers.py` 编译副本，`routers.py` 门面优先从此加载（`__pycache__` 为回退）。即便 `routers.py` 源码被误清空，这里有 100% 等价的可运行后端，且 git 可回退到任意历史版本。 |
 | `version_guard.py`（仓库根） | **误改/误删兜底工具（2026-08-08 新增，Git 跟踪）**：`python version_guard.py backup <file>` 改动前自动快照到 `.backups/`，`restore <file>` 一键回退，`status` 查看 git 基线与备份份数。与 git 互不冲突，见下方「兜底回退」说明。 |
+| `web_app.py`（仓库根 `D:\AI\manju_agent\web_app.py`） | **前端静态服务进程**：托管 `MANJU_FRONTEND_DIR`（**默认** `frontend/dist`）+ 反代 `/api/v1`→`127.0.0.1:7788`；`0.0.0.0:8099`。**2026-08-08 更正**：此前误记在 `server/` 下，实际位于仓库根。 |
 
 > **🛡️ 兜底/回退保障机制（2026-08-08 建立，针对「误改/误删关键文件」）**
 > 项目此前**无版本控制**，任何关键文件被覆盖都无法恢复。现已建立三重保险：
@@ -143,7 +146,9 @@ D:\AI\manju_agent\
 
 ## 5. 启动 / 运行命令
 ```bash
-# 后端（工作区 .db 只读锁 + WorkBuddy safe-delete 限制 → 用 MANJU_ 系列变量指向工作区外可写目录）
+# 后端（MANJU_ 系列变量按项目设计指向工作区外 Temp 目录：DB 默认 C: 快照、日志/运行/前端产物在 Temp。
+# 注：D: 工作区 SQLite 实测可写，"只读锁"为误判；MANJU_ 路径是项目既定运行时设计，非绕过锁。
+# 安全删除钩子会拦截删旧 dist 文件，故前端构建产物放工作区外。）
 cd D:\AI\manju_agent\server
 MANJU_RUN_DIR="C:/Users/L/AppData/Local/Temp/manju_run" \
 MANJU_DB_PATH="C:/Users/L/AppData/Local/Temp/manju_app_snapshot.db" \
@@ -151,10 +156,17 @@ MANJU_LOG_DIR="C:/Users/L/AppData/Local/Temp/manju_logs" \
 MANJU_FRONTEND_DIR="C:/Users/L/AppData/Local/Temp/manju_dist_fixed" \
 C:/Users/L/.workbuddy/binaries/python/envs/default/Scripts/python.exe launcher.py start backend
 # 监听 127.0.0.1:7788
+# ⚠️ 若在无头/自动化环境里 launcher 的 start "title" cmd /k 窗口无法保持进程存活，
+# 可直接以 venv python 拉起 main.py（同环境变量）：
+#   cd D:\AI\manju_agent\server
+#   MANJU_DB_PATH="C:/Users/L/AppData/Local/Temp/manju_app_snapshot.db" ^
+#   MANJU_LOG_DIR="C:/Users/L/AppData/Local/Temp/manju_logs" ^
+#   MANJU_RUN_DIR="C:/Users/L/AppData/Local/Temp/manju_run" ^
+#   C:/Users/L/.workbuddy/binaries/python/envs/default/Scripts/python.exe main.py
 
 # 前端静态服务（托管 frontend/dist + 反代 /api/v1）
 # 经 launcher 启动（推荐，受 SystemManager 管理）。
-# 本机工作区 frontend/dist 与 src/ 均受 safe-delete/文件锁限制，vite 无法覆盖 → 统一把构建产物放到工作区外：
+# 安全删除钩子会拦截删旧 dist 文件导致 vite 重建失败 → 统一把构建产物输出到工作区外 MANJU_FRONTEND_DIR：
 cd D:\AI\manju_agent
 C:/Users/L/.workbuddy/binaries/node/versions/22.22.2/node.exe node_modules/vite/bin/vite.js build \
   --outDir "C:/Users/L/AppData/Local/Temp/manju_dist_fixed"
