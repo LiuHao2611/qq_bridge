@@ -9,7 +9,7 @@
     耗尽触发降级（model→降级模型 / queue→降级队列），再失败则收敛为 FAILED
   - 状态收敛（CLOSE-01）：PENDING→RUNNING→DONE/FAILED/SKIPPED，全链路终态单一
   - 分支规则（§4.2）：用户终止→全链路回滚；质量失败片段在 N08 跳过并告警
-  - 看门狗（OPS-04）：整体耗时 > 30min → 终止 + 告警
+  - 看门狗（OPS-04）：整体耗时 > 30min → 终止 + 告警 + 退冻结金（CLOSE-04 资金兜底，见项 ⑥）
 
 本实现为「先搭骨架再填充」阶段：单机串行编排，复用现有 ai_local 生成/合成核心，
 不改动现有 worker.py/routers.py。full 版将 N04/N05 改为入队 worker + 并行调度。
@@ -65,6 +65,7 @@ class GlobalScheduler:
             "post_production": PostProductionAgent(),
         }
         self._cancel = False
+        self._refunded_traces = set()  # CLOSE-04：本次 run 退冻结金去重（项 ⑥）
 
     # -- 外部控制 -------------------------------------------------------------
     def cancel(self):
@@ -79,6 +80,7 @@ class GlobalScheduler:
         ctx = AgentContext(trace_id=trace_id, project_id=project_id,
                            user_id=user_id, params=params or {})
         result = DirectorRunResult(trace_id)
+        self._refunded_traces = set()  # CLOSE-04：本次 run 退冻结金去重（项 ⑥）
         blog(trace_id, "scheduler", "run_start", level="info",
              project_id=project_id, start_node=start_node, node_count=len(DAG_NODES))
         started = time.time()
@@ -93,6 +95,8 @@ class GlobalScheduler:
             if self._cancel:
                 blog(trace_id, "scheduler", "run_rollback", level="warning", reason="user_cancel")
                 self._rollback_all(ctx, upstream)
+                # CLOSE-04：用户终止 → 退本 trace 未派发的冻结金 + 告警（项 ⑥）
+                self._refund_pending_preauths(ctx, reason="用户主动终止退冻结金")
                 result.ok = False
                 result.errors.append({"node": node_id, "reason": "user_cancel"})
                 break
@@ -118,6 +122,8 @@ class GlobalScheduler:
                 result.ok = False
                 result.errors.append({"node": node_id, "reason": "watchdog_timeout"})
                 blog(trace_id, "scheduler", "watchdog_timeout", level="error", node=node_id)
+                # CLOSE-04：看门狗超时 → 退本 trace 未派发(queued)任务的冻结金 + 告警（项 ⑥）
+                self._refund_pending_preauths(ctx, reason="看门狗超时(>30min)未派发任务退冻结金")
                 break
 
             try:
@@ -130,6 +136,8 @@ class GlobalScheduler:
                                       "message": e.message})
                 blog(trace_id, "scheduler", "node_failed", level="error",
                      node=node_id, key=e.key, code=e.code)
+                # CLOSE-04：节点失败 → 退本 trace 未派发的冻结金 + 告警（项 ⑥）
+                self._refund_pending_preauths(ctx, reason="节点失败退冻结金(%s)" % node_id)
                 self._emit_progress(on_progress, idx, total, node_id, "failed",
                                     info={"key": e.key, "code": e.code})
                 break
@@ -143,6 +151,8 @@ class GlobalScheduler:
                                       "message": (res.error or {}).get("message") or "agent returned failed"})
                 blog(trace_id, "scheduler", "node_failed", level="error",
                      node=node_id, reason="agent_failed")
+                # CLOSE-04：节点失败 → 退本 trace 未派发的冻结金 + 告警（项 ⑥）
+                self._refund_pending_preauths(ctx, reason="节点失败退冻结金(%s)" % node_id)
                 self._emit_progress(on_progress, idx, total, node_id, "failed",
                                     info={"reason": "agent_failed"})
                 break
@@ -235,6 +245,86 @@ class GlobalScheduler:
                 agent.rollback(ctx)
             except Exception:
                 pass
+
+    # -- CLOSE-04 看门狗/失败 资金兜底（项 ⑥） ------------------------------------
+    def _refund_pending_preauths(self, ctx, reason):
+        """退本 trace 下「未派发(queued)」任务的冻结金 + 透出告警（CLOSE-04 资金安全）。
+
+        仅退 worker 从未派发的任务（status='queued'）：其 pre_auth 仍为 estimated 冻结态、
+        且 worker 不会 settle（worker 仅选 'queued'/'retrying'）。已 succeeded(已 settle)/
+        failed(已 refund) 的任务不在此列 —— 杜绝「用户白嫖成片」或重复退款（fund loss）。
+        幂等：同一次 run 内以 trace_id 去重；points_engine.refund 本身亦幂等。
+        """
+        if not ctx or not getattr(ctx, "trace_id", None):
+            return {"refunded_count": 0, "refunded_total": 0}
+        if ctx.trace_id in getattr(self, "_refunded_traces", set()):
+            return {"refunded_count": 0, "refunded_total": 0}
+        self._refunded_traces.add(ctx.trace_id)
+
+        try:
+            from db import get_conn
+            from points_engine import refund
+            from realtime import publish as ws_publish
+        except Exception:
+            get_conn = None
+            refund = None
+            ws_publish = None
+
+        # 1) 查本 trace 下未派发的待退任务
+        rows = []
+        if get_conn:
+            conn = get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT task_id, pre_auth_id FROM generation_tasks "
+                    "WHERE trace_id=? AND status='queued' AND pre_auth_id IS NOT NULL",
+                    (ctx.trace_id,)).fetchall()
+            finally:
+                conn.close()
+
+        # 2) 逐笔退还冻结金（CLOSE-04）
+        refunded_count = 0
+        refunded_total = 0
+        cancelled_ids = []
+        for r in rows:
+            pa = r["pre_auth_id"]
+            try:
+                res = refund(pa, reason=reason)
+                refunded_total += int((res or {}).get("refunded", 0) or 0)
+                refunded_count += 1
+                cancelled_ids.append(r["task_id"])
+            except Exception:
+                pass
+
+        # 3) 终态收敛（CLOSE-01）：取消未派发任务，阻止 worker 后续 pickup
+        if cancelled_ids and get_conn:
+            conn = get_conn()
+            try:
+                ph = ",".join("?" for _ in cancelled_ids)
+                conn.execute(
+                    "UPDATE generation_tasks SET status='cancelled' "
+                    "WHERE task_id IN (%s) AND status='queued'" % ph,
+                    cancelled_ids)
+                conn.commit()
+            finally:
+                conn.close()
+
+        # 4) 告警透出（REDUN-01 / WS director:<pid>）
+        if refunded_count:
+            blog(ctx.trace_id, "scheduler", "preauth_refunded", level="warning",
+                 reason=reason, refunded_count=refunded_count, refunded_total=refunded_total)
+            if ws_publish and getattr(ctx, "project_id", None):
+                try:
+                    ws_publish("director:%s" % ctx.project_id, "alert", {
+                        "level": "warning",
+                        "reason": reason,
+                        "refunded_count": refunded_count,
+                        "refunded_total": refunded_total,
+                        "trace_id": ctx.trace_id,
+                    })
+                except Exception:
+                    pass
+        return {"refunded_count": refunded_count, "refunded_total": refunded_total}
 
 
 def build_director():

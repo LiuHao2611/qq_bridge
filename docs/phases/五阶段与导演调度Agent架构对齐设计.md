@@ -148,8 +148,8 @@ N01→N02 失败收敛（CLOSE-01），错误码 1002（`MISSING_SCRIPT`）；�
    身份权重 0.8–0.9（骨架仅注入资产名不变量 + 分层权重配置，引擎消费侧待 full 版）。
 4. **重试/降级落地（骨架埋点）**：`retry_after` + `_degrade` 已在 scheduler 接入；需补「降级模型 / 降级队列」的实际切换动作
    （`_degrade` 当前仅记录类别，未真切换）。
-5. **进度透出（骨架占位）**：AgentResult 进度经 WebSocket / 轮询推前端（复用现有 `ws_publish`，骨架未接）。
-6. **看门狗联动（骨架埋点）**：长耗时整链 >30min 触发 `watchdog_timeout` 已埋点，需接退款 + 告警（CLOSE-04 / OPS-04）。
+5. **进度透出（✅ 已落地 2026-08-08）**：per-segment 进度经 WS 频道 `director:<pid>` 透出（REDUN-01：WS 优先、轮询兜底），由 `ProductionStage.vue` 渲染片段级状态/进度条/成片链接横幅（#72–#74 落地，随 full 版 ② 一并交付）。
+6. **看门狗联动退款告警（✅ 已落地 2026-08-08）**：`GlobalScheduler._refund_pending_preauths` 在 `watchdog_timeout` / 用户终止 / 节点失败（AgentError + agent_failed）三条终态路径，按 `trace_id` 查本链路 `status='queued'` 的 `generation_tasks`，逐一 `points_engine.refund(pre_auth_id)` 退冻结金（CLOSE-04 资金兜底），并将未派发任务收敛为 `cancelled`（CLOSE-01），经 WS `director:<pid>` 透出 `alert` 告警 + `blog` WARN。安全边界：仅退 worker 从未派发的 `queued` 任务（其 pre_auth 仍是 `estimated` 冻结态），**绝不退 `succeeded`（已 settle）任务**——杜绝「用户白嫖成片」或重复退款；同 run 内 trace_id 去重 + refund 幂等双重保险。隔离自测全绿（WATCHDOG_REFUND_OK / IDEMPOTENT_OK / FUND_LOSS_GUARD_OK）。
 7. **转场 / 全局后处理（待引擎）**：按镜头类型的转场、人脸修复 / 降噪 / 锐化 / 帧率统一后处理（骨架 `synthesize_project_video` 委托层未含，等 full 版）。
 8. **自动化品控重生成闭环（骨架占位）**：`face_sim` 当前占位 None，`failed_shot_list` 产出但未自动触发重生成；等真人脸比对引擎接入后接回 SequenceScheduler 重投。
 9. **规则引擎二次校验（待 full 版）**：设计逻辑「非破坏性编辑 / 资产沉淀复用」原则对应的规则引擎二次校验节点，骨架未含。
@@ -160,7 +160,7 @@ N01→N02 失败收敛（CLOSE-01），错误码 1002（`MISSING_SCRIPT`）；�
 
 - **CLOSE-01 状态机收敛**：`NodeStatus` PENDING→RUNNING→DONE/FAILED/SKIPPED；全链路终态单一，失败即 break 收敛。
 - **CLOSE-02 不吞异常**：Agent 异常统一转 `AgentError` 上抛；`partial_fail` 不静默吞（warning 记失败片段）。
-- **CLOSE-04 失败退积分**：积分相关逻辑仍在 `worker`（`_mark_failed` 退冻结金）；Director 生成路径复用 worker 时不重复扣退。
+- **CLOSE-04 失败退积分**：worker 侧 `_mark_failed` 退冻结金（任务级失败）；Director 调度器侧 `_refund_pending_preauths` 在 watch_dog 超时 / 用户终止 / 节点失败三条路径退本 trace 未派发(`queued`)任务的冻结金（整链失败兜底），且仅退 `queued` 任务避免重复退/白嫖。
 - **REDUN-01 降级链**：`ai_local` 内部 L1/L2/L3 三级降级；Director 层 §6 重试 + 降级类别。
 - **REDUN-02 重试退避**：`retry_after` 指数退避 + 抖动，尊重 §6.2。
 - **LOG-01/02/03/04**：`blog()` 全链路结构化 JSON，trace_id 贯穿，敏感字段剔除。
