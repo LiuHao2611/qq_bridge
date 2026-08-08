@@ -59,6 +59,9 @@ class SequenceSchedulerAgent(BaseAgent):
         enable_tail = ctx.params.get("enable_tail_frame", True)   # 手册 §3.3.5 默认开启
         resume = ctx.params.get("resume", True)                    # 断点续跑默认开启
         priority = int(ctx.params.get("priority_level", 0) or 0)
+        # N03 透传：资产注入配置 + 全局风格参考图（经 upstream 由 VisualControlAgent 产出）
+        asset_inject_config = ctx.upstream.get("asset_inject_config") or {}
+        global_style_ref = ctx.upstream.get("global_style_ref") or ""
         trace_id = ctx.trace_id or "DR-unknown"
         project_id = ctx.project_id
         resolution0 = ctx.params.get("resolution") or "720p"
@@ -139,6 +142,9 @@ class SequenceSchedulerAgent(BaseAgent):
                 "enable_tail_frame": enable_tail,
                 "priority_level": priority,
                 "audio": True,
+                # N03 资产注入：per-role 基础身份权重 / 全局风格参考图 / 512 维协议
+                "asset_inject_config": asset_inject_config,
+                "global_style_ref": global_style_ref,
             }
             try:
                 task_id, _local_task_id, _pre_auth_id = enqueue_segment(

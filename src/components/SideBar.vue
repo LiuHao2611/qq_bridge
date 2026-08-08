@@ -1,18 +1,28 @@
 <script setup>
-import { computed, ref, onMounted } from 'vue'
+import { computed, ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { healthCheck } from '../api'
+import { usePersistedState } from '../composables/usePersist.js'
 
 const props = defineProps({ pid: { type: String, default: '' } })
 const route = useRoute()
 const router = useRouter()
+
+// 记录最后一次打开的项目，离开项目后点击「项目中心」可回到该项目而非列表
+const lastProject = usePersistedState('manju_last_project', { id: '' })
+watch(() => route.params.id, (id) => { if (id) lastProject.id = id }, { immediate: true })
+
+const projectCenterPath = computed(() => {
+  const id = props.pid || lastProject.id
+  return id ? '/projects/' + id : '/projects'
+})
 
 const groups = computed(() => {
   const base = [
     {
       name: '主导航', items: [
         { icon: '🏠', label: '首页', path: '/' },
-        { icon: '🎬', label: '项目中心', path: '/projects' },
+        { icon: '🎬', label: '项目中心', path: projectCenterPath.value },
         { icon: '📝', label: '推理监控', path: '/tasks' },
       ],
     },
@@ -46,26 +56,21 @@ const groups = computed(() => {
       ],
     },
   ]
-  if (props.pid) {
-    base.push({
-      name: '项目内', items: [
-        { icon: '📖', label: '项目策划', path: '/projects/' + props.pid + '/planning' },
-        { icon: '🎞️', label: '项目编辑页', path: '/projects/' + props.pid + '/editor' },
-        { icon: '🗂️', label: '素材库', path: '/projects/' + props.pid + '/assets' },
-        { icon: '🧩', label: '工作流画布', path: '/projects/' + props.pid + '/canvas' },
-        { icon: '📽️', label: '人生回忆录编辑页', path: '/memoir/' + props.pid },
-      ],
-    })
-  }
+  // 项目内导航已由顶部 ProjectFlowNav 承载，侧栏不再重复展开「项目内」分组
   return base
 })
 
 const isActive = (path) => {
   const p = route.path
   if (path === '/') return p === '/'
-  if (path === '/projects') return p === '/projects' || p === '/'
+  if (path === '/projects') return p === '/projects' || p.startsWith('/projects/')
   if (path === '/memoir') return p === '/memoir' || p.startsWith('/memoir/')
-  if (path.startsWith('/projects/')) return p === path
+  if (path.startsWith('/projects/')) {
+    if (p === path) return true
+    // 项目入口 /projects/:id 在其任意子路由下都高亮
+    if (/^\/projects\/[^/]+$/.test(path) && p.startsWith(path + '/')) return true
+    return false
+  }
   return p.startsWith(path)
 }
 
@@ -120,10 +125,10 @@ onMounted(async () => {
 .logo .diamond { color: var(--pink); font-size: 22px; text-shadow: 0 0 12px rgba(255,77,141,.6); }
 .logo-txt { font-size: 16px; font-weight: 800; line-height: 1.15; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .logo-txt small { font-size: 10px; font-weight: 600; opacity: .8; }
-.nav-group { font-size: 11px; color: var(--sub); padding: 14px 18px 6px; letter-spacing: 1px; }
-.nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 18px; color: var(--sub); font-size: 14px; cursor: pointer; transition: .15s; border-left: 3px solid transparent; }
-.nav-item:hover { color: var(--txt); background: #1c1f27; }
-.nav-item.active { color: var(--txt); background: #1f2330; border-left-color: var(--pur); }
+.nav-group { font-size: 11px; color: var(--sub); padding: 16px 18px 8px; letter-spacing: 1px; }
+.nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 14px; margin: 0 10px 3px; color: var(--sub); font-size: 14px; cursor: pointer; transition: .15s; border-left: 3px solid transparent; border-radius: 8px; }
+.nav-item:hover { color: var(--txt); background: rgba(255,255,255,.06); }
+.nav-item.active { color: var(--txt); background: rgba(138,92,255,.12); border-left-color: var(--pur); }
 .nav-item .icon { width: 18px; text-align: center; }
 .sidebar-foot-wrap { margin-top: auto; padding: 10px 0 14px; }
 .sidebar-foot { display: flex; align-items: center; gap: 8px; padding: 8px 18px; font-size: 12px; color: var(--sub); }

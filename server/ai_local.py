@@ -986,13 +986,19 @@ def _comfy_text2img(prompt, width=1280, height=720, steps=20, cfg=7.0,
     return _comfy_run(wf, timeout)
 
 
-def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name, weight=0.7,
+def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name, weight=0.85,
                                    width=1280, height=720, steps=20, cfg=7.0,
-                                   seed=-1, timeout=240):
-    """带 IP-Adapter 的文生图：用参考图（角色定妆照）约束角色一致性。
+                                   seed=-1, timeout=240,
+                                   style_comfy_name=None, style_weight=0.4):
+    """带 IP-Adapter 的文生图：用参考图（角色定妆照）约束角色一致性（手册 §5.2 身份权重注入）。
 
-    依赖 ComfyUI_IPAdapter_plus + clip_vision 权重（本机已具备）。任何节点不匹配/执行失败都抛
-    RuntimeError，由调用方捕获后回退基础文生图（角色一致性降级为提示词强调，不阻塞生成）。
+    身份路（ref_comfy_name）：把角色参考图注入交叉注意力，weight=base_weight（默认 0.85，
+    可由 N03 按年龄在 0.7-0.95 调整），实现真人资产「基础 ID + 风格 LoRA」分层控制。
+    风格路（可选 style_comfy_name）：把全局风格参考图（N03 生成）作第二路 IP-Adapter 注入，
+    统一色调/质感/光影（手册 §3.2.4），权重低于身份路。
+
+    依赖 ComfyUI_IPAdapter_plus + clip_vision 权重。任何节点不匹配/执行失败都抛 RuntimeError，
+    由调用方捕获后回退基础文生图（身份/风格一致性降级为提示词强调，不阻塞生成）。
     """
     if not comfy_available():
         raise RuntimeError("ComfyUI 未启动")
@@ -1016,6 +1022,13 @@ def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name, weight=0.7,
         "12": {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": "CLIP-ViT-H-14-laion2B-s32B-b4K.safetensors"}},
         "13": {"class_type": "LoadImage", "inputs": {"image": ref_comfy_name}},
     }
+    # 风格路：第二路 IP-Adapter（全局风格参考图），链式接在身份路之后
+    if style_comfy_name:
+        wf["20"] = {"class_type": "IPAdapter", "inputs": {
+            "ipadapter": ["11", 0], "clip_vision": ["12", 0],
+            "image": ["23", 0], "model": ["10", 0], "weight": float(style_weight)}}
+        wf["23"] = {"class_type": "LoadImage", "inputs": {"image": style_comfy_name}}
+        wf["3"]["inputs"]["model"] = ["20", 0]
     return _comfy_run(wf, timeout)
 
 
@@ -1094,7 +1107,7 @@ def generate_segment_video(segment, shots, asset_refs, out_path, params=None):
         return "fail", "FFmpeg 不可用，无法合成视频（请确认 ffmpeg 在 PATH）"
 
     # 资产引用：取角色/场景参考图（用于 IP-Adapter / ControlNet），并收集资产名用于提示词不变量
-    role_cover = None   # (local_path, comfy_name)
+    role_cover = None   # (local_path, comfy_name, stage_id)
     scene_cover = None
     asset_infos = []
     try:
@@ -1114,13 +1127,28 @@ def generate_segment_video(segment, shots, asset_refs, out_path, params=None):
                 if not path or not os.path.isfile(path):
                     continue
                 if atype == "role" and role_cover is None:
-                    role_cover = (path, _upload_to_comfy(path))
+                    role_cover = (path, _upload_to_comfy(path), a.get("stage_id"))
                 elif atype == "scene" and scene_cover is None:
                     scene_cover = (path, _upload_to_comfy(path))
         finally:
             _conn.close()
     except Exception as e:
         logger.warning("[gen] 资产引用读取失败（降级为无参考图）: %s" % e)
+
+    # N03 资产注入配置：per-role 基础身份权重 + 全局风格参考图（手册 §5.2 / §3.2.4）
+    inject_cfg = params.get("asset_inject_config") or {}
+    style_ref = params.get("global_style_ref") or ""
+    style_weight = float(inject_cfg.get("style_weight", 0.4) or 0.4)
+    role_weights = {k: float(v.get("base_weight", 0.85))
+                    for k, v in (inject_cfg.get("roles") or {}).items()}
+    style_comfy_name = None
+    if style_ref and os.path.isfile(style_ref) and comfy_available():
+        try:
+            style_comfy_name = _upload_to_comfy(style_ref)
+            logger.info("[gen] 全局风格参考图已上传，将作为风格条件注入: %s" % style_ref)
+        except Exception as e:
+            logger.warning("[gen] 风格参考图上传失败，跳过风格注入: %s" % e)
+            style_comfy_name = None
 
     # LLM 润色中文分镜为英文提示词（无 LLM 模板兜底）
     en_prompt = build_segment_prompt(segment, shots, asset_infos)
@@ -1134,12 +1162,23 @@ def generate_segment_video(segment, shots, asset_refs, out_path, params=None):
     # 第一层：ComfyUI 出图（每张镜头一张）；IP-Adapter/ControlNet 失败自动回退基础文生图
     comfy_imgs = []
     if comfy_available():
+        # 本片段角色身份权重（N03 按年龄调权；无配置则默认 0.85）
+        role_stage_id = role_cover[2] if role_cover else None
+        base_w = role_weights.get(role_stage_id, 0.85) if role_stage_id else 0.85
+        if role_cover and role_cover[1]:
+            logger.info("[gen] 角色身份注入 IP-Adapter（base_weight=%.2f）stage=%s"
+                        % (base_w, role_stage_id))
+        if style_comfy_name:
+            logger.info("[gen] 全局风格参考图注入 IP-Adapter（style_weight=%.2f, %s）"
+                        % (style_weight, inject_cfg.get("warm_cool", "neutral")))
         for _ in shots:
             p = en_prompt
             img = None
             try:
                 if role_cover and role_cover[1]:
-                    img = _comfy_text2img_with_ipadapter(p, role_cover[1], width=W, height=H, seed=seed, timeout=120)
+                    img = _comfy_text2img_with_ipadapter(
+                        p, role_cover[1], weight=base_w, width=W, height=H, seed=seed,
+                        timeout=120, style_comfy_name=style_comfy_name, style_weight=style_weight)
                 elif scene_cover and scene_cover[1] and detect_comfy_controlnet():
                     img = _comfy_text2img_with_controlnet(p, scene_cover[1], width=W, height=H, seed=seed, timeout=120)
                 else:

@@ -155,7 +155,8 @@ def _serve_one(task):
             _tp = json.loads(task.get("params") or "{}") if task.get("params") else {}
         except Exception:
             _tp = {}
-        for _k in ("first_frame", "enable_tail_frame", "priority_level"):
+        for _k in ("first_frame", "enable_tail_frame", "priority_level",
+                   "asset_inject_config", "global_style_ref"):
             if _k in _tp and _tp[_k] is not None:
                 gen_params[_k] = _tp[_k]
         level, note = _run_with_timeout(

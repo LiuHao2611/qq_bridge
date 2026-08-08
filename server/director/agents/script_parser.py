@@ -142,6 +142,8 @@ class ScriptParserAgent(BaseAgent):
     def _auto_bind(self, segments, asset_lib):
         bound = {}
         warnings = []
+        # 资产 → 主阶段（selected=1 优先）映射，便于下游锁定 512 维身份向量与 stage_id
+        stage_map = self._primary_stage_map([a["asset_id"] for a in asset_lib])
         for seg in segments:
             seg_id = seg.get("segment_id")
             text = " ".join([
@@ -166,6 +168,7 @@ class ScriptParserAgent(BaseAgent):
                 if conf >= SIM_THRESHOLD:
                     seg_bound.append({
                         "asset_id": a["asset_id"], "asset_type": a["type"],
+                        "stage_id": stage_map.get(a["asset_id"]),
                         "weight": 0.85, "confidence": conf, "needs_review": False,
                     })
                 else:
@@ -176,6 +179,40 @@ class ScriptParserAgent(BaseAgent):
             if seg_bound:
                 bound[seg_id] = seg_bound
         return bound, warnings
+
+    def _primary_stage_map(self, asset_ids):
+        """资产 → 主阶段 stage_id 映射（selected=1 优先，否则首阶段），供下游锁定身份向量。"""
+        if not asset_ids:
+            return {}
+        try:
+            import db
+            conn = db.get_conn()
+        except Exception:
+            return {}
+        try:
+            placeholders = ",".join("?" for _ in asset_ids)
+            rows = db.fetch_all(
+                conn,
+                "SELECT stage_id, asset_id, selected FROM asset_stages "
+                "WHERE asset_id IN (%s)" % placeholders,
+                tuple(asset_ids),
+            )
+            best = {}
+            for r in rows:
+                aid = r["asset_id"]
+                if aid in best and best[aid].get("selected"):
+                    continue
+                if aid in best and r.get("selected"):
+                    best[aid] = r
+                    continue
+                if aid not in best:
+                    best[aid] = r
+            return {aid: r["stage_id"] for aid, r in best.items()}
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _load_asset_library(self, project_id):
         """加载资产库（全局 + 本项目），供关键词匹配。"""
