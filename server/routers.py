@@ -621,7 +621,10 @@ def _resolve_asset_local_file(c):
         name = os.path.basename(c)
     if name:
         for base in (_OUTPUTS, os.path.join(_OUTPUTS, "assets"),
-                     os.path.join(_OUTPUTS, "assets", "originals")):
+                     os.path.join(_OUTPUTS, "assets", "originals"),
+                     # upload-image 等端点以 server/ 为 BASE 写入 server/outputs/（.pyc 行为）
+                     os.path.join(_SERVER_DIR, "outputs"),
+                     os.path.join(_SERVER_DIR, ".uploads")):
             p = os.path.join(base, os.path.basename(name))
             if os.path.isfile(p):
                 return p

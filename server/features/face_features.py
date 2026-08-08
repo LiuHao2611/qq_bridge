@@ -105,6 +105,7 @@ def _load_insightface():
 
 def _embed_one(app, image_path):
     import cv2
+    np = _require_numpy()
     img = cv2.imread(image_path)
     if img is None:
         raise FeatureUnavailable("face", "无法读取参考图：%s" % image_path, code="FACE_IMAGE_UNREADABLE")
@@ -169,15 +170,21 @@ def compare_face_vector(image_path, vector_bytes):
 
 # ---- 落库（asset_stages.face_vector，BLOB = float32 little-endian） -------------
 def store_face_vector(stage_id, vector):
-    """把 512 维向量序列化写入 asset_stages.face_vector。"""
+    """把 512 维向量以 base64 文本存入 asset_stages.face_vector。
+
+    历史原因：compiled routers_compiled 的 /stages-with-poses 会直接把该列
+    带回 JSON，raw float32 bytes 触发 'utf-8 codec can't decode byte 0x8d'。
+    base64 ASCII 文本可被安全 JSON 序列化，load_face_vector 再解码还原。
+    """
     try:
         import db
         conn = db.get_conn()
     except Exception:
         return False
     try:
+        import base64
         np = _require_numpy()
-        blob = np.asarray(vector, dtype=np.float32).reshape(-1).tobytes()
+        blob = base64.b64encode(np.asarray(vector, dtype=np.float32).reshape(-1).tobytes()).decode('ascii')
         conn.execute(
             "UPDATE asset_stages SET face_vector=? WHERE stage_id=?",
             (blob, stage_id))
@@ -194,16 +201,30 @@ def store_face_vector(stage_id, vector):
 
 def load_face_vector(stage_id):
     """读取 asset_stages.face_vector；无则返回 None。"""
+    np = _require_numpy()
     try:
         import db
         conn = db.get_conn()
     except Exception:
         return None
     try:
+        import base64
         row = conn.execute(
             "SELECT face_vector FROM asset_stages WHERE stage_id=?", (stage_id,)).fetchone()
         if row and row["face_vector"]:
-            return np.frombuffer(row["face_vector"], dtype=np.float32).reshape(-1)
+            raw = row["face_vector"]
+            # 兼容 base64 文本（当前）与历史 raw float32 bytes（旧数据）
+            if isinstance(raw, str):
+                data = base64.b64decode(raw)
+            else:
+                try:
+                    data = base64.b64decode(raw)
+                except Exception:
+                    data = raw
+            vec = np.frombuffer(data, dtype=np.float32).reshape(-1)
+            if vec.shape[0] != FACE_VECTOR_DIM:
+                return None
+            return vec
         return None
     except Exception:
         return None

@@ -126,19 +126,24 @@ def _get_comfy_clip_vision():
     扫描 models/clip_vision 自动挑首个 *.safetensors；都没有 → 清晰报错。
     """
     return comfy_env.discover_weight(
-        "clip_vision", ["*.safetensors"], what="CLIP-ViT(clip_vision) 权重")
+        "clip_vision", ["*.safetensors", "*.bin"], what="CLIP-ViT(clip_vision) 权重")
 
 
 def _get_comfy_controlnet(control_type="depth"):
     """返回 ControlNet 权重文件名（场景构图约束，手册 §3 场景参考图约束）。
 
-    control_type: depth / canny / openpose / lineart。扫描 models/controlnet
-    自动挑首个匹配 *<type>* 的文件；都没有 → 清晰报错。
+    control_type: depth / canny / openpose / lineart。优先扫描 models/controlnet
+    中匹配 *<type>* 的文件（如 depth→control_v11f1p_sd15_depth.pth）；
+    没有同类则回退到任意 *.pth/*.safetensors；都没有 → 清晰报错。
     """
-    patterns = ["*%s*.pth" % control_type, "*%s*.safetensors" % control_type,
-                "*.pth", "*.safetensors"]
-    return comfy_env.discover_weight(
-        "controlnet", patterns, what="ControlNet(%s) 权重" % control_type)
+    type_patterns = ["*%s*.pth" % control_type, "*%s*.safetensors" % control_type]
+    try:
+        return comfy_env.discover_weight(
+            "controlnet", type_patterns, what="ControlNet(%s) 权重" % control_type)
+    except RuntimeError:
+        return comfy_env.discover_weight(
+            "controlnet", ["*.pth", "*.safetensors"],
+            what="ControlNet(%s) 权重" % control_type)
 
 
 def _get_llm_model_config(purpose="create"):
@@ -308,12 +313,13 @@ def detect_comfy_video():
 def detect_comfy_controlnet():
     """探测 ControlNet 节点可用且本地 models/controlnet 有真实权重。"""
     try:
-        info = json.loads(_http_post_json(COMFY_URL + "/object_info", b"{}", timeout=10))
+        # 注意：ComfyUI 的 /object_info 仅支持 GET（POST 返回 405），故用 GET 探测节点。
+        info = json.loads(urllib.request.urlopen(
+            urllib.request.Request(COMFY_URL + "/object_info"), timeout=10).read())
         if not any(k in " ".join(info.keys()) for k in
                    ("ControlNet", "ControlNetLoader", "ControlNetAux")):
             return False
-        for cand in (r"D:\AI\ComfyUI-aki-v3\ComfyUI\models\controlnet",
-                     os.path.join(BASE, "models", "controlnet")):
+        for cand in (os.path.join(comfy_env.get_comfy_root(), "models", "controlnet"),):
             if os.path.isdir(cand) and any(
                 f.endswith((".safetensors", ".pt", ".pth", ".bin"))
                 for f in os.listdir(cand)

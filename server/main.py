@@ -120,6 +120,11 @@ async def serve_file(name: str, request: Request):
     # 防目录穿越
     safe = os.path.basename(name)
     p = os.path.join(OUTPUTS, safe)
+    # 兼容 routers_compiled 等以 server/ 为 BASE 写入 server/outputs/ 的历史文件
+    if not os.path.isfile(p):
+        p = os.path.join(BASE, "server", "outputs", safe)
+    if not os.path.isfile(p):
+        p = os.path.join(BASE, "server", ".uploads", safe)
     if not os.path.isfile(p):
         logger.warning("[FILE] 404 name=%s tried=%s ua=%s" % (safe, p, request.headers.get("User-Agent", "-")))
         return JSONResponse(status_code=404, content=envelope(40001, None, "文件不存在"))

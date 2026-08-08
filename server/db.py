@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS assets (
 CREATE TABLE IF NOT EXISTS asset_stages (
   stage_id     TEXT PRIMARY KEY,
   asset_id     TEXT NOT NULL REFERENCES assets(asset_id),
-  stage_name   TEXT NOT NULL CHECK (stage_name IN ('childhood','juvenile','youth','middle_age','old_age')),
+  stage_name   TEXT NOT NULL,
   age          INTEGER NOT NULL,
   reference_image_url TEXT NOT NULL DEFAULT '',
   face_vector  BLOB,
@@ -453,6 +453,48 @@ def _migrate(conn):
              updated_at   INTEGER NOT NULL DEFAULT 0
            )"""
     )
+
+    # 2026-08-09 修正：asset_stages.stage_name 原枚举 CHECK 限制自由/层级命名（如 周岩-青年），迁移移除。
+    _migrate_asset_stages_free_stage_name(conn)
+
+
+def _migrate_asset_stages_free_stage_name(conn):
+    """如果现有 asset_stages 仍带旧枚举 CHECK，则重建表以解除命名限制。"""
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='asset_stages'"
+        ).fetchone()
+        if not row or not row[0] or "childhood" not in row[0]:
+            return  # 已无旧枚举约束（或表不存在）
+    except Exception:
+        return
+    try:
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("BEGIN")
+        conn.execute(
+            """CREATE TABLE asset_stages_new (
+                 stage_id     TEXT PRIMARY KEY,
+                 asset_id     TEXT NOT NULL REFERENCES assets(asset_id),
+                 stage_name   TEXT NOT NULL,
+                 age          INTEGER NOT NULL,
+                 reference_image_url TEXT NOT NULL DEFAULT '',
+                 face_vector  BLOB,
+                 selected     INTEGER NOT NULL DEFAULT 0,
+                 created_at   TIMESTAMP DEFAULT (strftime('%s','now'))
+               )"""
+        )
+        conn.execute("INSERT INTO asset_stages_new SELECT * FROM asset_stages")
+        conn.execute("DROP TABLE asset_stages")
+        conn.execute("ALTER TABLE asset_stages_new RENAME TO asset_stages")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+        except Exception:
+            pass
 
 
 def init_db():

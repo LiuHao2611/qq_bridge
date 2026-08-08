@@ -799,6 +799,12 @@ class Handler(BaseHTTPRequestHandler):
             path = os.path.join(OUTPUTS, name)
             if not os.path.isfile(path):
                 path = os.path.join(UPLOADS_DIR, name)
+            # 后端 upload-image 等端点以 server/ 为 BASE 写入 server/outputs/（或 server/.uploads/），
+            # 与 web_app 的 BASE（项目根）不一致，兜底兼容这些路径。
+            if not os.path.isfile(path):
+                path = os.path.join(BASE, "server", "outputs", name)
+            if not os.path.isfile(path):
+                path = os.path.join(BASE, "server", ".uploads", name)
         if not os.path.isfile(path):
             logger.warning("[FILE] 404 name=%s run=%s tried=%s ua=%s" % (name, run, path, client))
             self._send(404, json.dumps({"error": "文件不存在"}))

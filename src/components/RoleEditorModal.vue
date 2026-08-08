@@ -24,6 +24,12 @@ const router = useRouter()
 
 const PLACEHOLDER = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0%25' stop-color='%2320242e'/><stop offset='100%25' stop-color='%233a3f4d'/></linearGradient></defs><rect width='200' height='200' fill='url(%23g)'/><text x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' fill='%236b7283' font-size='70'>🖼️</text></svg>"
 
+// 图片加载失败（如 URL 失效/跨域被拦）时回退到占位图，避免破图图标
+const imgError = (e) => {
+  const t = e && e.target
+  if (t && t.src !== PLACEHOLDER) { t.onerror = null; t.src = PLACEHOLDER }
+}
+
 const visible = computed({
   get: () => props.modelValue,
   set: (v) => emit('update:modelValue', v),
@@ -51,7 +57,7 @@ const form = reactive({
 // 阶段/姿势交互状态
 const selectedStageId = ref('')
 const previewUrl = ref('')
-const stageForm = reactive({ open: false, stage_name: 'youth', age: 25, file: null })
+const stageForm = reactive({ open: false, stage_name: 'youth', age: 25, file: null, coverUrl: '' })
 const poseForm = reactive({ open: false, stageId: '', pose_name: 'front', file: null })
 
 // 音色试听状态
@@ -314,24 +320,40 @@ const selectStage = (st) => {
 const openStageForm = () => {
   if (!form.id) { toast('请先保存角色主卡片'); return }
   stageForm.open = true
-  stageForm.stage_name = 'youth'
+  stageForm.stage_name = ''
   stageForm.age = 25
   stageForm.file = null
+  stageForm.coverUrl = ''
 }
-const onStageFile = (ev) => { stageForm.file = ev.target.files?.[0] || null }
+const onStageFile = (ev) => {
+  const f = ev.target.files?.[0] || null
+  stageForm.file = f
+  if (stageForm.coverUrl && stageForm.coverUrl.startsWith('blob:')) {
+    URL.revokeObjectURL(stageForm.coverUrl)
+  }
+  stageForm.coverUrl = f ? URL.createObjectURL(f) : ''
+}
 const submitStage = async () => {
   if (!stageForm.file) { toast('请选择阶段参考照'); return }
-  if (!stageForm.stage_name.trim()) { toast('请输入阶段名称'); return }
+  const suffix = stageForm.stage_name.trim()
+  if (!suffix) { toast('请输入阶段名称后缀'); return }
+  const parentName = (form.name || '').trim()
+  if (!parentName) { toast('当前角色名称为空，无法生成层级阶段名'); return }
+  const fullName = parentName + '-' + suffix
   busy.value = true
   try {
     const up = await uploadImage(stageForm.file)
     await addStage(form.id, {
-      stage_name: stageForm.stage_name.trim(),
+      stage_name: fullName,
       age: Number(stageForm.age) || 25,
       reference_image_url: up.url || '',
     })
     toast('已添加阶段')
     stageForm.open = false
+    if (stageForm.coverUrl && stageForm.coverUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(stageForm.coverUrl)
+      stageForm.coverUrl = ''
+    }
     await loadStages({ id: form.id })
     emit('stagesChanged')
   } catch (e) {
@@ -396,7 +418,7 @@ const removePose = async (st, p) => {
         <!-- 左侧：角色大图 -->
         <div class="re-left">
           <div class="re-cover-wrap">
-            <img :src="form.coverUrl || PLACEHOLDER" class="re-cover" />
+            <img :src="form.coverUrl || PLACEHOLDER" class="re-cover" @error="imgError" />
             <div class="re-cover-actions">
               <label class="re-cover-btn" title="替换角色图">
                 <el-icon><Upload /></el-icon>
@@ -496,14 +518,14 @@ const removePose = async (st, p) => {
 
             <div class="re-stage-detail-body">
               <div class="re-stage-img-wrap" @click="previewUrl = selectedStage.reference_image_url">
-                <img :src="selectedStage.reference_image_url || PLACEHOLDER" />
+                <img :src="selectedStage.reference_image_url || PLACEHOLDER" @error="imgError" />
                 <div class="re-stage-img-hint"><el-icon><ZoomIn /></el-icon> 预览</div>
               </div>
               <div class="re-stage-poses">
                 <div v-if="!(selectedStage.poses||[]).length" class="re-poses-empty">该阶段暂无姿势，点击 + 添加</div>
                 <div v-else class="re-pose-list">
                   <div class="re-pose-chip" v-for="p in selectedStage.poses" :key="p.pose_id">
-                    <img :src="p.reference_image_url || PLACEHOLDER" @click="previewUrl = p.reference_image_url" />
+                    <img :src="p.reference_image_url || PLACEHOLDER" @error="imgError" @click="previewUrl = p.reference_image_url" />
                     <span class="re-pose-label">{{ poseLabel(p.pose_name) }}</span>
                     <button class="re-pose-del" @click="removePose(selectedStage, p)"><el-icon><Close /></el-icon></button>
                   </div>
@@ -532,11 +554,11 @@ const removePose = async (st, p) => {
             @click="selectStage(st)"
           >
             <div class="re-stage-mini-img">
-              <img :src="st.reference_image_url || PLACEHOLDER" />
+              <img :src="st.reference_image_url || PLACEHOLDER" @error="imgError" />
+              <span v-if="st.age" class="re-stage-mini-age">{{ st.age }}岁</span>
               <span class="re-stage-mini-vec" :class="st.faceVector && st.faceVector.has_vector ? 'ok' : 'missing'" :title="st.faceVector && st.faceVector.has_vector ? '512维已提取' : '512维缺失'"></span>
             </div>
             <div class="re-stage-mini-name">{{ stageLabel(st.stage_name) }}</div>
-            <div v-if="st.age" class="re-stage-mini-age">{{ st.age }}岁</div>
           </div>
           <button class="re-stage-mini re-stage-mini-add" @click="openStageForm">
             <span class="add-icon">＋</span>
@@ -564,20 +586,42 @@ const removePose = async (st, p) => {
   </el-dialog>
 
   <Teleport to="body">
-  <!-- 添加阶段弹窗 -->
+  <!-- 添加阶段弹窗：与编辑角色主面板保持一致的两栏布局，强制层级命名 -->
   <div class="re-modal-mask" v-if="stageForm.open" @click="stageForm.open=false">
-    <div class="re-modal-box" @click.stop>
+    <div class="re-modal-box re-modal-wide" @click.stop>
       <h3>添加阶段</h3>
-      <p class="re-modal-sub">为「{{ form.name || '当前角色' }}」新增一个阶段卡片（如青年期 / 特定造型），将作为该角色卡的变体参与提示词与创作；命名与底层 ID 已绑定到当前角色。</p>
-      <label class="re-modal-lbl">阶段名称</label>
-      <input class="re-modal-input" v-model="stageForm.stage_name" list="stage-name-suggestions" placeholder="如：青年期 / 红衣造型（基于当前角色）" />
-      <datalist id="stage-name-suggestions">
-        <option v-for="o in ASSET_STAGE_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
-      </datalist>
-      <label class="re-modal-lbl">年龄</label>
-      <input class="re-modal-input" type="number" v-model="stageForm.age" min="0" max="120" />
-      <label class="re-modal-lbl">参考照</label>
-      <input type="file" accept="image/*" @change="onStageFile" />
+      <p class="re-modal-sub">为「{{ form.name || '当前角色' }}」新增一个阶段卡片。阶段角色卡与底层角色卡保持层级关系，阶段名强制为「{{ form.name || '角色' }}-后缀」。</p>
+      <div class="re-modal-body">
+        <!-- 左侧：参考图预览 -->
+        <div class="re-modal-left">
+          <div class="re-cover-wrap re-stage-cover-wrap">
+            <img :src="stageForm.coverUrl || PLACEHOLDER" class="re-cover" @error="imgError" />
+            <div class="re-cover-actions">
+              <label class="re-cover-btn" title="上传阶段参考图">
+                <el-icon><Upload /></el-icon>
+                <input type="file" accept="image/*" style="display:none" @change="onStageFile" />
+              </label>
+            </div>
+          </div>
+        </div>
+        <!-- 右侧：表单 -->
+        <div class="re-modal-right">
+          <div class="re-modal-field">
+            <label class="re-modal-lbl">阶段名称 <span class="re-modal-hint">（层级命名，必填）</span></label>
+            <div class="re-stage-name-row">
+              <span class="re-stage-name-prefix">{{ form.name || '角色' }}-</span>
+              <input class="re-modal-input re-stage-name-input" v-model="stageForm.stage_name" list="stage-name-suggestions" placeholder="如：青年 / 红衣造型" />
+            </div>
+            <datalist id="stage-name-suggestions">
+              <option v-for="o in ASSET_STAGE_OPTIONS" :key="o.value" :value="o.label">{{ o.label }}</option>
+            </datalist>
+          </div>
+          <div class="re-modal-field">
+            <label class="re-modal-lbl">年龄</label>
+            <input class="re-modal-input" type="number" v-model="stageForm.age" min="0" max="120" />
+          </div>
+        </div>
+      </div>
       <div class="re-modal-acts">
         <button class="re-btn ghost" @click="stageForm.open=false">取消</button>
         <button class="re-btn" :disabled="busy" @click="submitStage">保存</button>
@@ -614,12 +658,12 @@ const removePose = async (st, p) => {
 /* ===== 整体布局：75% 上 / 25% 下 ===== */
 .role-editor-body { display: flex; flex-direction: column; height: 78vh; min-height: 520px; max-height: 860px; }
 .re-top { flex: 3; display: flex; gap: 20px; min-height: 0; overflow: hidden; }
-.re-bottom { flex: 1; min-height: 0; border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; display: flex; flex-direction: column; }
+.re-bottom { flex: 1; min-height: 0; border: 1px solid var(--line); background: var(--bg-2); border-radius: 12px; margin-top: 12px; padding: 10px 12px 6px; display: flex; flex-direction: column; }
 
 /* ===== 左侧封面 ===== */
 .re-left { flex: 0 0 260px; display: flex; flex-direction: column; }
 .re-cover-wrap { position: relative; width: 100%; flex: 1; min-height: 0; background: var(--bg-2); border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
-.re-cover { width: 100%; height: 100%; object-fit: cover; }
+.re-cover { width: 100%; height: 100%; object-fit: contain; background: var(--bg-2); }
 .re-cover-actions { position: absolute; top: 10px; right: 10px; display: flex; gap: 8px; opacity: 0; transition: .15s; }
 .re-cover-wrap:hover .re-cover-actions { opacity: 1; }
 .re-cover-btn { width: 32px; height: 32px; border-radius: 8px; background: rgba(0,0,0,.55); color: #fff; border: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; backdrop-filter: blur(4px); }
@@ -676,8 +720,9 @@ const removePose = async (st, p) => {
 .re-btn-icon:hover { border-color: var(--pur); color: var(--pur); }
 .re-btn-icon-danger:hover { border-color: #ff4d4d; color: #ff4d4d; }
 .re-stage-detail-body { flex: 1; display: flex; gap: 14px; min-height: 0; }
-.re-stage-img-wrap { flex: 0 0 180px; position: relative; border-radius: 10px; overflow: hidden; background: var(--bg-2); border: 1px solid var(--line); cursor: zoom-in; }
-.re-stage-img-wrap img { width: 100%; height: 100%; object-fit: cover; }
+.re-stage-img-wrap { flex: 0 0 180px; align-self: flex-start; aspect-ratio: 3 / 4; position: relative; border-radius: 10px; overflow: hidden; background: var(--bg-2); border: 1px solid var(--line); cursor: zoom-in; }
+.re-stage-img-wrap img { display: block; width: 100%; height: 100%; object-fit: contain; background: var(--bg-2); transition: transform .2s; }
+.re-stage-img-wrap:hover img { transform: scale(1.04); }
 .re-stage-img-hint { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 4px; background: rgba(0,0,0,.45); color: #fff; font-size: 12px; opacity: 0; transition: .15s; }
 .re-stage-img-wrap:hover .re-stage-img-hint { opacity: 1; }
 .re-stage-poses { flex: 1; min-width: 0; overflow-y: auto; }
@@ -693,16 +738,18 @@ const removePose = async (st, p) => {
 .re-stage-empty-inner p { margin: 8px 0 0; font-size: 13px; }
 
 /* ===== 底部阶段菜单条（类似片段导航） ===== */
-.re-stage-strip { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; align-items: stretch; flex: 1; }
-.re-stage-mini { flex: 0 0 76px; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; padding: 6px 4px; border-radius: 10px; border: 2px solid transparent; background: var(--bg-2); transition: .15s; }
-.re-stage-mini:hover { background: var(--card); }
-.re-stage-mini.active { background: rgba(138,92,255,.12); border-color: var(--pur); }
-.re-stage-mini-img { position: relative; width: 56px; height: 56px; border-radius: 8px; overflow: hidden; background: var(--bg); border: 1px solid var(--line); }
-.re-stage-mini-img img { width: 100%; height: 100%; object-fit: cover; }
+.re-stage-strip { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; align-items: center; flex: 1; }
+.re-stage-mini { flex: 0 0 72px; display: flex; flex-direction: column; align-items: center; gap: 5px; cursor: pointer; padding: 6px 4px; border-radius: 12px; border: 2px solid transparent; transition: .15s; }
+.re-stage-mini:hover { background: rgba(255,255,255,.04); transform: translateY(-2px); }
+.re-stage-mini.active { background: rgba(138,92,255,.14); border-color: var(--pur); box-shadow: 0 4px 14px rgba(138,92,255,.25); }
+.re-stage-mini-img { position: relative; width: 60px; height: 60px; border-radius: 10px; overflow: hidden; background: var(--bg); border: 1px solid var(--line); box-shadow: 0 2px 6px rgba(0,0,0,.25); }
+.re-stage-mini-img img { display: block; width: 100%; height: 100%; object-fit: cover; transition: transform .2s; }
+.re-stage-mini:hover .re-stage-mini-img img { transform: scale(1.06); }
+.re-stage-mini-img::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 42%; background: linear-gradient(to top, rgba(0,0,0,.55), rgba(0,0,0,0)); pointer-events: none; }
 .re-stage-mini-name { width: 100%; font-size: 11px; color: var(--text); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.re-stage-mini-age { width: 100%; font-size: 10px; color: var(--sub); text-align: center; }
+.re-stage-mini-age { position: absolute; top: 3px; left: 3px; font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 8px; background: rgba(0,0,0,.55); color: #fff; }
 .re-stage-mini-add { border: 1px dashed var(--line); background: transparent; color: var(--sub); justify-content: center; }
-.re-stage-mini-add:hover { border-color: var(--pur); color: var(--pur); background: rgba(138,92,255,.08); }
+.re-stage-mini-add:hover { border-color: var(--pur); color: var(--pur); background: rgba(138,92,255,.08); transform: translateY(-2px); }
 .re-stage-mini-add .add-icon { font-size: 22px; line-height: 1; }
 .re-stage-mini-add .add-label { font-size: 10px; line-height: 1.2; text-align: center; }
 
@@ -719,8 +766,20 @@ const removePose = async (st, p) => {
 .re-btn.ghost { background: transparent; color: var(--sub); border-color: var(--line); }
 .re-btn.ghost:hover { border-color: var(--pink); color: var(--pink); }
 .re-btn:disabled { opacity: .6; cursor: not-allowed; }
-.re-preview-box { max-width: 90vw; max-height: 90vh; }
-.re-preview-box img { max-width: 90vw; max-height: 90vh; border-radius: 12px; }
+.re-preview-box { display: flex; align-items: center; justify-content: center; max-width: 95vw; max-height: 95vh; }
+.re-preview-box img { display: block; width: auto; height: auto; max-width: 95vw; max-height: 95vh; object-fit: contain; border-radius: 12px; }
+
+/* ===== 添加阶段弹窗：与角色编辑主面板一致的两栏布局 ===== */
+.re-modal-wide { width: 720px; max-width: 92vw; }
+.re-modal-body { display: flex; gap: 18px; margin-top: 12px; }
+.re-modal-left { flex: 0 0 220px; }
+.re-modal-right { flex: 1; min-width: 0; }
+.re-stage-cover-wrap { flex: none; height: auto; max-height: 320px; aspect-ratio: 3 / 4; }
+.re-modal-field { margin-bottom: 14px; }
+.re-modal-hint { font-weight: normal; color: var(--sub); }
+.re-stage-name-row { display: flex; align-items: center; }
+.re-stage-name-prefix { flex-shrink: 0; font-size: 13px; color: var(--text); background: var(--bg-2); padding: 7px 10px; border-radius: 8px 0 0 8px; border: 1px solid var(--line); border-right: 0; white-space: nowrap; }
+.re-stage-name-input { flex: 1; width: auto; min-width: 0; border-radius: 0 8px 8px 0; }
 
 /* ===== 底部操作栏 ===== */
 .re-footer { display: flex; justify-content: space-between; align-items: center; width: 100%; }
