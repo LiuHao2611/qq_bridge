@@ -326,6 +326,8 @@ def _migrate(conn):
         # Phase 4 任务分发与异步AI推理：实时进度 + 外部异步引擎回传关联 id
         ("generation_tasks", "progress REAL DEFAULT 0"),
         ("generation_tasks", "external_id TEXT"),
+        # N04/N05 首尾帧锚定（手册 §3.3.4/§3.3.5）：存储前序分镜提取的尾帧路径，供同场景连续分镜作首帧参考
+        ("generation_tasks", "last_frame_path TEXT"),
     ]
     for tbl, col_def in alters:
         col = col_def.split(" ", 1)[0]

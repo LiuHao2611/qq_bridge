@@ -79,19 +79,40 @@ class SequenceSchedulerAgent(BaseAgent):
             persist_segment = None
             ws_publish = None
 
-        by_seg = {}          # real_seg_id -> result dict（保持片段顺序汇总）
-        task_ids = []        # (real_seg_id, task_id)
-        real_ids = []        # 与 segments 顺序对应的真实 segment_id
         total = len(segments)
 
+        # ---- N04/N05 DAG 依赖编排（手册 §3.3.4 / §3.3.5）----
+        # 同场景连续分镜 → 尾帧依赖（串行锚定）；场景切换 → 无依赖（可并行入队）
+        order = []          # [(seg_index, dep_index_or_None)]
+        prev_scene = None
+        prev_idx = None
         for i, seg in enumerate(segments):
+            scene = (seg.get("scene_description") or seg.get("summary") or "")
+            dep = None
+            if enable_tail and prev_idx is not None and scene.strip() and scene == prev_scene:
+                dep = prev_idx   # 同场景连续 → 前序尾帧作本分镜首帧（串行）
+            order.append((i, dep))
+            prev_scene, prev_idx = scene, i
+
+        # 算力队列超时（手册 §3.3.5）：高速队列 60s / 普通队列 120s
+        is_high = priority >= 10
+        gen_timeout = 60 if is_high else 120
+
+        by_seg = {}               # real_seg_id -> result dict（保持片段顺序汇总）
+        task_ids = []             # (real_seg_id, task_id)
+        real_ids_by_index = {}    # seg_index -> real_seg_id（按片段顺序汇总）
+        task_of = {}              # seg_index -> task_id
+        tail_frames = {}          # seg_index -> 尾帧本地路径（供依赖节点作首帧）
+        done_idx = set()
+
+        def enqueue_one(i, first_frame):
+            seg = segments[i]
             original_seg_id = seg.get("segment_id") or ("seg_%d" % i)
-            # 解析真实 segment_id（按位置对齐既有 DB 行 / 净新增派生稳定 id）
             if resolve_segment_id:
                 real_seg_id, exists = resolve_segment_id(seg, project_id, i)
             else:
                 real_seg_id, exists = original_seg_id, False
-            real_ids.append(real_seg_id)
+            real_ids_by_index[i] = real_seg_id
             # 断点续跑：已有成功片段且文件存在 → 跳过（Observability/非破坏性）
             exist_url = self._existing_video_url(real_seg_id)
             if resume and exist_url and self._local_exists(exist_url):
@@ -101,23 +122,21 @@ class SequenceSchedulerAgent(BaseAgent):
                     ws_publish("director:%s" % project_id, "segment",
                                {"segment_id": real_seg_id, "status": "skip", "progress": 100,
                                 "video_url": exist_url, "task_id": None})
-                self._set_state("running", (i + 1) / total * 100.0)
-                continue
-
+                done_idx.add(i)
+                return real_seg_id
             if enqueue_segment is None:
                 self._set_state("failed", 0.0)
                 raise AgentError("DISPATCH_FAILED", "入队模块不可用（director.enqueue 导入失败）")
-
-            # 落库为真实 segments 行（worker 依赖），仅当行不存在时创建（不覆盖用户既有分镜）
+            # 落库为真实 segments 行（worker 依赖），仅当行不存在时创建
             if (not exists) and persist_segment:
                 real_seg_id = persist_segment(seg, project_id, i,
                                               bound.get(original_seg_id), resolution0)
-            # 入队参数
             duration = int(seg.get("duration") or 12)
             resolution = resolution0 or seg.get("resolution") or "720p"
             model_cfg = ctx.params.get("model_config") or {}
             model_id = model_cfg.get("video") or DEFAULT_MODEL_ID
-            # 项 ④ REDUN 降级链：降级标志透传 → 切换降级模型（worker 走同一消费链路）
+            prio = priority
+            # 项 ④ REDUN 降级链：降级标志透传 → 切换降级模型
             if getattr(ctx, "use_fallback_model", False):
                 try:
                     from director.enqueue import FALLBACK_VIDEO_MODELS
@@ -128,20 +147,21 @@ class SequenceSchedulerAgent(BaseAgent):
                     self._log("degrade_model", level="warning",
                               segment_id=real_seg_id, from_model=model_id, to_model=fb)
                 model_id = fb
-            # 项 ④：降级队列 → 入队任务降为低优先级（避免阻塞正常队列）
+            # 项 ④：降级队列 → 入队任务降为低优先级
             degraded_priority = getattr(ctx, "degraded_priority", None)
             if degraded_priority is not None:
-                priority = int(degraded_priority)
+                prio = int(degraded_priority)
                 self._log("degrade_queue", level="warning",
-                          segment_id=real_seg_id, priority=priority)
+                          segment_id=real_seg_id, priority=prio)
             seed = int(seg.get("seed") if seg.get("seed") is not None else -1)
             params = {
                 "resolution": resolution,
                 "seed": seed,
-                "first_frame": None,           # full 版引擎消费；当前引擎忽略（REDUN 降级）
+                "first_frame": first_frame,   # N04/N05 首尾帧锚定：前序尾帧作首帧
                 "enable_tail_frame": enable_tail,
-                "priority_level": priority,
+                "priority_level": prio,
                 "audio": True,
+                "gen_timeout": gen_timeout,    # N04/N05 队列超时（§3.3.5）
                 # N03 资产注入：per-role 基础身份权重 / 全局风格参考图 / 512 维协议
                 "asset_inject_config": asset_inject_config,
                 "global_style_ref": global_style_ref,
@@ -149,30 +169,60 @@ class SequenceSchedulerAgent(BaseAgent):
             try:
                 task_id, _local_task_id, _pre_auth_id = enqueue_segment(
                     real_seg_id, trace_id, duration=duration, model_id=model_id,
-                    resolution=resolution, seed=seed, priority=priority, params=params)
+                    resolution=resolution, seed=seed, priority=prio, params=params)
             except ApiError as e:
                 # CLOSE-04：预授权失败（如积分不足）→ 该片段降级为失败，不阻断其他片段
                 self._log("preauth_failed", level="warning", segment_id=real_seg_id, code=e.code)
                 by_seg[real_seg_id] = {"segment_id": real_seg_id, "level": "fail",
                                       "note": "预授权失败：%s" % e.message, "video_url": None}
-                self._set_state("running", (i + 1) / total * 100.0)
-                continue
+                done_idx.add(i)
+                return real_seg_id
             task_ids.append((real_seg_id, task_id))
-            self._log("enqueued", level="info", segment_id=real_seg_id, task_id=task_id)
+            task_of[i] = task_id
+            self._log("enqueued", level="info", segment_id=real_seg_id, task_id=task_id,
+                      first_frame=bool(first_frame))
             if ws_publish:
                 ws_publish("director:%s" % project_id, "segment",
                            {"segment_id": real_seg_id, "task_id": task_id, "status": "queued",
                             "progress": 0, "video_url": None})
+            return real_seg_id
 
-        # 跟踪 worker 消费（REDUN-01：轮询 generation_tasks，经 WS 透出）
+        # 1) 入队所有根节点（无尾帧依赖）→ 可并行
+        roots = [i for i, dep in order if dep is None]
+        for i in roots:
+            enqueue_one(i, None)
+        # 等待根节点收敛并收集尾帧
         if task_ids and fetch_task_statuses:
             self._track_tasks(task_ids, project_id, trace_id, ws_publish)
+        for i in roots:
+            if i in task_of:
+                tail_frames[i] = self._read_tail_frame(task_of[i])
+        done_idx.update(roots)
 
-        # 汇总入队片段的最终结果（断点续跑的 skip 已在上方写入 by_seg）
+        # 2) 按拓扑序处理依赖节点（尾帧链：串行锚定）
+        pending = [i for i, _ in order if i not in roots]
+        while pending:
+            ready = [i for i in pending if order[i][1] in done_idx]
+            if not ready:
+                break  # 防环/异常保护
+            for i in ready:
+                dep = order[i][1]
+                enqueue_one(i, tail_frames.get(dep))
+            if fetch_task_statuses:
+                self._track_tasks([(real_ids_by_index.get(i), task_of[i]) for i in ready],
+                                  project_id, trace_id, ws_publish)
+            for i in ready:
+                if i in task_of:
+                    tail_frames[i] = self._read_tail_frame(task_of[i])
+                done_idx.add(i)
+            pending = [i for i in pending if i not in done_idx]
+
+        # 3) 汇总入队片段的最终结果（skip/fail 已在 enqueue_one 写入 by_seg）
         if fetch_segment_video_url:
             for seg_id, _task_id in task_ids:
+                if seg_id in by_seg:
+                    continue
                 vurl, _st = fetch_segment_video_url(seg_id)
-                # 取最新状态，确保 worker 已写回
                 st_rows = fetch_task_statuses([_task_id]) if fetch_task_statuses else {}
                 row = st_rows.get(_task_id) or {}
                 status = row.get("status")
@@ -193,9 +243,9 @@ class SequenceSchedulerAgent(BaseAgent):
                                       "video_url": vurl}
 
         # 按片段顺序汇总（用真实 segment_id 对齐）
-        results = [by_seg.get(rid, {"segment_id": rid, "level": "fail",
-                                    "note": "未跟踪", "video_url": None})
-                   for rid in real_ids]
+        results = [by_seg.get(real_ids_by_index.get(i), {"segment_id": real_ids_by_index.get(i),
+                                    "level": "fail", "note": "未跟踪", "video_url": None})
+                   for i in range(total)]
 
         failed = [r for r in results if r.get("level") == "fail"]
         if not failed:
@@ -207,7 +257,8 @@ class SequenceSchedulerAgent(BaseAgent):
         self._set_state("done", 100.0, generated=len(results) - len(failed), failed=len(failed),
                         skipped=sum(1 for r in results if r.get("level") == "skip"))
         self._log("agent_done", level="info", status=status,
-                  generated=len(results) - len(failed), failed=len(failed))
+                  generated=len(results) - len(failed), failed=len(failed),
+                  chained=len(task_of) - len(roots))
         warnings = [r["note"] for r in failed if r.get("note")]
         return AgentResult(status=status, data={"clips": results, "priority_level": priority}, warnings=warnings)
 
@@ -274,6 +325,25 @@ class SequenceSchedulerAgent(BaseAgent):
     def _local_exists(self, video_url):
         p = self._local_path(video_url)
         return bool(p) and os.path.isfile(p)
+
+    def _read_tail_frame(self, task_id):
+        """读回前序分镜生成后写入的尾帧本地路径（N04/N05 首尾帧锚定）。"""
+        try:
+            import db
+            conn = db.get_conn()
+        except Exception:
+            return None
+        try:
+            row = db.fetch_one(conn, "SELECT last_frame_path FROM generation_tasks WHERE task_id=?",
+                               (task_id,))
+            if row and row.get("last_frame_path"):
+                return row["last_frame_path"]
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return None
 
     def _load_asset_refs(self, seg_id):
         try:

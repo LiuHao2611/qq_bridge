@@ -54,16 +54,17 @@ def estimate_segment_credits(duration, resolution, model_id=DEFAULT_MODEL_ID):
 
 def enqueue_segment(segment_id, trace_id, *, duration=12, model_id=DEFAULT_MODEL_ID,
                     resolution="720p", seed=-1, asset_humanize=0, return_last_frame=0,
-                    priority=0, params=None):
+                    priority=0, params=None, idem_suffix=""):
     """预授权 + 入队一个片段生成任务，返回 (task_id, local_task_id, pre_auth_id)。
 
     CLOSE-04：
       - 先 pre_auth（冻结即扣减），再插入 generation_tasks；
       - 若插入失败，自动退还冻结金，绝不遗留孤儿冻结；
-      - 幂等：相同 (trace_id, segment_id) 的重复调用因 idempotency_key 唯一约束而安全。
+      - 幂等：相同 (trace_id, segment_id, idem_suffix) 的重复调用因 idempotency_key 唯一约束而安全。
+      - idem_suffix：重试场景传 "-r1"/"-r2" 等，保证每次重试都是独立新任务（不撞唯一约束）。
     """
     amount = estimate_segment_credits(duration, resolution, model_id)
-    idem = "dir-%s-%s" % (trace_id, segment_id)
+    idem = "dir-%s-%s%s" % (trace_id, segment_id, idem_suffix)
     pa = pre_auth(amount, segment_id, idem)
     pre_auth_id = pa["pre_auth_id"]
     try:
@@ -96,6 +97,64 @@ def enqueue_segment(segment_id, trace_id, *, duration=12, model_id=DEFAULT_MODEL
         except Exception:
             pass
         raise
+
+
+def rerun_segment(segment_id, trace_id, *, attempt=1, params=None, priority=None,
+                  duration=None, resolution=None, model_id=None, seed=None):
+    """N06 单分镜重试：对已经过一次生成的片段，按上次配置（或覆盖参数）重新入队。
+
+    手册 §4.2 分支规则：N06 校验不通过 → 触发单分镜重试（最多 2 次）。本函数即「单次重试入队」：
+      - 读取该片段最近一次 generation_tasks 的 params/model_id/resolution/seed 作为基线；
+      - 覆盖项（params/priority/duration/resolution/model_id/seed）合并到基线；
+      - 调 enqueue_segment 重新 pre-auth + 入队，idempotency_key 带 -r<attempt> 后缀（每次重试独立新任务）；
+      - 片段状态回置 'generating'（便于观察与质量复检）；worker 复用既有消费链路重渲染。
+    返回 (task_id, local_task_id, pre_auth_id)；入队失败自动退款（CLOSE-04）。
+    """
+    conn = get_conn()
+    try:
+        last = conn.execute(
+            "SELECT params, model_id, resolution, seed, priority FROM generation_tasks "
+            "WHERE segment_id=? ORDER BY created_at DESC LIMIT 1", (segment_id,)).fetchone()
+    finally:
+        conn.close()
+    if last:
+        prev_params = json.loads(last["params"] or "{}") if last["params"] else {}
+        base_model = last["model_id"] or DEFAULT_MODEL_ID
+        base_res = last["resolution"] or "720p"
+        base_seed = int(last["seed"] if last["seed"] is not None else -1)
+        base_prio = int(last["priority"] or 0)
+        try:
+            base_dur = int(json.loads(last["params"] or "{}").get("__duration__", 12) or 12)
+        except Exception:
+            base_dur = 12
+    else:
+        prev_params, base_model, base_res, base_seed, base_prio, base_dur = {}, DEFAULT_MODEL_ID, "720p", -1, 0, 12
+
+    merged = dict(prev_params)
+    if params:
+        merged.update(params)
+    model_id = model_id or base_model
+    resolution = resolution or base_res
+    seed = int(seed if seed is not None else base_seed)
+    prio = int(priority if priority is not None else base_prio)
+    duration = int(duration or base_dur)
+
+    task_id, local_task_id, pre_auth_id = enqueue_segment(
+        segment_id, trace_id, duration=duration, model_id=model_id,
+        resolution=resolution, seed=seed, priority=prio, params=merged,
+        idem_suffix="-r%d" % max(1, attempt))
+    # 片段状态回置 generating，便于质量复检与前端观察
+    try:
+        c2 = get_conn()
+        try:
+            c2.execute("UPDATE segments SET status='generating' WHERE segment_id=?",
+                       (segment_id,))
+            c2.commit()
+        finally:
+            c2.close()
+    except Exception:
+        pass
+    return task_id, local_task_id, pre_auth_id
 
 
 def fetch_task_statuses(task_ids):

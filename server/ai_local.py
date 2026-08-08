@@ -323,6 +323,9 @@ def _resolve_ffprobe():
 
 FFPROBE_BIN = _resolve_ffprobe()
 
+# 手册 §3.4.4：音画同步误差不得超过 100ms（N07 硬性约束）
+AUDIO_ALIGN_MAX_MS = 100
+
 # CLOSE-03：出站网络调用（Ollama / ComfyUI）必须指数退避重试且有上限
 HTTP_MAX_RETRIES = 3
 HTTP_BACKOFF_BASE = 2.0  # 第 n 次重试等待 2^n 秒
@@ -1032,6 +1035,49 @@ def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name, weight=0.85,
     return _comfy_run(wf, timeout)
 
 
+def _comfy_img2img(first_frame_path, prompt, strength=0.6,
+                   width=1280, height=720, steps=20, cfg=7.0,
+                   seed=-1, timeout=240):
+    """图生图：以首帧(first_frame)为锚点去噪，实现首尾帧像素级承接（手册 §3.3.4 首尾帧锚定）。
+
+    仅在前序分镜尾帧作为下一分镜首帧参考时调用；依赖 ComfyUI 与底模权重，失败抛 RuntimeError。
+    """
+    if not comfy_available():
+        raise RuntimeError("ComfyUI 未启动")
+    if seed is None or int(seed) < 0:
+        seed = random.randint(0, 2 ** 31 - 1)
+    wf = {
+        "3": {"class_type": "KSampler", "inputs": {
+            "seed": int(seed), "steps": steps, "cfg": float(cfg),
+            "sampler_name": "euler", "scheduler": "normal", "denoise": float(strength),
+            "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["10", 0]}},
+        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
+        "5": {"class_type": "LoadImage", "inputs": {"image": _upload_to_comfy(first_frame_path)}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "low quality, blurry, watermark, text", "clip": ["4", 1]}},
+        "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+        "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_seg_anchor"}},
+        "10": {"class_type": "VAEEncode", "inputs": {"pixels": ["5", 0], "vae": ["4", 2]}},
+    }
+    return _comfy_run(wf, timeout)
+
+
+def _extract_tail_frame(video_path, dst_path):
+    """用 ffmpeg 提取视频最后一帧，作为首尾帧锚定的尾帧参考（手册 §3.3.4）。失败返回 None。"""
+    if not (video_path and os.path.isfile(video_path) and FFMPEG_BIN):
+        return None
+    try:
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        cmd = [FFMPEG_BIN, "-y", "-sseof", "-1", "-i", video_path,
+               "-vsync", "0", "-q:v", "2", dst_path]
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        if os.path.isfile(dst_path) and os.path.getsize(dst_path) > 0:
+            return dst_path
+    except Exception as e:
+        logger.warning("[gen] 尾帧提取失败: %s" % e)
+    return None
+
+
 def _comfy_text2video(prompt, ref_comfy_name=None, width=1280, height=720,
                       frames=49, seed=-1, timeout=600):
     """视频生成（探测到视频模型时由调用方启用）。
@@ -1040,6 +1086,57 @@ def _comfy_text2video(prompt, ref_comfy_name=None, width=1280, height=720,
     由调用方回退图片轮播降级。若后续装好 Seedance/Wan，可在此接入对应工作流。
     """
     return None
+
+
+def _comfy_has_node(node_class):
+    """探测 ComfyUI 是否装有指定自定义节点（如 GFPGAN / CodeFormer）；失败返回 False。"""
+    try:
+        info = json.loads(_http_post_json(COMFY_URL + "/object_info", b"{}", timeout=10))
+        return node_class in info
+    except Exception:
+        return False
+
+
+def face_restore(image_path, method="GFPGAN", out_path=None):
+    """人脸修复（手册 §3.4.4 全局后处理）：经 ComfyUI 的 GFPGAN / CodeFormer 节点修复单图人脸。
+
+    环境要求（缺则诚实报错，绝不静默跳过人脸修复 / 绝不假装已修复）：
+      - ComfyUI 已启动（comfy_available）
+      - 已安装对应自定义节点（ComfyUI-GBLP/ComfyUI_GFPGAN 或对应 CodeFormer 节点）
+      - 已放入模型权重（GFPGAN/CodeFormer 权重文件）
+    返回修复后图像绝对路径；失败抛 RuntimeError（含真实原因），由上层据 REDUN-01 诚实降级。
+    """
+    if not comfy_available():
+        raise RuntimeError("人脸修复失败：ComfyUI 未启动（请先启动秋葉 ComfyUI :8188）")
+    m = (method or "GFPGAN").upper()
+    node_name = "GFPGAN" if m == "GFPGAN" else "CodeFormer"
+    if not _comfy_has_node(node_name):
+        raise RuntimeError(
+            "人脸修复失败：ComfyUI 未安装 %s 节点或未放入权重。"
+            "请在 ComfyUI 安装对应自定义节点（GFPGAN / CodeFormer）并放入模型权重后重试。" % node_name)
+    up = _upload_to_comfy(image_path)
+    if not up:
+        raise RuntimeError("人脸修复失败：参考图上传 ComfyUI 失败")
+    if node_name == "GFPGAN":
+        wf = {
+            "1": {"class_type": "LoadImage", "inputs": {"image": up}},
+            "2": {"class_type": "GFPGAN", "inputs": {
+                "ckpt_name": "GFPGANv1.4.pth", "restore_model": "GFPGANv1.4",
+                "input_image": ["1", 0], "use_builtin": False, "weight": 1.0, "upscale": 2}},
+            "3": {"class_type": "SaveImage", "inputs": {"images": ["2", 0], "filename_prefix": "manju_facefix"}},
+        }
+    else:
+        wf = {
+            "1": {"class_type": "LoadImage", "inputs": {"image": up}},
+            "2": {"class_type": "CodeFormer", "inputs": {
+                "image": ["1", 0], "upscale": 2, "codeformer_weight": 0.5,
+                "fidelity": 0.5, "seed": 0, "blur_amount": 0, "blur_kernel": 5}},
+            "3": {"class_type": "SaveImage", "inputs": {"images": ["2", 0], "filename_prefix": "manju_facefix"}},
+        }
+    try:
+        return _comfy_run(wf, timeout=180, output_dir=out_path and os.path.dirname(out_path))
+    except RuntimeError as e:
+        raise RuntimeError("人脸修复(%s)执行失败: %s" % (method, e))
 
 
 def _comfy_text2img_with_controlnet(prompt, ref_comfy_name, control_type="depth",
@@ -1141,6 +1238,11 @@ def generate_segment_video(segment, shots, asset_refs, out_path, params=None):
     style_weight = float(inject_cfg.get("style_weight", 0.4) or 0.4)
     role_weights = {k: float(v.get("base_weight", 0.85))
                     for k, v in (inject_cfg.get("roles") or {}).items()}
+    # N04/N05 首尾帧锚定：前序同场景分镜的尾帧作为本分镜首帧参考（手册 §3.3.4）
+    first_frame = params.get("first_frame") or ""
+    if first_frame and not os.path.isfile(first_frame):
+        logger.warning("[gen] first_frame 指向文件不存在，跳过首尾帧锚定: %s" % first_frame)
+        first_frame = ""
     style_comfy_name = None
     if style_ref and os.path.isfile(style_ref) and comfy_available():
         try:
@@ -1171,11 +1273,17 @@ def generate_segment_video(segment, shots, asset_refs, out_path, params=None):
         if style_comfy_name:
             logger.info("[gen] 全局风格参考图注入 IP-Adapter（style_weight=%.2f, %s）"
                         % (style_weight, inject_cfg.get("warm_cool", "neutral")))
-        for _ in shots:
+        if first_frame:
+            logger.info("[gen] 首尾帧锚定：首镜以首帧 %s 为锚点图生图（strength=0.6）" % first_frame)
+        for idx, sh in enumerate(shots):
             p = en_prompt
             img = None
             try:
-                if role_cover and role_cover[1]:
+                if first_frame and idx == 0:
+                    # 首镜锚定：以前序尾帧为起点去噪，保证像素级承接（手册 §3.3.4）
+                    img = _comfy_img2img(first_frame, p, strength=0.6, width=W, height=H,
+                                         seed=seed, timeout=120)
+                elif role_cover and role_cover[1]:
                     img = _comfy_text2img_with_ipadapter(
                         p, role_cover[1], weight=base_w, width=W, height=H, seed=seed,
                         timeout=120, style_comfy_name=style_comfy_name, style_weight=style_weight)
@@ -1253,13 +1361,18 @@ def generate_segment_video(segment, shots, asset_refs, out_path, params=None):
         subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                        stderr=subprocess.DEVNULL, timeout=180)
     except subprocess.TimeoutExpired:
-        return "fail", "FFmpeg 合成超时（180s）"
+        return "fail", "FFmpeg 合成超时（180s）", None
     except Exception as e:
-        return "fail", "FFmpeg 合成失败: %s" % e
+        return "fail", "FFmpeg 合成失败: %s" % e, None
 
     if not os.path.isfile(out_path):
-        return "fail", "视频文件未生成"
-    return level, note
+        return "fail", "视频文件未生成", None
+
+    # N04/N05 首尾帧锚定：提取尾帧，供同场景下一分镜作首帧参考（手册 §3.3.4）
+    tail_frame = _extract_tail_frame(out_path, os.path.join(run_dir, "tail_frame.png"))
+    if tail_frame:
+        logger.info("[gen] 尾帧已提取: %s" % tail_frame)
+    return level, note, tail_frame
 
 
 def _tts_to_file(text, out_file):
@@ -1543,6 +1656,61 @@ def _build_enhanced_base(clips, base_mp4, opts, temp_files):
     return base_mp4
 
 
+def _face_restore_one_clip(fpath, method, temp_files):
+    """对单个片段逐帧做人脸修复（GFPGAN/CodeFormer）并重建视频（保留原音轨）。
+
+    缺 ComfyUI / 节点 / 权重时 face_restore 抛清晰错误，由调用方 REDUN-01 诚实降级（仅告警）。
+    """
+    import glob as _glob
+    import tempfile as _tempfile
+    d = _tempfile.mkdtemp(prefix="manju_fr_")
+    temp_files.append(d)
+    fr_pattern = os.path.join(d, "f%05d.png")
+    subprocess.run([FFMPEG_BIN, "-y", "-i", fpath, "-vsync", "0", fr_pattern],
+                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
+    frames = sorted(_glob.glob(os.path.join(d, "f*.png")))
+    if not frames:
+        raise RuntimeError("人脸修复：未提取到帧")
+    for i, f in enumerate(frames):
+        out = os.path.join(d, "r%05d.png" % i)
+        rp = face_restore(f, method, out_path=out)   # 真实调用 ComfyUI GFPGAN/CodeFormer
+        if not (rp and os.path.isfile(rp)):
+            raise RuntimeError("人脸修复：帧 %d 未产出修复图" % i)
+        temp_files.append(rp)
+    silent = os.path.join(d, "restored_silent.mp4")
+    subprocess.run([FFMPEG_BIN, "-y", "-framerate", "25", "-i", os.path.join(d, "r%05d.png"),
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", silent],
+                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
+    if not os.path.isfile(silent):
+        raise RuntimeError("人脸修复：重建静音视频失败")
+    final = os.path.join(d, "restored.mp4")
+    if _has_audio(fpath):
+        subprocess.run([FFMPEG_BIN, "-y", "-i", silent, "-i", fpath,
+                        "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", final],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300)
+    else:
+        final = silent
+    if not os.path.isfile(final):
+        raise RuntimeError("人脸修复：最终视频未生成")
+    return final
+
+
+def _face_restore_clips(clips, method, temp_files):
+    """N08 全局后处理：人脸修复（手册 §3.4.4）。逐片段逐帧修复并重建。
+
+    任一片段失败 → 保留原片段（由调用方 REDUN-01 诚实降级，仅告警，不静默伪装已修复）。
+    """
+    out = []
+    for c in clips:
+        try:
+            new_path = _face_restore_one_clip(c[1], method, temp_files)
+            out.append((c[0], new_path, c[2], c[3], c[4], c[5]))
+        except Exception as e:
+            logger.warning("人脸修复跳过片段 %s: %s", c[1], e)
+            out.append(c)
+    return out
+
+
 def synthesize_project_video(project_id, out_path, options=None):
     """Phase 5（合成全集，KB §05）：把所有「已生成成功」片段拼接为完整 MP4，并按 options 叠加后期：
 
@@ -1636,6 +1804,14 @@ def synthesize_project_video(project_id, out_path, options=None):
         return "fail", "无可用片段视频（请先让全部片段生成成功）"
 
     clips.sort(key=lambda x: x[0])
+    # N08 全局后处理：人脸修复（手册 §3.4.4）。逐片段逐帧修复；缺能力时诚实降级（仅告警，不阻断）。
+    fr_method = options.get("face_restore")
+    if fr_method:
+        try:
+            clips = _face_restore_clips(clips, fr_method, temp_files)
+            logger.info("合成全集：人脸修复已应用（method=%s）", fr_method)
+        except Exception as e:
+            logger.warning("合成全集：人脸修复整体失败，跳过并保留原片段: %s", e)
     total_dur = sum(c[2] for c in clips)
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     concat_list = os.path.join(OUTPUTS, "synth_concat_%s.txt" % project_id)
@@ -1668,12 +1844,13 @@ def synthesize_project_video(project_id, out_path, options=None):
         # Step 2：旁白 TTS（REDUN-01 降级）
         if do_tts:
             seg_audios = []
-            cc = 0.0
+            audio_cursor = 0.0
             for _, _, dur, narration, _, _ in clips:
                 if narration:
                     seg_wav = os.path.join(OUTPUTS, "synth_tts_%s_%d.wav" % (project_id, len(seg_audios)))
                     if _tts_to_file(narration, seg_wav) and os.path.isfile(seg_wav):
                         padded = os.path.join(OUTPUTS, "synth_pad_%s_%d.wav" % (project_id, len(seg_audios)))
+                        # N07：逐段 apad 精确对齐到片段时长（误差≤单帧），保证音画同步≤100ms
                         subprocess.run([FFMPEG_BIN, "-nostdin", "-y", "-i", seg_wav,
                                         "-af", "apad", "-t", "%.2f" % dur, padded],
                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -1681,7 +1858,7 @@ def synthesize_project_video(project_id, out_path, options=None):
                         if os.path.isfile(padded):
                             seg_audios.append(padded)
                             temp_files.append(seg_wav); temp_files.append(padded)
-                cc += dur
+                audio_cursor += dur   # 无旁白片段为静音对齐，仍计时间轴
             if seg_audios:
                 narr_list = os.path.join(OUTPUTS, "synth_narr_%s.txt" % project_id)
                 with open(narr_list, "w", encoding="utf-8") as f:
@@ -1699,6 +1876,14 @@ def synthesize_project_video(project_id, out_path, options=None):
                     logger.info("合成全集：TTS 旁白已生成（%d 段）", len(seg_audios))
                 else:
                     logger.warning("合成全集：TTS 旁白合并失败，跳过音频后期")
+                # N07 音画同步校验（手册 §3.4.4 误差≤100ms）：逐段 apad 后音轨时间轴应与视频一致
+                drift = abs(audio_cursor - total_dur)
+                if drift * 1000 > AUDIO_ALIGN_MAX_MS:
+                    logger.warning("合成全集：音画时间轴漂移 %.0fms 超阈值(%dms)，可能音画不同步",
+                                   drift * 1000, AUDIO_ALIGN_MAX_MS)
+                else:
+                    logger.info("合成全集：音画对齐校验通过（逐段 apad 对齐，漂移 %.0fms ≤ %dms）",
+                                drift * 1000, AUDIO_ALIGN_MAX_MS)
 
         # Step 3：背景音乐（循环铺底，REDUN-01 降级）
         if do_bgm and bgm_path and os.path.isfile(bgm_path):

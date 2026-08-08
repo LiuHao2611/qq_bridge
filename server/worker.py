@@ -90,13 +90,16 @@ def _task_status(conn, task, status, progress=None, result_url=None, error_messa
                evt)
 
 
-def _run_with_timeout(fn, *a, **kw):
-    """CLOSE-05：在独立线程中执行生成调用并施加硬超时，超时即抛 RuntimeError（触发退避/退款）。"""
+def _run_with_timeout(fn, *a, timeout=None, **kw):
+    """CLOSE-05：在独立线程中执行生成调用并施加硬超时，超时即抛 RuntimeError（触发退避/退款）。
+
+    timeout 缺省用 VIDEO_TIMEOUT_SECS；N04/N05 可按算力队列覆盖（高速 60s / 普通 120s，手册 §3.3.5）。
+    """
     fut = _exec.submit(fn, *a, **kw)
     try:
-        return fut.result(timeout=VIDEO_TIMEOUT_SECS)
+        return fut.result(timeout=timeout or VIDEO_TIMEOUT_SECS)
     except FuturesTimeout:
-        raise RuntimeError("生成调用超时（CLOSE-05，%ds）" % VIDEO_TIMEOUT_SECS)
+        raise RuntimeError("生成调用超时（CLOSE-05，%ds）" % (timeout or VIDEO_TIMEOUT_SECS))
 
 
 def _mark_failed(conn, task, note):
@@ -151,6 +154,7 @@ def _serve_one(task):
         }
         # 透传 Director 入队时附加的镜头参数（first_frame/enable_tail_frame/priority_level 等）；
         # 当前引擎仅消费 resolution/seed，其余为 full 版兼容预留（不破坏既有 dispatch 路径）。
+        gen_timeout = None
         try:
             _tp = json.loads(task.get("params") or "{}") if task.get("params") else {}
         except Exception:
@@ -159,13 +163,17 @@ def _serve_one(task):
                    "asset_inject_config", "global_style_ref"):
             if _k in _tp and _tp[_k] is not None:
                 gen_params[_k] = _tp[_k]
-        level, note = _run_with_timeout(
+        # N04/N05 算力队列超时（手册 §3.3.5）：高速队列 60s / 普通队列 120s
+        if isinstance(_tp.get("gen_timeout"), (int, float)) and _tp["gen_timeout"] > 0:
+            gen_timeout = int(_tp["gen_timeout"])
+        level, note, tail_frame = _run_with_timeout(
             generate_segment_video,
             row_to_dict(segment) if segment else {"segment_id": task["segment_id"]},
             [row_to_dict(s) for s in shots],
             [row_to_dict(a) for a in asset_refs],
             out_path,
             gen_params,
+            timeout=gen_timeout,
         )
 
         if level == "fail":
@@ -181,6 +189,13 @@ def _serve_one(task):
         if segment:
             conn.execute("UPDATE segments SET status='succeeded', video_url=?, thumbnail_url=? WHERE segment_id=?",
                          (rel_url, rel_url, task["segment_id"]))
+        # N04/N05：尾帧路径落库，供同场景下一分镜作首帧参考（首尾帧锚定）
+        if tail_frame:
+            try:
+                conn.execute("UPDATE generation_tasks SET last_frame_path=? WHERE task_id=?",
+                             (tail_frame, task["task_id"]))
+            except Exception:
+                pass
         # DB 落地 + WebSocket 实时推送 completed（STR-01/02）
         _task_status(conn, task, "succeeded", progress=100, result_url=rel_url)
         _task_log(conn, task, "info", "生成完成：" + note)
