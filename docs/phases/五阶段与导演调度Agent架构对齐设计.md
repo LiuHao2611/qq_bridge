@@ -146,8 +146,11 @@ N01→N02 失败收敛（CLOSE-01），错误码 1002（`MISSING_SCRIPT`）；�
    - **实跑验证（2026-08-08）**：`director-run` 项目 b874b19c 触发 N04 → 2 条 `generation_tasks` 入队（真实 `seg-<project>-<index>` id，无 FK 错误）→ worker 消费（status running→succeeded）→ `segments.video_url` 写回、积分 settle；N05 因同 trace 重分发触发 pre-auth 碰撞，已借 OUTPUTS 修正 + resume 跳过修复。`ComfyUI` 未启动时 worker 走 FFmpeg 标题卡占位（"本地 AI 图像服务未启动"）仍返回成功。
 3. **N03 真人资产注入（待引擎）**：接入 ComfyUI IP-Adapter / ControlNet，落地手册 §5 的 512 维人脸特征 +
    身份权重 0.8–0.9（骨架仅注入资产名不变量 + 分层权重配置，引擎消费侧待 full 版）。
-4. **重试/降级落地（骨架埋点）**：`retry_after` + `_degrade` 已在 scheduler 接入；需补「降级模型 / 降级队列」的实际切换动作
-   （`_degrade` 当前仅记录类别，未真切换）。
+4. **重试/降级落地（✅ 已落地 2026-08-08）**：`GlobalScheduler._run_node` 在节点重试耗尽且 `degrade_on_exhaust != 'none'` 时，由 `_degrade` **实际切换**并给节点一次降级重试机会：
+   - MODEL 类耗尽 → 置 `ctx.use_fallback_model=True`（子 Agent 入队时切 `FALLBACK_VIDEO_MODELS` 降级模型，worker 走同一消费链路，REDUN-01）；
+   - SCHEDULE 类耗尽 → 置 `ctx.degraded_priority=DEGRADED_PRIORITY(-10)`（单队列架构下以低优先级区分「降级队列」，避免阻塞正常任务）；
+   - 降级后 `attempt=max_retries` 仅给**一次**重试机会（再失败即收敛抛出，杜绝无限重试）；`degraded` 标志防止重复降级；`PARAMETER/ASSET`（degrade=none）立即收敛不降级。
+   `AgentContext` 新增 `use_fallback_model`/`degraded_priority` 字段并经 `child()` 透传；`enqueue.py` 新增 `FALLBACK_VIDEO_MODELS`/`DEGRADED_PRIORITY`；`SequenceSchedulerAgent` 入队时消费两标志。隔离自测全绿（MODEL/SCHEDULE 降级成功、降级后失败收敛、PARAMETER 不降级、降级模型/优先级透传至入队）。
 5. **进度透出（✅ 已落地 2026-08-08）**：per-segment 进度经 WS 频道 `director:<pid>` 透出（REDUN-01：WS 优先、轮询兜底），由 `ProductionStage.vue` 渲染片段级状态/进度条/成片链接横幅（#72–#74 落地，随 full 版 ② 一并交付）。
 6. **看门狗联动退款告警（✅ 已落地 2026-08-08）**：`GlobalScheduler._refund_pending_preauths` 在 `watchdog_timeout` / 用户终止 / 节点失败（AgentError + agent_failed）三条终态路径，按 `trace_id` 查本链路 `status='queued'` 的 `generation_tasks`，逐一 `points_engine.refund(pre_auth_id)` 退冻结金（CLOSE-04 资金兜底），并将未派发任务收敛为 `cancelled`（CLOSE-01），经 WS `director:<pid>` 透出 `alert` 告警 + `blog` WARN。安全边界：仅退 worker 从未派发的 `queued` 任务（其 pre_auth 仍是 `estimated` 冻结态），**绝不退 `succeeded`（已 settle）任务**——杜绝「用户白嫖成片」或重复退款；同 run 内 trace_id 去重 + refund 幂等双重保险。隔离自测全绿（WATCHDOG_REFUND_OK / IDEMPOTENT_OK / FUND_LOSS_GUARD_OK）。
 7. **转场 / 全局后处理（待引擎）**：按镜头类型的转场、人脸修复 / 降噪 / 锐化 / 帧率统一后处理（骨架 `synthesize_project_video` 委托层未含，等 full 版）。

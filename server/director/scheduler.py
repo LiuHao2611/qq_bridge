@@ -185,8 +185,14 @@ class GlobalScheduler:
 
     # -- 节点执行 + 重试/降级 -------------------------------------------------
     def _run_node(self, node, ctx, upstream, trace_id):
-        """执行单个 DAG 节点，按 §6 处理 AgentError 重试；耗尽触发降级并抛出。"""
+        """执行单个 DAG 节点，按 §6 处理 AgentError 重试；耗尽触发降级并再试一次（项 ④）。
+
+        降级实际切换（REDUN 降级链）：MODEL 类耗尽 → 置 use_fallback_model（入队切降级模型）；
+        SCHEDULE 类耗尽 → 置 degraded_priority（入队降为低优先级=降级队列）。降级后给节点
+        一次重试机会（degraded 标志防止无限降级），成功则全链路继续，再失败则收敛抛出。
+        """
         attempt = 0
+        degraded = False
         while True:
             try:
                 res = self._exec_node(node, ctx, upstream)
@@ -196,8 +202,15 @@ class GlobalScheduler:
             except AgentError as e:
                 p = e.policy
                 if not p.retryable or attempt >= p.max_retries:
-                    # 耗尽：触发降级动作（model→降级模型 / queue→降级队列），再失败则收敛
-                    self._degrade(node, e)
+                    # 耗尽：未降级过则触发降级动作（model→降级模型 / queue→降级队列），再试一次
+                    if p.degrade_on_exhaust != "none" and not degraded:
+                        self._degrade(node, e, ctx)
+                        degraded = True
+                        blog(trace_id, "scheduler", "degrade_retry", level="warning",
+                             node=node.node_id, action=p.degrade_on_exhaust)
+                        # 降级后仅给一次重试机会（attempt 置满，下次失败即收敛，避免无限重试）
+                        attempt = p.max_retries
+                        continue
                     raise
                 delay = retry_after(e, attempt)
                 blog(trace_id, "scheduler", "retry_wait", level="warning",
@@ -232,11 +245,35 @@ class GlobalScheduler:
         clips = upstream.get("clips") or []
         return {"final_output": final, "clip_count": len(clips)}
 
-    def _degrade(self, node, err):
-        """降级触发点（§6 重试耗尽）：记录降级动作，full 版切换降级模型/队列。"""
-        blog("-", "scheduler", "degrade_triggered", level="warning",
-             node=node.node_id, category=err.category_enum.name,
-             action=err.policy.degrade_on_exhaust, key=err.key)
+    def _degrade(self, node, err, ctx):
+        """降级触发点（§6 重试耗尽，项 ④ REDUN 降级链）：实际切换降级模型/队列。
+
+        - model：置 ctx.use_fallback_model=True（子 Agent 入队时切 FALLBACK_VIDEO_MODELS 降级模型）
+        - queue：置 ctx.degraded_priority=DEGRADED_PRIORITY（入队降为低优先级，等同降级队列）
+        切换后由 _run_node 给节点一次重试机会；同时 blog WARN 记录降级类别与动作。
+        """
+        action = err.policy.degrade_on_exhaust
+        if action == "model":
+            try:
+                from director.enqueue import FALLBACK_VIDEO_MODELS
+            except Exception:
+                FALLBACK_VIDEO_MODELS = {}
+            ctx.use_fallback_model = True
+            blog("-", "scheduler", "degrade_triggered", level="warning",
+                 node=node.node_id, category=err.category_enum.name, action="model",
+                 use_fallback_model=True, fallback_models=list(FALLBACK_VIDEO_MODELS.keys()), key=err.key)
+        elif action == "queue":
+            try:
+                from director.enqueue import DEGRADED_PRIORITY
+            except Exception:
+                DEGRADED_PRIORITY = -10
+            ctx.degraded_priority = DEGRADED_PRIORITY
+            blog("-", "scheduler", "degrade_triggered", level="warning",
+                 node=node.node_id, category=err.category_enum.name, action="queue",
+                 degraded_priority=DEGRADED_PRIORITY, key=err.key)
+        else:
+            blog("-", "scheduler", "degrade_triggered", level="warning",
+                 node=node.node_id, category=err.category_enum.name, action=action, key=err.key)
 
     def _rollback_all(self, ctx, upstream):
         """用户终止时全链路回滚（§4.2 分支规则 3 / OPS-01）：调用各 Agent Rollback。"""

@@ -24,11 +24,16 @@ class AgentContext:
     user_id: Optional[str] = None
     params: Dict[str, Any] = field(default_factory=dict)
     upstream: Dict[str, Any] = field(default_factory=dict)   # 上游 Agent 的输出
+    # 降级透传（项 ④ REDUN 降级链）：_degrade 在重试耗尽后写入，子 Agent 据此切换
+    use_fallback_model: bool = False     # True → 入队改用 FALLBACK_VIDEO_MODELS 降级模型
+    degraded_priority: Optional[int] = None  # 非 None → 入队任务降为低优先级（降级队列）
 
     def child(self, **overrides) -> "AgentContext":
-        """派生子上下文，默认继承 trace_id/project_id/user_id。"""
+        """派生子上下文，默认继承 trace_id/project_id/user_id 及降级透传标志。"""
         base = dict(trace_id=self.trace_id, project_id=self.project_id,
-                    user_id=self.user_id, params=dict(self.params), upstream=dict(self.upstream))
+                    user_id=self.user_id, params=dict(self.params), upstream=dict(self.upstream),
+                    use_fallback_model=self.use_fallback_model,
+                    degraded_priority=self.degraded_priority)
         base.update(overrides)
         return AgentContext(**base)
 

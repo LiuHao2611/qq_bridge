@@ -114,6 +114,23 @@ class SequenceSchedulerAgent(BaseAgent):
             resolution = resolution0 or seg.get("resolution") or "720p"
             model_cfg = ctx.params.get("model_config") or {}
             model_id = model_cfg.get("video") or DEFAULT_MODEL_ID
+            # 项 ④ REDUN 降级链：降级标志透传 → 切换降级模型（worker 走同一消费链路）
+            if getattr(ctx, "use_fallback_model", False):
+                try:
+                    from director.enqueue import FALLBACK_VIDEO_MODELS
+                except Exception:
+                    FALLBACK_VIDEO_MODELS = {}
+                fb = FALLBACK_VIDEO_MODELS.get(model_id, model_id)
+                if fb != model_id:
+                    self._log("degrade_model", level="warning",
+                              segment_id=real_seg_id, from_model=model_id, to_model=fb)
+                model_id = fb
+            # 项 ④：降级队列 → 入队任务降为低优先级（避免阻塞正常队列）
+            degraded_priority = getattr(ctx, "degraded_priority", None)
+            if degraded_priority is not None:
+                priority = int(degraded_priority)
+                self._log("degrade_queue", level="warning",
+                          segment_id=real_seg_id, priority=priority)
             seed = int(seg.get("seed") if seg.get("seed") is not None else -1)
             params = {
                 "resolution": resolution,

@@ -24,6 +24,17 @@ from common import ApiError
 # 默认视频生成模型（与 worker._serve_one / 现有 dispatch 端点对齐）
 DEFAULT_MODEL_ID = "seedance-2.0-mini"
 
+# 降级模型映射（项 ④ REDUN 降级链 / §6）：主键模型 → 降级/兜底模型。
+# 触发条件：Director 节点因 MODEL 类错误重试耗尽 → _degrade 置 use_fallback_model，
+# SequenceSchedulerAgent 入队时据此把 task 切到降级模型（worker 走同一消费链路，REDUN-01）。
+FALLBACK_VIDEO_MODELS = {
+    "seedance-2.0-mini": "seedance-2.0-mini-fallback",
+}
+
+# 降级队列优先级（项 ④ / §6）：SCHEDULE 类错误重试耗尽 → _degrade 置 degraded_priority，
+# 入队任务降为低优先级，避免阻塞正常队列（单队列架构下以优先级区分「降级队列」）。
+DEGRADED_PRIORITY = -10
+
 
 def estimate_segment_credits(duration, resolution, model_id=DEFAULT_MODEL_ID):
     """积分估算（SCHEMA_INDEX §6 / points_engine.estimate_credits）。
