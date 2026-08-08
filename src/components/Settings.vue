@@ -73,6 +73,7 @@ const buildDefaultModelSettings = (existing = {}) => ({
     local: {
       baseUrl: existing.img?.local?.baseUrl || DEFAULT_COMFY_URL,
       model: existing.img?.local?.model || 'ComfyUI SD1.5 本地',
+      checkpoint: existing.img?.local?.checkpoint || 'Realistic_Vision_V6.0_NV_B1_fp16.safetensors',
     },
     online: {
       baseUrl: existing.img?.online?.baseUrl || '',
@@ -473,6 +474,11 @@ const hotkeys = [
                 <el-select v-model="settings.modelSettings.img.local.model" style="max-width:280px" filterable allow-create>
                   <el-option v-for="m in comfyImgModels" :key="m" :label="m" :value="m" />
                 </el-select>
+              </div>
+              <div v-if="key === 'img'" class="field"><label>底模文件(checkpoint)</label>
+                <el-input v-model="settings.modelSettings.img.local.checkpoint" style="max-width:420px"
+                  placeholder="Realistic_Vision_V6.0_NV_B1_fp16.safetensors" />
+                <span class="muted" style="margin-left:8px">对应秋葉 ComfyUI <code>models/checkpoints/</code> 下的 .safetensors 文件名</span>
               </div>
             </div>
 

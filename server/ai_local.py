@@ -87,6 +87,23 @@ def _get_comfy_url():
     return COMFY_URL
 
 
+def _get_comfy_checkpoint():
+    """返回 settings 中配置的 ComfyUI 基础模型（checkpoint）文件名。
+
+    用户在设置页「文生图 / 视频」的本地配置里填写 `local.checkpoint`（如
+    `Realistic_Vision_V6.0_NV_B1_fp16.safetensors`）即可切换底模，无需改代码；
+    未配置时回退全局常量 COMFY_CKPT（AGENTS.md §08 设计意图：秋葉 ComfyUI + Realistic_Vision SD1.5）。
+    """
+    ms = _load_model_settings()
+    for purpose in ("video", "img"):
+        cfg = ms.get(purpose, {})
+        if cfg.get("provider") == "local":
+            ckpt = cfg.get("local", {}).get("checkpoint")
+            if ckpt and isinstance(ckpt, str) and ckpt.strip():
+                return ckpt.strip()
+    return COMFY_CKPT
+
+
 def _get_llm_model_config(purpose="create"):
     """根据 purpose（create/planning）构造 model_config 供 split_story/extract_assets/ollama_chat 使用。"""
     ms = _load_model_settings()
@@ -917,7 +934,7 @@ def _comfy_text2img(prompt, width=1280, height=720, steps=20, cfg=7.0,
             "seed": int(seed), "steps": steps, "cfg": float(cfg),
             "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0,
             "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
-        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": COMFY_CKPT}},
+        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
         "5": {"class_type": "EmptyLatentImage", "inputs": {"width": width, "height": height, "batch_size": 1}},
         "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
         "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "low quality, blurry, watermark, text", "clip": ["4", 1]}},
@@ -944,7 +961,7 @@ def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name, weight=0.7,
             "seed": int(seed), "steps": steps, "cfg": float(cfg),
             "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0,
             "model": ["10", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
-        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": COMFY_CKPT}},
+        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
         "5": {"class_type": "EmptyLatentImage", "inputs": {"width": width, "height": height, "batch_size": 1}},
         "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
         "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "low quality, blurry, watermark, text", "clip": ["4", 1]}},
@@ -990,7 +1007,7 @@ def _comfy_text2img_with_controlnet(prompt, ref_comfy_name, control_type="depth"
             "seed": int(seed), "steps": steps, "cfg": float(cfg),
             "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0,
             "model": ["4", 0], "positive": ["14", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
-        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": COMFY_CKPT}},
+        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
         "5": {"class_type": "EmptyLatentImage", "inputs": {"width": width, "height": height, "batch_size": 1}},
         "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
         "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "low quality, blurry, watermark, text", "clip": ["4", 1]}},
@@ -2296,6 +2313,6 @@ def txt2img_generate(prompt, negative="", width=1024, height=576, steps=20,
         "prompt_used": final_prompt,
         "negative_used": final_negative,
         "orchestrator_used": used,
-        "model": COMFY_CKPT,
+        "model": _get_comfy_checkpoint(),
         "note": note,
     }
