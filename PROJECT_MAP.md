@@ -138,6 +138,10 @@ D:\AI\manju_agent\
 - **P1 资产（2026-08-09 续 · 添加阶段弹窗重做 + 强制层级命名）**：`RoleEditorModal.vue` ——「添加阶段」弹窗重建为与「编辑角色」主面板**完全一致**的两栏布局：左栏参考图预览（上传按钮 + blob URL 预览），右栏表单（**层级命名** + 年龄）。新增 `.re-modal-wide{width:720px}`、`.re-modal-body{flex;gap:18px}`、`.re-stage-name-prefix`（静态前缀 chip 显示 `{{父角色名}}-`，`border-radius:8px 0 0 8px`）、`.re-stage-name-input`（`border-radius:0 8px 8px 0`）。`submitStage` 强制 `fullName = (form.name||'').trim() + '-' + suffix`，父名或后缀为空则拒绝提交；底层经 `asset_id` 绑定父角色，阶段卡=角色卡变体（层级关系保留）。解决「添加阶段有报错」+ 命名强制「如 周岩-青年」。
 - **P2 策划**：`ProjectPlanning.vue`（导入场次 `doImport`：**2026-08-08 新增客户端 `redistributeDurations` 防御**，按片段时长重新均摊分镜时长，杜绝 BR-003 拦截「导入场次」；**同日 UX 优化**：批量选择工具栏（全选/全不选/反选、Shift 连选）、搜索过滤、卡片/列表双视图、场次内分镜展开预览与「保留前 N 个分镜」裁剪、Ctrl+A/Esc 快捷键、**拖入/选择文件导入剧本（.txt/.md/.srt/.docx，.srt 自动去时间轴、.docx 经 `src/parseDocx.js` 纯前端解压提取正文，详见该行）**；**2026-08-08 再增强**：底部「推理进度」面板支持最小化/展开/清空、AI 自动分场旁增加模型选择器（本地 Ollama 模型自动下拉 + 在线 OpenAI 兼容 API 配置弹窗，配置持久化到 localStorage，调用时透传 `model_config`）；后端 `split_story` 已同源修复并新增 `/models/local`；**2026-08-08 交互优化**：①localStorage 草稿自动保存——`story` 变更 1.2s 防抖写 `manju_planning_draft_<pid>`，`onMounted` 检测未导入草稿并顶部弹「恢复/丢弃」提示条(`.draft-banner`)，字数旁显示「草稿已自动保存」；导入成功后 `clearDraft()`；草稿写入失败显式 toast(CLOSE-02)；②在线模型配置弹窗由 `:close-on-click-modal="false"` 改为 `:before-close="beforeOnlineClose"`，已填配置时点击遮罩/× 触发二次确认
 - **P3 分镜**：`ProjectFragmentEditor.vue`（三栏 + `@`/`@[ ]` 引用 + **资产拖拽入提示词**生成 @引用标签/chip，BR-009 守卫；2026-08-08 画面描述固定高度 84px + 弹窗大编辑 + 左侧资产库，其他提示词框 autosize 限 maxRows:2；弹窗 AssetRichInput 设 `:auto-grow="false"` 以填满 70vh；**2026-08-08 同增强**：左侧资产库「角色」卡片(`char-card`，主区 + 画面描述弹窗两处) 新增**可展开阶段区**——点击「N 个阶段（点击展开）」(`stage-toggle`/chevron) 展开内嵌 `RoleStageManager`(`compact`)，显示该角色全部阶段子卡并支持增删阶段/姿势，`@changed→refreshAssets()` 保持 `p.characters` 阶段数据与折叠计数最新；hover 仍保留小云雀式三按钮——①拖动角色卡(`Grid`/`draggable`) ②编辑角色(`EditPen`→`RoleEditorModal`) ③预览角色图(`ZoomIn`)，`RoleEditorModal` 的 `@stagesChanged` 也接 `onStageChanged` 刷新左侧资产库；**2026-08-08 再优化**：顶部片段选择区由「全片段 tab 网格」改为「当前片段 + 左右切换 + 下拉跳转 + 操作」的紧凑 header，底部缩略图导航条尺寸缩小，减少上下重复臃肿感），**2026-08-08 继续优化分镜卡片 UI**：场景设定保留业务字段但弱化为紧凑单行；分镜核心文案（画面描述/画外音/对白/引用资产）默认外露，镜头参数（景别/机位/运镜/焦段/时长）、反向提示词、镜头设定折叠进「镜头与生成参数」可展开面板，减少单屏信息密度；**2026-08-08 再重构**：左侧资产库卡片改参考图布局——左侧小封面 + 右侧名称/定位/阶段数/chevron，展开后显示 `AssetStageManager`(`mode='strip'`) 内联阶段横条，更符合参考图且不再臃肿；**阶段扩展到场、道具**：`useProject.js` 已为 scenes/props 加载 `asset_stages`+`asset_poses`，左侧「场景/道具」卡片同样支持阶段展开与编辑（场景/道具点 hover「编辑阶段」按钮打开 `el-dialog` 内嵌 `AssetStageManager`(`mode='panel'`)）；阶段名自由输入，角色仍保留年龄字段，场景/道具用阶段描述替代固定年龄、`AssetRichInput.vue`（contenteditable 富文本输入框，支持资产气泡、拖拽插入、弹窗大编辑；2026-08-08 新增 `fixedHeight`/`autoGrow` 两 prop：`fixedHeight` 时高度锁定不可拖拽，`autoGrow=false` 时不按内容收缩；**2026-08-08 交互优化**：接入 `useAutoSave` 自动保存——`onSave` 返回布尔供判定成败，1.5s 防抖触发后端 `save()`，顶栏 `save-state` 实时显示 保存中/已保存/失败(idle/pending/saving/saved/error)，`window.beforeunload` 兜底提示；`descModal`/`assetDialog` 由 `:close-on-click-modal="false"` 改为 `:before-close`(有脏数据点击遮罩/ESC/× 触发二次确认)，减少误关丢失；**2026-08-08 顶部预设套餐重构**：把 `PRESET_OPTIONS` 扩展为 `PRESET_CONFIG`，每个套餐打包时长上限/速度档位/默认与可用模型/画质策略/积分系数，下拉选项带彩色圆点、标签、口号、时长上限、积分系数，hover ⓘ 显示完整套餐说明；切换套餐时自动把模型约束到可用列表、时长约束到上限；原「模型」标签改为「底层模型」以区分「套餐 vs 引擎」的包含关系，积分估算加入 `priceFactor`）；**2026-08-08 修复+优化**：分镜编排左侧资产库三按钮（角色/场景/道具）改为 toggle——`assetTab` 默认空（三类全显示），点其一→只显该类、再点取消→恢复全显示（`v-if="assetTab===''||assetTab==='<类型>'"` 主区+画面描述弹窗两处均改；`@click="assetTab=t"`→`toggleAssetTab(t)`，`＋` 按钮改用 `activeAssetType`）；新建资产由 `createAsset`(全局) 改为 `batchCreateProjectAssets(route.params.id,[...])`(项目作用域)，杜绝新建资产串到全局/其它项目）；**2026-08-08 重构**：`RoleEditorModal.vue` 角色编辑弹窗改为 75%/25% 垂直分屏——顶部 3/4 为角色主信息+选中阶段详情（默认折叠，无选中时显示提示占位），底部 1/4 为水平阶段菜单条（类似分镜片段导航），点击阶段在上方展开该阶段参考图与姿势网格；新增「音色试听」：支持上传参考音频本地播放试听，未上传则用浏览器 TTS 朗读试听文本；所有按钮统一图标化样式）；**2026-08-09 修正**：底部按钮与所有阶段相关文案统一为「添加阶段/阶段」（去掉「年龄阶段」措辞，阶段即基于当前角色的角色卡变体，ID 与命名绑定当前角色、便于提示词被大模型识别创作）；新增阶段/姿势/预览三个弹窗改为 `<Teleport to="body">` 且 `z-index:3000`，修复此前「弹窗不在顶层」被 el-dialog 遮罩盖住的问题；`Assets.vue` 角色阶段面板同样同步文案为「添加阶段」、`AssetStageManager.vue` 角色 i18n 去「年龄」）
+- **P3 分镜（2026-08-09 续 · 阶段卡作为提示词素材 + 角色卡禁用拖入 + 0 阶段禁用 + 左侧瘦身）**：`ProjectFragmentEditor.vue` ——①**业务逻辑变更**：角色卡不再作为提示词素材（`draggable` 移除；左侧主区与画面描述弹窗两处 `char-card` 均加 `disabled` 类当 `!c.stages?.length`，提示「⚠ 请先添加阶段才能引用」）；**阶段卡（`AssetStageManager` strip 的 `stage-mini`）接管拖拽**，写入引用对象 `{asset_id, asset_type, stage_id, name:stage_name}`（MIME `application/x-manju-asset`），拖入右侧文本插入 `@[阶段名]` 并合并 `shot.refs`；场景/道具卡仍按资产级拖拽（`assetRefObj(a,'scene'|'prop')`）②**引用模型升级**：`shot.refs` 由 `string[]`(asset_id) 升级为对象数组 `{asset_id,asset_type,stage_id,name}[]`，唯一键 `asset_id::stage_id`（同角色不同阶算不同引用）；`segRefCount`/`tryMergeRef`/`segUniqueExcept`/`removeRef`/`referencedAssets`/`syncMentionRefs`/`onChipRemoved`（`buildMentionMap` 删除→`resolveRefByName` 阶段名优先）/`onFieldDrop`/`onPromptDrop`/`onModalAssetDrop`/`openRefPicker`/`toggleRefDraft`/`confirmRefs`/`refAssetOptions`（按阶段拆分，无阶段角色不出现）/`richInputAssets`（含阶段名）/`mentionOptions`（含阶段名）/`assetKind`/`assetName` 全部改写为对象感知；BR-009（片段唯一引用≤9）按唯一键统计，引用选择器按「阶段」拆分天然满足「无阶段角色不可使用」③**后端零改动**：`segment_asset_refs` 已含 `stage_id` 列，保存 `useProject.js:325` 序列化 `asset_id/asset_type/stage_id/used_in`，Director 按 `stage_id` 注入 512 维④**左侧瘦身**：`char-card`/`asset-card` 内边距 10→8px、缩略图 48×64→42×56、hover 按钮 34→28px、外边距收紧；`char-card` 改 `cursor:default`（不再可拖）⑤**缩略图完整**：阶段小图 `object-fit:cover`→`contain`（编辑器内联横条 + Assets.vue 角色面板 + RoleEditorModal 面板）不再裁切。
+- **P1 资产（2026-08-09 续 · 阶段卡拖拽源 + 缩略图不裁切）**：`AssetStageManager.vue` ——`mode='strip'` 的 `stage-mini` 新增 `draggable="true"` + `@dragstart="onStageDragStart"` 写入引用对象（含 `stage_id`，提示「拖入右侧提示词以引用该阶段」）；`.stage-mini-img img` 与 `.stage-img img` 的 `object-fit` 由 `cover` 改为 `contain`（阶段参考图完整显示，不再裁半）；`.stage-mini` 光标 `pointer`→`grab`。
+- **P1 资产（2026-08-09 续 · 角色面板缩略图不裁切）**：`Assets.vue` ——角色面板 `.stage-img img` `object-fit:cover`→`contain`，阶段参考图完整显示。
+- **composables（2026-08-09 续 · 引用模型升级）**：`useProject.js` ——①`applyActiveSegment` 的 `refs` 加载由 `(safeJson(s.asset_refs,[])).map(r=>r?.asset_id||r)` 升级为对象归一化（兼容历史字符串 refs / `s.refs` / mock），产出 `{asset_id,asset_type,stage_id,name}[]`（name 缺省回退 `stage_name`）②保存 `asset_refs` 由 `{asset_id:rid,asset_type:'role',used_in:'shot'}` 改为 `{asset_id,asset_type,stage_id,used_in}` 携带 `stage_id`（后端 `segment_asset_refs` 已支持）。
 - **P4 生产**：`ProductionStage.vue`（生成生产页，**2026-08-08 新增 per-segment 进度透出**：`onDirectorEvent` 接 `director:<pid>` 频道 `segment` 事件，`directorSegments` ref 渲染片段级状态/进度条/视频链接横幅，three 态配色 running/succeeded/failed；`onDirectorRun` 重置）、`TaskCenter.vue`（**推理监控**诊断页）、`VideoLogPanel.vue`；**无编辑表单**，自动保存即现有自动轮询刷新，弹窗仅监控类无需 before-close 改动
 ；**2026-08-08 Director Layer 3 收口**：新增「⚙ 参数」面板下发 Director 全局生产参数（手册 §3.2.2/§3.3.2/§3.4.2/§3.4.4：分辨率/画幅/模型/seed 策略/真人资产开关/尾帧锚定/优先级/品控开关/人脸修复/音视频配置）；运行结果区展示 N03 全局风格参考图（`/file?name=` 真实回显）与 N06 品控报告（片段/文件/时长一致/人脸相似度/结论 表格 + 不合格分镜数 + 告警列表），数据来自 `directorRunStatus` 的 `snapshot.global_style_ref`/`quality_report`/`quality_alerts`/`failed_shot_list`（后端 `DirectorRunResult.to_dict` 已暴露，人脸相似度阈值≥0.8、音画≤100ms 按手册 §3.4.5）
 - **创作/工具**：`Txt2Img.vue`、`Img2Img.vue`、`Img2Prompt.vue`、`Canvas.vue`、`Creative.vue`
@@ -283,3 +287,40 @@ cp build/dist/Setup.exe D:/AI/ManjuAgent_Setup.exe
 - **Ollama/ComfyUI 不打包**：外部 HTTP 服务，安装器仅检测+引导；二者未运行则 AI 生成功能不可用，但应用本身可启动。
 - **不含 Node**：冻结版不可运行时 `vite build`（`module_manager._run_frontend_build` 冻结版直接返回），前端用预构建的 `frontend/dist`（改动前端源码后需重新 `vite build` 并重新打包）。
 - **`routers.py` 门面**仍从 `server/_vendor/routers_compiled.cpython-313.pyc` 加载权威路由实现（按 `__file__` 相对定位，冻结友好），打包相关的改动须同步本 §9 与 §3.1。
+
+### 9.7 权重落地与真实视频生成（2026-08-09）
+- **Wan2.1-T2V-1.3B 权重已落地**（经 ModelScope `Wan-AI/Wan2.1-T2V-1.3B`，全部落在 `D:\AI\ComfyUI-aki-v3.2\ComfyUI\models\`）：
+  - `diffusion_models/diffusion_pytorch_model.safetensors` (5.3G)
+  - `text_encoders/models_t5_umt5-xxl-enc-bf16.pth` (10.6G)
+  - `vae/Wan2.1_VAE.pth` (0.48G)
+  - 秋葉已装 `ComfyUI-WanVideoWrapper`（`detect_comfy_video()` 命中 `Wan*` 节点 → True）。
+- **N05 真实视频生成路由（显存门槛 + AnimateDiff 优先 / Wan 回退，2026-08-09 重写）**：
+  `_comfy_text2video` 按硬件约束分三层：① 显存 < `REAL_VIDEO_MIN_VRAM_GB`(8.0GB) →
+  `_comfy_vram_gb()` 查 `/system_stats` 取 `vram_total`，直接抛清晰 RuntimeError，由 `generate_segment_video`
+  (`except Exception` @ ~1630) 捕获后回退静态卡轮播（诚实降级，绝不假装运动视频）；② 显存达标且装有
+  `ADE_AnimateDiffLoaderGen1` → 走轻量 SD1.5+AnimateDiff 路线（见下）；③ 否则回退 Wan2.1-T2V（≥8GB 且装有
+  WanVideo 系列节点）。`generate_segment_video` 真实视频分支：逐镜头 `_comfy_text2video(timeout=600)` 生成运动片段，
+  全部成功才 `_concat_video_clips` 拼真实视频；任一失败自动回退静态卡轮播。
+- **AnimateDiff-Evolved 轻量路线已接入 + 实测**：`ComfyUI-AnimateDiff-Evolved` 自定义节点已从 codeload.github.com
+  落地 `custom_nodes/`（`import 0.5s` 已加载）；运动模块 `mm_sd_v15_v2.ckpt`(1.82G) 经 hf-mirror 下载到
+  `models/animatediff_models/`（初始误放 `animatediff/` 已纠正）。`_comfy_text2video_animatediff`：
+  `CheckpointLoaderSimple(SD1.5) → ADE_AnimateDiffLoaderGen1(mm_sd_v15_v2, 挂
+  ADE_AnimateDiffUniformContextOptions context_length=8 分窗压峰值显存) → CLIPTextEncode×2 →
+  EmptyLatentImage(batch) → KSampler(\`latent_image\` 键) → VAEDecode → VHS_VideoCombine(h264-mp4)`；
+  分辨率最长边收敛 ≤768 对齐64、帧数对4取整且 ≤32。工作流经 `D:/AI/animatediff_t2v_test.py` E2E 验证：
+  节点接线正确、可分窗不 OOM 崩 ComfyUI。
+  - **6GB 实测结论（关键）**：GTX 1660 Ti(6GB) 上 16 帧×24 步需 15+ 分钟/镜头，一个分镜多镜头即数小时，
+    且未分窗时默认配置会 OOM 崩掉共享 ComfyUI；故 6GB 机器统一走门槛跳过 + 静态轮播。**真实视频生成在用户当前
+    6GB 显卡上硬件不可行**（Wan 的 umt5-xxl≈11GB 单组件超卡；AnimateDiff 能跑但过慢且不实用），≥8GB 机器才能跑通。
+- **Wan2.1-T2V 在 6GB 上 OOM 不可行（已三轮实测验证）**：6GB 显存，Wan 的 `umt5-xxl`(bf16≈11GB) 单组件即超整卡；
+  试过 block swap(20/30)、VAE tiling、T5 `device=cpu`、降帧到 33 —— 仍 OOM（CUDA 缓存残留 ~10GB）。
+  故 Wan 仅作为 ≥8GB 机器的回退路径保留，6GB 由门槛直接拦截。
+  - 实测踩坑已固化（Wan 回退路径）：Sampler 需 `riflex_freq_index`; VAELoader 需 `precision`; Decode 需
+    `enable_vae_tiling`+`tile_*` 四参数；`t5` 来自 `LoadWanVideoT5TextEncoder`（非 ModelLoader 输出）。
+- **512 维"死配置"已修复**：`_comfy_text2img_with_ipadapter` 真正消费 `first_30_steps_boost` →
+  IP-Adapter `weight_type="ease in"`（采样前段增强身份约束）；`cross_attn_layers=2-4` 由 ipadapter-plus-face 内部
+  实现，不再伪造字段。`visual_control.py` 构建的 `asset_inject_config` 现在通过 `inject_cfg` 实际驱动 IP-Adapter。
+- **GFPGAN/CodeFormer 权重**：确认不在 ModelScope 白名单、HuggingFace 被墙，待用户在本机放
+  `GFPGANv1.4.pth` 到 `models\facerestore_models\`；N06/N08 人脸修复保持诚实降级（非阻塞）。
+- **沙箱投影限制（非平台 bug）**：本沙箱看不到 ComfyUI 主机侧 `output/` 写后文件，E2E 验证改用 `/view` HTTP
+  取回；真实后端与本机 ComfyUI 同机，读 `<root>/output` 正常。

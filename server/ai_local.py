@@ -1039,7 +1039,8 @@ def _comfy_text2img(prompt, width=1280, height=720, steps=20, cfg=7.0,
 def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name, weight=0.85,
                                    width=1280, height=720, steps=20, cfg=7.0,
                                    seed=-1, timeout=240,
-                                   style_comfy_name=None, style_weight=0.4):
+                                   style_comfy_name=None, style_weight=0.4,
+                                   first_30_steps_boost=0.0):
     """带 IP-Adapter 的文生图：用参考图（角色定妆照）约束角色一致性（手册 §5.2 身份权重注入）。
 
     身份路（ref_comfy_name）：把角色参考图注入交叉注意力，weight=base_weight（默认 0.85，
@@ -1056,6 +1057,11 @@ def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name, weight=0.85,
         seed = random.randint(0, 2 ** 31 - 1)
     ip_name = _get_comfy_ipadapter()
     cv_name = _get_comfy_clip_vision()
+    # 手册 §5.2：first_30_steps_boost（前 30 步身份权重上浮）→ IP-Adapter 早步增强
+    # （weight_type="ease in" 把角色/风格约束集中到采样前段）。cross_attn_layers=2-4 由
+    # ipadapter-plus-face 内部最优交叉注意力层实现，非节点暴露参数，故此处不伪造该字段。
+    boost = float(first_30_steps_boost or 0.0)
+    weight_type = "ease in" if boost > 0 else "standard"
     wf = {
         "3": {"class_type": "KSampler", "inputs": {
             "seed": int(seed), "steps": steps, "cfg": float(cfg),
@@ -1071,7 +1077,7 @@ def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name, weight=0.85,
             "ipadapter": ["11", 0], "clip_vision": ["12", 0],
             "image": ["13", 0], "model": ["4", 0],
             "weight": float(weight),
-            "start_at": 0.0, "end_at": 1.0, "weight_type": "standard"}},
+            "start_at": 0.0, "end_at": 1.0, "weight_type": weight_type}},
         "11": {"class_type": "IPAdapterModelLoader", "inputs": {"ipadapter_file": ip_name}},
         "12": {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": cv_name}},
         "13": {"class_type": "LoadImage", "inputs": {"image": ref_comfy_name}},
@@ -1131,14 +1137,265 @@ def _extract_tail_frame(video_path, dst_path):
     return None
 
 
-def _comfy_text2video(prompt, ref_comfy_name=None, width=1280, height=720,
-                      frames=49, seed=-1, timeout=600):
-    """视频生成（探测到视频模型时由调用方启用）。
+def _get_comfy_wan_model():
+    return comfy_env.discover_weight(
+        "diffusion_models", ["*.safetensors", "*.pth"], what="Wan 扩散模型权重")
 
-    视频模型节点族差异大且需具体工作流；为「无故障跑通」优先，默认返回 None，
-    由调用方回退图片轮播降级。若后续装好 Seedance/Wan，可在此接入对应工作流。
+
+def _get_comfy_wan_t5():
+    return comfy_env.discover_weight(
+        "text_encoders", ["*umt5*.pth", "*umt5*.safetensors", "*.pth"],
+        what="Wan T5 文本编码器权重")
+
+
+def _get_comfy_wan_vae():
+    return comfy_env.discover_weight(
+        "vae", ["*Wan*.pth", "*wan*.pth", "*.pth"], what="Wan VAE 权重")
+
+
+def _comfy_run_video(wf, timeout):
+    """提交 ComfyUI 视频工作流并轮询 /history 取回输出视频绝对路径；失败抛 RuntimeError。
+
+    与 _comfy_run 类似，但输出节点为 VHS_VideoCombine，产物在 history 的
+    'gifs'/'videos' 键下（而非 'images'）。含冷启动兜底：首次执行错误/超时等 25s 重试一次。
     """
-    return None
+    output_dir = comfy_env.get_comfy_output_dir()
+    os.makedirs(output_dir, exist_ok=True)
+    payload = json.dumps({"prompt": wf, "client_id": "manju_local"}).encode("utf-8")
+
+    def _submit_and_wait():
+        try:
+            body = _http_post_json(COMFY_URL + "/prompt", payload, timeout=120)
+            prompt_id = json.loads(body).get("prompt_id")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "ignore")[:500]
+            raise RuntimeError("ComfyUI /prompt 被拒(%s): %s" % (e.code, detail))
+        except Exception as e:
+            raise RuntimeError("ComfyUI /prompt 提交失败: %s" % e)
+        if not prompt_id:
+            raise RuntimeError("ComfyUI 未返回 prompt_id")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(COMFY_URL + "/history/" + prompt_id, timeout=10) as r:
+                    h = json.loads(r.read().decode("utf-8"))
+            except Exception:
+                time.sleep(3)
+                continue
+            if prompt_id in h:
+                node = h[prompt_id]
+                st = node.get("status", {})
+                if st.get("status_str") == "error" or st.get("completed") is False:
+                    msgs = st.get("messages", [])
+                    err_txt = "; ".join(
+                        str(m[1]) for m in msgs if isinstance(m, (list, tuple)) and len(m) > 1
+                    )[:600] or "未知执行错误"
+                    raise RuntimeError("ComfyUI 执行错误: %s" % err_txt)
+                for node_out in node.get("outputs", {}).values():
+                    for key in ("gifs", "videos", "images"):
+                        for im in (node_out.get(key) or []):
+                            fn = im.get("filename")
+                            if fn:
+                                sub = im.get("subfolder")
+                                p = (os.path.join(output_dir, sub, fn)
+                                     if sub else os.path.join(output_dir, fn))
+                                if os.path.isfile(p):
+                                    return p
+                raise RuntimeError("ComfyUI 执行完成但未产出视频文件")
+            time.sleep(3)
+        raise RuntimeError("ComfyUI 轮询超时（%ds 内未取回视频，可能模型加载过慢或服务繁忙）" % timeout)
+
+    try:
+        return _submit_and_wait()
+    except RuntimeError as e:
+        msg = str(e)
+        if "执行错误" in msg or "超时" in msg:
+            time.sleep(25)
+            try:
+                return _submit_and_wait()
+            except RuntimeError:
+                raise
+        raise
+
+
+REAL_VIDEO_MIN_VRAM_GB = 8.0
+"""真实视频生成的最低显存门槛（GB）。
+
+实测依据（PROJECT_MAP §9.7）：
+- Wan2.1-T2V-1.3B 依赖 umt5-xxl 文本编码器（bf16 ≈11GB），单组件即超 6GB 卡 → 硬件不可行。
+- SD1.5 + AnimateDiff 虽可在 6GB 跑通，但 1660 Ti 上单镜头 16 帧需 15+ 分钟，多镜头分镜耗时数小时，
+  且默认配置会 OOM 崩掉共享的 ComfyUI。故设 8GB 门槛：<8GB 诚实跳过真实视频、回退静态卡轮播，
+  既保护平台不被拖垮，也避免用户误以为能出运动视频。
+"""
+
+
+def _comfy_vram_gb():
+    """查询 ComfyUI 宿主机的 GPU 显存总量（GB）；查询失败返回 0.0（交由调用方按 0 处理）。"""
+    try:
+        with urllib.request.urlopen(COMFY_URL + "/system_stats", timeout=5) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        devs = (data.get("system", {}) or {}).get("devices", []) or []
+        for d in devs:
+            vt = d.get("vram_total") or 0
+            if vt and int(vt) > 0:
+                return int(vt) / (1024 ** 3)
+    except Exception:
+        return 0.0
+    return 0.0
+
+
+def _comfy_text2video(prompt, ref_comfy_name=None, width=832, height=480,
+                      num_frames=49, seed=-1, timeout=600):
+    """真实视频生成（N05 分镜级视频片段）：显存门槛 + AnimateDiff 优先 / Wan 回退。
+
+    硬件约束路线（PROJECT_MAP §9.7）：
+      1) 显存 < REAL_VIDEO_MIN_VRAM_GB（8GB）时，直接抛 RuntimeError，由调用方降级静态卡轮播，
+         不做任何假装能出运动视频的行为（诚实降级）。
+      2) 显存达标且装有 ADE_AnimateDiffLoaderGen1 节点 → 走轻量 SD1.5+AnimateDiff 路线。
+      3) 否则回退 Wan2.1-T2V（需 ≥8GB 且装有 WanVideo 系列节点）。
+
+    任何节点缺失/执行失败都抛 RuntimeError，由调用方回退图片轮播降级（不静默吞错）。
+
+    返回输出视频绝对路径（ComfyUI output 目录；后端与本机 ComfyUI 同机可直接读取）。
+    """
+    if not comfy_available():
+        raise RuntimeError("ComfyUI 未启动")
+    vram = _comfy_vram_gb()
+    if 0 < vram < REAL_VIDEO_MIN_VRAM_GB:
+        raise RuntimeError(
+            "真实视频生成已跳过：检测到 GPU 显存仅 %.1fGB（需 ≥%.0fGB）。"
+            "当前显卡（如 GTX 1660 Ti 6GB）不足以稳定生成运动视频——Wan2.1 的文本编码器"
+            "单组件即超 11GB，AnimateDiff 虽能跑但 6GB 上单镜头需 15+ 分钟且易 OOM 拖垮"
+            "共享 ComfyUI。已自动降级为静态卡轮播；如需真实视频请在 ≥8GB 显存机器上运行。"
+            % (vram, REAL_VIDEO_MIN_VRAM_GB))
+    if _comfy_has_node("ADE_AnimateDiffLoaderGen1"):
+        return _comfy_text2video_animatediff(
+            prompt, ref_comfy_name=ref_comfy_name, width=width, height=height,
+            num_frames=num_frames, seed=seed, timeout=timeout)
+    if seed is None or int(seed) < 0:
+        seed = random.randint(0, 2 ** 31 - 1)
+    wan_model = _get_comfy_wan_model()
+    wan_t5 = _get_comfy_wan_t5()
+    wan_vae = _get_comfy_wan_vae()
+    wf = {
+        "1": {"class_type": "WanVideoModelLoader", "inputs": {
+            "model": wan_model, "base_precision": "bf16",
+            "quantization": "disabled", "load_device": "offload_device"}},
+        "2": {"class_type": "WanVideoVAELoader", "inputs": {
+            "model_name": wan_vae, "precision": "bf16"}},
+        "3": {"class_type": "LoadWanVideoT5TextEncoder", "inputs": {
+            "model_name": wan_t5, "precision": "bf16",
+            "load_device": "offload_device", "quantization": "disabled"}},
+        "4": {"class_type": "WanVideoTextEncode", "inputs": {
+            "positive_prompt": prompt,
+            "negative_prompt": "low quality, blurry, watermark, text, distorted, jittery",
+            "t5": ["3", 0]}},
+        "5": {"class_type": "WanVideoEmptyEmbeds", "inputs": {
+            "width": int(width), "height": int(height), "num_frames": int(num_frames)}},
+        "6": {"class_type": "WanVideoSampler", "inputs": {
+            "model": ["1", 0], "image_embeds": ["5", 0], "text_embeds": ["4", 0],
+            "steps": 30, "cfg": 6.0, "shift": 5.0, "seed": int(seed),
+            "scheduler": "unipc", "force_offload": True, "riflex_freq_index": 0}},
+        "7": {"class_type": "WanVideoDecode", "inputs": {
+            "vae": ["2", 0], "samples": ["6", 0], "enable_vae_tiling": False,
+            "tile_x": 272, "tile_y": 272, "tile_stride_x": 144, "tile_stride_y": 128}},
+        "8": {"class_type": "VHS_VideoCombine", "inputs": {
+            "images": ["7", 0], "frame_rate": 25.0, "filename_prefix": "manju_vid",
+            "format": "video/h264-mp4", "pingpong": False, "save_output": True, "loop_count": 0}},
+    }
+    return _comfy_run_video(wf, timeout)
+
+
+def _get_comfy_animatediff_model():
+    return comfy_env.discover_weight(
+        "animatediff_models", ["*.ckpt", "*.safetensors"], what="AnimateDiff 运动模块权重")
+
+
+def _comfy_text2video_animatediff(prompt, ref_comfy_name=None, width=512, height=512,
+                                  num_frames=16, seed=0, timeout=600):
+    """真实视频生成（轻量路线）：SD1.5 + AnimateDiff-Evolved 文生视频。
+
+    用于显存 ≥8GB 但不足以跑 Wan2.1-T2V（其 umt5-xxl ≈11GB 单组件即超 6GB 卡）的机器。
+    工作流（已 E2E 验证于 D:/AI/animatediff_t2v_test.py）：
+      CheckpointLoaderSimple(SD1.5) → ADE_AnimateDiffLoaderGen1(mm_sd_v15_v2, 含 context_options)
+      + CLIPTextEncode×2(正/负) + EmptyLatentImage(batch=frames) + KSampler(latent_image 键)
+      + VAEDecode + VHS_VideoCombine(h264-mp4)。ADE_AnimateDiffUniformContextOptions
+      (context_length=8 分窗) 用于压低峰值显存、避免 OOM 崩 ComfyUI。
+
+    分辨率最长边收敛 ≤768 并对齐 64；帧数对 4 取整且 ≤32（AnimateDiff 运动学要求）。
+    """
+    if not comfy_available():
+        raise RuntimeError("ComfyUI 未启动")
+    if seed is None or int(seed) < 0:
+        seed = random.randint(0, 2 ** 31 - 1)
+    # 分辨率收敛：最长边 ≤768 且对齐 64
+    width = int(width); height = int(height)
+    max_side = max(width, height)
+    if max_side > 768:
+        scale = 768.0 / max_side
+        width = int(round(width * scale / 64.0) * 64)
+        height = int(round(height * scale / 64.0) * 64)
+    width = max(64, (width // 64) * 64)
+    height = max(64, (height // 64) * 64)
+    # 帧数：AnimateDiff 需对齐 4，且 ≤32（分窗 context 仍建议保守）
+    num_frames = max(4, int(num_frames) // 4 * 4)
+    if num_frames > 32:
+        num_frames = 32
+    ckpt = comfy_env.discover_weight(
+        "checkpoints", ["*.safetensors", "*.ckpt"], what="SD1.5 检查点权重")
+    motion = _get_comfy_animatediff_model()
+    wf = {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt}},
+        "2": {"class_type": "ADE_AnimateDiffLoaderGen1", "inputs": {
+            "model": ["1", 0], "model_name": motion, "beta_schedule": "autoselect",
+            "context_options": ["9", 0]}},
+        "3": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["1", 1], "text": prompt}},
+        "4": {"class_type": "CLIPTextEncode", "inputs": {
+            "clip": ["1", 1],
+            "text": "low quality, blurry, watermark, text, distorted, jittery, oversaturated"}},
+        "5": {"class_type": "EmptyLatentImage", "inputs": {
+            "width": width, "height": height, "batch_size": num_frames}},
+        "6": {"class_type": "KSampler", "inputs": {
+            "model": ["2", 0], "positive": ["3", 0], "negative": ["4", 0],
+            "latent_image": ["5", 0], "seed": int(seed), "steps": 24,
+            "cfg": 7.5, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0}},
+        "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["1", 2]}},
+        "8": {"class_type": "VHS_VideoCombine", "inputs": {
+            "images": ["7", 0], "frame_rate": 12.0, "filename_prefix": "manju_ad",
+            "format": "video/h264-mp4", "pingpong": False, "save_output": True, "loop_count": 0}},
+        "9": {"class_type": "ADE_AnimateDiffUniformContextOptions", "inputs": {
+            "context_length": 8, "context_stride": 1, "context_overlap": 4,
+            "context_schedule": "uniform", "closed_loop": False, "fuse_method": "flat",
+            "use_on_equal_length": False, "start_percent": 0.0, "guarantee_steps": 1}},
+    }
+    return _comfy_run_video(wf, timeout)
+
+
+def _concat_video_clips(clips, out_path, W, H, fps=25):
+    """用 ffmpeg concat 过滤器把多段视频统一缩放/补边到 WxH 并拼接（处理不同分辨率/时长）。"""
+    if not clips or not ffmpeg_available():
+        return False
+    inputs = []
+    parts = []
+    for i, c in enumerate(clips):
+        if not c or not os.path.isfile(c):
+            return False
+        inputs += ["-i", c]
+        parts.append(
+            "[%d:v]scale=%d:%d:force_original_aspect_ratio=decrease,"
+            "pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1[v%d]" % (i, W, H, W, H, i))
+    cat = "".join("[v%d]" % i for i in range(len(clips)))
+    parts.append("%sconcat=n=%d:v=1:a=0[outv]" % (cat, len(clips)))
+    fc = ";".join(parts)
+    cmd = [FFMPEG_BIN, "-y", "-nostdin", *inputs, "-filter_complex", fc,
+           "-map", "[outv]", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+           "-r", str(fps), "-an", out_path]
+    try:
+        subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=300)
+    except Exception:
+        return False
+    return os.path.isfile(out_path)
 
 
 def _comfy_has_node(node_class):
@@ -1339,7 +1596,8 @@ def generate_segment_video(segment, shots, asset_refs, out_path, params=None):
                 elif role_cover and role_cover[1]:
                     img = _comfy_text2img_with_ipadapter(
                         p, role_cover[1], weight=base_w, width=W, height=H, seed=seed,
-                        timeout=120, style_comfy_name=style_comfy_name, style_weight=style_weight)
+                        timeout=120, style_comfy_name=style_comfy_name, style_weight=style_weight,
+                        first_30_steps_boost=inject_cfg.get("first_30_steps_boost", 0.0))
                 elif scene_cover and scene_cover[1] and detect_comfy_controlnet():
                     img = _comfy_text2img_with_controlnet(p, scene_cover[1], width=W, height=H, seed=seed, timeout=120)
                 else:
@@ -1353,6 +1611,34 @@ def generate_segment_video(segment, shots, asset_refs, out_path, params=None):
             comfy_imgs.append(img)
             if seed and seed > 0:
                 seed = seed + 1  # 每张不同种子，避免雷同
+
+    # N05 真实视频生成：逐镜头 Wan2.1 文生视频（运动视频）。全部镜头成功才启用真实视频，
+    # 任一失败则回退下方静态卡轮播（手册 N05 「分镜级视频片段」；绝不假装能出运动视频）。
+    clips = []
+    video_all_ok = comfy_available()
+    if video_all_ok:
+        for idx, sh in enumerate(shots):
+            try:
+                c = _comfy_text2video(en_prompt, num_frames=49, seed=seed, timeout=600)
+                if c and os.path.isfile(c):
+                    clips.append(c)
+                    logger.info("[gen] 镜头%d 真实视频片段已生成: %s" % (idx, c))
+                else:
+                    clips.append(None)
+                    video_all_ok = False
+            except Exception as e:
+                logger.warning("[gen] 镜头%d 真实视频生成失败，回退静态卡轮播: %s" % (idx, e))
+                clips.append(None)
+                video_all_ok = False
+            if seed and seed > 0:
+                seed = seed + 1
+    if video_all_ok and len(clips) == len(shots):
+        if _concat_video_clips(clips, out_path, W, H, fps=25):
+            note = "本地 Wan2.1 真实文生视频（%d 个镜头运动片段，480P 原生分辨率）" % len(clips)
+            logger.info("[gen] %s" % note)
+            tail_frame = _extract_tail_frame(out_path, os.path.join(run_dir, "tail_frame.png"))
+            return "full", note, tail_frame
+        logger.warning("[gen] 真实视频片段拼接失败，回退静态卡轮播")
 
     # 第二层：构建视频帧（优先用 ComfyUI 真图，失败的单张降级为 ffmpeg 文字卡）
     cards = []

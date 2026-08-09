@@ -10,7 +10,7 @@ ComfyUI 可用时直接出图 / 注入真人特征，不可用时优雅降级（
 generate() 抛清晰错误由上层回退），保持接口与手册一致。
 
 引擎分类与手册 §5.2 资产注入协议对应：
-  文生视频    → ComfyUI 视频工作流（Seedance/Wan；当前 _comfy_text2video 待工作流，未配则返回清晰错误）
+  文生视频    → ComfyUI 视频工作流（Wan2.1-T2V 已接；detect_comfy_video 为 True 时生成真实运动视频，失败回退幻灯片）
   人脸 ID 嵌入 → ComfyUI IP-Adapter（参考图 → 身份特征注入，等价于 512 维特征注入的本地落地）
   TTS         → 本地 / 在线 TTS（合成阶段调用，Layer0 仅登记）
   画质增强    → 本地 ffmpeg 后处理（ai_local.synthesize_project_video 承担，Layer0 仅登记）
