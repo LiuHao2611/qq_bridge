@@ -1230,11 +1230,15 @@ REAL_VIDEO_MIN_VRAM_GB = 8.0
 
 
 def _comfy_vram_gb():
-    """查询 ComfyUI 宿主机的 GPU 显存总量（GB）；查询失败返回 0.0（交由调用方按 0 处理）。"""
+    """查询 ComfyUI 宿主机的 GPU 显存总量（GB）；查询失败返回 0.0（交由调用方按 0 处理）。
+
+    注意：秋葉 ComfyUI v0.30.2 的 /system_stats 中 devices 是**顶层键**
+    （并非嵌套在 system 下），故优先取顶层 devices，并兼容旧版 system.devices 布局。
+    """
     try:
         with urllib.request.urlopen(COMFY_URL + "/system_stats", timeout=5) as r:
             data = json.loads(r.read().decode("utf-8"))
-        devs = (data.get("system", {}) or {}).get("devices", []) or []
+        devs = data.get("devices") or (data.get("system", {}) or {}).get("devices") or []
         for d in devs:
             vt = d.get("vram_total") or 0
             if vt and int(vt) > 0:

@@ -296,7 +296,8 @@ cp build/dist/Setup.exe D:/AI/ManjuAgent_Setup.exe
   - 秋葉已装 `ComfyUI-WanVideoWrapper`（`detect_comfy_video()` 命中 `Wan*` 节点 → True）。
 - **N05 真实视频生成路由（显存门槛 + AnimateDiff 优先 / Wan 回退，2026-08-09 重写）**：
   `_comfy_text2video` 按硬件约束分三层：① 显存 < `REAL_VIDEO_MIN_VRAM_GB`(8.0GB) →
-  `_comfy_vram_gb()` 查 `/system_stats` 取 `vram_total`，直接抛清晰 RuntimeError，由 `generate_segment_video`
+  `_comfy_vram_gb()` 查 `/system_stats` 取 `vram_total`（实测 devices 在**顶层**键，非 system 下；已兼容两种布局），
+  直接抛清晰 RuntimeError，由 `generate_segment_video`
   (`except Exception` @ ~1630) 捕获后回退静态卡轮播（诚实降级，绝不假装运动视频）；② 显存达标且装有
   `ADE_AnimateDiffLoaderGen1` → 走轻量 SD1.5+AnimateDiff 路线（见下）；③ 否则回退 Wan2.1-T2V（≥8GB 且装有
   WanVideo 系列节点）。`generate_segment_video` 真实视频分支：逐镜头 `_comfy_text2video(timeout=600)` 生成运动片段，
