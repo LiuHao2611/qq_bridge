@@ -22,6 +22,8 @@ import importlib.util
 import logging
 import json
 import time
+import uuid
+import shutil
 
 logger = logging.getLogger("routers")
 
@@ -46,12 +48,15 @@ for _name, _val in vars(routers_compiled).items():
         globals()[_name] = _val
 
 # 覆盖实现所需的依赖（来自原模块 / 公共模块）
-from fastapi import Request  # noqa: F401
+from fastapi import Request, UploadFile, File, Form  # noqa: F401
 import re  # noqa: F401
 from common import ok, ApiError  # noqa: F401
 from ai_local import (  # noqa: F401
     split_story_with_llm, ollama_list_models, extract_assets_from_story,
-    _call_online_llm, comfy_available, _ollama_running_info, generate_comic
+    _call_online_llm, comfy_available, _ollama_running_info, generate_comic,
+    _comfy_img2img, _comfy_inpaint, _comfy_outpaint, _comfy_upscale,
+    _comfy_img2img_with_controlnet, _comfy_img2img_with_ipadapter,
+    _get_comfy_upscale_model, reverse_prompt, face_restore, OUTPUTS,
 )
 _body = getattr(routers_compiled, "_body")
 _redistribute_durations = getattr(routers_compiled, "_redistribute_durations")
@@ -775,6 +780,147 @@ async def t2i_task_detail(task_id: str):
         }})
     finally:
         conn.close()
+
+
+# ----------------------------------------------------------------------
+# 图生图专业编辑：统一多模式编辑入口 + 提示词反推
+# ----------------------------------------------------------------------
+_EDIT_TMP = os.path.join(_SERVER_DIR, ".tmp", "edit_uploads")
+os.makedirs(_EDIT_TMP, exist_ok=True)
+
+_EDIT_MODES = ("img2img", "inpaint", "outpaint", "upscale", "facefix", "style", "controlnet")
+
+
+def _save_upload(upl, suffix):
+    """把上传文件落到 D:/AI 下的临时目录（遵守 C 盘零写入），返回本地路径；无上传返回 None。"""
+    if not upl:
+        return None
+    fn = "%s_%s" % (uuid.uuid4().hex[:12], suffix)
+    p = os.path.join(_EDIT_TMP, fn)
+    with open(p, "wb") as f:
+        f.write(upl.file.read() if hasattr(upl, "file") else upl.read())
+    return p
+
+
+@api.post("/t2i/edit")
+async def t2i_edit(
+    image: UploadFile = File(...),
+    mask: UploadFile = None,
+    ref: UploadFile = None,
+    mode: str = Form("img2img"),
+    prompt: str = Form(""),
+    negative: str = Form(""),
+    strength: float = Form(0.65),
+    steps: int = Form(20),
+    cfg: float = Form(7.0),
+    seed: int = Form(-1),
+    sampler: str = Form("euler"),
+    scheduler: str = Form("normal"),
+    scale: int = Form(2),
+    upscale_model: str = Form(""),
+    denoise: float = Form(0.0),
+    left: int = Form(0),
+    top: int = Form(0),
+    right: int = Form(0),
+    bottom: int = Form(0),
+    feathering: int = Form(20),
+    control_type: str = Form("canny"),
+    control_weight: float = Form(1.0),
+    ip_weight: float = Form(0.8),
+    method: str = Form("GFPGAN"),
+):
+    """图生图专业编辑统一入口：根据 mode 分发到对应 ComfyUI 工作流。
+
+    mode ∈ {img2img 图生图重绘, inpaint 局部重绘, outpaint 扩图, upscale 高清放大,
+            facefix 面部修复, style 风格迁移(IP-Adapter), controlnet ControlNet 结构控制}。
+    image 必填；inpaint 必须带 mask；style 必须带 ref（风格参考图）。
+    结果复制到 server/outputs 并经 /file?name= 服务；同时写入 image_tasks(kind=edit) 历史。
+    """
+    img_path = _save_upload(image, "img.png")
+    mask_path = _save_upload(mask, "mask.png")
+    ref_path = _save_upload(ref, "ref.png")
+    if mode not in _EDIT_MODES:
+        raise ApiError("INVALID_PARAMS", "未知编辑模式: %s" % mode)
+    if mode == "inpaint" and not mask_path:
+        raise ApiError("INVALID_PARAMS", "局部重绘必须提供蒙版（mask）")
+    if mode == "style" and not ref_path:
+        raise ApiError("INVALID_PARAMS", "风格迁移必须提供风格参考图（ref）")
+    try:
+        if mode == "img2img":
+            out = await asyncio.to_thread(
+                _comfy_img2img, img_path, prompt, float(strength),
+                1280, 720, int(steps), float(cfg), int(seed))
+        elif mode == "inpaint":
+            out = await asyncio.to_thread(
+                _comfy_inpaint, img_path, mask_path, prompt, negative,
+                float(strength), int(steps), float(cfg), int(seed), sampler, scheduler)
+        elif mode == "outpaint":
+            out = await asyncio.to_thread(
+                _comfy_outpaint, img_path, int(left), int(top), int(right), int(bottom), int(feathering),
+                prompt, negative, float(strength), int(steps), float(cfg), int(seed), sampler, scheduler)
+        elif mode == "upscale":
+            out = await asyncio.to_thread(
+                _comfy_upscale, img_path, int(scale), upscale_model or None,
+                float(denoise), int(steps), float(cfg), prompt, negative, int(seed), sampler, scheduler)
+        elif mode == "facefix":
+            out = await asyncio.to_thread(face_restore, img_path, method)
+        elif mode == "style":
+            out = await asyncio.to_thread(
+                _comfy_img2img_with_ipadapter, img_path, ref_path, float(ip_weight),
+                prompt, negative, float(strength), int(steps), float(cfg), int(seed), sampler, scheduler)
+        else:  # controlnet
+            out = await asyncio.to_thread(
+                _comfy_img2img_with_controlnet, img_path, prompt, negative,
+                control_type, float(control_weight), float(strength), int(steps), float(cfg), int(seed), sampler, scheduler)
+    except ApiError:
+        raise
+    except Exception as e:
+        raise ApiError("GEN_FAILED", "图片编辑失败：%s" % str(e)[:300])
+    # 复制结果到 OUTPUTS 并生成 /file?name= URL
+    try:
+        dst_name = "edit_%s.png" % uuid.uuid4().hex[:12]
+        dst = os.path.join(OUTPUTS, dst_name)
+        shutil.copyfile(out, dst)
+        url = "/file?name=" + dst_name
+    except Exception as e:
+        raise ApiError("GEN_FAILED", "编辑结果保存失败：%s" % str(e)[:200])
+    # 持久化历史 image_tasks(kind=edit)，供编辑页历史列表按 kind 过滤
+    try:
+        conn = get_conn()
+        try:
+            insert_row(conn, TABLES["image_tasks"], {
+                "task_id": uid(),
+                "prompt": prompt or mode,
+                "negative_prompt": negative,
+                "params": json.dumps(
+                    {"kind": "edit", "mode": mode, "strength": strength, "steps": steps,
+                     "cfg": cfg, "seed": seed, "control_type": control_type, "scale": scale},
+                    ensure_ascii=False),
+                "status": "succeeded", "progress": 100,
+                "result": json.dumps({"url": url, "mode": mode}, ensure_ascii=False),
+                "error_message": "", "pre_auth_id": "", "cost_credits": 0,
+                "priority": 0, "retry_count": 0,
+                "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("[edit] 保存 image_tasks 历史失败（不影响本次返回）: %s" % e)
+    return ok({"url": url, "mode": mode, "local_path": out})
+
+
+@api.post("/t2i/reverse")
+async def t2i_reverse(image: UploadFile = File(...)):
+    """提示词反推：上传参考图，返回结构化提示词（主体/构图/风格/正负向）。"""
+    p = _save_upload(image, "rev.png")
+    try:
+        res = await asyncio.to_thread(reverse_prompt, p)
+    except Exception as e:
+        raise ApiError("GEN_FAILED", "提示词反推失败：%s" % str(e)[:200])
+    return ok(res)
 
 
 # ======================================================================

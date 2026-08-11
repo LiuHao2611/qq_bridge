@@ -1,210 +1,532 @@
 <script setup>
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, nextTick } from 'vue'
 import { ElMessage } from 'element-plus'
 import { usePersistedState } from '../composables/usePersist'
 
 defineOptions({ name: 'Img2Img' })
 
-const resolutions = ['720p', '1080p', '4K']
-const ratios = ['16:9', '9:16', '1:1', '4:3']
-
-const grads = [
-  ['#ff4d8d', '#8a5cff'], ['#4d9fff', '#3ddc84'], ['#ffb020', '#ff4d8d'],
-  ['#8a5cff', '#4d9fff'], ['#3ddc84', '#8a5cff'], ['#ff7696', '#ffb020'],
-  ['#5b6cff', '#ff4d8d'], ['#22d3ee', '#8a5cff'], ['#f472b6', '#a78bfa'],
+// ============================================================
+// 模式定义（社区高频 ComfyUI 图片编辑工作流）
+// ============================================================
+const modes = [
+  { key: 'img2img', label: '图生图', tip: '以原图为锚点重新生成，强度越高改动越大' },
+  { key: 'inpaint', label: '局部重绘', tip: '涂抹需要修改的区域，仅重绘遮罩部分（denoise 0.6–0.8）' },
+  { key: 'outpaint', label: '扩图', tip: '向四向扩展画布并由 AI 智能填充新区域' },
+  { key: 'upscale', label: '高清放大', tip: 'ESRGAN / 4x-UltraSharp 模型超分，可选细节增强' },
+  { key: 'facefix', label: '面部修复', tip: 'GFPGAN / CodeFormer 重建人脸细节' },
+  { key: 'style', label: '风格迁移', tip: '用风格参考图经 IP-Adapter 统一色调/质感' },
+  { key: 'controlnet', label: 'ControlNet', tip: '用原图提取边缘/深度/姿态等结构约束生成' },
+  { key: 'reverse', label: '反推提示词', tip: '上传参考图，反推结构化提示词（需本地 Ollama）' },
 ]
-const emojis = ['🖼', '🌆', '🌃', '🎭', '✨', '🌟', '🌈', '🪄', '🌉']
+const genModes = ['img2img', 'inpaint', 'outpaint', 'style', 'controlnet']
+const mode = ref('img2img')
+const modeTip = computed(() => modes.find(m => m.key === mode.value)?.tip || '')
 
-const state = usePersistedState('wn_i2i_state', {
-  prompt: '',
-  strength: 0.65,
-  count: 4,
-  resolution: '1080p',
-  ratio: '16:9',
-})
-
-const uploaded = ref([]) // { name, url }
-const results = ref([])
-const generating = ref(false)
-const progress = ref(0)
-
-let seq = 0
-function makeImage(base) {
-  const i = seq++
-  const g = base || grads[i % grads.length]
-  const e = emojis[i % emojis.length]
-  return {
-    id: i,
-    name: '变体 ' + (i + 1),
-    grad: `linear-gradient(135deg, ${g[0]}, ${g[1]})`,
-    emoji: e,
-    res: state.resolution,
-    ratio: state.ratio,
-  }
+function setMode(k) {
+  mode.value = k
+  // 按模式给出社区常用默认重绘幅度
+  const def = { img2img: 0.65, inpaint: 0.75, outpaint: 0.8, style: 0.6, controlnet: 0.6 }
+  if (k in def) strength.value = def[k]
+  if (k === 'inpaint') nextTick(() => { clearMask() })
 }
 
-// 上传参考图（本地预览，不真正上传）
-function handleChange(file) {
+// 持久化部分参数（跨刷新保留习惯）
+const persist = usePersistedState('wn_editor_state', {
+  prompt: '', negative: '', strength: 0.65, steps: 20, cfg: 7.0,
+  sampler: 'euler', scheduler: 'normal', seedRandom: true, seed: -1, count: 1,
+  scale: 4, denoise: 0.15, feathering: 24, left: 128, top: 128, right: 128, bottom: 128,
+  controlType: 'canny', controlWeight: 1.0, ipWeight: 0.8, faceMethod: 'GFPGAN',
+})
+const prompt = computed({ get: () => persist.prompt, set: v => persist.prompt = v })
+const negative = computed({ get: () => persist.negative, set: v => persist.negative = v })
+const strength = computed({ get: () => persist.strength, set: v => persist.strength = v })
+const steps = computed({ get: () => persist.steps, set: v => persist.steps = v })
+const cfg = computed({ get: () => persist.cfg, set: v => persist.cfg = v })
+const sampler = computed({ get: () => persist.sampler, set: v => persist.sampler = v })
+const scheduler = computed({ get: () => persist.scheduler, set: v => persist.scheduler = v })
+const seedRandom = computed({ get: () => persist.seedRandom, set: v => persist.seedRandom = v })
+const seed = computed({ get: () => persist.seed, set: v => persist.seed = v })
+const count = computed({ get: () => persist.count, set: v => persist.count = v })
+const scale = computed({ get: () => persist.scale, set: v => persist.scale = v })
+const denoise = computed({ get: () => persist.denoise, set: v => persist.denoise = v })
+const feathering = computed({ get: () => persist.feathering, set: v => persist.feathering = v })
+const left = computed({ get: () => persist.left, set: v => persist.left = v })
+const top = computed({ get: () => persist.top, set: v => persist.top = v })
+const right = computed({ get: () => persist.right, set: v => persist.right = v })
+const bottom = computed({ get: () => persist.bottom, set: v => persist.bottom = v })
+const controlType = computed({ get: () => persist.controlType, set: v => persist.controlType = v })
+const controlWeight = computed({ get: () => persist.controlWeight, set: v => persist.controlWeight = v })
+const ipWeight = computed({ get: () => persist.ipWeight, set: v => persist.ipWeight = v })
+const faceMethod = computed({ get: () => persist.faceMethod, set: v => persist.faceMethod = v })
+
+const samplers = ['euler', 'euler_ancestral', 'dpmpp_2m', 'dpmpp_2m_sde', 'dpmpp_sde', 'ddim', 'uni_pc']
+const schedulers = ['normal', 'karras', 'exponential', 'simple', 'ddim_uniform']
+
+// ============================================================
+// 源图 / 风格图 / 蒙版
+// ============================================================
+const sourceFile = ref(null)
+const sourceUrl = ref('')
+const styleFile = ref(null)
+const styleUrl = ref('')
+const imgEl = ref(null)
+const maskEl = ref(null)
+const brushSize = ref(48)
+const eraser = ref(false)
+const maskPainted = ref(false)
+const drawing = ref(false)
+
+function onSource(file) {
   if (!file.raw || !file.raw.type.startsWith('image/')) return
-  uploaded.value.push({ name: file.name, url: URL.createObjectURL(file.raw) })
+  if (sourceUrl.value) URL.revokeObjectURL(sourceUrl.value)
+  sourceFile.value = file.raw
+  sourceUrl.value = URL.createObjectURL(file.raw)
+  compareBefore.value = sourceUrl.value
 }
-function removeUpload(idx) {
-  uploaded.value.splice(idx, 1)
+function onStyle(file) {
+  if (!file.raw || !file.raw.type.startsWith('image/')) return
+  if (styleUrl.value) URL.revokeObjectURL(styleUrl.value)
+  styleFile.value = file.raw
+  styleUrl.value = URL.createObjectURL(file.raw)
+}
+function onImgLoad() {
+  const c = maskEl.value
+  if (!c || !imgEl.value) return
+  c.width = imgEl.value.naturalWidth
+  c.height = imgEl.value.naturalHeight
+  clearMask()
+}
+function maskPos(e) {
+  const c = maskEl.value
+  const r = c.getBoundingClientRect()
+  const sx = c.width / r.width, sy = c.height / r.height
+  return { x: (e.clientX - r.left) * sx, y: (e.clientY - r.top) * sy, sx }
+}
+function paintAt(x, y, sx) {
+  const c = maskEl.value
+  const ctx = c.getContext('2d')
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+  if (eraser.value) { ctx.globalCompositeOperation = 'destination-out'; ctx.fillStyle = 'rgba(0,0,0,1)' }
+  else { ctx.globalCompositeOperation = 'source-over'; ctx.fillStyle = 'rgba(255,255,255,1)' }
+  ctx.beginPath(); ctx.arc(x, y, Math.max(2, brushSize.value * sx), 0, Math.PI * 2); ctx.fill()
+  maskPainted.value = true
+}
+function maskDown(e) { if (mode.value !== 'inpaint') return; drawing.value = true; const p = maskPos(e); paintAt(p.x, p.y, p.sx) }
+function maskMove(e) { if (!drawing.value) return; const p = maskPos(e); paintAt(p.x, p.y, p.sx) }
+function maskUp() { drawing.value = false }
+function clearMask() {
+  const c = maskEl.value; if (!c) return
+  c.getContext('2d').clearRect(0, 0, c.width, c.height)
+  maskPainted.value = false
+}
+function invertMask() {
+  const c = maskEl.value; if (!c) return
+  const ctx = c.getContext('2d')
+  const d = ctx.getImageData(0, 0, c.width, c.height)
+  for (let i = 3; i < d.data.length; i += 4) d.data[i] = 255 - d.data[i]
+  ctx.putImageData(d, 0, 0); maskPainted.value = true
+}
+function maskBlob() {
+  return new Promise(res => { if (maskEl.value) maskEl.value.toBlob(b => res(b), 'image/png'); else res(null) })
 }
 
-const estCredits = computed(() => {
-  const base = { '720p': 2, '1080p': 4, '4K': 8 }[state.resolution] || 4
-  return base * state.count
-})
-
-function generate() {
-  if (!uploaded.value.length) {
-    ElMessage.warning('请先上传一张参考图（演示）')
-    return
-  }
-  if (generating.value) return
-  generating.value = true
-  progress.value = 0
-  const n = Number(state.count)
-
-  const timer = setInterval(() => {
-    progress.value = Math.min(100, progress.value + 9 + Math.random() * 11)
-    if (progress.value >= 100) {
-      clearInterval(timer)
-      // 以参考图渐变为底，生成 N 个变体
-      const base = grads[Math.floor(Math.random() * grads.length)]
-      for (let k = 0; k < n; k++) results.value.push(makeImage())
-      generating.value = false
-      ElMessage.success(`已生成 ${n} 个变体（演示）`)
-    }
-  }, 220)
-}
-
+// ============================================================
+// 生成 / 反推 / 历史
+// ============================================================
+const generating = ref(false)
+const results = ref([])
+const compareBefore = ref('')
+const compareAfter = ref('')
+const slider = ref(50)
+const afterClip = computed(() => ({ clipPath: `inset(0 ${100 - slider.value}% 0 0)` }))
+const historyVisible = ref(false)
+const history = ref([])
 const previewVisible = ref(false)
 const previewItem = ref(null)
+
+const estCredits = computed(() => {
+  if (mode.value === 'upscale') return Math.ceil(scale.value / 2)
+  if (mode.value === 'facefix') return 2
+  return 2 * (Number(count.value) || 1)
+})
+
+async function postEdit(fd) {
+  const r = await fetch('/api/v1/t2i/edit', { method: 'POST', body: fd })
+  const j = await r.json()
+  if (j.code !== 0) throw new Error(j.message || '编辑失败')
+  return j.data
+}
+
+async function generate() {
+  if (mode.value === 'reverse') { reversePrompt(); return }
+  if (!sourceFile.value) { ElMessage.warning('请先上传源图'); return }
+  if (mode.value === 'inpaint' && !maskPainted.value) { ElMessage.warning('请在图上涂抹需要重绘的区域'); return }
+  if (mode.value === 'style' && !styleFile.value) { ElMessage.warning('风格迁移请先上传风格参考图'); return }
+  if (generating.value) return
+  generating.value = true
+  try {
+    const n = Math.min(4, Math.max(1, Number(count.value) || 1))
+    for (let i = 0; i < n; i++) {
+      const fd = new FormData()
+      fd.append('image', sourceFile.value)
+      fd.append('mode', mode.value)
+      fd.append('prompt', prompt.value || '')
+      fd.append('negative', negative.value || '')
+      fd.append('strength', String(strength.value))
+      fd.append('steps', String(steps.value))
+      fd.append('cfg', String(cfg.value))
+      fd.append('sampler', sampler.value)
+      fd.append('scheduler', scheduler.value)
+      fd.append('seed', seedRandom.value ? '-1' : String(seed.value))
+      if (mode.value === 'inpaint') {
+        const mb = await maskBlob(); if (mb) fd.append('mask', mb, 'mask.png')
+      }
+      if (mode.value === 'style' && styleFile.value) fd.append('ref', styleFile.value)
+      if (mode.value === 'outpaint') {
+        fd.append('left', String(left.value)); fd.append('top', String(top.value))
+        fd.append('right', String(right.value)); fd.append('bottom', String(bottom.value))
+        fd.append('feathering', String(feathering.value))
+      }
+      if (mode.value === 'upscale') {
+        fd.append('scale', String(scale.value)); fd.append('denoise', String(denoise.value))
+      }
+      if (mode.value === 'facefix') fd.append('method', faceMethod.value)
+      if (mode.value === 'controlnet') {
+        fd.append('control_type', controlType.value); fd.append('control_weight', String(controlWeight.value))
+      }
+      const data = await postEdit(fd)
+      results.value.unshift({ url: data.url, mode: data.mode, ts: Date.now() })
+      compareBefore.value = sourceUrl.value
+      compareAfter.value = data.url
+    }
+    ElMessage.success('编辑完成（' + n + ' 张）')
+  } catch (e) {
+    ElMessage.error(e.message || '编辑失败')
+  } finally {
+    generating.value = false
+  }
+}
+
+async function reversePrompt() {
+  if (!sourceFile.value) { ElMessage.warning('请先上传参考图'); return }
+  try {
+    const fd = new FormData(); fd.append('image', sourceFile.value)
+    const r = await fetch('/api/v1/t2i/reverse', { method: 'POST', body: fd })
+    const j = await r.json()
+    if (j.code !== 0) throw new Error(j.message || '反推失败')
+    prompt.value = j.data.prompt || ''
+    negative.value = j.data.negative_prompt || negative.value
+    ElMessage.success('已反推提示词，可在此基础上修改')
+  } catch (e) {
+    ElMessage.error(e.message || '反推失败')
+  }
+}
+
+async function loadHistory() {
+  historyVisible.value = true
+  try {
+    const r = await fetch('/api/v1/t2i/tasks?page=1&size=60')
+    const j = await r.json()
+    if (j.code !== 0) throw new Error(j.message || '加载失败')
+    const items = (j.data.items || []).filter(it => (it.params && it.params.kind) === 'edit')
+    history.value = items.map(it => ({
+      url: (it.result && it.result.url) || '',
+      mode: (it.params && it.params.mode) || '',
+      ts: it.created_at,
+    })).filter(h => h.url)
+    if (!history.value.length) ElMessage.info('暂无编辑历史')
+  } catch (e) {
+    ElMessage.error(e.message || '加载历史失败')
+  }
+}
+
 function openPreview(item) { previewItem.value = item; previewVisible.value = true }
-function download(item) { ElMessage.success(`已开始下载「${item.name}」（演示）`) }
+function download(item) {
+  if (!item.url) return
+  const a = document.createElement('a'); a.href = item.url; a.download = 'edit.png'; a.click()
+  ElMessage.success('已开始下载')
+}
+function useAsSource(item) {
+  if (!item.url) return
+  fetch(item.url).then(r => r.blob()).then(b => {
+    const f = new File([b], 'history.png', { type: 'image/png' })
+    sourceFile.value = f; sourceUrl.value = URL.createObjectURL(f)
+    compareBefore.value = sourceUrl.value
+    ElMessage.success('已载入为源图')
+  })
+}
 </script>
 
 <template>
-  <div class="page">
+  <div class="page editor">
     <div class="page-head">
       <div>
-        <h1>🪄 图生图</h1>
-        <p class="muted">上传参考图并调整强度，生成风格一致的多个变体（演示）</p>
+        <h1>🖼 专业图片编辑</h1>
+        <p class="muted">基于 ComfyUI 工作流：局部重绘 · 扩图 · 高清放大 · 面部修复 · 风格迁移 · ControlNet · 提示词反推</p>
       </div>
       <el-tag type="warning" effect="dark">预计消耗 {{ estCredits }} 积分</el-tag>
     </div>
 
+    <!-- 模式切换 -->
+    <div class="segment-tabs mode-tabs">
+      <button v-for="m in modes" :key="m.key" :class="{ active: mode === m.key }" @click="setMode(m.key)">
+        {{ m.label }}
+      </button>
+    </div>
+    <div class="mode-tip muted">{{ modeTip }}</div>
+
     <div class="ws-grid">
+      <!-- 左侧参数面板 -->
       <div class="panel">
+        <!-- 源图 -->
         <div class="param-group">
-          <div class="g-title">参考图</div>
-          <el-upload drag :auto-upload="false" :show-file-list="false" :on-change="handleChange"
-            accept="image/*" class="up">
+          <div class="g-title">源图（必填）</div>
+          <el-upload drag :auto-upload="false" :show-file-list="false" :on-change="onSource" accept="image/*" class="up">
             <el-icon style="font-size:34px;color:var(--sub)"><Picture /></el-icon>
             <div class="el-upload__text">拖拽图片到此处，或 <em>点击上传</em></div>
           </el-upload>
-          <div class="thumbs" v-if="uploaded.length">
-            <div class="thumb" v-for="(u, i) in uploaded" :key="i">
-              <img :src="u.url" :alt="u.name" />
-              <button class="btn sm ghost del" @click="removeUpload(i)">×</button>
-              <span class="tn">{{ u.name }}</span>
+          <div v-if="sourceUrl" class="src-preview">
+            <div class="canvas-wrap">
+              <img ref="imgEl" :src="sourceUrl" @load="onImgLoad" alt="源图" />
+              <canvas v-show="mode === 'inpaint'" ref="maskEl" class="mask-canvas"
+                @mousedown.prevent="maskDown" @mousemove="maskMove" @mouseup="maskUp" @mouseleave="maskUp"></canvas>
             </div>
+            <div v-if="mode === 'inpaint'" class="mask-tools">
+              <span class="lab">笔刷 {{ brushSize }}</span>
+              <el-slider v-model="brushSize" :min="5" :max="160" style="width:130px" />
+              <button class="tool" :class="{ on: !eraser }" @click="eraser = false">画笔</button>
+              <button class="tool" :class="{ on: eraser }" @click="eraser = true">橡皮</button>
+              <button class="tool" @click="clearMask">清除</button>
+              <button class="tool" @click="invertMask">反相</button>
+            </div>
+            <div v-if="mode === 'inpaint'" class="muted small">在图上涂抹需要重绘的区域（白色），遮罩外区域保持不变</div>
           </div>
         </div>
 
-        <div class="param-group">
-          <div class="g-title">提示词</div>
-          <el-input v-model="state.prompt" type="textarea" :rows="3"
-            placeholder="在参考图基础上描述想要的改动，如：更暖的色调、增加雾气" />
-          <div class="param-row" style="margin-top:10px;align-items:flex-start">
-            <span class="lab" style="margin-top:6px">重绘强度</span>
-            <div style="width:200px">
-              <el-slider v-model="state.strength" :min="0" :max="1" :step="0.01" />
-              <div class="muted" style="text-align:right">{{ state.strength.toFixed(2) }}</div>
-            </div>
+        <!-- 风格参考图（风格迁移） -->
+        <div class="param-group" v-if="mode === 'style'">
+          <div class="g-title">风格参考图（必填）</div>
+          <el-upload drag :auto-upload="false" :show-file-list="false" :on-change="onStyle" accept="image/*" class="up">
+            <el-icon style="font-size:30px;color:var(--sub)"><Picture /></el-icon>
+            <div class="el-upload__text">上传风格参考图</div>
+          </el-upload>
+          <div v-if="styleUrl" class="thumbs"><div class="thumb"><img :src="styleUrl" alt="风格" /></div></div>
+          <div class="param-row" style="margin-top:10px">
+            <span class="lab">风格强度</span>
+            <el-slider v-model="ipWeight" :min="0.2" :max="1.2" :step="0.05" style="width:200px" />
+            <span class="val">{{ ipWeight.toFixed(2) }}</span>
           </div>
         </div>
 
-        <div class="param-group">
-          <div class="g-title">变体与参数</div>
-          <div class="param-row">
-            <span class="lab">变体数量</span>
-            <el-radio-group v-model="state.count">
-              <el-radio-button :value="2">2</el-radio-button>
-              <el-radio-button :value="4">4</el-radio-button>
-              <el-radio-button :value="6">6</el-radio-button>
+        <!-- 扩图边距 -->
+        <div class="param-group" v-if="mode === 'outpaint'">
+          <div class="g-title">扩展边距（像素）</div>
+          <div class="param-row"><span class="lab">左</span><el-slider v-model="left" :min="0" :max="512" style="width:200px" /><span class="val">{{ left }}</span></div>
+          <div class="param-row"><span class="lab">上</span><el-slider v-model="top" :min="0" :max="512" style="width:200px" /><span class="val">{{ top }}</span></div>
+          <div class="param-row"><span class="lab">右</span><el-slider v-model="right" :min="0" :max="512" style="width:200px" /><span class="val">{{ right }}</span></div>
+          <div class="param-row"><span class="lab">下</span><el-slider v-model="bottom" :min="0" :max="512" style="width:200px" /><span class="val">{{ bottom }}</span></div>
+          <div class="param-row"><span class="lab">羽化</span><el-slider v-model="feathering" :min="0" :max="64" style="width:200px" /><span class="val">{{ feathering }}</span></div>
+          <div class="muted small">羽化越大，原图与新增区域过渡越平滑</div>
+        </div>
+
+        <!-- 高清放大 -->
+        <div class="param-group" v-if="mode === 'upscale'">
+          <div class="g-title">放大设置</div>
+          <div class="param-row"><span class="lab">倍数</span>
+            <el-radio-group v-model="scale">
+              <el-radio-button :value="2">2x</el-radio-button>
+              <el-radio-button :value="4">4x</el-radio-button>
             </el-radio-group>
           </div>
-          <div class="param-row">
-            <span class="lab">分辨率</span>
-            <el-select v-model="state.resolution" style="width:200px">
-              <el-option v-for="r in resolutions" :key="r" :label="r" :value="r" />
+          <div class="param-row"><span class="lab">细节增强</span>
+            <el-slider v-model="denoise" :min="0" :max="0.4" :step="0.01" style="width:200px" />
+            <span class="val">{{ denoise.toFixed(2) }}</span>
+          </div>
+          <div class="muted small">放大模型自动优选（4x-UltraSharp / RealESRGAN 等）；细节增强会在放大后追加一次轻量重绘</div>
+        </div>
+
+        <!-- 面部修复 -->
+        <div class="param-group" v-if="mode === 'facefix'">
+          <div class="g-title">修复方法</div>
+          <el-radio-group v-model="faceMethod">
+            <el-radio-button value="GFPGAN">GFPGAN</el-radio-button>
+            <el-radio-button value="CodeFormer">CodeFormer</el-radio-button>
+          </el-radio-group>
+          <div class="muted small">需在 ComfyUI 安装对应节点并放入权重</div>
+        </div>
+
+        <!-- ControlNet -->
+        <div class="param-group" v-if="mode === 'controlnet'">
+          <div class="g-title">结构控制</div>
+          <div class="param-row"><span class="lab">类型</span>
+            <el-select v-model="controlType" style="width:200px">
+              <el-option label="边缘 Canny" value="canny" />
+              <el-option label="深度 Depth" value="depth" />
+              <el-option label="姿态 OpenPose" value="openpose" />
+              <el-option label="线稿 LineArt" value="lineart" />
+              <el-option label="涂鸦 Scribble" value="scribble" />
             </el-select>
           </div>
-          <div class="param-row">
-            <span class="lab">比例</span>
-            <el-select v-model="state.ratio" style="width:200px">
-              <el-option v-for="r in ratios" :key="r" :label="r" :value="r" />
-            </el-select>
+          <div class="param-row"><span class="lab">控制强度</span>
+            <el-slider v-model="controlWeight" :min="0.2" :max="2" :step="0.05" style="width:200px" />
+            <span class="val">{{ controlWeight.toFixed(2) }}</span>
           </div>
         </div>
 
-        <button class="btn pink" style="width:100%;justify-content:center;margin-top:14px"
-          :disabled="generating" @click="generate">
-          {{ generating ? '生成中…' : '生成变体' }}
-        </button>
+        <!-- 生成类通用参数 -->
+        <div class="param-group" v-if="genModes.includes(mode)">
+          <div class="g-title">提示词</div>
+          <el-input v-model="prompt" type="textarea" :rows="3" placeholder="描述想要的改动，如：更暖的色调、增加雾气、换成夜晚" />
+          <div class="param-row" style="margin-top:10px;align-items:flex-start">
+            <span class="lab" style="margin-top:6px">反向</span>
+            <el-input v-model="negative" type="textarea" :rows="2" placeholder="不想要的元素" />
+          </div>
+          <div class="param-row"><span class="lab">重绘幅度</span>
+            <el-slider v-model="strength" :min="0" :max="1" :step="0.01" style="width:200px" />
+            <span class="val">{{ strength.toFixed(2) }}</span>
+          </div>
+          <div class="param-row"><span class="lab">步数</span><el-input-number v-model="steps" :min="1" :max="60" :controls="false" style="width:90px" /></div>
+          <div class="param-row"><span class="lab">CFG</span><el-input-number v-model="cfg" :min="1" :max="20" :step="0.5" :controls="false" style="width:90px" /></div>
+          <div class="param-row"><span class="lab">采样器</span>
+            <el-select v-model="sampler" style="width:200px"><el-option v-for="s in samplers" :key="s" :label="s" :value="s" /></el-select>
+          </div>
+          <div class="param-row"><span class="lab">调度器</span>
+            <el-select v-model="scheduler" style="width:200px"><el-option v-for="s in schedulers" :key="s" :label="s" :value="s" /></el-select>
+          </div>
+          <div class="param-row"><span class="lab">种子</span>
+            <el-switch v-model="seedRandom" active-text="随机" inactive-text="固定" />
+            <el-input-number v-if="!seedRandom" v-model="seed" :controls="false" style="width:120px" />
+          </div>
+          <div class="param-row" v-if="mode !== 'facefix'"><span class="lab">批次数</span>
+            <el-radio-group v-model="count">
+              <el-radio-button :value="1">1</el-radio-button>
+              <el-radio-button :value="2">2</el-radio-button>
+              <el-radio-button :value="4">4</el-radio-button>
+            </el-radio-group>
+          </div>
+        </div>
 
-        <div class="progress" v-if="generating || progress >= 100">
-          <div class="lab"><span>图生图推理中…（演示）</span><span>{{ Math.round(progress) }}%</span></div>
-          <el-progress :percentage="Math.round(progress)" :stroke-width="8" :color="['#ff4d8d', '#8a5cff']" />
+        <!-- 操作 -->
+        <div class="param-group">
+          <button class="generate-btn" style="width:100%;justify-content:center" :disabled="generating" @click="generate">
+            {{ generating ? '处理中…' : (mode === 'reverse' ? '反推提示词' : '开始编辑') }}
+          </button>
+          <div class="act-row" v-if="genModes.includes(mode)">
+            <button class="btn ghost" :disabled="!sourceFile" @click="reversePrompt">反推提示词</button>
+            <button class="btn ghost" @click="loadHistory">编辑历史</button>
+          </div>
+          <el-progress v-if="generating" :indeterminate="true" :duration="1.5" :stroke-width="8"
+            style="margin-top:12px" :color="['#8B7ED8', '#5A96E3']" />
         </div>
       </div>
 
+      <!-- 右侧对比 + 结果 + 历史 -->
       <div class="panel">
-        <div class="g-title" style="margin-bottom:4px">变体结果 <span class="muted">（{{ results.length }} 张）</span></div>
-        <div v-if="!results.length && !generating" class="empty">还没有变体，上传参考图后点击「生成变体」。</div>
+        <div class="g-title">前后对比 <span class="muted">（拖动滑块查看原图 / 结果）</span></div>
+        <div class="compare" v-if="compareAfter || sourceUrl">
+          <img class="c-before" :src="compareBefore || sourceUrl" alt="原图" />
+          <img v-if="compareAfter" class="c-after" :src="compareAfter" :style="afterClip" alt="结果" />
+          <input class="c-slider" type="range" min="0" max="100" v-model="slider" />
+          <div class="c-tag b">原图</div>
+          <div class="c-tag a">结果</div>
+        </div>
+        <div v-else class="empty">上传源图并生成后，这里显示前后对比。</div>
+
+        <div class="g-title" style="margin-top:16px">结果 <span class="muted">（{{ results.length }} 张）</span></div>
+        <div v-if="!results.length" class="empty small">暂无结果</div>
         <div class="asset-grid">
-          <div class="asset-card" v-for="item in results" :key="item.id" @click="openPreview(item)">
-            <div class="ph" :style="{ background: item.grad }">
-              <span class="ph-emoji">{{ item.emoji }}</span>
+          <div class="asset-card" v-for="(it, i) in results" :key="i" @click="openPreview(it)">
+            <div class="ph"><img :src="it.url" alt="结果" />
               <div class="ph-acts" @click.stop>
-                <button class="btn sm ghost" @click.stop="download(item)">下载</button>
-                <button class="btn sm ghost" @click.stop="openPreview(item)">放大</button>
+                <button class="btn sm ghost" @click.stop="download(it)">下载</button>
+                <button class="btn sm ghost" @click.stop="openPreview(it)">放大</button>
               </div>
             </div>
-            <div class="info">
-              <div class="name">{{ item.name }}</div>
-              <div class="type">{{ item.res }} · {{ item.ratio }} · 强度 {{ state.strength.toFixed(2) }}</div>
-            </div>
+            <div class="info"><div class="name">{{ it.mode }}</div><div class="type">{{ new Date(it.ts).toLocaleTimeString() }}</div></div>
           </div>
         </div>
+
+        <template v-if="historyVisible">
+          <div class="g-title" style="margin-top:16px">编辑历史 <span class="muted">（{{ history.length }} 条）</span></div>
+          <div v-if="!history.length" class="empty small">暂无历史</div>
+          <div class="asset-grid">
+            <div class="asset-card" v-for="(it, i) in history" :key="i">
+              <div class="ph"><img :src="it.url" alt="历史" />
+                <div class="ph-acts" @click.stop>
+                  <button class="btn sm ghost" @click.stop="useAsSource(it)">载入源图</button>
+                  <button class="btn sm ghost" @click.stop="openPreview(it)">放大</button>
+                </div>
+              </div>
+              <div class="info"><div class="name">{{ it.mode }}</div><div class="type">{{ it.ts }}</div></div>
+            </div>
+          </div>
+        </template>
       </div>
     </div>
 
-    <el-dialog v-model="previewVisible" title="预览（演示）" width="60%" align-center>
-      <div v-if="previewItem" class="big-ph" :style="{ background: previewItem.grad }">
-        <span>{{ previewItem.emoji }}</span>
+    <el-dialog v-model="previewVisible" title="预览" width="60%" align-center>
+      <div v-if="previewItem" class="big-ph">
+        <img :src="previewItem.url" alt="预览" />
       </div>
-      <div class="muted" style="margin-top:10px">{{ previewItem?.name }} · {{ previewItem?.res }} · {{ previewItem?.ratio }}</div>
     </el-dialog>
   </div>
 </template>
 
 <style scoped>
-.ws-grid { display: grid; grid-template-columns: 380px 1fr; gap: 18px; align-items: start; }
+.editor .mode-tabs { margin: 4px 0 2px; }
+.mode-tip { margin: 2px 0 14px; font-size: 13px; }
+.ws-grid { display: grid; grid-template-columns: 400px 1fr; gap: 18px; align-items: start; }
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
-.up :deep(.el-upload-dragger) { background: #0f1117; border-color: var(--line); padding: 22px; }
-.thumbs { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
-.thumb { position: relative; width: 84px; }
-.thumb img { width: 84px; height: 84px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); display: block; }
-.thumb .del { position: absolute; top: 4px; right: 4px; padding: 0 7px; line-height: 20px; }
-.thumb .tn { display: block; font-size: 11px; color: var(--sub); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ph { position: relative; aspect-ratio: 1; display: flex; align-items: center; justify-content: center; }
-.ph-emoji { font-size: 42px; filter: drop-shadow(0 2px 6px rgba(0,0,0,.4)); }
-.ph-acts { position: absolute; inset: auto 0 0 0; display: flex; gap: 6px; justify-content: center; padding: 8px;
-  opacity: 0; transition: .2s; background: linear-gradient(0deg, rgba(0,0,0,.55), transparent); }
+.up :deep(.el-upload-dragger) { background: #0f1117; border-color: var(--line); padding: 18px; }
+.up :deep(.el-upload-dragger .el-upload__text) { color: var(--sub); font-size: 13px; }
+
+.src-preview { margin-top: 12px; }
+.canvas-wrap { position: relative; display: inline-block; max-width: 100%; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background:#0f1117; }
+.canvas-wrap img { display: block; max-width: 100%; max-height: 460px; }
+.mask-canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+.mask-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.mask-tools .tool { padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--sub); cursor: pointer; font-size: 12px; }
+.mask-tools .tool.on { border-color: #8B7ED8; color: #cdbfff; background: rgba(139,126,216,.12); }
+.thumbs { display: flex; gap: 10px; margin-top: 10px; }
+.thumb { width: 92px; }
+.thumb img { width: 92px; height: 92px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); }
+
+.param-group { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.param-group:last-child { border-bottom: none; }
+.g-title { font-size: 13px; font-weight: 600; color: #cdd3e0; margin-bottom: 10px; }
+.param-row { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+.param-row .lab { width: 64px; font-size: 13px; color: var(--sub); flex: none; }
+.param-row .val { width: 46px; text-align: right; font-size: 12px; color: var(--sub); }
+.muted { color: var(--sub); font-size: 13px; }
+.small { font-size: 12px; }
+
+.generate-btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 18px; border-radius: 12px; border: none; cursor: pointer;
+  color: #fff; font-weight: 600; background: linear-gradient(135deg, #8B7ED8, #5A96E3);
+  box-shadow: 0 6px 20px rgba(91,108,255,.28), inset 0 1px 0 rgba(255,255,255,.25); transition: .18s; }
+.generate-btn:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.06); }
+.generate-btn:disabled { opacity: .55; cursor: not-allowed; }
+.act-row { display: flex; gap: 10px; margin-top: 10px; }
+.btn.ghost { padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.03); color: var(--sub); cursor: pointer; font-size: 13px; }
+.btn.ghost:hover:not(:disabled) { border-color: #8B7ED8; color: #cdbfff; }
+
+.compare { position: relative; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); background: #0f1117; user-select: none; }
+.compare img { display: block; width: 100%; }
+.compare .c-after { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.compare .c-slider { position: absolute; left: 0; right: 0; bottom: 8px; width: 90%; margin: 0 auto; }
+.c-tag { position: absolute; top: 8px; padding: 2px 8px; border-radius: 6px; font-size: 11px; background: rgba(0,0,0,.5); color: #fff; }
+.c-tag.b { left: 8px; } .c-tag.a { right: 8px; }
+
+.asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
+.asset-card { border-radius: 12px; overflow: hidden; border: 1px solid var(--line); background: rgba(255,255,255,.02); cursor: pointer; transition: .18s; }
+.asset-card:hover { transform: translateY(-2px); border-color: #8B7ED8; }
+.asset-card .ph { position: relative; aspect-ratio: 1; background: #0f1117; }
+.asset-card .ph img { width: 100%; height: 100%; object-fit: cover; }
+.ph-acts { position: absolute; inset: auto 0 0 0; display: flex; gap: 6px; justify-content: center; padding: 8px; opacity: 0; transition: .2s; background: linear-gradient(0deg, rgba(0,0,0,.55), transparent); }
 .asset-card:hover .ph-acts { opacity: 1; }
-.big-ph { width: 100%; aspect-ratio: 16/9; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 80px; }
+.btn.sm { padding: 3px 8px; font-size: 12px; border-radius: 7px; border: 1px solid rgba(255,255,255,.25); background: rgba(0,0,0,.35); color: #fff; cursor: pointer; }
+.info { padding: 7px 9px; }
+.info .name { font-size: 12px; color: #cdd3e0; }
+.info .type { font-size: 11px; color: var(--sub); margin-top: 2px; }
+.empty { padding: 24px; text-align: center; color: var(--sub); border: 1px dashed var(--line); border-radius: 12px; }
+.big-ph img { width: 100%; border-radius: 12px; display: block; }
 </style>

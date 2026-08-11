@@ -19,6 +19,7 @@ import urllib.request
 import urllib.error
 import logging
 import sys
+import glob
 
 import comfy_env  # 秋葉 ComfyUI 根目录 + 权重自动发现（手册 §5.1/§5.2）
 
@@ -3489,3 +3490,248 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
         "elapsed_ms": elapsed_ms,
         "params": full_params,
     }
+
+
+# =============================================================================
+# 图生图专业编辑工作流（社区高频：局部重绘 / 扩图 / 高清放大 / ControlNet / IP-Adapter）
+# 统一沿用 _comfy_run(wf) 提交 ComfyUI /prompt 并轮询 /history 取回输出图。
+# 所有外部依赖（ComfyUI / 节点 / 权重）缺失时一律抛 RuntimeError（诚实降级，绝不静默）。
+# =============================================================================
+
+def _get_comfy_upscale_model(prefer_factor=None):
+    """返回 ComfyUI/models/upscale_models 下一个可用放大模型文件名；prefer_factor=2/4 优先匹配倍数。"""
+    if not comfy_available():
+        return None
+    root = comfy_env.get_comfy_root()
+    if not root:
+        return None
+    d = os.path.join(root, "models", "upscale_models")
+    if not os.path.isdir(d):
+        return None
+    files = []
+    for ext in ("*.pth", "*.pt", "*.safetensors", "*.bin"):
+        files += glob.glob(os.path.join(d, ext))
+    if not files:
+        return None
+    names = [os.path.basename(f) for f in files]
+    if prefer_factor in (2, 4):
+        tag = "%dx" % prefer_factor
+        for n in names:
+            if tag in n.lower():
+                return n
+    for key in ("4x-UltraSharp", "RealESRGAN_x4plus", "4x_ESRGAN", "ESRGAN", "UltraSharp"):
+        for n in names:
+            if key.lower() in n.lower():
+                return n
+    return names[0]
+
+
+_EDefault_NEG = "low quality, blurry, watermark, text, deformed, extra limbs"
+
+
+def _comfy_inpaint(image_path, mask_path, prompt, negative="", strength=0.75,
+                   steps=20, cfg=7.0, seed=-1, sampler="euler", scheduler="normal", timeout=300):
+    """局部重绘（Inpainting）：原图 + 蒙版(Alpha=重绘区) 经 VAEEncodeForInpaint 仅重绘遮罩区域。
+
+    蒙版由前端画笔编辑器生成 RGBA PNG（重绘区 alpha=255）；LoadImage 的 MASK 输出即 alpha 通道。
+    依赖 ComfyUI 与底模权重，失败抛 RuntimeError。
+    """
+    if not comfy_available():
+        raise RuntimeError("局部重绘失败：ComfyUI 未启动（请先启动秋葉 ComfyUI :8188）")
+    if seed is None or int(seed) < 0:
+        seed = random.randint(0, 2 ** 31 - 1)
+    up_img = _upload_to_comfy(image_path)
+    up_mask = _upload_to_comfy(mask_path)
+    if not up_img or not up_mask:
+        raise RuntimeError("局部重绘失败：参考图或蒙版上传 ComfyUI 失败")
+    neg = negative or _EDefault_NEG
+    wf = {
+        "3": {"class_type": "KSampler", "inputs": {
+            "seed": int(seed), "steps": steps, "cfg": float(cfg),
+            "sampler_name": sampler, "scheduler": scheduler, "denoise": float(strength),
+            "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["10", 0]}},
+        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
+        "5": {"class_type": "LoadImage", "inputs": {"image": up_img}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": neg, "clip": ["4", 1]}},
+        "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+        "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_inpaint"}},
+        "10": {"class_type": "VAEEncodeForInpaint", "inputs": {
+            "pixels": ["5", 0], "vae": ["4", 2], "mask": ["55", 1], "grow_mask_by": 6}},
+        "55": {"class_type": "LoadImage", "inputs": {"image": up_mask}},
+    }
+    return _comfy_run(wf, timeout)
+
+
+def _comfy_outpaint(image_path, left=0, top=0, right=0, bottom=0, feathering=20,
+                    prompt="", negative="", strength=0.8, steps=25, cfg=7.0, seed=-1,
+                    sampler="euler", scheduler="normal", timeout=300):
+    """扩图（Outpainting）：Pad Image for Outpainting 扩展画布并生成边缘蒙版，再 inpaint 融合。
+
+    left/top/right/bottom 为四向扩展像素量，feathering 控制原图与新增区的过渡平滑度。
+    依赖 ComfyUI 与底模权重，失败抛 RuntimeError。
+    """
+    if not comfy_available():
+        raise RuntimeError("扩图失败：ComfyUI 未启动（请先启动秋葉 ComfyUI :8188）")
+    if seed is None or int(seed) < 0:
+        seed = random.randint(0, 2 ** 31 - 1)
+    up = _upload_to_comfy(image_path)
+    if not up:
+        raise RuntimeError("扩图失败：参考图上传 ComfyUI 失败")
+    neg = negative or _EDefault_NEG
+    wf = {
+        "3": {"class_type": "KSampler", "inputs": {
+            "seed": int(seed), "steps": steps, "cfg": float(cfg),
+            "sampler_name": sampler, "scheduler": scheduler, "denoise": float(strength),
+            "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["10", 0]}},
+        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
+        "5": {"class_type": "LoadImage", "inputs": {"image": up}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt or "extend the scene naturally", "clip": ["4", 1]}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": neg, "clip": ["4", 1]}},
+        "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+        "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_outpaint"}},
+        "10": {"class_type": "VAEEncodeForInpaint", "inputs": {
+            "pixels": ["11", 0], "vae": ["4", 2], "mask": ["11", 1], "grow_mask_by": 6}},
+        "11": {"class_type": "PadImageForOutpainting", "inputs": {
+            "image": ["5", 0], "left": int(left), "top": int(top),
+            "right": int(right), "bottom": int(bottom), "feathering": int(feathering)}},
+    }
+    return _comfy_run(wf, timeout)
+
+
+def _comfy_upscale(image_path, scale=2, upscale_model=None, denoise=0.0,
+                   steps=20, cfg=7.0, prompt="", negative="", seed=-1,
+                   sampler="euler", scheduler="normal", timeout=300):
+    """高清放大/超分：(可选)模型放大 + (可选)轻量 img2img 细节增强。
+
+    - scale=2/4 自动优选对应倍数放大模型（prefer 指定则优先）；缺模型诚实报错。
+    - denoise>0 时在放大后追加一次低强度 img2img 精炼（补细节、不改动构图）。
+    依赖 ComfyUI 与放大模型权重，失败抛 RuntimeError。
+    """
+    if not comfy_available():
+        raise RuntimeError("高清放大失败：ComfyUI 未启动（请先启动秋葉 ComfyUI :8188）")
+    up = _upload_to_comfy(image_path)
+    if not up:
+        raise RuntimeError("高清放大失败：参考图上传 ComfyUI 失败")
+    um = upscale_model or _get_comfy_upscale_model(prefer_factor=scale)
+    if not um:
+        raise RuntimeError("高清放大失败：未找到放大模型（请在 ComfyUI/models/upscale_models 放入 4x-UltraSharp / RealESRGAN 等）")
+    if denoise and float(denoise) > 0:
+        if seed is None or int(seed) < 0:
+            seed = random.randint(0, 2 ** 31 - 1)
+        neg = negative or _EDefault_NEG
+        wf = {
+            "1": {"class_type": "LoadImage", "inputs": {"image": up}},
+            "2": {"class_type": "LoadUpscaleModel", "inputs": {"model_name": um}},
+            "3": {"class_type": "UpscaleImageByModel", "inputs": {"image": ["1", 0], "upscale_model": ["2", 0]}},
+            "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
+            "5": {"class_type": "VAEEncode", "inputs": {"pixels": ["3", 0], "vae": ["4", 2]}},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt or "high quality, detailed, sharp", "clip": ["4", 1]}},
+            "7": {"class_type": "CLIPTextEncode", "inputs": {"text": neg, "clip": ["4", 1]}},
+            "8": {"class_type": "KSampler", "inputs": {
+                "seed": int(seed), "steps": steps, "cfg": float(cfg),
+                "sampler_name": sampler, "scheduler": scheduler, "denoise": float(denoise),
+                "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
+            "9": {"class_type": "VAEDecode", "inputs": {"samples": ["8", 0], "vae": ["4", 2]}},
+            "10": {"class_type": "SaveImage", "inputs": {"images": ["9", 0], "filename_prefix": "manju_upscale"}},
+        }
+    else:
+        wf = {
+            "1": {"class_type": "LoadImage", "inputs": {"image": up}},
+            "2": {"class_type": "LoadUpscaleModel", "inputs": {"model_name": um}},
+            "3": {"class_type": "UpscaleImageByModel", "inputs": {"image": ["1", 0], "upscale_model": ["2", 0]}},
+            "4": {"class_type": "SaveImage", "inputs": {"images": ["3", 0], "filename_prefix": "manju_upscale"}},
+        }
+    return _comfy_run(wf, timeout)
+
+
+def _comfy_img2img_with_controlnet(image_path, prompt, negative="", control_type="canny",
+                                    weight=1.0, strength=0.6, steps=20, cfg=7.0, seed=-1,
+                                    sampler="euler", scheduler="normal", timeout=300):
+    """图生图 + ControlNet 结构控制：用参考图提取结构（边缘/深度/姿态/线稿/涂鸦）约束生成。
+
+    control_type ∈ {canny, depth, openpose, lineart, scribble}；预处理节点缺失或权重缺失诚实报错。
+    依赖 ComfyUI 与对应 ControlNet 权重，失败抛 RuntimeError。
+    """
+    if not comfy_available():
+        raise RuntimeError("ControlNet 编辑失败：ComfyUI 未启动（请先启动秋葉 ComfyUI :8188）")
+    if not detect_comfy_controlnet():
+        raise RuntimeError("ControlNet 编辑失败：未安装 ControlNet 节点或缺失权重")
+    if seed is None or int(seed) < 0:
+        seed = random.randint(0, 2 ** 31 - 1)
+    up = _upload_to_comfy(image_path)
+    if not up:
+        raise RuntimeError("ControlNet 编辑失败：参考图上传 ComfyUI 失败")
+    preprocess_map = {"canny": "CannyEdgePreprocessor", "depth": "DepthPreprocessor",
+                      "openpose": "OpenposePreprocessor", "lineart": "LineArtPreprocessor",
+                      "scribble": "ScribblePreprocessor"}
+    pre = preprocess_map.get(control_type, "CannyEdgePreprocessor")
+    if not _comfy_has_node(pre):
+        raise RuntimeError("ControlNet 编辑失败：缺少预处理节点 %s（请安装 ComfyUI 控制网预处理节点）" % pre)
+    cn = _get_comfy_controlnet(control_type)
+    if not cn:
+        raise RuntimeError("ControlNet 编辑失败：未找到 %s 类型 ControlNet 权重" % control_type)
+    neg = negative or _EDefault_NEG
+    wf = {
+        "3": {"class_type": "KSampler", "inputs": {
+            "seed": int(seed), "steps": steps, "cfg": float(cfg),
+            "sampler_name": sampler, "scheduler": scheduler, "denoise": float(strength),
+            "model": ["4", 0], "positive": ["14", 0], "negative": ["7", 0], "latent_image": ["10", 0]}},
+        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
+        "5": {"class_type": "LoadImage", "inputs": {"image": up}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": neg, "clip": ["4", 1]}},
+        "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+        "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_cn"}},
+        "10": {"class_type": "VAEEncode", "inputs": {"pixels": ["5", 0], "vae": ["4", 2]}},
+        "11": {"class_type": pre, "inputs": {"image": ["5", 0]}},
+        "12": {"class_type": "ControlNetLoader", "inputs": {"control_net_name": cn}},
+        "13": {"class_type": "ControlNetApply", "inputs": {
+            "conditioning": ["6", 0], "control_net": ["12", 0], "image": ["11", 0], "strength": float(weight)}},
+        "14": {"class_type": "ControlNetApply", "inputs": {
+            "conditioning": ["13", 0], "control_net": ["12", 0], "image": ["11", 0], "strength": float(weight)}},
+    }
+    return _comfy_run(wf, timeout)
+
+
+def _comfy_img2img_with_ipadapter(image_path, style_image_path, weight=0.8, prompt="", negative="",
+                                  strength=0.6, steps=20, cfg=7.0, seed=-1, sampler="euler",
+                                  scheduler="normal", timeout=300):
+    """图生图 + IP-Adapter 风格迁移：以风格参考图注入交叉注意力，统一色调/质感/光影。
+
+    单路风格 IP-Adapter（非 FaceID），weight 越大风格越强；依赖 IP-Adapter + CLIP-Vision 权重。
+    失败抛 RuntimeError（诚实降级）。
+    """
+    if not comfy_available():
+        raise RuntimeError("风格迁移失败：ComfyUI 未启动（请先启动秋葉 ComfyUI :8188）")
+    ip_name = _get_comfy_ipadapter()
+    cv_name = _get_comfy_clip_vision()
+    if not ip_name or not cv_name:
+        raise RuntimeError("风格迁移失败：缺少 IP-Adapter 或 CLIP-Vision 权重（请安装 ComfyUI_IPAdapter_plus 并放入权重）")
+    up = _upload_to_comfy(image_path)
+    up_style = _upload_to_comfy(style_image_path)
+    if not up or not up_style:
+        raise RuntimeError("风格迁移失败：参考图或风格图上传 ComfyUI 失败")
+    if seed is None or int(seed) < 0:
+        seed = random.randint(0, 2 ** 31 - 1)
+    neg = negative or _EDefault_NEG
+    wf = {
+        "3": {"class_type": "KSampler", "inputs": {
+            "seed": int(seed), "steps": steps, "cfg": float(cfg),
+            "sampler_name": sampler, "scheduler": scheduler, "denoise": float(strength),
+            "model": ["20", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["10", 0]}},
+        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
+        "5": {"class_type": "LoadImage", "inputs": {"image": up}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt or "high quality", "clip": ["4", 1]}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": neg, "clip": ["4", 1]}},
+        "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+        "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_ip"}},
+        "10": {"class_type": "VAEEncode", "inputs": {"pixels": ["5", 0], "vae": ["4", 2]}},
+        "11": {"class_type": "IPAdapterModelLoader", "inputs": {"ipadapter_file": ip_name}},
+        "12": {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": cv_name}},
+        "13": {"class_type": "LoadImage", "inputs": {"image": up_style}},
+        "20": {"class_type": "IPAdapter", "inputs": {
+            "ipadapter": ["11", 0], "clip_vision": ["12", 0], "image": ["13", 0], "model": ["4", 0],
+            "weight": float(weight), "start_at": 0.0, "end_at": 1.0, "weight_type": "standard"}},
+    }
+    return _comfy_run(wf, timeout)
