@@ -486,6 +486,18 @@ html.light .el-button:not(.el-button--primary):hover { background: var(--card-2)
 .fade-enter-active, .fade-leave-active { transition: opacity .2s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
+/* ---------- 主题切换过渡（明暗 / 配色预设）：临时挂 html.theme-anim，
+   让所有元素的颜色/背景/边框/阴影平滑过渡，避免出现硬切闪烁 ---------- */
+html.theme-anim,
+html.theme-anim *,
+html.theme-anim *::before,
+html.theme-anim *::after {
+  transition: background-color .42s ease, border-color .42s ease, color .42s ease,
+    fill .42s ease, stroke .42s ease, box-shadow .42s ease,
+    background .42s ease !important;
+}
+
+
 /* ---------- 配色预设（与明暗正交，挂在 html.t-* 上；默认=粉紫，即 :root 无需加类）
    与后台 manju_admin 的 src/style.css 保持单一来源一致，变量同名直接生效。 ---------- */
 /* 灰 */

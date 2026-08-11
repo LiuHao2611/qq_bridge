@@ -59,6 +59,17 @@ const persistPreset = (preset) => {
   try { localStorage.setItem(PRESET_KEY, preset || '') } catch (e) {}
 }
 
+/* ---------- 主题切换过渡：临时挂 theme-anim，让颜色/背景/边框平滑过渡 ---------- */
+let _animTimer = null
+const animateTheme = () => {
+  if (typeof document === 'undefined') return
+  const html = document.documentElement
+  html.classList.add('theme-anim')
+  if (_animTimer) clearTimeout(_animTimer)
+  // 略大于 CSS 过渡时长，确保过渡播完后再移除类（避免 hover 态被长时间锁定过渡）
+  _animTimer = setTimeout(() => html.classList.remove('theme-anim'), 460)
+}
+
 /* ---------- 状态 ---------- */
 const theme = ref(readMode())
 const preset = ref(readPreset())
@@ -80,11 +91,11 @@ export function useTheme() {
     return theme.value === 'dark'
   })
 
-  const set = (t) => { theme.value = t; applyMode(t); persistMode(t) }
+  const set = (t) => { theme.value = t; applyMode(t); persistMode(t); animateTheme() }
   const toggle = () => set(isDark.value ? 'light' : 'dark')
   const setPreset = (p) => {
     if (!VALID_PRESETS.includes(p)) p = ''
-    preset.value = p; applyPreset(p); persistPreset(p)
+    preset.value = p; applyPreset(p); persistPreset(p); animateTheme()
   }
 
   return { theme, preset, isDark, set, setPreset, toggle }

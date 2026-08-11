@@ -264,7 +264,7 @@ function useAsSource(item) {
         <h1>🖼 专业图片编辑</h1>
         <p class="muted">基于 ComfyUI 工作流：局部重绘 · 扩图 · 高清放大 · 面部修复 · 风格迁移 · ControlNet · 提示词反推</p>
       </div>
-      <el-tag type="warning" effect="dark">预计消耗 {{ estCredits }} 积分</el-tag>
+      <el-tag type="warning">预计消耗 {{ estCredits }} 积分</el-tag>
     </div>
 
     <!-- 模式切换 -->
@@ -303,6 +303,8 @@ function useAsSource(item) {
           </div>
         </div>
 
+        <transition name="modefade" mode="out-in">
+        <div class="dyn" :key="mode">
         <!-- 风格参考图（风格迁移） -->
         <div class="param-group" v-if="mode === 'style'">
           <div class="g-title">风格参考图（必填）</div>
@@ -405,6 +407,8 @@ function useAsSource(item) {
             </el-radio-group>
           </div>
         </div>
+        </div>
+        </transition>
 
         <!-- 操作 -->
         <div class="param-group">
@@ -416,7 +420,7 @@ function useAsSource(item) {
             <button class="btn ghost" @click="loadHistory">编辑历史</button>
           </div>
           <el-progress v-if="generating" :indeterminate="true" :duration="1.5" :stroke-width="8"
-            style="margin-top:12px" :color="['#8B7ED8', '#5A96E3']" />
+            style="margin-top:12px" :color="'var(--pur)'" />
         </div>
       </div>
 
@@ -434,7 +438,7 @@ function useAsSource(item) {
 
         <div class="g-title" style="margin-top:16px">结果 <span class="muted">（{{ results.length }} 张）</span></div>
         <div v-if="!results.length" class="empty small">暂无结果</div>
-        <div class="asset-grid">
+        <transition-group name="cardpop" tag="div" class="asset-grid">
           <div class="asset-card" v-for="(it, i) in results" :key="i" @click="openPreview(it)">
             <div class="ph"><img :src="it.url" alt="结果" />
               <div class="ph-acts" @click.stop>
@@ -444,7 +448,7 @@ function useAsSource(item) {
             </div>
             <div class="info"><div class="name">{{ it.mode }}</div><div class="type">{{ new Date(it.ts).toLocaleTimeString() }}</div></div>
           </div>
-        </div>
+        </transition-group>
 
         <template v-if="historyVisible">
           <div class="g-title" style="margin-top:16px">编辑历史 <span class="muted">（{{ history.length }} 条）</span></div>
@@ -461,6 +465,13 @@ function useAsSource(item) {
             </div>
           </div>
         </template>
+
+        <transition name="fade">
+          <div v-if="generating" class="gen-cover">
+            <div class="spin"></div>
+            <div class="txt">正在处理，请稍候…</div>
+          </div>
+        </transition>
       </div>
     </div>
 
@@ -473,27 +484,35 @@ function useAsSource(item) {
 </template>
 
 <style scoped>
-.editor .mode-tabs { margin: 4px 0 2px; }
-.mode-tip { margin: 2px 0 14px; font-size: 13px; }
-.ws-grid { display: grid; grid-template-columns: 400px 1fr; gap: 18px; align-items: start; }
-.panel { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
-.up :deep(.el-upload-dragger) { background: #0f1117; border-color: var(--line); padding: 18px; }
+/* ===== 固定窗口高度：根容器填满 .page，内部面板自行滚动，切换页签/内容增多不再撑高整窗 ===== */
+.page.editor { padding: 0; overflow: hidden; }
+.editor { height: 100%; box-sizing: border-box; padding: 20px 24px; display: flex; flex-direction: column; }
+.editor .page-head { flex: 0 0 auto; }
+.editor .mode-tabs { flex: 0 0 auto; margin: 4px 0 2px; }
+.mode-tip { flex: 0 0 auto; min-height: 19px; margin: 2px 0 14px; font-size: 13px; }
+
+.ws-grid { display: grid; grid-template-columns: 400px 1fr; grid-template-rows: minmax(0, 1fr); gap: 18px; flex: 1 1 auto; min-height: 0; }
+.panel { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; overflow-y: auto; min-height: 0; }
+.dyn { display: block; }
+
+.up :deep(.el-upload-dragger) { background: var(--bg); border-color: var(--line); padding: 18px; }
 .up :deep(.el-upload-dragger .el-upload__text) { color: var(--sub); font-size: 13px; }
 
 .src-preview { margin-top: 12px; }
-.canvas-wrap { position: relative; display: inline-block; max-width: 100%; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background:#0f1117; }
+.canvas-wrap { position: relative; display: inline-block; max-width: 100%; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: var(--bg); }
 .canvas-wrap img { display: block; max-width: 100%; max-height: 460px; }
 .mask-canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
 .mask-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-.mask-tools .tool { padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--sub); cursor: pointer; font-size: 12px; }
-.mask-tools .tool.on { border-color: #8B7ED8; color: #cdbfff; background: rgba(139,126,216,.12); }
+.mask-tools .tool { padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--sub); cursor: pointer; font-size: 12px; transition: .15s; }
+.mask-tools .tool:hover { border-color: var(--pur); color: var(--txt); }
+.mask-tools .tool.on { border-color: var(--pur); color: var(--txt); background: color-mix(in srgb, var(--pur) 16%, transparent); }
 .thumbs { display: flex; gap: 10px; margin-top: 10px; }
 .thumb { width: 92px; }
 .thumb img { width: 92px; height: 92px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); }
 
 .param-group { padding: 12px 0; border-bottom: 1px solid var(--line); }
 .param-group:last-child { border-bottom: none; }
-.g-title { font-size: 13px; font-weight: 600; color: #cdd3e0; margin-bottom: 10px; }
+.g-title { font-size: 13px; font-weight: 600; color: var(--txt); margin-bottom: 10px; }
 .param-row { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
 .param-row .lab { width: 64px; font-size: 13px; color: var(--sub); flex: none; }
 .param-row .val { width: 46px; text-align: right; font-size: 12px; color: var(--sub); }
@@ -501,15 +520,15 @@ function useAsSource(item) {
 .small { font-size: 12px; }
 
 .generate-btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 18px; border-radius: 12px; border: none; cursor: pointer;
-  color: #fff; font-weight: 600; background: linear-gradient(135deg, #8B7ED8, #5A96E3);
-  box-shadow: 0 6px 20px rgba(91,108,255,.28), inset 0 1px 0 rgba(255,255,255,.25); transition: .18s; }
+  color: #fff; font-weight: 600; background: var(--grad);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--pur) 30%, transparent), inset 0 1px 0 rgba(255,255,255,.25); transition: transform .18s ease, filter .18s ease, box-shadow .25s ease; }
 .generate-btn:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.06); }
 .generate-btn:disabled { opacity: .55; cursor: not-allowed; }
 .act-row { display: flex; gap: 10px; margin-top: 10px; }
-.btn.ghost { padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.03); color: var(--sub); cursor: pointer; font-size: 13px; }
-.btn.ghost:hover:not(:disabled) { border-color: #8B7ED8; color: #cdbfff; }
+.btn.ghost { padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--txt); cursor: pointer; font-size: 13px; transition: .18s; }
+.btn.ghost:hover:not(:disabled) { border-color: var(--pur); color: var(--txt); background: color-mix(in srgb, var(--pur) 14%, var(--card-2)); }
 
-.compare { position: relative; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); background: #0f1117; user-select: none; }
+.compare { position: relative; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); background: var(--bg); user-select: none; }
 .compare img { display: block; width: 100%; }
 .compare .c-after { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .compare .c-slider { position: absolute; left: 0; right: 0; bottom: 8px; width: 90%; margin: 0 auto; }
@@ -517,16 +536,36 @@ function useAsSource(item) {
 .c-tag.b { left: 8px; } .c-tag.a { right: 8px; }
 
 .asset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
-.asset-card { border-radius: 12px; overflow: hidden; border: 1px solid var(--line); background: rgba(255,255,255,.02); cursor: pointer; transition: .18s; }
-.asset-card:hover { transform: translateY(-2px); border-color: #8B7ED8; }
-.asset-card .ph { position: relative; aspect-ratio: 1; background: #0f1117; }
+.asset-card { border-radius: 12px; overflow: hidden; border: 1px solid var(--line); background: var(--bg); cursor: pointer; transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
+.asset-card:hover { transform: translateY(-2px); border-color: var(--pur); box-shadow: 0 8px 22px color-mix(in srgb, var(--pur) 22%, transparent); }
+.asset-card .ph { position: relative; aspect-ratio: 1; background: var(--bg-2); }
 .asset-card .ph img { width: 100%; height: 100%; object-fit: cover; }
 .ph-acts { position: absolute; inset: auto 0 0 0; display: flex; gap: 6px; justify-content: center; padding: 8px; opacity: 0; transition: .2s; background: linear-gradient(0deg, rgba(0,0,0,.55), transparent); }
 .asset-card:hover .ph-acts { opacity: 1; }
-.btn.sm { padding: 3px 8px; font-size: 12px; border-radius: 7px; border: 1px solid rgba(255,255,255,.25); background: rgba(0,0,0,.35); color: #fff; cursor: pointer; }
+.btn.sm { padding: 3px 8px; font-size: 12px; border-radius: 7px; border: 1px solid var(--line); background: color-mix(in srgb, var(--card) 78%, transparent); color: var(--txt); cursor: pointer; backdrop-filter: blur(4px); transition: .15s; }
+.btn.sm:hover { border-color: var(--pur); }
 .info { padding: 7px 9px; }
-.info .name { font-size: 12px; color: #cdd3e0; }
+.info .name { font-size: 12px; color: var(--txt); }
 .info .type { font-size: 11px; color: var(--sub); margin-top: 2px; }
 .empty { padding: 24px; text-align: center; color: var(--sub); border: 1px dashed var(--line); border-radius: 12px; }
 .big-ph img { width: 100%; border-radius: 12px; display: block; }
+
+/* ===== 生成中磨砂遮罩 ===== */
+.gen-cover { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 12px; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--card) 55%, transparent); backdrop-filter: blur(3px); border-radius: 14px; z-index: 5; }
+.gen-cover .spin { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--pur); animation: edspin .8s linear infinite; }
+.gen-cover .txt { font-size: 13px; color: var(--txt); }
+@keyframes edspin { to { transform: rotate(360deg); } }
+
+/* ===== 模式切换淡入淡出（out-in） ===== */
+.modefade-enter-active, .modefade-leave-active { transition: opacity .22s ease, transform .22s ease; }
+.modefade-enter-from { opacity: 0; transform: translateY(6px); }
+.modefade-leave-to { opacity: 0; transform: translateY(-6px); }
+
+/* ===== 结果卡片弹入 ===== */
+.cardpop-enter-active { transition: opacity .3s ease, transform .3s cubic-bezier(.34,1.56,.64,1); }
+.cardpop-enter-from { opacity: 0; transform: scale(.86); }
+.cardpop-leave-active { transition: opacity .2s ease; }
+.cardpop-leave-to { opacity: 0; }
+.cardpop-move { transition: transform .3s ease; }
 </style>
