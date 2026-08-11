@@ -55,7 +55,7 @@ from ai_local import (  # noqa: F401
 )
 _body = getattr(routers_compiled, "_body")
 _redistribute_durations = getattr(routers_compiled, "_redistribute_durations")
-from db import get_conn, fetch_all, uid, SINGLE_USER_ID, log_operation  # noqa: F401
+from db import get_conn, fetch_all, uid, SINGLE_USER_ID, log_operation, insert_row, TABLES  # noqa: F401
 
 # ======================================================================
 # 定点覆盖区（START）
@@ -619,6 +619,49 @@ async def t2i_comic(req: Request):
         raise
     except Exception as e:
         raise ApiError("GEN_FAILED", "漫画生成失败：%s" % str(e)[:200])
+
+    # 持久化到 image_tasks，使漫画生成历史可跨会话保留、可分页查询
+    try:
+        conn = get_conn()
+        try:
+            insert_row(
+                conn,
+                TABLES["image_tasks"],
+                {
+                    "task_id": uid(),
+                    "prompt": story,
+                    "negative_prompt": (b.get("negative") or "") + ", " + "低质量, 无关物体, 文字",
+                    "params": json.dumps(
+                        {
+                            "kind": "comic",
+                            "style": b.get("style") or "日漫",
+                            "panels": int(b.get("panels") or 4),
+                            "resolution": b.get("resolution") or "1024",
+                            "ratio": b.get("ratio") or "16:9",
+                            "steps": int(b.get("steps") or 20),
+                            "seed": int(b.get("seed") or -1),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "status": "succeeded",
+                    "progress": 100,
+                    "result": json.dumps(result, ensure_ascii=False),
+                    "error_message": "",
+                    "pre_auth_id": "",
+                    "cost_credits": 0,
+                    "priority": 0,
+                    "retry_count": 0,
+                    "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                },
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("[comic] 保存 image_tasks 历史失败（不影响本次返回）: %s" % e)
+
     return ok(result)
 
 

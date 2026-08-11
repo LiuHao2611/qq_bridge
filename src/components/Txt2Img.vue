@@ -319,6 +319,11 @@ const previewItem = computed(() => {
   const list = previewImages.value
   return list.length ? list[previewIndex.value] : null
 })
+const previewPanel = computed(() => {
+  // 漫画模式下，把当前预览图索引对应到 comicPanels 的元数据
+  if (mode.value !== 'comic') return null
+  return comicPanels.value[previewIndex.value] || null
+})
 function previewPrev() {
   if (previewIndex.value > 0) previewIndex.value--
 }
@@ -365,6 +370,46 @@ const comicStyleRef = ref('')
 const comicProgress = reactive({ done: 0, total: 0 })
 const comicNote = ref('')
 
+// ---- 漫画生成历史（服务端分页，避免结果丢失）----
+const comicHistoryTab = ref('current')   // current | history
+const comicHistories = ref([])
+const loadingComicHistory = ref(false)
+const comicHistPage = ref(1)
+const comicHistSize = ref(8)
+const comicHistTotal = ref(0)
+
+async function loadComicHistory() {
+  loadingComicHistory.value = true
+  try {
+    const r = await t2iHistory(comicHistPage.value, comicHistSize.value, '')
+    const items = (r.items || []).filter((it) => {
+      const p = it.params || {}
+      return p.kind === 'comic' || (it.result && Array.isArray(it.result.panels))
+    })
+    comicHistories.value = items
+    comicHistTotal.value = r.pagination?.total || items.length
+  } catch (e) {
+    comicHistories.value = []
+    comicHistTotal.value = 0
+  } finally {
+    loadingComicHistory.value = false
+  }
+}
+function onComicHistPageChange(p) {
+  comicHistPage.value = p
+  loadComicHistory()
+}
+function useComicHistory(item) {
+  if (item && item.result) {
+    comicResults.value = item.result.images || []
+    comicPanels.value = item.result.panels || []
+    comicStyleRef.value = item.result.style_ref || ''
+    comicNote.value = '已载入历史漫画：' + (item.prompt || '').slice(0, 30)
+    comicHistoryTab.value = 'current'
+    ElMessage.success('已载入历史漫画')
+  }
+}
+
 function onRefFiles(e) {
   const files = Array.from(e.target.files || [])
   files.forEach((f) => {
@@ -410,6 +455,8 @@ async function generateComic() {
     comicProgress.done = comicResults.value.length
     comicProgress.total = comicResults.value.length || comicProgress.total
     ElMessage.success(`已生成 ${comicResults.value.length} 格漫画`)
+    // 刷新服务端漫画历史（如果当前在历史标签）
+    if (comicHistoryTab.value === 'history') loadComicHistory()
     // 同步进文生图历史（覆盖使用）
     const h = pushHistory(genKey.t2i('global'), {
       kind: 'image',
@@ -783,22 +830,66 @@ loadHistory()
             <span class="g-title">统一风格参考图（N03）</span>
             <img :src="comicStyleRef" @click="openPreview([{ url: comicStyleRef }], 0)" />
           </div>
-          <div class="g-title" style="margin-bottom:4px">
-            漫画结果 <span class="muted">（{{ comicResults.length }} 格）</span>
+
+          <div class="res-tabs">
+            <span :class="{ active: comicHistoryTab === 'current' }" @click="comicHistoryTab = 'current'">本次结果</span>
+            <span :class="{ active: comicHistoryTab === 'history' }" @click="comicHistoryTab = 'history'; loadComicHistory()">
+              生成历史 <small v-if="comicHistTotal" class="muted">{{ comicHistTotal }}</small>
+            </span>
           </div>
-          <div v-if="!comicResults.length && !comicGenerating" class="empty">
-            还没有生成结果。左侧输入故事后点击「一键生成 {{ comic.panels }} 格漫画」，{{ comic.panels }} 格由本地 ComfyUI 一次性产出。
+
+          <!-- 本次结果 -->
+          <div v-if="comicHistoryTab === 'current'">
+            <div class="g-title" style="margin-bottom:4px">
+              漫画结果 <span class="muted">（{{ comicResults.length }} 格）</span>
+            </div>
+            <div v-if="!comicResults.length && !comicGenerating" class="empty">
+              还没有生成结果。左侧输入故事后点击「一键生成 {{ comic.panels }} 格漫画」，{{ comic.panels }} 格由本地 ComfyUI 一次性产出。
+            </div>
+            <div class="comic-panels" :class="'cols-' + comic.panels">
+              <div class="comic-cell" v-for="(img, i) in comicResults" :key="i" @click="openPreview(comicResults, i)">
+                <div class="ph">
+                  <img :src="img.url" alt="漫画格" loading="lazy" @load="imgLoadLog(img, true, $event)" @error="imgLoadLog(img, false, $event)" />
+                  <div class="ph-acts" @click.stop>
+                    <button class="btn sm ghost" @click.stop="download(img)">下载</button>
+                    <button class="btn sm ghost" @click.stop="openPreview(comicResults, i)">放大</button>
+                  </div>
+                </div>
+                <div class="cap">{{ (comicPanels[i] && comicPanels[i].caption) || ('第 ' + (i + 1) + ' 格') }}</div>
+              </div>
+            </div>
           </div>
-          <div class="comic-panels" :class="'cols-' + comic.panels">
-            <div class="comic-cell" v-for="(img, i) in comicResults" :key="i" @click="openPreview(comicResults, i)">
-              <div class="ph">
-                <img :src="img.url" alt="漫画格" loading="lazy" @load="imgLoadLog(img, true, $event)" @error="imgLoadLog(img, false, $event)" />
-                <div class="ph-acts" @click.stop>
-                  <button class="btn sm ghost" @click.stop="download(img)">下载</button>
-                  <button class="btn sm ghost" @click.stop="openPreview(comicResults, i)">放大</button>
+
+          <!-- 生成历史（分页，避免结果丢失） -->
+          <div v-else>
+            <div class="g-title" style="margin-bottom:4px">
+              漫画生成历史 <span class="muted">（{{ comicHistTotal }} 条）</span>
+            </div>
+            <div v-if="loadingComicHistory" class="empty">加载历史中…</div>
+            <div v-else-if="!comicHistories.length" class="empty">暂无历史漫画记录</div>
+            <div v-else class="asset-grid">
+              <div class="asset-card" v-for="(h, i) in comicHistories" :key="h.task_id || i" @click="useComicHistory(h)">
+                <div class="ph">
+                  <img :src="(h.result && h.result.images && h.result.images[0] && h.result.images[0].url) || ''" alt="历史漫画" loading="lazy" />
+                  <div class="img-count" v-if="h.result && h.result.images && h.result.images.length">{{ h.result.images.length }} 格</div>
+                  <div class="ph-acts" @click.stop>
+                    <button class="btn sm ghost" @click.stop="useComicHistory(h)">载入</button>
+                  </div>
+                </div>
+                <div class="info">
+                  <div class="name" :title="h.prompt">{{ (h.prompt || '漫画').slice(0, 14) }}{{ (h.prompt || '').length > 14 ? '…' : '' }}</div>
+                  <div class="type">{{ ((h.result && h.result.images) || []).length }} 格 · {{ h.status }}</div>
                 </div>
               </div>
-              <div class="cap">{{ (comicPanels[i] && comicPanels[i].caption) || ('第 ' + (i + 1) + ' 格') }}</div>
+            </div>
+            <div v-if="comicHistTotal > comicHistSize" class="hist-pagination">
+              <el-pagination
+                v-model:current-page="comicHistPage"
+                :page-size="comicHistSize"
+                :total="comicHistTotal"
+                layout="prev, pager, next"
+                @current-change="onComicHistPageChange"
+              />
             </div>
           </div>
         </div>
@@ -816,6 +907,16 @@ loadHistory()
       <div class="preview-meta">
         <span v-if="previewImages.length > 1" class="counter">{{ previewIndex + 1 }} / {{ previewImages.length }}</span>
         <span class="muted">seed {{ previewItem?.seed }} · {{ previewItem?.width }}×{{ previewItem?.height }}</span>
+      </div>
+      <!-- 漫画模式：当前格文字与原始提示词 -->
+      <div v-if="previewPanel" class="preview-comic-meta">
+        <div v-if="previewPanel.caption" class="preview-caption">{{ previewPanel.caption }}</div>
+        <div v-if="previewPanel.characters || previewPanel.action || previewPanel.scene" class="preview-tags">
+          <el-tag v-if="previewPanel.characters" size="small" type="info">角色：{{ previewPanel.characters }}</el-tag>
+          <el-tag v-if="previewPanel.action" size="small" type="info">动作：{{ previewPanel.action }}</el-tag>
+          <el-tag v-if="previewPanel.scene" size="small" type="info">场景：{{ previewPanel.scene }}</el-tag>
+        </div>
+        <div v-if="previewPanel.prompt" class="preview-prompt">画面描述：{{ previewPanel.prompt }}</div>
       </div>
       <div v-if="previewImages.length > 1" class="preview-thumbs">
         <img v-for="(it, idx) in previewImages" :key="idx"
@@ -926,4 +1027,34 @@ loadHistory()
 .comic-cell { background: var(--card-2); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .comic-cell .ph { aspect-ratio: 16 / 9; }
 .comic-cell .cap { padding: 8px 10px; font-size: 13px; color: var(--txt); line-height: 1.4; }
+
+.preview-comic-meta {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--card-2);
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+.preview-caption {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--txt);
+  margin-bottom: 8px;
+}
+.preview-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.preview-prompt {
+  font-size: 12px;
+  color: var(--sub);
+  line-height: 1.5;
+}
+.hist-pagination {
+  display: flex;
+  justify-content: center;
+  margin-top: 14px;
+}
 </style>

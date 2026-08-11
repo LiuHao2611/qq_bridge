@@ -3135,20 +3135,35 @@ COMIC_STYLE_SUFFIX = {
 }
 COMIC_NEGATIVE = ("lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, "
                   "fewer digits, cropped, worst quality, low quality, blurry, watermark, "
-                  "photo, 3d render, deformed panel")
+                  "photo, 3d render, deformed panel, "
+                  "unrelated objects, isolated flowers, still life, abstract floral pattern, "
+                  "empty landscape, scenery only, disconnected background, speech bubble, word, letter")
 
 
 def _split_story_to_panels(story, style, orchestrator="ollama", panels=4):
     """把故事拆分为 N 格分镜；优先 Ollama 结构化拆分，失败则规则兜底。
 
-    返回 list[{"caption": 中文短描述, "prompt": 中文画面描述}]。
+    返回 list[{"caption": 中文短描述, "characters": 主角, "action": 动作/情绪,
+               "scene": 场景, "prompt": 完整中文画面描述}]。
     """
+    # 先尝试从故事中提炼主角，用于兜底和权重注入
+    main_subject = _extract_main_subject(story)
+
     if (orchestrator == "ollama") and ollama_available():
-        p = ("你是一个漫画分镜编剧。请把下面的故事拆成 %d 格漫画，每格是一个独立的画面。"
-             "严格只输出一个 JSON 数组，不要任何解释文字，格式："
-             '[{"caption":"这一格的中文旁白/对白短句(不超过20字)","prompt":"这一格的画面描述(中文,含主体/动作/场景/情绪)"}]。'
-             "要求：%d 格连起来完整讲述故事，有起承转合，画面具体可画。\n\n故事：%s"
-             % (panels, panels, story))
+        p = (
+            "你是一个漫画分镜编剧。请把下面的故事拆成 %d 格漫画，每格是一个独立画面。"
+            "严格只输出一个 JSON 数组，不要任何解释文字，格式："
+            '[{"caption":"中文旁白短句(≤20字)","characters":"本格必须出现的主角(如:男孩,猫)",'
+            '"action":"具体动作或表情(如:蹲下,抚摸,流泪)","scene":"场景(如:花园,窗台)",'
+            '"prompt":"完整中文画面描述,必须包含主角、动作、场景、情绪"}]。\n'
+            "要求(必须遵守):\n"
+            "1. %d 格连起来完整讲述故事，有起承转合；\n"
+            "2. 每一格都必须出现故事中的主要角色，禁止只画风景、物品、花纹、抽象图案；\n"
+            "3. 画面以角色动作和表情为核心，场景为辅助；\n"
+            "4. prompt 先写角色和动作，再写场景，最后写情绪；\n"
+            "5. 风格为 '%s'，画面内不要出现任何文字、对话框、水印。\n\n故事：%s"
+            % (panels, panels, style, story)
+        )
         try:
             txt = _ollama_generate(p, think=False, keep_alive=0)
             s = txt.strip()
@@ -3161,15 +3176,30 @@ def _split_story_to_panels(story, style, orchestrator="ollama", panels=4):
                     if not isinstance(it, dict):
                         continue
                     cap = (it.get("caption") or "").strip()
+                    chars = (it.get("characters") or "").strip()
+                    action = (it.get("action") or "").strip()
+                    scene = (it.get("scene") or "").strip()
                     pr = (it.get("prompt") or "").strip()
+                    if not pr:
+                        pr = "，".join([x for x in [chars, action, scene] if x])
                     if pr:
-                        out.append({"caption": cap or pr[:20], "prompt": pr})
+                        # 确保主角出现：如果 LLM 没写主角，强制前置
+                        if main_subject and main_subject not in pr:
+                            pr = main_subject + "，" + pr
+                        out.append({
+                            "caption": cap or pr[:20],
+                            "characters": chars or main_subject,
+                            "action": action,
+                            "scene": scene,
+                            "prompt": pr,
+                        })
                 if len(out) >= 2:
                     return out
         except Exception as e:
             logger.warning("[comic] Ollama 分镜拆分失败，回退规则拆分: %s" % e)
-    # 规则兜底：按标点切句，尽量均匀分到 panels 格
-    delims = "。！？!?；;\n"
+
+    # 规则兜底：按叙事节奏切句（包含中英文逗号），并强制每格包含主角
+    delims = "。！？!?；;，,、\n"
     parts = []
     buf = ""
     for ch in story:
@@ -3185,13 +3215,52 @@ def _split_story_to_panels(story, style, orchestrator="ollama", panels=4):
         parts = [story]
     out = []
     per = max(1, (len(parts) + panels - 1) // panels)
+    beats = ["开端", "发展", "转折", "高潮", "结局"]
     for i in range(panels):
         chunk = parts[i * per:(i + 1) * per]
         if not chunk:
             chunk = parts[-1:]
         text = "。".join(chunk)
-        out.append({"caption": text[:20], "prompt": text})
+        beat = beats[i] if i < len(beats) else "后续"
+        prompt = "（同一主角），%s，%s，必须出现主要角色，不要只画风景或物品" % (beat, text)
+        if main_subject:
+            prompt = "（%s），" % main_subject + prompt
+        out.append({
+            "caption": text[:20],
+            "characters": main_subject,
+            "action": beat,
+            "scene": "",
+            "prompt": prompt,
+        })
     return out
+
+
+def _extract_main_subject(story):
+    """从故事中简单提取主要角色/主体，用于兜底权重注入。优先使用 Ollama，失败则规则提取前两个名词短语。"""
+    if not story:
+        return ""
+    if ollama_available():
+        p = (
+            "请从下面故事中只提取最主要的一到两个角色/主体（如：男孩、猫、少女、机器人），"
+            "严格只输出一个 JSON 对象，格式：{\"subjects\":\"角色1,角色2\"}，不要解释。\n\n故事：%s" % story
+        )
+        try:
+            txt = _ollama_generate(p, think=False, keep_alive=0)
+            s = txt.strip()
+            start = s.find("{")
+            end = s.rfind("}")
+            if start >= 0 and end > start:
+                obj = json.loads(s[start:end + 1])
+                subj = (obj.get("subjects") or obj.get("main_subject") or "").strip()
+                if subj:
+                    return subj
+        except Exception:
+            pass
+    # 规则兜底：取开头连续的名词性短句，最多 8 个字符
+    m = re.search(r"^([^，,。！？\n]{2,8})", story.strip())
+    if m:
+        return m.group(1).strip()
+    return story.strip()[:8]
 
 
 def generate_comic(story, style="日漫", negative="", resolution="1024", ratio="16:9",
@@ -3231,6 +3300,8 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
 
     style_suffix = COMIC_STYLE_SUFFIX.get(style, COMIC_STYLE_SUFFIX["日漫"])
     neg = ((negative + ", ") if negative else "") + COMIC_NEGATIVE
+    # 统一故事主角，用于每格 prompt 权重锚定
+    main_subject = _extract_main_subject(story)
 
     # 1) 分镜拆分
     panel_specs = _split_story_to_panels(story, style, orchestrator, panels)
@@ -3250,8 +3321,9 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
         ip_available = False
     if ip_available:
         try:
-            sp = ("cinematic color grading reference still, " + style_suffix +
-                  ", consistent art style keyframe, film still, high detail")
+            sp = ("comic panel reference still, consistent " + style_suffix +
+                  ", narrative scene, same main character present, no text, no speech bubbles, "
+                  "clean composition, film still, high detail")
             style_ref_local = _comfy_text2img(sp, width=512, height=288, steps=20, timeout=120)
             if style_ref_local and os.path.isfile(style_ref_local):
                 try:
@@ -3287,18 +3359,36 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
     for idx, spec in enumerate(panel_specs):
         s = (int(seed) + idx) if seed and int(seed) > 0 else rnd.randint(0, 2 ** 31 - 1)
         zh_prompt = spec["prompt"]
+        chars = (spec.get("characters") or main_subject or "").strip()
+        action = (spec.get("action") or "").strip()
+
+        # 构造带权重的中文提示词：主角权重 1.35，动作权重 1.15，强化图文一致
+        weighted_zh = zh_prompt
+        if chars:
+            weighted_zh = "（%s:1.35），%s" % (chars, weighted_zh)
+        if action:
+            weighted_zh = "（%s:1.15），%s" % (action, weighted_zh)
+
         if orchestrator == "ollama" or enhance:
-            tr = translate_to_sd_prompt(zh_prompt, "", style)
+            tr = translate_to_sd_prompt(weighted_zh, "", style)
             if tr:
                 en_p = tr[0]
                 used = used or "ollama"
             else:
-                en_p = _dict_fallback_translate(zh_prompt, "", style)[0]
+                en_p = _dict_fallback_translate(weighted_zh, "", style)[0]
                 used = used or "dict_fallback"
         else:
-            en_p = _dict_fallback_translate(zh_prompt, "", style)[0]
+            en_p = _dict_fallback_translate(weighted_zh, "", style)[0]
             used = used or "dict_fallback"
-        final_prompt = "%s, %s" % (en_p, style_suffix)
+
+        # 翻译后再叠加主角与动作权重（SD 权重语法），并追加风格后缀与一致性约束
+        weight_prefix = ""
+        if chars:
+            weight_prefix += "(same main character:1.35), (character consistency:1.2), "
+        if action:
+            weight_prefix += "(clear character action:1.15), "
+        final_prompt = "%s%s, %s, narrative comic panel, no text, no speech bubbles" % (
+            weight_prefix, en_p, style_suffix)
         try:
             if char_comfy and ip_available:
                 path = _comfy_text2img_with_ipadapter(
@@ -3332,7 +3422,15 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
             continue
         img = {"url": "/file?name=" + dst_name, "seed": s, "width": W, "height": H}
         images.append(img)
-        panels_out.append({"index": idx, "caption": spec.get("caption") or "", "prompt": zh_prompt})
+        panels_out.append({
+            "index": idx,
+            "caption": spec.get("caption") or "",
+            "characters": spec.get("characters") or main_subject or "",
+            "action": spec.get("action") or "",
+            "scene": spec.get("scene") or "",
+            "prompt": zh_prompt,
+            "final_prompt": final_prompt,
+        })
         if on_progress:
             try:
                 on_progress(len(images), total, img)

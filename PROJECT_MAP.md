@@ -123,6 +123,13 @@ D:\AI\manju_agent\
 > - **③ 空间站位预规划落库 + 渲染（§3.3.x 多人场景相对位置）**：`db.py` `_migrate()` 幂等新增 `shots.stage_blueprint TEXT`；`director/enqueue.py` `persist_segment` 落库 `stage_blueprint`（由 `script_parser._plan_stage_positions` 计算）；`ProjectPlanning.vue` 分镜卡片新增空间站位条（`stagePositions(sh)` 优先读 `stage_blueprint.positions`，缺则按 `refs` 推导 2/3/>3 布局），`posLabel` 映射 左/右/中/最左/最右。
 > - **④ 断点续跑 UI（P4 生产）**：`ProductionStage.vue` 片段进度行新增 暂停/恢复/取消 内联按钮（调 `pauseTask / resumeTask / cancelTask` 配 `s.task_id`），复用后端 `/tasks/:id/{pause,resume,cancel}`；新增「↻ 断点续跑」入口，借调度器内置 `resume=True` 跳过已成功分镜重跑整轮。
 > 后端 5 文件（`ai_local.py`、`db.py`、`post_production.py`、`sequence_scheduler.py`、`enqueue.py`）均通过 `py_compile` 语法校验；前端 `ProductionStage.vue` / `ProjectPlanning.vue` 改动需重新构建 `frontend/dist` 后 `:8099` 才生效（用户未要求构建/重启，仅落地源码，符合 §6）。
+>
+> **2026-08-12 补充（漫画生成一致性 + 历史分页 + 预览交互增强 ✅）**：针对用户反馈「漫画结果与故事偏差大（如出现无关花卉）」与「需要历史分页/放大预览」：
+> - **提示词约束增强**：`ai_local._split_story_to_panels` 强制 schema 含 `characters/action/scene/prompt`，系统提示要求每格必须出现主要角色、以角色动作/表情为核心、禁止纯风景/物品/花纹/文字对话框；新增 `_extract_main_subject` 提取主角并在兜底规则中强制前置；`COMIC_NEGATIVE` 追加 `unrelated objects, isolated flowers, abstract floral pattern, still life, scenery only, speech bubble, text` 等防跑偏词。
+> - **风格锁与权重**：全局风格参考图 prompt 明确 `narrative scene, same main character present, no text, no speech bubbles`；逐格 `final_prompt` 以 `(same main character:1.35), (character consistency:1.2), (clear character action:1.15)` 加权主角与动作，并追加 `narrative comic panel, no text, no speech bubbles` 一致性约束。
+> - **服务端历史持久化**：`routers.py` `/t2i/comic` 生成成功后写入 `image_tasks` 表（`status='succeeded'`，`result` JSON 含 `images/panels/style_ref`），复用既有 `GET /t2i/tasks` 分页查询，避免生成结果丢失。
+> - **前端交互优化**：`Txt2Img.vue` 漫画模式新增「本次结果 / 生成历史」分页标签，历史列表调 `t2iHistory` 并过滤漫画任务，支持 `el-pagination` 翻页与「载入」恢复；图片预览弹窗在漫画模式下显示当前格 `caption/characters/action/scene/prompt` 元数据，保留左右箭头切换与底部缩略图条。
+> - **验证**：`py_compile server/ai_local.py server/routers.py` 通过；`bash scripts/build_frontend.sh` 生成 `index-B3koQC5n.js`；后端 `:7788` health 正常；`/t2i/comic` 空 story 返回 10001；`/t2i/tasks` 正常返回（含历史 item）。真实出图需本机 ComfyUI 已放入 checkpoint/CLIP-Vision/IP-Adapter 权重且 `:8188` 可服务。
 
 > **2026-08-09 补充（超时延长 + 停止按钮 + GPU/CPU 运行分布日志：已落地 ✅）**：回应「资产初始化 / 项目策划调用 Ollama 慢且误以为跑 CPU」——延长超时、加停止按钮、前台日志打印模型 GPU/CPU 分布（避免误解）。全部源码改动落在 `D:\AI\manju_agent`，符合 C 盘/目录外约束：
 > - **① 超时延长（避免长文本推理被前端/反代截断）**：`server/ai_local.py` 的 `_ollama_generate` 内 `_http_post_json(url, payload, timeout=600)`（原 180）；`web_app.py` 的 `_proxy_v1` `urllib.request.urlopen(req, timeout=600)`（原 180，与后端对齐）；`src/api.js` 的 `extractAssetsFromStory` 默认 `{timeout:300000}`(300s) 且新增 `opts` 透传（原 120s，修复长剧本提取被前端默认超时截断）。
