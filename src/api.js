@@ -97,10 +97,15 @@ export const splitStory = (pid, body, opts = {}) =>
     ...opts,
   })
 export const getLocalModels = () => get('/models/local').then((r) => r.models || [])
+export const getOllamaStatus = () => get('/ollama/status').then((r) => r || { ok: false, models: [] })
 export const getSegment = (pid, sid) => get('/projects/' + pid + '/segments/' + sid).then((r) => ({ segment: r.segment, shots: r.shots || [] }))
 export const updateSegment = (pid, sid, body) => patch('/projects/' + pid + '/segments/' + sid, body).then((r) => r.segment)
 export const putShots = (pid, sid, shots) => put('/projects/' + pid + '/segments/' + sid + '/shots', { shots }).then((r) => r.shots || [])
 export const putAssetRefs = (pid, sid, refs) => put('/projects/' + pid + '/segments/' + sid + '/asset-refs', { asset_refs: refs }).then((r) => r.asset_refs || [])
+// F1：删除资产/阶段后，级联清理所有片段（含未在内存加载的）中的悬空 @引用。
+// 以 asset_id（可选 stage_id）为键「全局」清理 segment_asset_refs 与 shots.asset_refs。
+export const pruneAssetRefs = (projectId, { assetId, stageId } = {}) =>
+  post('/projects/' + projectId + '/prune-refs', { asset_id: assetId, stage_id: stageId || null })
 export const deleteSegment = (pid, sid) => del('/projects/' + pid + '/segments/' + sid)
 export const generateSegment = (pid, sid, preAuthId, params) =>
   post('/projects/' + pid + '/segments/' + sid + '/generate', { pre_auth_id: preAuthId, params })
@@ -144,8 +149,8 @@ export const updateAsset = (id, body) => patch('/assets/' + id, body).then((r) =
 export const deleteAsset = (id) => del('/assets/' + id)
 
 // ---- Phase 1 一键从剧本提取 + 批量创建本集资产 ----
-export const extractAssetsFromStory = (pid, story, modelConfig) =>
-  post('/projects/' + pid + '/extract-assets', { story, model_config: modelConfig }, { timeout: 120000 }).then((r) => r || { roles: [], scenes: [], props: [], meta: {} })
+export const extractAssetsFromStory = (pid, story, modelConfig, opts = {}) =>
+  post('/projects/' + pid + '/extract-assets', { story, model_config: modelConfig }, { timeout: 300000, ...opts }).then((r) => r || { roles: [], scenes: [], props: [], meta: {} })
 export const batchCreateProjectAssets = (pid, assets) =>
   post('/projects/' + pid + '/assets/batch', { assets }).then((r) => r || { created: [], skipped: [], count: 0 })
 
@@ -328,6 +333,10 @@ export const t2iHistory = (page = 1, size = 60, status = '') => {
   if (status) q.set('status', status)
   return get('/t2i/tasks?' + q.toString()).then((r) => r || { items: [], pagination: {} })
 }
+// 一键生成 4 格漫画（复用导演 Agent 生图约束：N03 全局风格参考 + §5.2 角色一致性）；
+// 单次请求完整生成全部 4 格，长任务放宽超时至 10 分钟。
+export const t2iComic = (body) =>
+  post('/t2i/comic', body, { timeout: 600000 }).then((r) => r || {})
 export const servicesStatus = (opts = {}) => get('/services/status', opts).then((r) => r || {})
 export const difyConfig = () => get('/services/dify-config').then((r) => r || {})
 export const difyStart = () => post('/services/dify/start').then((r) => r || {})

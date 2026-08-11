@@ -3,7 +3,10 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, onActivated, onDea
 import { ElMessage } from 'element-plus'
 import { usePersistedState } from '../composables/usePersist'
 import { useServiceStatus } from '../composables/useServiceStatus'
-import { t2iGenerate, t2iTask, t2iCancel, t2iHistory, difyConfig, updateSettings, difyStart, difyStop } from '../api.js'
+import { pushHistory, genKey } from '../composables/useGenHistory'
+import { pushGeneration } from '../composables/useDirectorOrb'
+import { t2iGenerate, t2iTask, t2iCancel, t2iHistory, t2iComic, difyConfig, updateSettings, difyStart, difyStop } from '../api.js'
+import HistoryPanel from './HistoryPanel.vue'
 
 defineOptions({ name: 'Txt2Img' })
 
@@ -150,6 +153,16 @@ function useHistoryPrompt(item) {
   }
 }
 
+// ---- 左侧历史生成面板（覆盖使用）----
+const t2iHist = ref(null)
+function onUseT2iHist(record) {
+  if (record && record.payload && Array.isArray(record.payload.images)) {
+    results.value = record.payload.images
+    if (record.payload.prompt) state.prompt = record.payload.prompt
+    ElMessage.success('已覆盖使用历史生成图像')
+  }
+}
+
 const totalCount = computed(() => task.value?.params?.count || state.count)
 const doneCount = computed(() => task.value?.progress || results.value.length)
 const statusText = computed(() => {
@@ -234,6 +247,7 @@ async function cancelGenerate() {
 
 function startPoll(tid) {
   if (pollTimer) clearInterval(pollTimer)
+  pushGeneration('image', '文生图', 'running')
   pollTimer = setInterval(async () => {
     if (!pageActive) return
     try {
@@ -246,11 +260,21 @@ function startPoll(tid) {
         progressMsg.value = (t.result && t.result.note) || '生成完成'
         ElMessage.success(`已生成 ${results.value.length} 张图`)
         loadHistory()  // 刷新历史画廊
+        // 记录到左侧历史生成面板（覆盖使用）
+        const h = pushHistory(genKey.t2i('global'), {
+          kind: 'image',
+          title: (state.prompt || '文生图').slice(0, 20),
+          preview: (results.value[0] && results.value[0].url) || '',
+          payload: { images: results.value, prompt: state.prompt },
+        })
+        if (h && t2iHist.value) t2iHist.value.refresh()
+        pushGeneration('image', '文生图', 'done')
       } else if (t.status === 'failed') {
         finishPoll()
         console.error('[Txt2Img] task failed', JSON.parse(JSON.stringify(t)))
         progressMsg.value = '失败：' + (t.error_message || '未知错误')
         ElMessage.error('生成失败：' + (t.error_message || '未知错误'))
+        pushGeneration('image', '文生图', 'failed', t.error_message || '未知错误')
       } else if (t.status === 'cancelled') {
         finishPoll()
         progressMsg.value = '已取消'
@@ -322,6 +346,88 @@ function download(item) {
   document.body.removeChild(a)
 }
 
+// ---- 漫画创作模式（占满文生图区域，复用导演 Agent 生图约束）----
+const mode = ref('t2i')  // 't2i' | 'comic'
+const comicStyles = ['日漫', '美漫', '港漫', '写实漫画', '水彩绘本']
+const comic = reactive({
+  story: '',
+  style: '日漫',
+  panels: 4,
+  resolution: '1024',
+  ratio: '16:9',
+  steps: 24,
+  charRefs: [],
+})
+const comicGenerating = ref(false)
+const comicResults = ref([])
+const comicPanels = ref([])
+const comicStyleRef = ref('')
+const comicProgress = reactive({ done: 0, total: 0 })
+const comicNote = ref('')
+
+function onRefFiles(e) {
+  const files = Array.from(e.target.files || [])
+  files.forEach((f) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === 'string') comic.charRefs.push(reader.result)
+    }
+    reader.readAsDataURL(f)
+  })
+  e.target.value = ''
+}
+
+async function generateComic() {
+  if (!comic.story.trim()) {
+    ElMessage.warning('请先输入故事')
+    return
+  }
+  if (comicGenerating.value) return
+  comicGenerating.value = true
+  comicResults.value = []
+  comicPanels.value = []
+  comicStyleRef.value = ''
+  comicProgress.done = 0
+  comicProgress.total = parseInt(comic.panels) || 4
+  comicNote.value = '正在生成漫画（ComfyUI 出图，约 1-3 分钟）…'
+  pushGeneration('image', '漫画创作', 'running')
+  try {
+    const r = await t2iComic({
+      story: comic.story,
+      style: comic.style,
+      panels: parseInt(comic.panels) || 4,
+      resolution: comic.resolution,
+      ratio: comic.ratio,
+      steps: comic.steps,
+      enhance: true,
+      orchestrator: 'ollama',
+      character_refs: comic.charRefs,
+    })
+    comicResults.value = r.images || []
+    comicPanels.value = r.panels || []
+    comicStyleRef.value = r.style_ref || ''
+    comicNote.value = r.note || '生成完成'
+    comicProgress.done = comicResults.value.length
+    comicProgress.total = comicResults.value.length || comicProgress.total
+    ElMessage.success(`已生成 ${comicResults.value.length} 格漫画`)
+    // 同步进文生图历史（覆盖使用）
+    const h = pushHistory(genKey.t2i('global'), {
+      kind: 'image',
+      title: (comic.story || '漫画').slice(0, 20),
+      preview: (comicResults.value[0] && comicResults.value[0].url) || '',
+      payload: { images: comicResults.value, prompt: comic.story },
+    })
+    if (h && t2iHist.value) t2iHist.value.refresh()
+    pushGeneration('image', '漫画创作', 'done')
+  } catch (e) {
+    comicNote.value = '生成失败：' + (e.message || e)
+    ElMessage.error('漫画生成失败：' + (e.message || e))
+    pushGeneration('image', '漫画创作', 'failed', e.message || '')
+  } finally {
+    comicGenerating.value = false
+  }
+}
+
 // 初始加载（服务状态由 useServiceStatus 自动在 activated 时拉取）
 loadDifyConfig()
 loadHistory()
@@ -329,16 +435,30 @@ loadHistory()
 
 <template>
   <div class="page">
+    <!-- 左侧：历史生成记录（页面级，固定在内容区左侧，默认折叠，点击展开可选择覆盖使用） -->
+    <HistoryPanel
+      v-if="mode === 't2i'"
+      ref="t2iHist"
+      storage-key="manju_hist_t2i_global"
+      title="生成历史"
+      kind-filter="all"
+      :floating="true"
+      @use="onUseT2iHist"
+    />
     <div class="page-head">
-      <div>
-        <h1>🎨 文生图</h1>
-        <p class="muted">输入文字描述，调用本地 ComfyUI 真实出图（Ollama 润色提示词 · Dify 可选编排）</p>
+      <div class="ph-left">
+        <div class="mode-tabs">
+          <span :class="{ active: mode === 't2i' }" @click="mode = 't2i'">🎨 文生图</span>
+          <span :class="{ active: mode === 'comic' }" @click="mode = 'comic'">📖 漫画创作</span>
+        </div>
+        <p class="muted" v-if="mode === 't2i'">输入文字描述，调用本地 ComfyUI 真实出图（Ollama 润色提示词 · Dify 可选编排）</p>
+        <p class="muted" v-else>输入故事，单次点击完整生成全部 4 格漫画（复用导演 Agent 全局风格参考 + 角色一致性约束）</p>
       </div>
       <el-tag type="success" effect="dark">本地生成 · 不计积分</el-tag>
     </div>
 
     <!-- 服务绑定状态条：Docker · Dify · Ollama · ComfyUI · 模型（Docker/Dify 可启停） -->
-    <div class="svc-bar">
+    <div class="svc-bar" v-if="mode === 't2i'">
       <div class="svc" :class="services.docker?.reachable ? 'ok' : 'bad'">
         <span class="dot" /> Docker
         <small>{{ services.docker?.reachable ? '已运行' : '未运行（请启动 Docker Desktop）' }}</small>
@@ -379,7 +499,7 @@ loadHistory()
       </button>
     </div>
 
-    <div class="ws-grid">
+    <div class="ws-grid" v-if="mode === 't2i'">
       <!-- 左侧：参数 -->
       <div class="panel">
         <div class="param-group">
@@ -581,6 +701,110 @@ loadHistory()
       </div>
     </div>
 
+    <!-- 漫画创作（占满整个文生图区域） -->
+    <div v-if="mode === 'comic'" class="comic-wrap">
+      <div class="comic-head">
+        <div>
+          <h2>📖 漫画创作 · 一键 {{ comic.panels }} 格漫画</h2>
+          <p class="muted">输入故事，单次点击完整生成全部 {{ comic.panels }} 格（复用导演 Agent 全局风格参考 + 角色一致性约束）</p>
+        </div>
+        <el-tag type="success" effect="dark">本地生成 · 不计积分</el-tag>
+      </div>
+
+      <div class="comic-grid">
+        <!-- 左侧：参数 -->
+        <div class="panel comic-params">
+          <div class="param-group">
+            <div class="g-title">故事 / 剧情</div>
+            <el-input v-model="comic.story" type="textarea" :rows="6"
+              placeholder="输入一个短故事，例如：男孩在雨夜捡到一只受伤的流浪猫，带回家悉心照料，猫康复后却在一个清晨悄然离开，只留下窗台上一朵小花。" />
+          </div>
+          <div class="param-group">
+            <div class="g-title">漫画设置</div>
+            <div class="param-row"><span class="lab">风格</span>
+              <el-select v-model="comic.style" style="width:240px">
+                <el-option v-for="s in comicStyles" :key="s" :label="s" :value="s" />
+              </el-select>
+            </div>
+            <div class="param-row"><span class="lab">格数</span>
+              <el-select v-model="comic.panels" style="width:240px">
+                <el-option :value="4" label="4 格（推荐）" />
+                <el-option :value="6" label="6 格" />
+                <el-option :value="3" label="3 格" />
+                <el-option :value="8" label="8 格" />
+              </el-select>
+            </div>
+            <div class="param-row"><span class="lab">分辨率</span>
+              <el-select v-model="comic.resolution" style="width:240px">
+                <el-option v-for="r in resolutions" :key="r" :label="r + '（长边）'" :value="r" />
+              </el-select>
+            </div>
+            <div class="param-row"><span class="lab">比例</span>
+              <el-select v-model="comic.ratio" style="width:240px">
+                <el-option v-for="r in ratios" :key="r" :label="r" :value="r" />
+              </el-select>
+            </div>
+            <div class="param-row" style="align-items:flex-start"><span class="lab" style="margin-top:6px">采样步数</span>
+              <div style="width:240px"><el-slider v-model="comic.steps" :min="1" :max="50" show-input /></div>
+            </div>
+          </div>
+          <div class="param-group">
+            <div class="g-title">角色一致性参考图（可选）</div>
+            <p class="muted" style="margin:0 0 8px">上传角色定妆照，保持跨格角色一致（§5.2 IP-Adapter 身份路）</p>
+            <div class="comic-refs">
+              <div class="ref-thumb" v-for="(r, i) in comic.charRefs" :key="i">
+                <img :src="r" /><button class="ref-del" @click="comic.charRefs.splice(i, 1)">×</button>
+              </div>
+              <label class="ref-add">
+                <input type="file" accept="image/*" multiple @change="onRefFiles" hidden />
+                <span>＋ 添加</span>
+              </label>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:14px">
+            <button class="btn pink" style="flex:1;justify-content:center"
+              :disabled="comicGenerating" @click="generateComic">
+              {{ comicGenerating ? '生成中…' : '⚡ 一键生成 ' + comic.panels + ' 格漫画' }}
+            </button>
+          </div>
+          <div class="progress" v-if="comicGenerating || comicNote">
+            <div class="lab">
+              <span>{{ comicNote || '准备中…' }}</span>
+              <span>{{ comicProgress.done }}/{{ comicProgress.total }}</span>
+            </div>
+            <el-progress :percentage="comicProgress.total ? Math.round(comicProgress.done / comicProgress.total * 100) : 0"
+              :stroke-width="8" :color="['#ff4d8d', '#8a5cff']" />
+          </div>
+        </div>
+
+        <!-- 右侧：结果 -->
+        <div class="panel comic-result">
+          <div v-if="comicStyleRef" class="comic-style-ref">
+            <span class="g-title">统一风格参考图（N03）</span>
+            <img :src="comicStyleRef" @click="openPreview([{ url: comicStyleRef }], 0)" />
+          </div>
+          <div class="g-title" style="margin-bottom:4px">
+            漫画结果 <span class="muted">（{{ comicResults.length }} 格）</span>
+          </div>
+          <div v-if="!comicResults.length && !comicGenerating" class="empty">
+            还没有生成结果。左侧输入故事后点击「一键生成 {{ comic.panels }} 格漫画」，{{ comic.panels }} 格由本地 ComfyUI 一次性产出。
+          </div>
+          <div class="comic-panels" :class="'cols-' + comic.panels">
+            <div class="comic-cell" v-for="(img, i) in comicResults" :key="i" @click="openPreview(comicResults, i)">
+              <div class="ph">
+                <img :src="img.url" alt="漫画格" loading="lazy" @load="imgLoadLog(img, true, $event)" @error="imgLoadLog(img, false, $event)" />
+                <div class="ph-acts" @click.stop>
+                  <button class="btn sm ghost" @click.stop="download(img)">下载</button>
+                  <button class="btn sm ghost" @click.stop="openPreview(comicResults, i)">放大</button>
+                </div>
+              </div>
+              <div class="cap">{{ (comicPanels[i] && comicPanels[i].caption) || ('第 ' + (i + 1) + ' 格') }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <el-dialog v-model="previewVisible" title="预览" width="64%" align-center @opened="() => {}" destroy-on-close>
       <div class="preview-wrap">
         <button v-if="previewImages.length > 1" class="nav-btn prev" :disabled="previewIndex <= 0" @click="previewPrev">❮</button>
@@ -669,4 +893,37 @@ loadHistory()
 .res-tabs span.active { color: var(--txt); background: var(--card-2); border-color: var(--pur); }
 .prompt-used pre { white-space: pre-wrap; word-break: break-word; background: var(--card-2);
   border: 1px solid var(--line); border-radius: 10px; padding: 10px; font-size: 12px; color: var(--text); max-height: 180px; overflow: auto; }
+
+/* ---- 漫画创作模式 ---- */
+.ph-left { display: flex; flex-direction: column; }
+.mode-tabs { display: inline-flex; gap: 6px; margin-bottom: 4px; }
+.mode-tabs span { font-size: 18px; font-weight: 800; color: var(--sub); padding: 6px 14px;
+  border-radius: 10px; cursor: pointer; border: 1px solid transparent; transition: .15s; user-select: none; }
+.mode-tabs span:hover { color: var(--txt); }
+.mode-tabs span.active { color: #fff; background: linear-gradient(135deg, var(--pur), #ff4d8d);
+  border-color: transparent; box-shadow: 0 4px 14px rgba(138, 92, 255, .35); }
+
+.comic-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.comic-head h2 { margin: 0 0 4px; font-size: 20px; }
+.comic-grid { display: grid; grid-template-columns: 380px 1fr; gap: 18px; align-items: start; }
+.comic-refs { display: flex; flex-wrap: wrap; gap: 8px; }
+.ref-thumb { position: relative; width: 56px; height: 56px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+.ref-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.ref-del { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; border-radius: 50%;
+  border: none; background: rgba(0, 0, 0, .6); color: #fff; cursor: pointer; font-size: 12px; line-height: 1; }
+.ref-add { width: 56px; height: 56px; border-radius: 10px; border: 1px dashed var(--line);
+  display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--pur);
+  font-size: 13px; font-weight: 700; }
+.ref-add:hover { border-color: var(--pur); }
+.comic-style-ref { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.comic-style-ref img { width: 120px; height: 68px; object-fit: cover; border-radius: 8px;
+  cursor: pointer; border: 1px solid var(--line); }
+.comic-panels { display: grid; gap: 14px; }
+.comic-panels.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.comic-panels.cols-4 { grid-template-columns: repeat(2, 1fr); }
+.comic-panels.cols-6 { grid-template-columns: repeat(3, 1fr); }
+.comic-panels.cols-8 { grid-template-columns: repeat(4, 1fr); }
+.comic-cell { background: var(--card-2); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.comic-cell .ph { aspect-ratio: 16 / 9; }
+.comic-cell .cap { padding: 8px 10px; font-size: 13px; color: var(--txt); line-height: 1.4; }
 </style>

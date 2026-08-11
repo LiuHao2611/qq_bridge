@@ -28,6 +28,11 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUTPUTS = os.path.join(BASE, "outputs")
 os.makedirs(OUTPUTS, exist_ok=True)
 
+# FS-01/FS-03：所有临时文件/目录必须落在 D:\AI 下，严禁使用系统 C 盘 temp
+# （既遵守「禁止操作 C 盘任何文件」，也避免安全删除钩子把清理动作送进回收站）。
+_TMP_ROOT = os.path.join(BASE, ".tmp")
+os.makedirs(_TMP_ROOT, exist_ok=True)
+
 OLLAMA_URL = "http://127.0.0.1:11434"
 COMFY_URL = "http://127.0.0.1:8188"
 MODEL = os.environ.get("MANJU_OLLAMA_MODEL", "qwen3.5:9b")
@@ -146,6 +151,19 @@ def _get_comfy_controlnet(control_type="depth"):
             what="ControlNet(%s) 权重" % control_type)
 
 
+def _detect_depth_controlnet():
+    """返回可用的 depth ControlNet 权重文件名；无则 None（手册 §3.3.4 深度复用诚实降级）。
+
+    仅匹配 *depth* 权重，避免与 canny/openpose 等错配导致构图语义错误。
+    """
+    try:
+        return comfy_env.discover_weight(
+            "controlnet", ["*depth*.pth", "*depth*.safetensors", "*depth*.bin"],
+            what="depth ControlNet 权重")
+    except RuntimeError:
+        return None
+
+
 def _get_llm_model_config(purpose="create"):
     """根据 purpose（create/planning）构造 model_config 供 split_story/extract_assets/ollama_chat 使用。"""
     ms = _load_model_settings()
@@ -190,6 +208,40 @@ def ollama_list_models(base_url=None):
             return [m.get("name", "") for m in data.get("models", []) if m.get("name")]
     except Exception:
         return []
+
+
+def _ollama_running_info(model=None):
+    """查询 Ollama 当前已加载模型的 GPU/CPU 分布，供前端日志展示（避免误以为模型在 CPU 跑）。
+
+    通过 /api/ps 获取每个模型的 size（总占用）与 size_vram（显存占用），
+    按 size_vram / size 估算 GPU 占比（与 `ollama ps` 的 PROCESSOR 列口径一致）。
+    返回 {ok, error?, models:[{name, size_gb, size_vram_gb, gpu_pct, cpu_pct}]}。
+    """
+    url = (_get_ollama_url()).rstrip("/") + "/api/ps"
+    try:
+        with urllib.request.urlopen(url, timeout=3) as r:
+            if r.status != 200:
+                return {"ok": False, "error": "ollama /api/ps 返回 %s" % r.status, "models": []}
+            data = json.loads(r.read().decode("utf-8", "ignore"))
+        models = []
+        for m in (data.get("models") or []):
+            size = int(m.get("size") or 0)
+            size_vram = int(m.get("size_vram") or 0)
+            gpu_pct = int(round(size_vram * 100.0 / size)) if size > 0 else 0
+            cpu_pct = 100 - gpu_pct
+            models.append({
+                "name": m.get("name") or m.get("model"),
+                "size_gb": round(size / 1024 ** 3, 1),
+                "size_vram_gb": round(size_vram / 1024 ** 3, 1),
+                "gpu_pct": gpu_pct,
+                "cpu_pct": cpu_pct,
+            })
+        hit = None
+        if model:
+            hit = next((x for x in models if model in (x.get("name") or "")), None)
+        return {"ok": True, "model": hit, "models": models}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "models": []}
 
 
 def comfy_available(base_url=None):
@@ -426,22 +478,34 @@ def _ollama_generate(prompt, think=False, keep_alive=None, model=None, base_url=
     if keep_alive is not None:
         pl["keep_alive"] = keep_alive
     payload = json.dumps(pl).encode("utf-8")
-    body = _http_post_json(url, payload, timeout=180)
+    body = _http_post_json(url, payload, timeout=600)
     return json.loads(body).get("response", "")
 
 
-def ollama_chat(prompt, think=False, keep_alive=None, purpose="create"):
+def ollama_chat(prompt, think=False, keep_alive=None, purpose="create",
+               model=None, base_url=None):
     """LLM 统一入口（§9 提示词规范）：按 purpose 读取 settings 决定本地/在线。
 
     purpose: 'create' | 'planning' | 'extract'，对应 Settings.vue 中 modelSettings 的 key。
     当 settings 中该 purpose 配置为 online 时，走 OpenAI 兼容在线 API；否则走本地 Ollama。
+
+    model / base_url: 透传优先（运行时指定，覆盖 settings），用于
+        「从剧本提取资产」/「分场」等接口接前端 model_config 后立刻生效。
+    透传与 settings 的优先级：透传 > settings(MODEL_SETTINGS) > MODEL(env)> MODEL 默认值。
     """
     cfg = _get_llm_model_config(purpose)
     if cfg.get("provider") == "online":
+        # 在线模式下也允许透传覆盖 prompt 之外的字段
+        if model or base_url:
+            cfg = dict(cfg)
+            if model:    cfg["model"]   = model
+            if base_url: cfg["apiBase"] = base_url
         raw, _ = _call_online_llm(prompt, cfg)
         return raw or ""
+    eff_model   = model        or cfg.get("model")
+    eff_baseurl = base_url     or cfg.get("apiBase")
     return _ollama_generate(prompt, think=think, keep_alive=keep_alive,
-                            model=cfg.get("model"), base_url=cfg.get("apiBase"))
+                            model=eff_model, base_url=eff_baseurl)
 
 
 def ollama_unload():
@@ -767,7 +831,9 @@ def extract_assets_from_story(story, model_config=None):
                     "model": model, "available_models": available, "error": meta["error"],
                 }, ensure_ascii=False))
                 return {"roles": [], "scenes": [], "props": [], "meta": meta}
-            raw = ollama_chat(prompt, purpose="create")
+            raw = ollama_chat(prompt, purpose="create",
+                               model=model,
+                               base_url=model_config.get("apiBase") or None)
         else:
             raw, online_meta = _call_online_llm(prompt, model_config)
             meta.update(online_meta or {})
@@ -840,7 +906,9 @@ def split_story_with_llm(story, model_config=None):
                 available = ollama_list_models()
                 meta["error"] = "Ollama 服务未启动或目标模型 %s 未加载（可用模型：%s）" % (model, ", ".join(available) or "无")
                 return {"segments": None, "meta": meta}
-            raw = ollama_chat(prompt, purpose="planning")
+            raw = ollama_chat(prompt, purpose="planning",
+                               model=model,
+                               base_url=model_config.get("apiBase") or None)
         else:
             raw, online_meta = _call_online_llm(prompt, model_config)
             meta.update(online_meta)
@@ -1036,17 +1104,18 @@ def _comfy_text2img(prompt, width=1280, height=720, steps=20, cfg=7.0,
     return _comfy_run(wf, timeout)
 
 
-def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name, weight=0.85,
+def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name=None, weight=0.85,
                                    width=1280, height=720, steps=20, cfg=7.0,
                                    seed=-1, timeout=240,
                                    style_comfy_name=None, style_weight=0.4,
                                    first_30_steps_boost=0.0):
     """带 IP-Adapter 的文生图：用参考图（角色定妆照）约束角色一致性（手册 §5.2 身份权重注入）。
 
-    身份路（ref_comfy_name）：把角色参考图注入交叉注意力，weight=base_weight（默认 0.85，
-    可由 N03 按年龄在 0.7-0.95 调整），实现真人资产「基础 ID + 风格 LoRA」分层控制。
+    身份路（ref_comfy_name，可选）：把角色参考图注入交叉注意力，weight=base_weight（默认 0.85，
+        可由 N03 按年龄在 0.7-0.95 调整），实现真人资产「基础 ID + 风格 LoRA」分层控制；
+        ref_comfy_name 为 None 时跳过身份路（仅风格路 / 纯文本路径）。
     风格路（可选 style_comfy_name）：把全局风格参考图（N03 生成）作第二路 IP-Adapter 注入，
-    统一色调/质感/光影（手册 §3.2.4），权重低于身份路。
+        统一色调/质感/光影（手册 §3.2.4），权重低于身份路；链式接在身份路（或底模）之后。
 
     依赖 ComfyUI_IPAdapter_plus + clip_vision 权重。任何节点不匹配/执行失败都抛 RuntimeError，
     由调用方捕获后回退基础文生图（身份/风格一致性降级为提示词强调，不阻塞生成）。
@@ -1073,24 +1142,31 @@ def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name, weight=0.85,
         "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "low quality, blurry, watermark, text", "clip": ["4", 1]}},
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
         "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_seg_ip"}},
-        "10": {"class_type": "IPAdapter", "inputs": {
+    }
+    # 身份路（角色/资产参考图）：ref_comfy_name 提供才注入；否则以底模为上游
+    if ref_comfy_name:
+        wf["10"] = {"class_type": "IPAdapter", "inputs": {
             "ipadapter": ["11", 0], "clip_vision": ["12", 0],
             "image": ["13", 0], "model": ["4", 0],
             "weight": float(weight),
-            "start_at": 0.0, "end_at": 1.0, "weight_type": weight_type}},
-        "11": {"class_type": "IPAdapterModelLoader", "inputs": {"ipadapter_file": ip_name}},
-        "12": {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": cv_name}},
-        "13": {"class_type": "LoadImage", "inputs": {"image": ref_comfy_name}},
-    }
-    # 风格路：第二路 IP-Adapter（全局风格参考图），链式接在身份路之后
+            "start_at": 0.0, "end_at": 1.0, "weight_type": weight_type}}
+        wf["11"] = {"class_type": "IPAdapterModelLoader", "inputs": {"ipadapter_file": ip_name}}
+        wf["12"] = {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": cv_name}}
+        wf["13"] = {"class_type": "LoadImage", "inputs": {"image": ref_comfy_name}}
+        prev_model = ["10", 0]
+    else:
+        prev_model = ["4", 0]
+    # 风格路：第二路 IP-Adapter（全局风格参考图），链式接在身份路（或底模）之后
     if style_comfy_name:
         wf["20"] = {"class_type": "IPAdapter", "inputs": {
             "ipadapter": ["11", 0], "clip_vision": ["12", 0],
-            "image": ["23", 0], "model": ["10", 0],
+            "image": ["23", 0], "model": prev_model,
             "weight": float(style_weight),
             "start_at": 0.0, "end_at": 1.0, "weight_type": "standard"}}
         wf["23"] = {"class_type": "LoadImage", "inputs": {"image": style_comfy_name}}
         wf["3"]["inputs"]["model"] = ["20", 0]
+    else:
+        wf["3"]["inputs"]["model"] = prev_model
     return _comfy_run(wf, timeout)
 
 
@@ -1117,6 +1193,43 @@ def _comfy_img2img(first_frame_path, prompt, strength=0.6,
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
         "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_seg_anchor"}},
         "10": {"class_type": "VAEEncode", "inputs": {"pixels": ["5", 0], "vae": ["4", 2]}},
+    }
+    return _comfy_run(wf, timeout)
+
+
+def _comfy_img2img_with_depth(first_frame_path, prompt, strength=0.6, depth_weight=0.6,
+                              depth_cn=None, width=1280, height=720, steps=20, cfg=7.0,
+                              seed=-1, timeout=240):
+    """首尾帧锚定 + 深度复用（手册 §3.3.4）：首镜以首帧做 img2img 像素承接，
+    同时把首帧深度图作为 depth ControlNet 约束构图，保证同场景相邻分镜空间结构一致。
+
+    depth_cn 由调用方经 _detect_depth_controlnet() 解析；缺权重或 ComfyUI 未启动抛
+    RuntimeError，调用方捕获后回退纯像素级 img2img（诚实降级，不静默）。
+    """
+    if not comfy_available():
+        raise RuntimeError("ComfyUI 未启动")
+    if not depth_cn:
+        raise RuntimeError("未提供 depth ControlNet 权重")
+    if seed is None or int(seed) < 0:
+        seed = random.randint(0, 2 ** 31 - 1)
+    wf = {
+        "3": {"class_type": "KSampler", "inputs": {
+            "seed": int(seed), "steps": steps, "cfg": float(cfg),
+            "sampler_name": "euler", "scheduler": "normal", "denoise": float(strength),
+            "model": ["4", 0], "positive": ["14", 0], "negative": ["7", 0], "latent_image": ["10", 0]}},
+        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
+        "5": {"class_type": "LoadImage", "inputs": {"image": _upload_to_comfy(first_frame_path)}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "low quality, blurry, watermark, text", "clip": ["4", 1]}},
+        "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+        "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_seg_anchor_depth"}},
+        "10": {"class_type": "VAEEncode", "inputs": {"pixels": ["5", 0], "vae": ["4", 2]}},
+        "11": {"class_type": "DepthPreprocessor", "inputs": {"image": ["5", 0]}},
+        "12": {"class_type": "ControlNetLoader", "inputs": {"control_net_name": depth_cn}},
+        "13": {"class_type": "ControlNetApply", "inputs": {
+            "conditioning": ["6", 0], "control_net": ["12", 0], "image": ["11", 0], "strength": float(depth_weight)}},
+        "14": {"class_type": "ControlNetApply", "inputs": {
+            "conditioning": ["13", 0], "control_net": ["12", 0], "image": ["11", 0], "strength": float(depth_weight)}},
     }
     return _comfy_run(wf, timeout)
 
@@ -1557,6 +1670,15 @@ def generate_segment_video(segment, shots, asset_refs, out_path, params=None):
     if first_frame and not os.path.isfile(first_frame):
         logger.warning("[gen] first_frame 指向文件不存在，跳过首尾帧锚定: %s" % first_frame)
         first_frame = ""
+    # N04/N05 首尾帧深度复用（§3.3.4）：同场景首帧承接时，若本地有 depth ControlNet，
+    # 首镜额外以首帧深度图约束构图；权重缺失则诚实降级为像素级 img2img（不静默）。
+    depth_cn = None
+    if params.get("enable_tail_depth", True) and first_frame:
+        depth_cn = _detect_depth_controlnet()
+        if depth_cn:
+            logger.info("[gen] 首尾帧深度复用可用（depth ControlNet=%s），首镜将叠加深度约束" % depth_cn)
+        else:
+            logger.info("[gen] 深度 ControlNet 权重缺失，首尾帧锚定仅用像素级 img2img（诚实降级）")
     style_comfy_name = None
     if style_ref and os.path.isfile(style_ref) and comfy_available():
         try:
@@ -1594,9 +1716,20 @@ def generate_segment_video(segment, shots, asset_refs, out_path, params=None):
             img = None
             try:
                 if first_frame and idx == 0:
-                    # 首镜锚定：以前序尾帧为起点去噪，保证像素级承接（手册 §3.3.4）
-                    img = _comfy_img2img(first_frame, p, strength=0.6, width=W, height=H,
-                                         seed=seed, timeout=120)
+                    # 首镜锚定：以前序尾帧为起点；depth ControlNet 可用则叠加深度约束（§3.3.4）
+                    if depth_cn:
+                        try:
+                            img = _comfy_img2img_with_depth(
+                                first_frame, p, strength=0.6, depth_weight=0.6, depth_cn=depth_cn,
+                                width=W, height=H, seed=seed, timeout=120)
+                            logger.info("[gen] 首尾帧锚定+深度复用：首镜 img2img + depth ControlNet")
+                        except Exception as e:
+                            logger.warning("[gen] 深度复用失败，回退纯 img2img 首尾帧锚定: %s" % e)
+                            img = _comfy_img2img(first_frame, p, strength=0.6, width=W, height=H,
+                                                 seed=seed, timeout=120)
+                    else:
+                        img = _comfy_img2img(first_frame, p, strength=0.6, width=W, height=H,
+                                             seed=seed, timeout=120)
                 elif role_cover and role_cover[1]:
                     img = _comfy_text2img_with_ipadapter(
                         p, role_cover[1], weight=base_w, width=W, height=H, seed=seed,
@@ -2006,7 +2139,7 @@ def _face_restore_one_clip(fpath, method, temp_files):
     """
     import glob as _glob
     import tempfile as _tempfile
-    d = _tempfile.mkdtemp(prefix="manju_fr_")
+    d = _tempfile.mkdtemp(prefix="manju_fr_", dir=_TMP_ROOT)
     temp_files.append(d)
     fr_pattern = os.path.join(d, "f%05d.png")
     subprocess.run([FFMPEG_BIN, "-y", "-i", fpath, "-vsync", "0", fr_pattern],
@@ -2054,11 +2187,56 @@ def _face_restore_clips(clips, method, temp_files):
     return out
 
 
+def _mix_audio_tracks(tracks, project_id, temp_files):
+    """§3.4.4 多音轨分层：逐轨 volume 增益后 amix 为单音轨。tracks=[(path, volume), ...]，均须为已存在文件。
+
+    - 单轨：volume≠1.0 则增益后输出新文件，否则直出原文件（避免无谓转码）。
+    - 多轨：ffmpeg 多输入 + 每输入 volume 滤镜 + amix=inputs=N:duration=longest。
+    混流产物登记 temp_files（OPS-01 收尾统一释放）。返回混流 aac 路径或 None。
+    """
+    valid = [(p, v) for (p, v) in tracks if p and os.path.isfile(p)]
+    if not valid:
+        return None
+    if len(valid) == 1:
+        p, v = valid[0]
+        if abs(v - 1.0) < 1e-3:
+            return p
+        out = os.path.join(OUTPUTS, "synth_vol_%s.aac" % project_id)
+        subprocess.run([FFMPEG_BIN, "-nostdin", "-y", "-i", p,
+                        "-af", "volume=%.3f" % v, "-c:a", "aac", out],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=120)
+        if os.path.isfile(out):
+            temp_files.append(out)
+            return out
+        return p
+    inputs = []
+    vc = []
+    labels = []
+    for i, (p, v) in enumerate(valid):
+        inputs += ["-i", p]
+        tag = "t%d" % i
+        vc.append("[%d:a]volume=%.3f[%s]" % (i, v, tag))
+        labels.append(tag)
+    amix = "%s" % "".join(labels) + ("amix=inputs=%d:duration=longest:dropout_transition=0[aout]" % len(labels))
+    filter_complex = ";".join(vc) + amix
+    out = os.path.join(OUTPUTS, "synth_mix_%s.aac" % project_id)
+    cmd = [FFMPEG_BIN, "-nostdin", "-y"] + inputs + ["-filter_complex", filter_complex,
+          "-map", "[aout]", "-c:a", "aac", out]
+    subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL, timeout=300)
+    if os.path.isfile(out):
+        temp_files.append(out)
+        return out
+    return None
+
+
 def synthesize_project_video(project_id, out_path, options=None):
     """Phase 5（合成全集，KB §05）：把所有「已生成成功」片段拼接为完整 MP4，并按 options 叠加后期：
 
       - tts=True：收集各片段 shot.voiceover/dialogue 作为旁白，TTS 生成音轨并混流（REDUN-01 降级）
-      - bgm=True 且提供 bgm_path：背景音乐循环铺底混流
+      - bgm=True 且提供 bgm_path：背景音乐循环铺底混流；voice_volume/bgm_volume/sfx_volume（§3.4.4 多音轨分层音量控制）
+      - sfx_path（可选）：音效轨，与旁白/背景乐分层混流；缺失则诚实跳过（不与 BGM 抢默认）
       - subtitle=True：把各片段对话烧录为硬字幕（中文需字体，失败则降级跳过）
       - transitions=True（默认）：按「出镜镜头类型」自适应转场（xfade），见 _pick_transition（项 ⑦）
       - post_process=True（默认）：全局后处理——统一帧率/分辨率 + 降噪(hqdn3d) + 锐化(unsharp) + 调色(eq)
@@ -2074,6 +2252,17 @@ def synthesize_project_video(project_id, out_path, options=None):
     do_bgm = bool(options.get("bgm"))
     do_sub = bool(options.get("subtitle"))
     bgm_path = options.get("bgm_path") or ""
+    # §3.4.4 多音轨分层音量控制：人声/音效/背景音乐分别增益（默认 1.0，范围 0~2）
+    def _clamp_vol(v, default=1.0):
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return default
+        return min(max(x, 0.0), 2.0)
+    voice_volume = _clamp_vol(options.get("voice_volume"), 1.0)
+    bgm_volume = _clamp_vol(options.get("bgm_volume"), 1.0)
+    sfx_volume = _clamp_vol(options.get("sfx_volume"), 1.0)
+    sfx_path = options.get("sfx_path") or ""
     do_trans = bool(options.get("transitions", True))
     do_pp = bool(options.get("post_process", True))
     target_fps = int(options.get("target_fps") or 25)
@@ -2228,7 +2417,13 @@ def synthesize_project_video(project_id, out_path, options=None):
                     logger.info("合成全集：音画对齐校验通过（逐段 apad 对齐，漂移 %.0fms ≤ %dms）",
                                 drift * 1000, AUDIO_ALIGN_MAX_MS)
 
-        # Step 3：背景音乐（循环铺底，REDUN-01 降级）
+        # Step 3：多音轨分层混流（§3.4.4：voice / sfx / bgm 独立音量增益后合成单音轨）
+        # 降级（REDUN-01）：任一音轨缺失即跳过该轨，至少保留存在的轨；三轨全缺则无音频（静音视频）
+        tracks = []
+        if audio_final and os.path.isfile(audio_final):
+            tracks.append((audio_final, voice_volume))   # 旁白（来自 Step 2）
+        if sfx_path and os.path.isfile(sfx_path):
+            tracks.append((sfx_path, sfx_volume))         # 音效 SFX（可选）
         if do_bgm and bgm_path and os.path.isfile(bgm_path):
             bgm_aac = os.path.join(OUTPUTS, "synth_bgm_%s.aac" % project_id)
             subprocess.run([FFMPEG_BIN, "-nostdin", "-y", "-stream_loop", "-1", "-i", bgm_path,
@@ -2236,22 +2431,20 @@ def synthesize_project_video(project_id, out_path, options=None):
                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL, timeout=120)
             if os.path.isfile(bgm_aac):
-                if audio_final:
-                    mixed = os.path.join(OUTPUTS, "synth_mix_%s.aac" % project_id)
-                    subprocess.run([FFMPEG_BIN, "-nostdin", "-y", "-i", audio_final, "-i", bgm_aac,
-                                    "-filter_complex", "amix=inputs=2:duration=longest:dropout_transition=0",
-                                    mixed],
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, timeout=120)
-                    if os.path.isfile(mixed):
-                        temp_files.append(bgm_aac); temp_files.append(mixed)
-                        audio_final = mixed
-                    else:
-                        temp_files.append(bgm_aac)
-                        logger.warning("合成全集：BGM 混流失败，仅保留旁白音轨")
-                else:
-                    audio_final = bgm_aac
-                    temp_files.append(bgm_aac)
+                tracks.append((bgm_aac, bgm_volume))      # 背景音乐 BGM
+                temp_files.append(bgm_aac)
+        if tracks:
+            mixed = _mix_audio_tracks(tracks, project_id, temp_files)
+            if mixed and os.path.isfile(mixed):
+                audio_final = mixed
+                logger.info("合成全集：多音轨分层混流完成（voice=%.2f / sfx=%.2f / bgm=%.2f，共 %d 轨）",
+                            voice_volume, sfx_volume, bgm_volume, len(tracks))
+            else:
+                logger.warning("合成全集：多音轨混流失败，保留 Step 2 既有音轨")
+        else:
+            # 无旁白/无 BGM/无 SFX：保证 audio_final 为 None（生成静音视频或仅画面）
+            if not (audio_final and os.path.isfile(audio_final)):
+                audio_final = None
 
         # Step 4：硬字幕（REDUN-01 降级）
         if do_sub:
@@ -2298,10 +2491,13 @@ def synthesize_project_video(project_id, out_path, options=None):
                 except Exception:
                     pass
     finally:
-        # OPS-01：释放所有临时文件（基础视频/音频/SRT/列表），仅保留最终 out_path
+        # OPS-01：释放所有临时文件/目录（基础视频/音频/SRT/列表/人脸修复帧目录），
+        # 仅保留最终 out_path；目录必须用 rmtree 释放（os.remove 对目录会失败被静默吞掉）。
         for tf in temp_files:
             try:
-                if os.path.isfile(tf):
+                if os.path.isdir(tf):
+                    shutil.rmtree(tf, ignore_errors=True)
+                elif os.path.isfile(tf):
                     os.remove(tf)
             except Exception:
                 pass
@@ -2922,6 +3118,246 @@ def txt2img_generate(prompt, negative="", width=1024, height=576, steps=20,
         "prompt_used": final_prompt,
         "negative_used": final_negative,
         "orchestrator_used": used,
+        "model": _get_comfy_checkpoint(),
+        "note": note,
+    }
+
+
+# ======================================================================
+# 漫画创作：一键生成 4 格漫画（复用 Director N03 全局风格参考 + §5.2 角色一致性约束）
+# ======================================================================
+COMIC_STYLE_SUFFIX = {
+    "日漫": "manga style, Japanese comic, clean lineart, screentone, expressive characters, black and white ink with subtle shading",
+    "美漫": "american comic book style, bold ink lines, flat colors, dynamic composition, halftone",
+    "港漫": "hong kong manhua style, ink wash, dramatic action, high contrast, detailed linework",
+    "写实漫画": "realistic comic illustration, semi-realistic rendering, graphic novel style, detailed",
+    "水彩绘本": "watercolor storybook illustration, soft pastel, hand-painted, gentle ink outlines",
+}
+COMIC_NEGATIVE = ("lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, "
+                  "fewer digits, cropped, worst quality, low quality, blurry, watermark, "
+                  "photo, 3d render, deformed panel")
+
+
+def _split_story_to_panels(story, style, orchestrator="ollama", panels=4):
+    """把故事拆分为 N 格分镜；优先 Ollama 结构化拆分，失败则规则兜底。
+
+    返回 list[{"caption": 中文短描述, "prompt": 中文画面描述}]。
+    """
+    if (orchestrator == "ollama") and ollama_available():
+        p = ("你是一个漫画分镜编剧。请把下面的故事拆成 %d 格漫画，每格是一个独立的画面。"
+             "严格只输出一个 JSON 数组，不要任何解释文字，格式："
+             '[{"caption":"这一格的中文旁白/对白短句(不超过20字)","prompt":"这一格的画面描述(中文,含主体/动作/场景/情绪)"}]。'
+             "要求：%d 格连起来完整讲述故事，有起承转合，画面具体可画。\n\n故事：%s"
+             % (panels, panels, story))
+        try:
+            txt = _ollama_generate(p, think=False, keep_alive=0)
+            s = txt.strip()
+            start = s.find("[")
+            end = s.rfind("]")
+            if start >= 0 and end > start:
+                arr = json.loads(s[start:end + 1])
+                out = []
+                for it in arr[:panels]:
+                    if not isinstance(it, dict):
+                        continue
+                    cap = (it.get("caption") or "").strip()
+                    pr = (it.get("prompt") or "").strip()
+                    if pr:
+                        out.append({"caption": cap or pr[:20], "prompt": pr})
+                if len(out) >= 2:
+                    return out
+        except Exception as e:
+            logger.warning("[comic] Ollama 分镜拆分失败，回退规则拆分: %s" % e)
+    # 规则兜底：按标点切句，尽量均匀分到 panels 格
+    delims = "。！？!?；;\n"
+    parts = []
+    buf = ""
+    for ch in story:
+        if ch in delims:
+            if buf.strip():
+                parts.append(buf.strip())
+            buf = ""
+        else:
+            buf += ch
+    if buf.strip():
+        parts.append(buf.strip())
+    if not parts:
+        parts = [story]
+    out = []
+    per = max(1, (len(parts) + panels - 1) // panels)
+    for i in range(panels):
+        chunk = parts[i * per:(i + 1) * per]
+        if not chunk:
+            chunk = parts[-1:]
+        text = "。".join(chunk)
+        out.append({"caption": text[:20], "prompt": text})
+    return out
+
+
+def generate_comic(story, style="日漫", negative="", resolution="1024", ratio="16:9",
+                   steps=20, seed=-1, enhance=True, orchestrator="ollama",
+                   character_refs=None, panels=4, on_progress=None):
+    """一键生成 4 格漫画：复用 Director 生图约束逻辑。
+
+    1) 分镜拆分：_split_story_to_panels（Ollama 优先，规则兜底）——对应导演「剧本→分镜」。
+    2) 全局风格参考图（N03 复用）：以漫画风格基调出一张参考图，作为第二路 IP-Adapter
+       风格条件，统一 4 格色调/质感/光影；无 ComfyUI 或 IP-Adapter 权重缺失则诚实降级
+       为提示词风格强调（与 N03 下游不注入风格条件一致）。
+    3) 逐格出图：每格用「分镜提示词 + 漫画风格后缀 + 负向」调用 ComfyUI；若提供角色参考图
+       则走 _comfy_text2img_with_ipadapter（身份路 + 风格路），保证角色跨格一致（§5.2 复用）。
+    返回 dict：{images, panels, style_ref, style_ref_local, orchestrator_used, model, note}
+    """
+    if not comfy_available():
+        raise RuntimeError("本地 ComfyUI 未启动（%s），无法生成漫画" % COMFY_URL)
+
+    # 分辨率/比例 → 宽高（与 t2i 一致：长边=resolution，按比例算短边，8 整除）
+    try:
+        base = int(resolution)
+    except Exception:
+        base = 1024
+    if ratio == "9:16":
+        W, H = int(base * 9 / 16), base
+    elif ratio == "3:4":
+        W, H = int(base * 3 / 4), base
+    elif ratio == "1:1":
+        W = H = base
+    elif ratio == "4:3":
+        W, H = base, int(base * 3 / 4)
+    elif ratio == "21:9":
+        W, H = base, int(base * 9 / 21)
+    else:  # 16:9 默认
+        W, H = base, int(base * 9 / 16)
+    W, H = max(64, (W // 8) * 8), max(64, (H // 8) * 8)
+
+    style_suffix = COMIC_STYLE_SUFFIX.get(style, COMIC_STYLE_SUFFIX["日漫"])
+    neg = ((negative + ", ") if negative else "") + COMIC_NEGATIVE
+
+    # 1) 分镜拆分
+    panel_specs = _split_story_to_panels(story, style, orchestrator, panels)
+    while len(panel_specs) < panels:
+        panel_specs.append(panel_specs[-1] if panel_specs else {"caption": "", "prompt": story})
+
+    # 2) 全局风格参考图（N03 复用）
+    style_ref_local = None
+    style_ref_comfy = None
+    style_ref_url = None
+    ip_available = False
+    try:
+        _get_comfy_ipadapter()
+        _get_comfy_clip_vision()
+        ip_available = True
+    except Exception:
+        ip_available = False
+    if ip_available:
+        try:
+            sp = ("cinematic color grading reference still, " + style_suffix +
+                  ", consistent art style keyframe, film still, high detail")
+            style_ref_local = _comfy_text2img(sp, width=512, height=288, steps=20, timeout=120)
+            if style_ref_local and os.path.isfile(style_ref_local):
+                try:
+                    style_ref_comfy = _upload_to_comfy(style_ref_local)
+                except Exception:
+                    style_ref_comfy = None
+                dst_name = "t2i_%s_style.png" % uuid.uuid4().hex[:12]
+                dst = os.path.join(OUTPUTS, dst_name)
+                try:
+                    shutil.copyfile(style_ref_local, dst)
+                    style_ref_url = "/file?name=" + dst_name
+                except Exception:
+                    style_ref_url = None
+        except Exception as e:
+            logger.warning("[comic] 全局风格参考图生成失败（不阻塞）: %s" % str(e)[:160])
+            style_ref_local = None
+
+    # 角色参考图上传（§5.2 身份路，可选）
+    char_comfy = []
+    for ref in (character_refs or []):
+        try:
+            if ref and os.path.isfile(ref):
+                char_comfy.append(_upload_to_comfy(ref))
+        except Exception:
+            pass
+
+    # 3) 逐格出图
+    used = None
+    images = []
+    panels_out = []
+    total = len(panel_specs)
+    rnd = random.Random()
+    for idx, spec in enumerate(panel_specs):
+        s = (int(seed) + idx) if seed and int(seed) > 0 else rnd.randint(0, 2 ** 31 - 1)
+        zh_prompt = spec["prompt"]
+        if orchestrator == "ollama" or enhance:
+            tr = translate_to_sd_prompt(zh_prompt, "", style)
+            if tr:
+                en_p = tr[0]
+                used = used or "ollama"
+            else:
+                en_p = _dict_fallback_translate(zh_prompt, "", style)[0]
+                used = used or "dict_fallback"
+        else:
+            en_p = _dict_fallback_translate(zh_prompt, "", style)[0]
+            used = used or "dict_fallback"
+        final_prompt = "%s, %s" % (en_p, style_suffix)
+        try:
+            if char_comfy and ip_available:
+                path = _comfy_text2img_with_ipadapter(
+                    final_prompt, char_comfy[0], weight=0.85,
+                    width=W, height=H, steps=steps, seed=s, timeout=180,
+                    style_comfy_name=style_ref_comfy, style_weight=0.4)
+            elif style_ref_comfy and ip_available:
+                # 仅风格路注入（无角色参考）：复用 IP-Adapter 风格路径保持 4 格统一
+                path = _comfy_text2img_with_ipadapter(
+                    final_prompt, ref_comfy_name=None,
+                    width=W, height=H, steps=steps, seed=s, timeout=180,
+                    style_comfy_name=style_ref_comfy, style_weight=0.4)
+            else:
+                path = _comfy_text2img(final_prompt, width=W, height=H, steps=steps,
+                                       cfg=7.0, seed=s, timeout=180)
+        except Exception as e:
+            # IP-Adapter 失败诚实降级为基础文生图（与 Director 一致，不阻塞生成）
+            logger.warning("[comic] 第 %d 格 IP-Adapter 出图失败，降级基础文生图: %s" % (idx, e))
+            try:
+                path = _comfy_text2img(final_prompt, width=W, height=H, steps=steps,
+                                       cfg=7.0, seed=s, timeout=180)
+            except Exception as e2:
+                raise RuntimeError("ComfyUI 第 %d 格出图失败: %s" % (idx, e2))
+        if not path or not os.path.isfile(path):
+            continue
+        dst_name = "t2i_%s_%d.png" % (uuid.uuid4().hex[:12], idx)
+        dst = os.path.join(OUTPUTS, dst_name)
+        try:
+            shutil.copyfile(path, dst)
+        except Exception:
+            continue
+        img = {"url": "/file?name=" + dst_name, "seed": s, "width": W, "height": H}
+        images.append(img)
+        panels_out.append({"index": idx, "caption": spec.get("caption") or "", "prompt": zh_prompt})
+        if on_progress:
+            try:
+                on_progress(len(images), total, img)
+            except Exception:
+                pass
+
+    if used in ("ollama", "ollama(fallback)"):
+        ollama_unload()
+
+    if not images:
+        raise RuntimeError("ComfyUI 未产出任何漫画图像，请确认模型已加载或服务未繁忙")
+
+    note = "本地 ComfyUI 真实生成 %d 格漫画（风格：%s）" % (len(images), style)
+    if style_ref_local:
+        note += "；已注入全局风格参考图保持 4 格统一"
+    if char_comfy:
+        note += "；已注入角色参考图保持角色一致"
+    if not ip_available:
+        note += "（未检测到 IP-Adapter 权重，风格/角色一致性仅由提示词保证）"
+    return {
+        "images": images,
+        "panels": panels_out,
+        "style_ref": style_ref_url,
+        "style_ref_local": style_ref_local or "",
+        "orchestrator_used": used or "dict_fallback",
         "model": _get_comfy_checkpoint(),
         "note": note,
     }

@@ -17,6 +17,7 @@ BR-003 分镜时长重分配等修复；已从 `routers.cpython-313.pyc` 拷出�
 """
 import os
 import sys
+import asyncio
 import importlib.util
 import logging
 import json
@@ -50,7 +51,7 @@ import re  # noqa: F401
 from common import ok, ApiError  # noqa: F401
 from ai_local import (  # noqa: F401
     split_story_with_llm, ollama_list_models, extract_assets_from_story,
-    _call_online_llm, comfy_available
+    _call_online_llm, comfy_available, _ollama_running_info, generate_comic
 )
 _body = getattr(routers_compiled, "_body")
 _redistribute_durations = getattr(routers_compiled, "_redistribute_durations")
@@ -87,7 +88,10 @@ async def split_story(project_id: str, req: Request):
     model_config = b.get("model_config") or {}
     meta = {}
     try:
-        result = split_story_with_llm(text, model_config) or {}
+        # 关键：用 asyncio.to_thread 把同步 Ollama HTTP 调用丢到工作线程池
+        # → FastAPI 事件循环不阻塞，/ollama/status 轮询 / stages-with-poses 等
+        #   其他请求在 22 分钟长跑期间依然可以响应（修根因：之前单次 split 把整个 ASGI 卡死）。
+        result = await asyncio.to_thread(split_story_with_llm, text, model_config) or {}
         segs = result.get("segments")
         meta = result.get("meta") or {}
         source = meta.get("source") or ("llm" if segs else "regex")
@@ -213,6 +217,15 @@ def _regex_fallback_segments(text):
 async def list_local_models():
     """返回本地 Ollama 已加载模型列表，供「AI 自动分场」模型选择器使用。"""
     return ok({"models": ollama_list_models()})
+
+
+@api.get("/ollama/status")
+async def ollama_status():
+    """返回 Ollama 当前已加载模型的 GPU/CPU 分布，供前端日志展示（避免误以为模型在 CPU 跑）。
+
+    数据来自 ai_local._ollama_running_info（查询 /api/ps，按 size_vram/size 估算 GPU 占比）。
+    """
+    return ok(_ollama_running_info())
 
 
 # --- settings: 修复 /settings 被旧实现占用为 Dify 配置的问题，改为读写 settings 表 ---
@@ -386,7 +399,8 @@ async def extract_assets(project_id: str, req: Request):
     if not story:
         raise ApiError("NO_STORY", "项目中暂无场次/分镜，请在请求体提供 story 文本")
     model_config = b.get("model_config") or {}
-    result = extract_assets_from_story(story, model_config)
+    # 同上：用 asyncio.to_thread 包装同步 Ollama 调用，避免事件循环被 extract 卡死（修根因）
+    result = await asyncio.to_thread(extract_assets_from_story, story, model_config)
     # 即使 LLM 失败也把 meta.error 返回给前端，前端可提示用户
     return ok(result)
 
@@ -476,6 +490,136 @@ async def batch_create_project_assets(project_id: str, req: Request):
     finally:
         conn.close()
     return ok({"created": created, "skipped": skipped, "count": len(created)})
+
+
+# --- F1：删除资产/阶段后级联清理悬空引用（根因修复） ---
+# 引用以 asset_id（可选 stage_id）为键「全局」清理，与所属项目无关：
+#   - segment_asset_refs：DELETE 匹配行（归一化表）
+#   - shots.asset_refs：逐镜头解析 JSON 文本列，剔除悬空引用（渲染 @chip 的权威来源）
+# 设计为「附加端点」，不改动编译模块中的 delete_asset / del_stage，零回归风险；
+# 任何删除资产/阶段的调用方在成功后显式调用本端点即可保证引用一致性（INV-1）。
+_PRUNE_PATH = "/projects/{project_id}/prune-refs"
+@api.post(_PRUNE_PATH)
+async def prune_asset_refs(project_id: str, req: Request):
+    """删除资产/阶段后级联清理悬空 @引用（F1）。
+
+    请求体：{ asset_id: str (必填), stage_id?: str }
+      - 删资产：清理全部 asset_id 匹配的引用（不论 stage_id）
+      - 删阶段：仅清理 asset_id + stage_id 同时匹配的引用
+    返回：{ cleaned_segments, cleaned_shots }
+    """
+    b = await _body(req)
+    asset_id = b.get("asset_id")
+    stage_id = b.get("stage_id") or None
+    if not asset_id:
+        raise ApiError("INVALID_PARAMS", "asset_id 必填")
+    conn = get_conn()
+    try:
+        if stage_id:
+            conn.execute(
+                "DELETE FROM segment_asset_refs WHERE asset_id=? AND stage_id=?",
+                (asset_id, stage_id),
+            )
+        else:
+            conn.execute("DELETE FROM segment_asset_refs WHERE asset_id=?", (asset_id,))
+        rows = fetch_all(conn,
+            "SELECT shot_id, segment_id, asset_refs FROM shots "
+            "WHERE asset_refs IS NOT NULL AND asset_refs <> ''")
+        cleaned_shots = 0
+        cleaned_segments = set()
+        for r in rows:
+            raw = r.get("asset_refs")
+            if not raw:
+                continue
+            try:
+                arr = json.loads(raw) if isinstance(raw, str) else (raw if isinstance(raw, list) else [])
+            except Exception:
+                continue
+            if not isinstance(arr, list):
+                continue
+            if stage_id:
+                new = [x for x in arr
+                       if not (isinstance(x, dict) and x.get("asset_id") == asset_id
+                               and (x.get("stage_id") or None) == stage_id)]
+            else:
+                new = [x for x in arr
+                       if not (isinstance(x, dict) and x.get("asset_id") == asset_id)]
+            if len(new) != len(arr):
+                conn.execute("UPDATE shots SET asset_refs=? WHERE shot_id=?",
+                             (json.dumps(new, ensure_ascii=False), r["shot_id"]))
+                cleaned_shots += 1
+                if r.get("segment_id"):
+                    cleaned_segments.add(r["segment_id"])
+        conn.commit()
+    finally:
+        conn.close()
+    return ok({"cleaned_segments": len(cleaned_segments), "cleaned_shots": cleaned_shots})
+
+
+# --- 漫画创作：一键生成 4 格漫画（复用 Director N03 全局风格参考 + §5.2 角色一致性约束） ---
+import base64 as _b64  # noqa: E402
+import uuid as _uuid    # noqa: E402
+
+_COMIC_TMP = os.path.join(os.path.dirname(_SERVER_DIR), ".tmp", "comic_refs")
+
+
+def _decode_dataurl_to_png(dataurl):
+    """把前端传来的 data URL（可选角色参考图）解码为本地 PNG（落 D 盘 .tmp，FS-03 合规）。"""
+    if not dataurl or not isinstance(dataurl, str) or "base64," not in dataurl:
+        return None
+    try:
+        _hdr, b64 = dataurl.split("base64,", 1)
+        raw = _b64.b64decode(b64)
+        os.makedirs(_COMIC_TMP, exist_ok=True)
+        p = os.path.join(_COMIC_TMP, "ref_%s.png" % _uuid.uuid4().hex[:12])
+        with open(p, "wb") as f:
+            f.write(raw)
+        return p
+    except Exception as e:
+        logger.warning("[comic] 角色参考图解码失败: %s" % e)
+        return None
+
+
+@api.post("/t2i/comic")
+async def t2i_comic(req: Request):
+    """一键生成 4 格漫画：复用导演 Agent 生图约束逻辑。
+
+    复用点：
+      - 分镜拆分：Ollama 结构化拆分（与导演「剧本→分镜」同源），失败规则兜底；
+      - 全局风格参考图（N03）：以漫画风格基调出一张参考图作为第二路 IP-Adapter 风格条件，
+        统一 4 格色调/质感/光影；
+      - 角色一致性（§5.2）：若提供角色参考图，走 IP-Adapter 身份路 + 风格路，跨格一致。
+    单次请求完整生成全部 4 格（无分步交互），长任务经 asyncio.to_thread 不阻塞事件循环。
+    """
+    b = await _body(req)
+    story = (b.get("story") or "").strip()
+    if not story:
+        raise ApiError("INVALID_PARAMS", "story 不能为空")
+    char_refs = []
+    for item in (b.get("character_refs") or []):
+        p = _decode_dataurl_to_png(item)
+        if p:
+            char_refs.append(p)
+    try:
+        result = await asyncio.to_thread(
+            generate_comic,
+            story,
+            b.get("style") or "日漫",
+            b.get("negative") or "",
+            b.get("resolution") or "1024",
+            b.get("ratio") or "16:9",
+            int(b.get("steps") or 20),
+            int(b.get("seed") or -1),
+            bool(b.get("enhance", True)),
+            b.get("orchestrator") or "ollama",
+            char_refs,
+            int(b.get("panels") or 4),
+        )
+    except ApiError:
+        raise
+    except Exception as e:
+        raise ApiError("GEN_FAILED", "漫画生成失败：%s" % str(e)[:200])
+    return ok(result)
 
 
 # ======================================================================
