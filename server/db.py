@@ -9,6 +9,7 @@ import sqlite3
 import uuid
 import time
 import json
+from contextlib import contextmanager
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -328,6 +329,9 @@ def _migrate(conn):
         ("generation_tasks", "external_id TEXT"),
         # N04/N05 首尾帧锚定（手册 §3.3.4/§3.3.5）：存储前序分镜提取的尾帧路径，供同场景连续分镜作首帧参考
         ("generation_tasks", "last_frame_path TEXT"),
+        # 空间站位预规划蓝图（设计逻辑「空间站位预规划」/ §3.4.4）：多人分镜角色相对位置/朝向/视线，
+        # 由 ScriptParserAgent(N02) 计算并随 shots 落库，前端站位条可视化；GET 端点 SELECT * 自动带回。
+        ("shots", "stage_blueprint TEXT"),
     ]
     for tbl, col_def in alters:
         col = col_def.split(" ", 1)[0]
@@ -537,6 +541,223 @@ def fetch_one(conn, sql, params=()):
 def fetch_all(conn, sql, params=()):
     cur = conn.execute(sql, params)
     return [row_to_dict(r) for r in cur.fetchall()]
+
+
+# ----------------------------- 表名常量（单一来源，避免拼写散落） -----------------------------
+TABLES = {
+    "users": "users",
+    "projects": "projects",
+    "segments": "segments",
+    "shots": "shots",
+    "assets": "assets",
+    "asset_stages": "asset_stages",
+    "asset_poses": "asset_poses",
+    "segment_asset_refs": "segment_asset_refs",
+    "generation_tasks": "generation_tasks",
+    "generation_logs": "generation_logs",
+    "image_tasks": "image_tasks",
+    "memoir_tasks": "memoir_tasks",
+    "point_transactions": "point_transactions",
+    "messages": "messages",
+    "operation_logs": "operation_logs",
+    "settings": "settings",
+    "templates": "templates",
+    "memoirs": "memoirs",
+    "memoir_chapters": "memoir_chapters",
+    "memoir_fact_anchors": "memoir_fact_anchors",
+    "feedbacks": "feedbacks",
+    "module_versions": "module_versions",
+    "module_flags": "module_flags",
+}
+
+
+# ----------------------------- 事务与 CRUD 封装 -----------------------------
+# 安全提示：以下 helper 的 table / where / order_by 参数直接拼入 SQL，调用方必须
+# 保证这些标识符来自内部常量（TABLES）或硬编码，不得直接拼接用户输入。
+
+
+@contextmanager
+def transaction(conn):
+    """自动提交/回滚的事务上下文。
+
+    用法：
+        with transaction(conn) as c:
+            insert_row(c, ...)
+            update_row(c, ...)
+    """
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def _build_insert(table, data):
+    cols = list(data.keys())
+    placeholders = ",".join(["?"] * len(cols))
+    sql = "INSERT INTO %s (%s) VALUES (%s)" % (table, ",".join(cols), placeholders)
+    return sql, tuple(data.values())
+
+
+def _build_update(table, data, pk):
+    data = {k: v for k, v in data.items() if k != pk}
+    if not data:
+        raise ValueError("update data is empty")
+    cols = ["%s=?" % k for k in data.keys()]
+    sql = "UPDATE %s SET %s WHERE %s=?" % (table, ",".join(cols), pk)
+    return sql, tuple(data.values())
+
+
+def insert_row(conn, table, data, returning=None):
+    """插入一行并返回指定列（SQLite 3.35+ 支持 RETURNING）。
+
+    :param returning: None 或单列名，如 'id'
+    :return: returning 指定时返回该列值，否则 None
+    """
+    sql, params = _build_insert(table, data)
+    if returning:
+        cur = conn.execute(sql + " RETURNING %s" % returning, params)
+        row = cur.fetchone()
+        return row[0] if row else None
+    conn.execute(sql, params)
+    return None
+
+
+def update_row(conn, table, row_id, data, pk="id"):
+    """按主键更新。data 中即使含 pk 也会被忽略。返回影响行数。"""
+    sql, params = _build_update(table, data, pk)
+    cur = conn.execute(sql, params + (row_id,))
+    return cur.rowcount
+
+
+def delete_row(conn, table, row_id, pk="id"):
+    """按主键删除。返回影响行数。"""
+    cur = conn.execute("DELETE FROM %s WHERE %s=?" % (table, pk), (row_id,))
+    return cur.rowcount
+
+
+def get_by_id(conn, table, row_id, pk="id"):
+    """按主键查询单行。"""
+    return fetch_one(conn, "SELECT * FROM %s WHERE %s=?" % (table, pk), (row_id,))
+
+
+def exists(conn, table, where, params=()):
+    """条件是否存在记录（where 语句直接拼入 SQL，调用方保证安全）。"""
+    sql = "SELECT 1 FROM %s WHERE %s LIMIT 1" % (table, where)
+    return conn.execute(sql, params).fetchone() is not None
+
+
+def count_rows(conn, table, where=None, params=()):
+    """计数。"""
+    sql = "SELECT COUNT(*) FROM %s" % table
+    if where:
+        sql += " WHERE %s" % where
+    return conn.execute(sql, params).fetchone()[0]
+
+
+def list_rows(conn, table, where=None, params=(), order_by=None, limit=None, offset=None):
+    """列表查询（where / order_by 直接拼入 SQL，调用方保证安全）。"""
+    sql = "SELECT * FROM %s" % table
+    if where:
+        sql += " WHERE %s" % where
+    if order_by:
+        sql += " ORDER BY %s" % order_by
+    if limit is not None:
+        sql += " LIMIT %d" % int(limit)
+    if offset is not None:
+        sql += " OFFSET %d" % int(offset)
+    return fetch_all(conn, sql, params)
+
+
+def upsert_row(conn, table, data, conflict_columns, update_columns=None):
+    """SQLite upsert（INSERT ... ON CONFLICT DO UPDATE）。
+
+    :param conflict_columns: 冲突判定列名列表，如 ['user_id', 'key']
+    :param update_columns: 需要更新的列名列表；None 表示更新除冲突列外的所有列
+    """
+    cols = list(data.keys())
+    placeholders = ",".join(["?"] * len(cols))
+    conflict = ",".join(conflict_columns)
+    if update_columns is None:
+        update_columns = [c for c in cols if c not in conflict_columns]
+    updates = ["%s=excluded.%s" % (c, c) for c in update_columns]
+    if not updates:
+        raise ValueError("upsert has no columns to update")
+    sql = "INSERT INTO %s (%s) VALUES (%s) ON CONFLICT(%s) DO UPDATE SET %s" % (
+        table, ",".join(cols), placeholders, conflict, ",".join(updates)
+    )
+    conn.execute(sql, tuple(data.values()))
+
+
+# ----------------------------- 业务封装（与现有模块衔接） -----------------------------
+def ensure_user(conn):
+    """确保单用户存在。"""
+    if not exists(conn, TABLES["users"], "user_id=?", (SINGLE_USER_ID,)):
+        insert_row(conn, TABLES["users"], {
+            "user_id": SINGLE_USER_ID,
+            "nickname": "小志",
+            "membership_tier": "personal",
+            "points_balance": DEFAULT_POINTS,
+        })
+
+
+def get_user_points(conn):
+    """获取当前单用户积分余额。"""
+    row = get_by_id(conn, TABLES["users"], SINGLE_USER_ID, pk="user_id")
+    return row["points_balance"] if row else DEFAULT_POINTS
+
+
+def set_user_points(conn, balance):
+    """设置当前单用户积分余额。"""
+    update_row(conn, TABLES["users"], SINGLE_USER_ID,
+               {"points_balance": balance, "updated_at": now_ms()}, pk="user_id")
+
+
+def insert_point_transaction(conn, amount, txn_type, task_id=None, idempotency_key=None):
+    """写入积分流水。"""
+    if idempotency_key is None:
+        idempotency_key = uid()
+    insert_row(conn, TABLES["point_transactions"], {
+        "txn_id": uid(),
+        "user_id": SINGLE_USER_ID,
+        "amount": amount,
+        "type": txn_type,
+        "task_id": task_id,
+        "idempotency_key": idempotency_key,
+    })
+
+
+def list_projects_for_user(conn, limit=None, offset=None, order_by="updated_at DESC"):
+    """我的项目查询（服务于 MyData.vue / 项目中心）。"""
+    return list_rows(
+        conn, TABLES["projects"],
+        where="user_id=? AND deleted_at IS NULL",
+        params=(SINGLE_USER_ID,),
+        order_by=order_by, limit=limit, offset=offset,
+    )
+
+
+def list_assets_for_user(conn, asset_type=None, limit=None, offset=None, order_by="updated_at DESC"):
+    """我的资产查询（服务于 MyData.vue / 资产库）。"""
+    where = "user_id=?"
+    params = [SINGLE_USER_ID]
+    if asset_type:
+        where += " AND type=?"
+        params.append(asset_type)
+    return list_rows(conn, TABLES["assets"], where=where, params=tuple(params),
+                     order_by=order_by, limit=limit, offset=offset)
+
+
+def list_image_tasks_for_user(conn, status=None, limit=None, offset=None, order_by="created_at DESC"):
+    """我的成片查询（服务于 MyData.vue / 文生图历史）。"""
+    where = "1=1"
+    params = []
+    if status:
+        where += " AND status=?"
+        params.append(status)
+    return list_rows(conn, TABLES["image_tasks"], where=where, params=tuple(params),
+                     order_by=order_by, limit=limit, offset=offset)
 
 
 def log_operation(conn, action, object_type=None, object_id=None, object_name=None,

@@ -55,7 +55,10 @@ from ai_local import (  # noqa: F401
 )
 _body = getattr(routers_compiled, "_body")
 _redistribute_durations = getattr(routers_compiled, "_redistribute_durations")
-from db import get_conn, fetch_all, uid, SINGLE_USER_ID, log_operation, insert_row, TABLES  # noqa: F401
+from db import (  # noqa: F401
+    get_conn, fetch_all, uid, SINGLE_USER_ID, log_operation, insert_row,
+    count_rows, list_rows, get_by_id, TABLES,
+)
 
 # ======================================================================
 # 定点覆盖区（START）
@@ -663,6 +666,115 @@ async def t2i_comic(req: Request):
         logger.warning("[comic] 保存 image_tasks 历史失败（不影响本次返回）: %s" % e)
 
     return ok(result)
+
+
+# --- 文生图/漫画历史列表：补充 params / result 原始对象，供漫画历史页正确识别 ---
+_T2I_LIST_PATH = "/t2i/tasks"
+_T2I_LIST_FULL = (getattr(api, "prefix", "") or "") + _T2I_LIST_PATH
+for _i in range(len(api.routes) - 1, -1, -1):
+    if getattr(api.routes[_i], "path", None) == _T2I_LIST_FULL:
+        del api.routes[_i]
+
+
+@api.get(_T2I_LIST_PATH)
+async def t2i_tasks_list(page: int = 1, size: int = 60, status: str = ""):
+    """返回 image_tasks 分页列表，包含 params / result 解析后的完整对象。
+
+    兼容原实现字段（images / orchestrator_used / prompt_used），同时补充
+    params（生成参数）、result（原始结果对象），让漫画历史页可以按 kind 过滤。
+    """
+    conn = get_conn()
+    try:
+        where = "1=1"
+        params = []
+        if status:
+            where += " AND status=?"
+            params.append(status)
+        total = count_rows(conn, TABLES["image_tasks"], where, tuple(params))
+        items_db = list_rows(
+            conn, TABLES["image_tasks"], where=where, params=tuple(params),
+            order_by="created_at DESC", limit=size, offset=(page - 1) * size,
+        )
+        items = []
+        for row in items_db:
+            parsed_params = {}
+            try:
+                parsed_params = json.loads(row.get("params") or "{}")
+            except Exception:
+                parsed_params = {}
+            parsed_result = {}
+            try:
+                parsed_result = json.loads(row.get("result") or "{}")
+            except Exception:
+                parsed_result = {}
+            images = parsed_result.get("images") or []
+            prompt_used = parsed_result.get("prompt_used")
+            item = {
+                "task_id": row.get("task_id"),
+                "prompt": row.get("prompt") or "",
+                "status": row.get("status"),
+                "progress": row.get("progress") or 0,
+                "created_at": row.get("created_at"),
+                "finished_at": row.get("finished_at"),
+                "images": images,
+                "orchestrator_used": parsed_result.get("orchestrator_used"),
+                "prompt_used": prompt_used,
+                "params": parsed_params,
+                "result": parsed_result,
+            }
+            items.append(item)
+        return ok({
+            "items": items,
+            "pagination": {
+                "page": page, "page_size": size, "total": total,
+                "total_pages": max(1, (total + size - 1) // size),
+                "has_next": page * size < total, "has_prev": page > 1,
+            },
+        })
+    finally:
+        conn.close()
+
+
+# --- 文生图/漫画任务详情：补充 params / result 原始对象（保持与列表一致） ---
+_T2I_DETAIL_PATH = "/t2i/tasks/{task_id}"
+_T2I_DETAIL_FULL = (getattr(api, "prefix", "") or "") + _T2I_DETAIL_PATH
+for _i in range(len(api.routes) - 1, -1, -1):
+    if getattr(api.routes[_i], "path", None) == _T2I_DETAIL_FULL:
+        del api.routes[_i]
+
+
+@api.get(_T2I_DETAIL_PATH)
+async def t2i_task_detail(task_id: str):
+    """返回单个 image_tasks 记录，包含解析后的 params / result。"""
+    conn = get_conn()
+    try:
+        row = get_by_id(conn, TABLES["image_tasks"], task_id, pk="task_id")
+        if not row:
+            raise ApiError("NOT_FOUND", "task_id 不存在")
+        parsed_params = {}
+        try:
+            parsed_params = json.loads(row.get("params") or "{}")
+        except Exception:
+            parsed_params = {}
+        parsed_result = {}
+        try:
+            parsed_result = json.loads(row.get("result") or "{}")
+        except Exception:
+            parsed_result = {}
+        return ok({"task": {
+            "task_id": row.get("task_id"),
+            "status": row.get("status"),
+            "progress": row.get("progress") or 0,
+            "prompt": row.get("prompt") or "",
+            "negative_prompt": row.get("negative_prompt") or "",
+            "params": parsed_params,
+            "error_message": row.get("error_message") or "",
+            "result": parsed_result,
+            "created_at": row.get("created_at"),
+            "finished_at": row.get("finished_at"),
+        }})
+    finally:
+        conn.close()
 
 
 # ======================================================================

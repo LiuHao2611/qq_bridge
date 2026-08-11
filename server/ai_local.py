@@ -3274,8 +3274,10 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
        为提示词风格强调（与 N03 下游不注入风格条件一致）。
     3) 逐格出图：每格用「分镜提示词 + 漫画风格后缀 + 负向」调用 ComfyUI；若提供角色参考图
        则走 _comfy_text2img_with_ipadapter（身份路 + 风格路），保证角色跨格一致（§5.2 复用）。
-    返回 dict：{images, panels, style_ref, style_ref_local, orchestrator_used, model, note}
+    返回 dict：{images, panels, style_ref, style_ref_local, orchestrator_used, model, note,
+                elapsed_ms, params}
     """
+    start_ts = time.time()
     if not comfy_available():
         raise RuntimeError("本地 ComfyUI 未启动（%s），无法生成漫画" % COMFY_URL)
 
@@ -3420,7 +3422,12 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
             shutil.copyfile(path, dst)
         except Exception:
             continue
-        img = {"url": "/file?name=" + dst_name, "seed": s, "width": W, "height": H}
+        img = {
+            "url": "/file?name=" + dst_name, "seed": s, "width": W, "height": H,
+            "final_prompt": final_prompt, "model": _get_comfy_checkpoint(),
+            "steps": steps, "cfg": 7.0, "sampler": "euler", "style": style,
+            "size": "%dx%d" % (W, H),
+        }
         images.append(img)
         panels_out.append({
             "index": idx,
@@ -3450,6 +3457,27 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
         note += "；已注入角色参考图保持角色一致"
     if not ip_available:
         note += "（未检测到 IP-Adapter 权重，风格/角色一致性仅由提示词保证）"
+    elapsed_ms = int((time.time() - start_ts) * 1000)
+    full_params = {
+        "kind": "comic",
+        "model": _get_comfy_checkpoint(),
+        "style": style,
+        "panels": len(images),
+        "requested_panels": panels,
+        "resolution": str(resolution),
+        "ratio": ratio,
+        "width": W,
+        "height": H,
+        "steps": steps,
+        "seed": seed,
+        "cfg": 7.0,
+        "sampler": "euler",
+        "orchestrator": used or orchestrator or "dict_fallback",
+        "enhance": enhance,
+        "negative": neg,
+        "ip_available": ip_available,
+        "character_refs": len(character_refs or []),
+    }
     return {
         "images": images,
         "panels": panels_out,
@@ -3458,4 +3486,6 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
         "orchestrator_used": used or "dict_fallback",
         "model": _get_comfy_checkpoint(),
         "note": note,
+        "elapsed_ms": elapsed_ms,
+        "params": full_params,
     }

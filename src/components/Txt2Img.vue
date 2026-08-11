@@ -309,10 +309,12 @@ onBeforeUnmount(() => {
 const previewVisible = ref(false)
 const previewImages = ref([])
 const previewIndex = ref(0)
-function openPreview(itemOrItems, startIndex = 0) {
+const previewMeta = ref(null)
+function openPreview(itemOrItems, startIndex = 0, meta = null) {
   const list = Array.isArray(itemOrItems) ? itemOrItems : [itemOrItems]
   previewImages.value = list
   previewIndex.value = Math.max(0, Math.min(startIndex, list.length - 1))
+  previewMeta.value = meta || null
   previewVisible.value = true
 }
 const previewItem = computed(() => {
@@ -323,6 +325,18 @@ const previewPanel = computed(() => {
   // 漫画模式下，把当前预览图索引对应到 comicPanels 的元数据
   if (mode.value !== 'comic') return null
   return comicPanels.value[previewIndex.value] || null
+})
+const previewGenInfo = computed(() => {
+  // 优先使用 openPreview 传入的元数据，否则按当前模式回退到 task / comic result
+  if (previewMeta.value) return previewMeta.value
+  if (mode.value === 'comic') {
+    return { params: comicMeta.value?.params || {}, result: comicMeta.value || {}, panels: comicPanels.value }
+  }
+  return {
+    params: task.value?.params || task.value?.result?.params || {},
+    result: task.value?.result || {},
+    prompt_used: task.value?.result?.prompt_used,
+  }
 })
 function previewPrev() {
   if (previewIndex.value > 0) previewIndex.value--
@@ -350,6 +364,14 @@ function download(item) {
   a.click()
   document.body.removeChild(a)
 }
+function formatMs(ms) {
+  if (!ms && ms !== 0) return '-'
+  if (ms < 1000) return ms + ' ms'
+  if (ms < 60000) return (ms / 1000).toFixed(1) + ' s'
+  const m = Math.floor(ms / 60000)
+  const s = ((ms % 60000) / 1000).toFixed(1)
+  return m + ' m ' + s + ' s'
+}
 
 // ---- 漫画创作模式（占满文生图区域，复用导演 Agent 生图约束）----
 const mode = ref('t2i')  // 't2i' | 'comic'
@@ -366,6 +388,7 @@ const comic = reactive({
 const comicGenerating = ref(false)
 const comicResults = ref([])
 const comicPanels = ref([])
+const comicMeta = ref(null)
 const comicStyleRef = ref('')
 const comicProgress = reactive({ done: 0, total: 0 })
 const comicNote = ref('')
@@ -403,6 +426,13 @@ function useComicHistory(item) {
   if (item && item.result) {
     comicResults.value = item.result.images || []
     comicPanels.value = item.result.panels || []
+    comicMeta.value = {
+      params: item.params || item.result.params || {},
+      elapsed_ms: item.result.elapsed_ms,
+      orchestrator_used: item.result.orchestrator_used,
+      model: item.result.model,
+      note: item.result.note,
+    }
     comicStyleRef.value = item.result.style_ref || ''
     comicNote.value = '已载入历史漫画：' + (item.prompt || '').slice(0, 30)
     comicHistoryTab.value = 'current'
@@ -450,6 +480,13 @@ async function generateComic() {
     })
     comicResults.value = r.images || []
     comicPanels.value = r.panels || []
+    comicMeta.value = {
+      params: r.params || {},
+      elapsed_ms: r.elapsed_ms,
+      orchestrator_used: r.orchestrator_used,
+      model: r.model,
+      note: r.note,
+    }
     comicStyleRef.value = r.style_ref || ''
     comicNote.value = r.note || '生成完成'
     comicProgress.done = comicResults.value.length
@@ -713,12 +750,12 @@ loadHistory()
             还没有生成结果。左侧填写提示词后点击「开始生成」，图像由本地 ComfyUI 实时产出。
           </div>
           <div class="asset-grid">
-            <div class="asset-card" v-for="(item, i) in results" :key="i" @click="openPreview(item)">
+            <div class="asset-card" v-for="(item, i) in results" :key="i" @click="openPreview(item, 0, { params: task.value?.params, result: task.value?.result })">
               <div class="ph">
                 <img :src="item.url" alt="生成图" loading="lazy" @load="imgLoadLog(item, true, $event)" @error="imgLoadLog(item, false, $event)" />
                 <div class="ph-acts" @click.stop>
                   <button class="btn sm ghost" @click.stop="download(item)">下载</button>
-                  <button class="btn sm ghost" @click.stop="openPreview(item)">放大</button>
+                  <button class="btn sm ghost" @click.stop="openPreview(item, 0, { params: task.value?.params, result: task.value?.result })">放大</button>
                 </div>
               </div>
               <div class="info">
@@ -747,13 +784,13 @@ loadHistory()
             暂无历史记录。生成成功后会出现在这里。
           </div>
           <div v-else class="asset-grid">
-            <div class="asset-card" v-for="(h, i) in histories" :key="h.task_id" @click="openPreview(h.images, 0)">
+            <div class="asset-card" v-for="(h, i) in histories" :key="h.task_id" @click="openPreview(h.images, 0, h)">
               <div class="ph">
                 <img :src="h.images[0].url" alt="历史图" loading="lazy" @error="imgLoadLog(h.images[0], false, $event)" />
                 <div v-if="h.images.length > 1" class="img-count">{{ h.images.length }} 张</div>
                 <div class="ph-acts" @click.stop>
                   <button class="btn sm ghost" @click.stop="useHistoryPrompt(h)">复用提示词</button>
-                  <button class="btn sm ghost" @click.stop="openPreview(h.images, 0)">放大</button>
+                  <button class="btn sm ghost" @click.stop="openPreview(h.images, 0, h)">放大</button>
                 </div>
               </div>
               <div class="info">
@@ -853,7 +890,7 @@ loadHistory()
         <div class="panel comic-result">
           <div v-if="comicStyleRef" class="comic-style-ref">
             <span class="g-title">统一风格参考图（N03）</span>
-            <img :src="comicStyleRef" @click="openPreview([{ url: comicStyleRef }], 0)" />
+            <img :src="comicStyleRef" @click="openPreview([{ url: comicStyleRef }], 0, { params: comicMeta.value?.params || {}, result: comicMeta.value || {} })" />
           </div>
 
           <div class="res-tabs">
@@ -872,12 +909,12 @@ loadHistory()
               还没有生成结果。左侧输入故事后点击「一键生成 {{ comic.panels }} 格漫画」，{{ comic.panels }} 格由本地 ComfyUI 一次性产出。
             </div>
             <div class="comic-panels" :class="'cols-' + comic.panels">
-              <div class="comic-cell" v-for="(img, i) in comicResults" :key="i" @click="openPreview(comicResults, i)">
+              <div class="comic-cell" v-for="(img, i) in comicResults" :key="i" @click="openPreview(comicResults, i, { params: comicMeta.value?.params || {}, result: comicMeta.value || {}, panels: comicPanels.value })">
                 <div class="ph">
                   <img :src="img.url" alt="漫画格" loading="lazy" @load="imgLoadLog(img, true, $event)" @error="imgLoadLog(img, false, $event)" />
                   <div class="ph-acts" @click.stop>
                     <button class="btn sm ghost" @click.stop="download(img)">下载</button>
-                    <button class="btn sm ghost" @click.stop="openPreview(comicResults, i)">放大</button>
+                    <button class="btn sm ghost" @click.stop="openPreview(comicResults, i, { params: comicMeta.value?.params || {}, result: comicMeta.value || {}, panels: comicPanels.value })">放大</button>
                   </div>
                 </div>
                 <div class="cap">{{ (comicPanels[i] && comicPanels[i].caption) || ('第 ' + (i + 1) + ' 格') }}</div>
@@ -933,15 +970,46 @@ loadHistory()
         <span v-if="previewImages.length > 1" class="counter">{{ previewIndex + 1 }} / {{ previewImages.length }}</span>
         <span class="muted">seed {{ previewItem?.seed }} · {{ previewItem?.width }}×{{ previewItem?.height }}</span>
       </div>
-      <!-- 漫画模式：当前格文字与原始提示词 -->
-      <div v-if="previewPanel" class="preview-comic-meta">
-        <div v-if="previewPanel.caption" class="preview-caption">{{ previewPanel.caption }}</div>
-        <div v-if="previewPanel.characters || previewPanel.action || previewPanel.scene" class="preview-tags">
-          <el-tag v-if="previewPanel.characters" size="small" type="info">角色：{{ previewPanel.characters }}</el-tag>
-          <el-tag v-if="previewPanel.action" size="small" type="info">动作：{{ previewPanel.action }}</el-tag>
-          <el-tag v-if="previewPanel.scene" size="small" type="info">场景：{{ previewPanel.scene }}</el-tag>
+      <!-- 生成信息：当前格/图的提示词、完整参数与耗时 -->
+      <div class="preview-gen-info">
+        <div class="info-section" v-if="previewPanel && previewPanel.caption">
+          <div class="info-title">画面说明</div>
+          <div class="info-body">{{ previewPanel.caption }}</div>
         </div>
-        <div v-if="previewPanel.prompt" class="preview-prompt">画面描述：{{ previewPanel.prompt }}</div>
+        <div class="info-section" v-if="previewPanel && (previewPanel.characters || previewPanel.action || previewPanel.scene)">
+          <div class="info-title">分镜要素</div>
+          <div class="preview-tags">
+            <el-tag v-if="previewPanel.characters" size="small" type="info">角色：{{ previewPanel.characters }}</el-tag>
+            <el-tag v-if="previewPanel.action" size="small" type="info">动作：{{ previewPanel.action }}</el-tag>
+            <el-tag v-if="previewPanel.scene" size="small" type="info">场景：{{ previewPanel.scene }}</el-tag>
+          </div>
+        </div>
+        <div class="info-section" v-if="previewPanel && previewPanel.prompt">
+          <div class="info-title">原始画面描述</div>
+          <div class="info-body pre">{{ previewPanel.prompt }}</div>
+        </div>
+        <div class="info-section" v-if="mode === 'comic' && (previewPanel?.final_prompt || previewItem?.final_prompt)">
+          <div class="info-title">实际生成提示词（SD 英文）</div>
+          <div class="info-body pre">{{ previewPanel?.final_prompt || previewItem?.final_prompt }}</div>
+        </div>
+        <div class="info-section" v-if="mode === 't2i' && previewGenInfo.prompt_used">
+          <div class="info-title">实际生成提示词（SD 英文）</div>
+          <div class="info-body pre">{{ previewGenInfo.prompt_used }}</div>
+        </div>
+        <div class="info-section" v-if="previewGenInfo.params && Object.keys(previewGenInfo.params).length">
+          <div class="info-title">生成参数</div>
+          <div class="param-grid">
+            <div class="param-cell"><span class="param-key">模型</span><span class="param-val">{{ previewGenInfo.params.model || previewGenInfo.result?.model || '-' }}</span></div>
+            <div class="param-cell"><span class="param-key">尺寸</span><span class="param-val">{{ previewGenInfo.params.width && previewGenInfo.params.height ? previewGenInfo.params.width + '×' + previewGenInfo.params.height : (previewItem?.width + '×' + previewItem?.height) }}</span></div>
+            <div class="param-cell"><span class="param-key">步数</span><span class="param-val">{{ previewGenInfo.params.steps ?? previewItem?.steps ?? '-' }}</span></div>
+            <div class="param-cell"><span class="param-key">CFG</span><span class="param-val">{{ previewGenInfo.params.cfg ?? previewItem?.cfg ?? '-' }}</span></div>
+            <div class="param-cell"><span class="param-key">采样器</span><span class="param-val">{{ previewGenInfo.params.sampler || previewItem?.sampler || '-' }}</span></div>
+            <div class="param-cell"><span class="param-key">种子</span><span class="param-val">{{ previewItem?.seed ?? previewGenInfo.params.seed ?? '-' }}</span></div>
+            <div class="param-cell" v-if="previewGenInfo.params.style !== undefined"><span class="param-key">风格</span><span class="param-val">{{ previewGenInfo.params.style }}</span></div>
+            <div class="param-cell" v-if="previewGenInfo.params.orchestrator !== undefined"><span class="param-key">润色</span><span class="param-val">{{ previewGenInfo.params.orchestrator }}</span></div>
+            <div class="param-cell"><span class="param-key">耗时</span><span class="param-val">{{ formatMs(previewGenInfo.result?.elapsed_ms ?? previewGenInfo.params?.elapsed_ms) }}</span></div>
+          </div>
+        </div>
       </div>
       <div v-if="previewImages.length > 1" class="preview-thumbs">
         <img v-for="(it, idx) in previewImages" :key="idx"
@@ -1291,29 +1359,70 @@ loadHistory()
 .res-tabs span:hover { color: var(--txt); }
 .res-tabs span.active { color: #fff; background: rgba(139,126,216,.18); border-color: rgba(139,126,216,.35); }
 
-.preview-comic-meta {
+.preview-gen-info {
   margin-top: 14px;
   padding: 14px;
   background: rgba(255,255,255,.04);
   border-radius: 12px;
   border: 1px solid rgba(255,255,255,.08);
+  max-height: 42vh;
+  overflow-y: auto;
 }
-.preview-caption {
-  font-size: 15px;
+.preview-gen-info .info-section { margin-bottom: 14px; }
+.preview-gen-info .info-section:last-child { margin-bottom: 0; }
+.preview-gen-info .info-title {
+  font-size: 12px;
   font-weight: 700;
-  color: var(--txt);
-  margin-bottom: 10px;
+  color: var(--sub);
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
 }
-.preview-tags {
+.preview-gen-info .info-body {
+  font-size: 13px;
+  color: var(--txt);
+  line-height: 1.6;
+}
+.preview-gen-info .info-body.pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(0,0,0,.18);
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 12px;
+  color: var(--sub);
+  max-height: 120px;
+  overflow: auto;
+}
+.preview-gen-info .preview-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 10px;
 }
-.preview-prompt {
-  font-size: 12px;
+.preview-gen-info .param-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+}
+.preview-gen-info .param-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: rgba(0,0,0,.18);
+  border-radius: 8px;
+}
+.preview-gen-info .param-key {
+  font-size: 11px;
   color: var(--sub);
-  line-height: 1.6;
+}
+.preview-gen-info .param-val {
+  font-size: 13px;
+  color: var(--txt);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .hist-pagination {
   display: flex;
