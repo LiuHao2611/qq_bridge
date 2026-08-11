@@ -130,6 +130,15 @@ D:\AI\manju_agent\
 > - **服务端历史持久化**：`routers.py` `/t2i/comic` 生成成功后写入 `image_tasks` 表（`status='succeeded'`，`result` JSON 含 `images/panels/style_ref`），复用既有 `GET /t2i/tasks` 分页查询，避免生成结果丢失。
 > - **前端交互优化**：`Txt2Img.vue` 漫画模式新增「本次结果 / 生成历史」分页标签，历史列表调 `t2iHistory` 并过滤漫画任务，支持 `el-pagination` 翻页与「载入」恢复；图片预览弹窗在漫画模式下显示当前格 `caption/characters/action/scene/prompt` 元数据，保留左右箭头切换与底部缩略图条。
 > - **验证**：`py_compile server/ai_local.py server/routers.py` 通过；`bash scripts/build_frontend.sh` 生成 `index-B3koQC5n.js`；后端 `:7788` health 正常；`/t2i/comic` 空 story 返回 10001；`/t2i/tasks` 正常返回（含历史 item）。真实出图需本机 ComfyUI 已放入 checkpoint/CLIP-Vision/IP-Adapter 权重且 `:8188` 可服务。
+>
+> **2026-08-12 补充（漫画/文生图页视觉重设计 ✅）**：按用户截图反馈，对「文生图」与「漫画创作」页做简约高级感重塑，重点优化箭头指示的 Tab 切换与生成按钮区域：
+> - **配色与背景**：深色调基底叠加低饱合紫/蓝/金环境光晕（`.page::before` 三层 `radial-gradient`）；卡片采用半透明毛玻璃（`rgba(255,255,255,.025)` + `backdrop-filter`）与 1px 微边框，取代原先实心色块。
+> - **Tab 切换**：`mode-tabs` loud 紫粉渐变改为 `.segment-tabs` 分段控制器，细边框容器 + 选中态微立体高光，无 emoji，排版更克制。
+> - **状态徽章**：原 `el-tag type="success" effect="dark"` 高饱和绿牌改为 `.premium-badge` 暖金细边胶囊徽标（`#C9A86C`），与深色背景协调。
+> - **生成按钮**：`.btn.pink` 亮粉改为 `.generate-btn` 宽版靛蓝渐变按钮（`#8B7ED8 → #5A96E3`），带内发光、hover 扫光、轻抬升；左侧闪电为 SVG，右侧加 `Enter` 提示标；取消按钮改为低饱红玻璃态。
+> - **服务状态条**：`.svc` 由圆角方块霓虹绿/红改为圆角胶囊、低饱色、微背景，减少视觉噪音。
+> - **结果卡片/漫画格**：统一圆角、hover 轻抬升与靛蓝微边框，空态用虚线框占位。
+> - **验证**：`bash scripts/build_frontend.sh` 生成 `index-CdDXEdtn.js`；服务重启后 `:8099` 引用新 hash；Edge headless 截图确认 Tab、按钮、徽章、卡片均呈现新风格。
 
 > **2026-08-09 补充（超时延长 + 停止按钮 + GPU/CPU 运行分布日志：已落地 ✅）**：回应「资产初始化 / 项目策划调用 Ollama 慢且误以为跑 CPU」——延长超时、加停止按钮、前台日志打印模型 GPU/CPU 分布（避免误解）。全部源码改动落在 `D:\AI\manju_agent`，符合 C 盘/目录外约束：
 > - **① 超时延长（避免长文本推理被前端/反代截断）**：`server/ai_local.py` 的 `_ollama_generate` 内 `_http_post_json(url, payload, timeout=600)`（原 180）；`web_app.py` 的 `_proxy_v1` `urllib.request.urlopen(req, timeout=600)`（原 180，与后端对齐）；`src/api.js` 的 `extractAssetsFromStory` 默认 `{timeout:300000}`(300s) 且新增 `opts` 透传（原 120s，修复长剧本提取被前端默认超时截断）。

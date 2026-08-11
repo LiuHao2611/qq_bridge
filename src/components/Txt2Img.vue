@@ -494,14 +494,29 @@ loadHistory()
     />
     <div class="page-head">
       <div class="ph-left">
-        <div class="mode-tabs">
-          <span :class="{ active: mode === 't2i' }" @click="mode = 't2i'">🎨 文生图</span>
-          <span :class="{ active: mode === 'comic' }" @click="mode = 'comic'">📖 漫画创作</span>
+        <div class="segment-tabs" role="tablist">
+          <button
+            :class="{ active: mode === 't2i' }"
+            @click="mode = 't2i'"
+            :aria-selected="mode === 't2i'"
+          >
+            文生图
+          </button>
+          <button
+            :class="{ active: mode === 'comic' }"
+            @click="mode = 'comic'"
+            :aria-selected="mode === 'comic'"
+          >
+            漫画创作
+          </button>
         </div>
-        <p class="muted" v-if="mode === 't2i'">输入文字描述，调用本地 ComfyUI 真实出图（Ollama 润色提示词 · Dify 可选编排）</p>
-        <p class="muted" v-else>输入故事，单次点击完整生成全部 4 格漫画（复用导演 Agent 全局风格参考 + 角色一致性约束）</p>
+        <p class="page-subtitle" v-if="mode === 't2i'">输入文字描述，调用本地 ComfyUI 真实出图</p>
+        <p class="page-subtitle" v-else>输入故事，单次点击完整生成全部 {{ comic.panels }} 格漫画</p>
       </div>
-      <el-tag type="success" effect="dark">本地生成 · 不计积分</el-tag>
+      <div class="premium-badge">
+        <span class="dot" />
+        本地生成 · 不计积分
+      </div>
     </div>
 
     <!-- 服务绑定状态条：Docker · Dify · Ollama · ComfyUI · 模型（Docker/Dify 可启停） -->
@@ -654,15 +669,18 @@ loadHistory()
           </div>
         </div>
 
-        <div style="display:flex;gap:10px;margin-top:14px">
-          <button class="btn pink" style="flex:1;justify-content:center"
-            :disabled="generating" @click="generate">
-            {{ generating ? '生成中…' : '开始生成' }}
+        <div class="generate-actions">
+          <button class="generate-btn" :disabled="generating" @click="generate">
+            <span class="generate-icon">
+              <svg v-if="!generating" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+              <span v-else class="spinner" />
+            </span>
+            <span class="generate-label">{{ generating ? '正在生成…' : '开始生成' }}</span>
           </button>
           <button v-if="generating" class="btn sm ghost cancel-btn"
             :disabled="cancelling" @click="cancelGenerate"
             style="min-width:100px;justify-content:center">
-            {{ cancelling ? '取消中…' : '⏸ 暂停' }}
+            {{ cancelling ? '取消中…' : '暂停' }}
           </button>
         </div>
 
@@ -672,7 +690,7 @@ loadHistory()
             <span>{{ doneCount }}/{{ totalCount }}</span>
           </div>
           <el-progress :percentage="totalCount ? Math.round(doneCount / totalCount * 100) : (task?.status==='succeeded'?100:0)"
-            :stroke-width="8" :color="['#ff4d8d', '#8a5cff']"
+            :stroke-width="8" :color="['#8B7ED8', '#5A96E3']"
             :status="task?.status==='failed' ? 'exception' : (task?.status==='cancelled' ? 'exception' : undefined)" />
         </div>
       </div>
@@ -751,11 +769,14 @@ loadHistory()
     <!-- 漫画创作（占满整个文生图区域） -->
     <div v-if="mode === 'comic'" class="comic-wrap">
       <div class="comic-head">
-        <div>
-          <h2>📖 漫画创作 · 一键 {{ comic.panels }} 格漫画</h2>
-          <p class="muted">输入故事，单次点击完整生成全部 {{ comic.panels }} 格（复用导演 Agent 全局风格参考 + 角色一致性约束）</p>
+        <div class="comic-head-text">
+          <h2>漫画创作</h2>
+          <p class="page-subtitle">单次点击完整生成全部 {{ comic.panels }} 格，复用导演 Agent 风格参考与角色一致性约束</p>
         </div>
-        <el-tag type="success" effect="dark">本地生成 · 不计积分</el-tag>
+        <div class="premium-badge">
+          <span class="dot" />
+          本地生成 · 不计积分
+        </div>
       </div>
 
       <div class="comic-grid">
@@ -808,10 +829,14 @@ loadHistory()
               </label>
             </div>
           </div>
-          <div style="display:flex;gap:10px;margin-top:14px">
-            <button class="btn pink" style="flex:1;justify-content:center"
-              :disabled="comicGenerating" @click="generateComic">
-              {{ comicGenerating ? '生成中…' : '⚡ 一键生成 ' + comic.panels + ' 格漫画' }}
+          <div class="generate-actions">
+            <button class="generate-btn" :disabled="comicGenerating" @click="generateComic">
+              <span class="generate-icon">
+                <svg v-if="!comicGenerating" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                <span v-else class="spinner" />
+              </span>
+              <span class="generate-label">{{ comicGenerating ? '正在生成漫画…' : '一键生成 ' + comic.panels + ' 格漫画' }}</span>
+              <span v-if="!comicGenerating" class="generate-hint">Enter</span>
             </button>
           </div>
           <div class="progress" v-if="comicGenerating || comicNote">
@@ -820,7 +845,7 @@ loadHistory()
               <span>{{ comicProgress.done }}/{{ comicProgress.total }}</span>
             </div>
             <el-progress :percentage="comicProgress.total ? Math.round(comicProgress.done / comicProgress.total * 100) : 0"
-              :stroke-width="8" :color="['#ff4d8d', '#8a5cff']" />
+              :stroke-width="8" :color="['#8B7ED8', '#5A96E3']" />
           </div>
         </div>
 
@@ -928,17 +953,27 @@ loadHistory()
 </template>
 
 <style scoped>
-.svc-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
-.svc { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 10px;
-  border: 1px solid var(--line); background: var(--card); font-size: 13px; font-weight: 600; }
-.svc .dot { width: 8px; height: 8px; border-radius: 50%; background: #888; }
-.svc.ok { border-color: #2ecc71; color: #2ecc71; }
-.svc.ok .dot { background: #2ecc71; box-shadow: 0 0 6px #2ecc71; }
-.svc.bad { border-color: #e74c3c; color: #e74c3c; }
-.svc.bad .dot { background: #e74c3c; }
-.svc.warn { border-color: #f5c542; color: #f5c542; }
-.svc.warn .dot { background: #f5c542; box-shadow: 0 0 6px #f5c542; }
-.svc small { color: var(--muted); font-weight: 400; }
+.svc-bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 20px; }
+.svc {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.04);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sub);
+}
+.svc .dot { width: 6px; height: 6px; border-radius: 50%; background: #888; }
+.svc.ok { border-color: rgba(129, 199, 132, .35); color: #a5d6a7; background: rgba(129, 199, 132, .08); }
+.svc.ok .dot { background: #81c784; box-shadow: 0 0 8px rgba(129, 199, 132, .45); }
+.svc.bad { border-color: rgba(239, 83, 80, .35); color: #ef9a9a; background: rgba(239, 83, 80, .08); }
+.svc.bad .dot { background: #ef5350; }
+.svc.warn { border-color: rgba(255, 202, 40, .35); color: #ffe082; background: rgba(255, 202, 40, .08); }
+.svc.warn .dot { background: #ffca28; box-shadow: 0 0 8px rgba(255, 202, 40, .35); }
+.svc small { color: inherit; opacity: .75; font-weight: 500; }
 .svc-refresh { margin-left: auto; }
 .cancel-btn { border-color: #e74c3c !important; color: #e74c3c !important; }
 .cancel-btn:hover:not(:disabled) { background: #e74c3c !important; color: #fff !important; }
@@ -949,8 +984,26 @@ loadHistory()
 .mini-btn.ghost { background: transparent; color: var(--sub); border-color: var(--line); }
 .mini-btn.ghost:hover:not(:disabled) { color: var(--txt); border-color: var(--sub); }
 
-.ws-grid { display: grid; grid-template-columns: 380px 1fr; gap: 18px; align-items: start; }
-.panel { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+.ws-grid { display: grid; grid-template-columns: 360px 1fr; gap: 20px; align-items: start; }
+.panel {
+  background: rgba(255,255,255,.025);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 18px;
+  padding: 22px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.18);
+  backdrop-filter: blur(8px);
+}
+.panel > .param-group + .param-group { margin-top: 22px; }
+.panel > .param-group > .g-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--txt);
+  margin-bottom: 12px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.panel > .param-group > .param-row { margin-bottom: 12px; }
+.panel > .param-group > .param-row:last-child { margin-bottom: 0; }
 
 .ph { position: relative; aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
   background: var(--card-2); border-radius: 8px; overflow: hidden; }
@@ -995,66 +1048,340 @@ loadHistory()
 .prompt-used pre { white-space: pre-wrap; word-break: break-word; background: var(--card-2);
   border: 1px solid var(--line); border-radius: 10px; padding: 10px; font-size: 12px; color: var(--text); max-height: 180px; overflow: auto; }
 
-/* ---- 漫画创作模式 ---- */
-.ph-left { display: flex; flex-direction: column; }
-.mode-tabs { display: inline-flex; gap: 6px; margin-bottom: 4px; }
-.mode-tabs span { font-size: 18px; font-weight: 800; color: var(--sub); padding: 6px 14px;
-  border-radius: 10px; cursor: pointer; border: 1px solid transparent; transition: .15s; user-select: none; }
-.mode-tabs span:hover { color: var(--txt); }
-.mode-tabs span.active { color: #fff; background: linear-gradient(135deg, var(--pur), #ff4d8d);
-  border-color: transparent; box-shadow: 0 4px 14px rgba(138, 92, 255, .35); }
+/* ---- Ambient premium background ---- */
+.page { position: relative; }
+.page::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 80% 50% at 15% 10%, rgba(139, 126, 216, .08), transparent 55%),
+    radial-gradient(ellipse 60% 40% at 85% 90%, rgba(90, 150, 227, .06), transparent 50%),
+    radial-gradient(ellipse 50% 30% at 50% 0%, rgba(201, 168, 108, .04), transparent 45%);
+}
+.page > * { position: relative; z-index: 1; }
 
-.comic-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
-.comic-head h2 { margin: 0 0 4px; font-size: 20px; }
-.comic-grid { display: grid; grid-template-columns: 380px 1fr; gap: 18px; align-items: start; }
-.comic-refs { display: flex; flex-wrap: wrap; gap: 8px; }
-.ref-thumb { position: relative; width: 56px; height: 56px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+/* ---- Page header & segmented tabs ---- */
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.ph-left { display: flex; flex-direction: column; gap: 10px; }
+.page-subtitle {
+  margin: 0;
+  font-size: 13px;
+  color: var(--sub);
+  line-height: 1.5;
+  letter-spacing: .02em;
+}
+.segment-tabs {
+  display: inline-flex;
+  padding: 4px;
+  gap: 4px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 12px;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.15);
+}
+.segment-tabs button {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--sub);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 18px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: all .2s ease;
+  letter-spacing: .02em;
+}
+.segment-tabs button:hover { color: var(--txt); }
+.segment-tabs button.active {
+  color: #fff;
+  background: linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.04));
+  box-shadow: 0 2px 8px rgba(0,0,0,.25), inset 0 1px 0 rgba(255,255,255,.10);
+  border: 1px solid rgba(255,255,255,.12);
+}
+.segment-tabs button.active:hover { color: #fff; }
+
+.premium-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #C9A86C;
+  background: rgba(201, 168, 108, .08);
+  border: 1px solid rgba(201, 168, 108, .22);
+  box-shadow: 0 2px 8px rgba(0,0,0,.12);
+  letter-spacing: .04em;
+  flex-shrink: 0;
+}
+.premium-badge .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #C9A86C;
+  box-shadow: 0 0 8px rgba(201, 168, 108, .55);
+}
+
+/* ---- Premium primary generate button ---- */
+.generate-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 18px;
+}
+.generate-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 48px;
+  padding: 0 24px;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  background: linear-gradient(135deg, #8B7ED8 0%, #6A82D8 50%, #5A96E3 100%);
+  box-shadow:
+    0 4px 14px rgba(90, 116, 227, .35),
+    inset 0 1px 0 rgba(255,255,255,.18),
+    0 0 0 1px rgba(255,255,255,.08) inset;
+  transition: all .2s ease;
+  letter-spacing: .02em;
+  position: relative;
+  overflow: hidden;
+}
+.generate-btn::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.14), transparent);
+  transform: translateX(-100%);
+  transition: transform .5s ease;
+}
+.generate-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow:
+    0 6px 22px rgba(90, 116, 227, .45),
+    inset 0 1px 0 rgba(255,255,255,.20),
+    0 0 0 1px rgba(255,255,255,.10) inset;
+}
+.generate-btn:hover:not(:disabled)::before { transform: translateX(100%); }
+.generate-btn:active:not(:disabled) { transform: translateY(0); }
+.generate-btn:disabled {
+  opacity: .72;
+  cursor: not-allowed;
+  filter: grayscale(.25);
+}
+.generate-btn .generate-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+}
+.generate-btn .generate-label { position: relative; z-index: 1; }
+.generate-btn .generate-hint {
+  margin-left: 6px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255,255,255,.75);
+  background: rgba(0,0,0,.18);
+  border: 1px solid rgba(255,255,255,.10);
+}
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255,255,255,.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- Comic mode layout ---- */
+.comic-wrap { padding-bottom: 24px; }
+.comic-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+.comic-head-text { display: flex; flex-direction: column; gap: 6px; }
+.comic-head h2 { margin: 0; font-size: 22px; font-weight: 700; color: var(--txt); letter-spacing: -.01em; }
+.comic-grid { display: grid; grid-template-columns: 360px 1fr; gap: 20px; align-items: start; }
+.comic-params,
+.comic-result {
+  background: rgba(255,255,255,.025);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 18px;
+  padding: 22px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.18);
+  backdrop-filter: blur(8px);
+}
+.comic-params .param-group + .param-group { margin-top: 22px; }
+.comic-params .g-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--txt);
+  margin-bottom: 12px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.comic-params .param-row { margin-bottom: 12px; }
+.comic-params .param-row:last-child { margin-bottom: 0; }
+
+.comic-refs { display: flex; flex-wrap: wrap; gap: 10px; }
+.ref-thumb { position: relative; width: 56px; height: 56px; border-radius: 10px; overflow: hidden; border: 1px solid rgba(255,255,255,.10); }
 .ref-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .ref-del { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; border-radius: 50%;
   border: none; background: rgba(0, 0, 0, .6); color: #fff; cursor: pointer; font-size: 12px; line-height: 1; }
-.ref-add { width: 56px; height: 56px; border-radius: 10px; border: 1px dashed var(--line);
-  display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--pur);
-  font-size: 13px; font-weight: 700; }
-.ref-add:hover { border-color: var(--pur); }
-.comic-style-ref { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.comic-style-ref img { width: 120px; height: 68px; object-fit: cover; border-radius: 8px;
-  cursor: pointer; border: 1px solid var(--line); }
-.comic-panels { display: grid; gap: 14px; }
+.ref-add { width: 56px; height: 56px; border-radius: 10px; border: 1px dashed rgba(255,255,255,.18);
+  display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--sub);
+  font-size: 12px; font-weight: 600; background: rgba(255,255,255,.02); transition: .15s; }
+.ref-add:hover { border-color: #8B7ED8; color: #8B7ED8; background: rgba(139,126,216,.06); }
+
+.comic-style-ref { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; padding: 12px; border-radius: 12px; background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.06); }
+.comic-style-ref .g-title { margin: 0; font-size: 12px; font-weight: 700; color: var(--sub); letter-spacing: .04em; text-transform: uppercase; }
+.comic-style-ref img { width: 120px; height: 68px; object-fit: cover; border-radius: 10px;
+  cursor: pointer; border: 1px solid rgba(255,255,255,.10); transition: .15s; }
+.comic-style-ref img:hover { border-color: rgba(139,126,216,.5); }
+
+.comic-panels { display: grid; gap: 16px; }
 .comic-panels.cols-3 { grid-template-columns: repeat(3, 1fr); }
 .comic-panels.cols-4 { grid-template-columns: repeat(2, 1fr); }
 .comic-panels.cols-6 { grid-template-columns: repeat(3, 1fr); }
 .comic-panels.cols-8 { grid-template-columns: repeat(4, 1fr); }
-.comic-cell { background: var(--card-2); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
-.comic-cell .ph { aspect-ratio: 16 / 9; }
-.comic-cell .cap { padding: 8px 10px; font-size: 13px; color: var(--txt); line-height: 1.4; }
+.comic-cell {
+  background: rgba(255,255,255,.03);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 14px;
+  overflow: hidden;
+  transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+}
+.comic-cell:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 28px rgba(0,0,0,.22);
+  border-color: rgba(139,126,216,.28);
+}
+.comic-cell .ph { aspect-ratio: 16 / 9; background: rgba(0,0,0,.18); }
+.comic-cell .cap { padding: 10px 12px; font-size: 13px; color: var(--txt); line-height: 1.5; font-weight: 500; }
+
+/* Result tabs */
+.res-tabs { display: flex; gap: 6px; margin-bottom: 16px; padding: 4px; border-radius: 10px; background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.06); }
+.res-tabs span { font-size: 13px; font-weight: 600; color: var(--sub); padding: 7px 14px;
+  border-radius: 7px; cursor: pointer; border: 1px solid transparent; transition: .15s; }
+.res-tabs span:hover { color: var(--txt); }
+.res-tabs span.active { color: #fff; background: rgba(139,126,216,.18); border-color: rgba(139,126,216,.35); }
 
 .preview-comic-meta {
-  margin-top: 12px;
-  padding: 12px;
-  background: var(--card-2);
-  border-radius: 10px;
-  border: 1px solid var(--line);
+  margin-top: 14px;
+  padding: 14px;
+  background: rgba(255,255,255,.04);
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.08);
 }
 .preview-caption {
   font-size: 15px;
   font-weight: 700;
   color: var(--txt);
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
 .preview-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 .preview-prompt {
   font-size: 12px;
   color: var(--sub);
-  line-height: 1.5;
+  line-height: 1.6;
 }
 .hist-pagination {
   display: flex;
   justify-content: center;
-  margin-top: 14px;
+  margin-top: 18px;
+}
+
+/* Premium overrides for result cards */
+.asset-grid { margin-top: 14px; }
+.asset-card {
+  background: rgba(255,255,255,.03);
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 14px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+  position: relative;
+}
+.asset-card:hover {
+  border-color: rgba(139,126,216,.28);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 28px rgba(0,0,0,.22);
+}
+.asset-card img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: rgba(0,0,0,.18); }
+.asset-card .info { padding: 12px 14px; }
+.asset-card .name { font-weight: 700; font-size: 13px; color: var(--txt); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.asset-card .type { font-size: 11px; color: var(--sub); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.empty {
+  padding: 36px 24px;
+  text-align: center;
+  color: var(--sub);
+  font-size: 13px;
+  line-height: 1.6;
+  background: rgba(255,255,255,.02);
+  border: 1px dashed rgba(255,255,255,.10);
+  border-radius: 14px;
+}
+
+/* Scoped premium button overrides */
+:deep(.btn.sm.ghost),
+.btn.sm.ghost {
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.10);
+  color: var(--txt);
+  border-radius: 8px;
+  transition: all .15s ease;
+}
+:deep(.btn.sm.ghost:hover:not(:disabled)),
+.btn.sm.ghost:hover:not(:disabled) {
+  background: rgba(255,255,255,.08);
+  border-color: rgba(139,126,216,.35);
+  color: #fff;
+}
+.cancel-btn {
+  border-color: rgba(239, 83, 80, .45) !important;
+  color: #ef9a9a !important;
+  background: rgba(239, 83, 80, .08) !important;
+}
+.cancel-btn:hover:not(:disabled) {
+  background: rgba(239, 83, 80, .18) !important;
+  border-color: rgba(239, 83, 80, .55) !important;
+  color: #fff !important;
+}
+
+/* Responsive */
+@media (max-width: 1100px) {
+  .comic-grid { grid-template-columns: 1fr; }
+  .ws-grid { grid-template-columns: 1fr; }
 }
 </style>
