@@ -3141,11 +3141,93 @@ COMIC_NEGATIVE = ("lowres, bad anatomy, bad hands, text, error, missing fingers,
                   "empty landscape, scenery only, disconnected background, speech bubble, word, letter")
 
 
+# ---------------------------------------------------------------------------
+# 图文一致性增强（对应「图文不符根因分析」下一轮修正 Checklist 必须项/建议项）
+# 目标：避免「男孩雨夜捡受伤白猫」被稀释成「男孩+夜景」而猫/受伤/动作丢失。
+# 不新增端点、不改 ComfyUI 工作流结构，仅在提示词与负向约束层做加固 + 诚实降级。
+# ---------------------------------------------------------------------------
+# 实体强制规则：故事出现下列中文关键词时，若翻译后的英文提示词缺失对应实体，
+# 则自动补回并加 SD 权重，保证核心主体/对象/状态/动作不被风格词淹没。
+_COMIC_ENTITY_RULES = [
+    (("男孩", "少年", "男生", "男孩子"), "(1boy:1.3), (young boy:1.2)"),
+    (("女孩", "少女", "女生", "女孩子"), "(1girl:1.3), (young girl:1.2)"),
+    (("白猫",), "(white cat:1.4), (white fur:1.2)"),
+    (("猫",), "(cat:1.35)"),
+    (("受伤", "流血", "伤口", "血迹", "血"), "(injured:1.3), (bandaged:1.25), (wound:1.2)"),
+    (("雨", "雨夜", "下雨", "暴雨"), "(rain:1.25), (rainy:1.2)"),
+    (("夜", "夜晚", "夜里", "晚上"), "(night:1.2)"),
+    (("捡", "抱", "捧", "搂", "抱起", "捧起", "拾"), "(holding:1.4), (kneeling:1.2), (arms:1.2)"),
+    (("狗",), "(dog:1.3)"),
+]
+
+# 抽象→具象：把「受伤/雨夜/捡到」等抽象语义显式转成可渲染的视觉短语，
+# 与实体强制互补——前者保证「有这个东西」，后者保证「长得出来」。
+_COMIC_CONCRETE_RULES = [
+    (("受伤", "流血", "伤口", "血"), "bandaged leg, small wound, blood stain on fur, limping"),
+    (("雨夜", "下雨", "雨", "暴雨"), "rain drops, wet ground, puddle, street lamp reflection, dark clouds"),
+    (("捡", "抱", "捧", "拾"), "kneeling down, reaching out hand, holding in arms, close-up of hands and cat"),
+    (("白猫",), "small white cat, white fur, cat ears, tail, whiskers"),
+]
+
+
+def _comic_ensure_entities(story, en_prompt):
+    """实体强制：保证翻译后的英文提示词包含故事关键主体/对象/状态/动作，缺失则加权补回。"""
+    if not story or not en_prompt:
+        return en_prompt
+    low = en_prompt.lower()
+    add = []
+    for keys, phrase in _COMIC_ENTITY_RULES:
+        if any(k in story for k in keys):
+            tokens = [t.strip(" ,()") for t in phrase.split(",")]
+            if not any(tok and tok.lower() in low for tok in tokens):
+                add.append(phrase)
+    if add:
+        en_prompt = en_prompt.rstrip(", ") + ", " + ", ".join(add)
+    return en_prompt
+
+
+def _comic_append_concrete(story, en_prompt):
+    """抽象→具象：根据中文关键词追加可渲染的视觉短语，强化「受伤/雨夜/动作」的可视化。"""
+    if not story or not en_prompt:
+        return en_prompt
+    add = []
+    for keys, phrase in _COMIC_CONCRETE_RULES:
+        if any(k in story for k in keys) and phrase not in en_prompt:
+            add.append(phrase)
+    if add:
+        en_prompt = en_prompt.rstrip(", ") + ", " + ", ".join(add)
+    return en_prompt
+
+
+def _comic_dynamic_negative(story, base_neg):
+    """按故事动态追加负向约束：单主角→排除异性/多余人物；提及猫→排除猫缺失/狗；
+    统一强化无文字/水印/气泡/签名。去重后返回。"""
+    neg = base_neg or ""
+    has_boy = any(k in story for k in ("男孩", "少年", "男生", "男孩子", "男性"))
+    has_girl = any(k in story for k in ("女孩", "少女", "女生", "女孩子", "女性"))
+    has_cat = "猫" in story
+    add = []
+    if has_boy and not has_girl:
+        add += ["girl", "woman", "female", "lady", "extra person", "multiple people", "duplicate character"]
+    if has_cat:
+        add += ["cat missing", "no cat", "mutated cat", "dog"]
+    # 漫画统一禁项（避免随机竖排字/气泡/签名）
+    add += ["text", "speech bubble", "watermark", "signature", "letters", "manga sfx", "logo"]
+    # 重建：base 词与追加词统一去重，避免把 base 自身重复拼接
+    seen = set()
+    tokens = []
+    for p in [p.strip() for p in (base_neg or "").split(",") if p.strip()] + add:
+        if p and p.lower() not in seen:
+            seen.add(p.lower())
+            tokens.append(p)
+    return ", ".join(tokens)
+
+
 def _split_story_to_panels(story, style, orchestrator="ollama", panels=4):
     """把故事拆分为 N 格分镜；优先 Ollama 结构化拆分，失败则规则兜底。
 
     返回 list[{"caption": 中文短描述, "characters": 主角, "action": 动作/情绪,
-               "scene": 场景, "prompt": 完整中文画面描述}]。
+               "scene": 场景, "props": 关键道具/对象, "prompt": 完整中文画面描述}]。
     """
     # 先尝试从故事中提炼主角，用于兜底和权重注入
     main_subject = _extract_main_subject(story)
@@ -3156,12 +3238,14 @@ def _split_story_to_panels(story, style, orchestrator="ollama", panels=4):
             "严格只输出一个 JSON 数组，不要任何解释文字，格式："
             '[{"caption":"中文旁白短句(≤20字)","characters":"本格必须出现的主角(如:男孩,猫)",'
             '"action":"具体动作或表情(如:蹲下,抚摸,流泪)","scene":"场景(如:花园,窗台)",'
-            '"prompt":"完整中文画面描述,必须包含主角、动作、场景、情绪"}]。\n'
+            '"props":"本格关键道具/对象(如:雨伞,白猫,绷带)","prompt":"完整中文画面描述,'
+            '必须包含主角、动作、对象、场景、情绪"}]。\n'
             "要求(必须遵守):\n"
             "1. %d 格连起来完整讲述故事，有起承转合；\n"
-            "2. 每一格都必须出现故事中的主要角色，禁止只画风景、物品、花纹、抽象图案；\n"
-            "3. 画面以角色动作和表情为核心，场景为辅助；\n"
-            "4. prompt 先写角色和动作，再写场景，最后写情绪；\n"
+            "2. 每一格都必须出现故事中的主要角色与关键对象（如猫/礼物/伤口），"
+            "禁止只画风景、物品、花纹、抽象图案；\n"
+            "3. 画面以角色动作和表情为核心，场景与道具为辅助；\n"
+            "4. prompt 先写角色和动作，再写关键对象，再写场景，最后写情绪；\n"
             "5. 风格为 '%s'，画面内不要出现任何文字、对话框、水印。\n\n故事：%s"
             % (panels, panels, style, story)
         )
@@ -3180,9 +3264,10 @@ def _split_story_to_panels(story, style, orchestrator="ollama", panels=4):
                     chars = (it.get("characters") or "").strip()
                     action = (it.get("action") or "").strip()
                     scene = (it.get("scene") or "").strip()
+                    props = (it.get("props") or "").strip()
                     pr = (it.get("prompt") or "").strip()
                     if not pr:
-                        pr = "，".join([x for x in [chars, action, scene] if x])
+                        pr = "，".join([x for x in [chars, action, props, scene] if x])
                     if pr:
                         # 确保主角出现：如果 LLM 没写主角，强制前置
                         if main_subject and main_subject not in pr:
@@ -3192,6 +3277,7 @@ def _split_story_to_panels(story, style, orchestrator="ollama", panels=4):
                             "characters": chars or main_subject,
                             "action": action,
                             "scene": scene,
+                            "props": props,
                             "prompt": pr,
                         })
                 if len(out) >= 2:
@@ -3302,7 +3388,9 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
     W, H = max(64, (W // 8) * 8), max(64, (H // 8) * 8)
 
     style_suffix = COMIC_STYLE_SUFFIX.get(style, COMIC_STYLE_SUFFIX["日漫"])
-    neg = ((negative + ", ") if negative else "") + COMIC_NEGATIVE
+    # 动态负向：按故事主体/对象追加针对性排除词（如单主角→排除异性/多余人物、提猫→排除猫缺失/狗）
+    base_neg = ((negative + ", ") if negative else "") + COMIC_NEGATIVE
+    neg = _comic_dynamic_negative(story, base_neg)
     # 统一故事主角，用于每格 prompt 权重锚定
     main_subject = _extract_main_subject(story)
 
@@ -3359,6 +3447,7 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
     panels_out = []
     total = len(panel_specs)
     rnd = random.Random()
+    first_local = None  # 首格出图本地路径，用于第 2 格起的首帧锚定
     for idx, spec in enumerate(panel_specs):
         s = (int(seed) + idx) if seed and int(seed) > 0 else rnd.randint(0, 2 ** 31 - 1)
         zh_prompt = spec["prompt"]
@@ -3390,12 +3479,19 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
             weight_prefix += "(same main character:1.35), (character consistency:1.2), "
         if action:
             weight_prefix += "(clear character action:1.15), "
-        final_prompt = "%s%s, %s, narrative comic panel, no text, no speech bubbles" % (
-            weight_prefix, en_p, style_suffix)
+        base_final = "%s%s, %s" % (weight_prefix, en_p, style_suffix)
+        # 一致性加固（对照「图文不符」修正 Checklist）：
+        # 1) 实体强制：翻译丢失的关键主体/对象/状态/动作自动补回并加权
+        # 2) 抽象→具象：把「受伤/雨夜/捡到」等转成可渲染视觉短语
+        base_final = _comic_ensure_entities(story, base_final)
+        base_final = _comic_append_concrete(story, base_final)
+        final_prompt = ("%s, narrative comic panel, no text, no speech bubbles, "
+                        "4-koma panel, panel border, reading order left-to-right, top-to-bottom"
+                        % base_final)
         try:
             if char_comfy and ip_available:
                 path = _comfy_text2img_with_ipadapter(
-                    final_prompt, char_comfy[0], weight=0.85,
+                    final_prompt, char_comfy[0], weight=0.9,
                     width=W, height=H, steps=steps, seed=s, timeout=180,
                     style_comfy_name=style_ref_comfy, style_weight=0.4)
             elif style_ref_comfy and ip_available:
@@ -3405,8 +3501,19 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
                     width=W, height=H, steps=steps, seed=s, timeout=180,
                     style_comfy_name=style_ref_comfy, style_weight=0.4)
             else:
-                path = _comfy_text2img(final_prompt, width=W, height=H, steps=steps,
-                                       cfg=7.0, seed=s, timeout=180)
+                # 无 IP-Adapter（常见降级场景）：第 2 格起用首帧 img2img 锚定，
+                # 保持同场景/同主角连续，避免 4 格各自随机；失败诚实回退纯文生图。
+                if first_local and idx > 0:
+                    try:
+                        path = _comfy_img2img(first_local, final_prompt, strength=0.55,
+                                              width=W, height=H, steps=steps, seed=s, timeout=180)
+                    except Exception as e:
+                        logger.warning("[comic] 第 %d 格首帧锚定失败，回退基础文生图: %s" % (idx, e))
+                        path = _comfy_text2img(final_prompt, width=W, height=H, steps=steps,
+                                               cfg=7.0, seed=s, timeout=180)
+                else:
+                    path = _comfy_text2img(final_prompt, width=W, height=H, steps=steps,
+                                           cfg=7.0, seed=s, timeout=180)
         except Exception as e:
             # IP-Adapter 失败诚实降级为基础文生图（与 Director 一致，不阻塞生成）
             logger.warning("[comic] 第 %d 格 IP-Adapter 出图失败，降级基础文生图: %s" % (idx, e))
@@ -3415,6 +3522,8 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
                                        cfg=7.0, seed=s, timeout=180)
             except Exception as e2:
                 raise RuntimeError("ComfyUI 第 %d 格出图失败: %s" % (idx, e2))
+        if idx == 0 and path and os.path.isfile(path):
+            first_local = path
         if not path or not os.path.isfile(path):
             continue
         dst_name = "t2i_%s_%d.png" % (uuid.uuid4().hex[:12], idx)
