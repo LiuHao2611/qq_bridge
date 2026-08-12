@@ -1567,7 +1567,7 @@ def _qc_character_card(image_path, five):
 
 def generate_character_card_v2(asset_id, setting_text=None, era=None,
                                style_tags=None, poses=None, ollama_fn=None,
-                               catalog=None, timeout=240):
+                               catalog=None, timeout=240, project_id=None):
     """P1 角色卡六步确定性管线（设计 §8，解决 P3「角色卡随机/脱离剧本」）。
 
     ① LLM 提取五要素 → ② 能力匹配(时代+风格→底模+LoRA) → ③ 结构化 prompt
@@ -1579,6 +1579,9 @@ def generate_character_card_v2(asset_id, setting_text=None, era=None,
     显式上浮或诚实降级（禁静默）。
     """
     from intent_engine.parameter_injector import derive_seed
+    import uuid
+
+    trace_id = uuid.uuid4().hex  # 全链路可追溯（禁用 hash/random）
 
     # ① 五要素（LLM 结构化提取）
     five = None
@@ -1601,11 +1604,34 @@ def generate_character_card_v2(asset_id, setting_text=None, era=None,
     positive = build_generation_prompt(intent, subject=subject)
     negative = build_character_negative_prompt()
 
+    # M3（手册 §4.1）：管线开始 → 导演主动告知（project_id 缺省则跳过推送）
+    if project_id:
+        try:
+            from realtime import publish_director_notice
+            publish_director_notice(project_id, {
+                "message": "开始为角色「%s」生成定妆照（六步确定性管线）" % name,
+                "phase": "P3", "asset_id": asset_id, "trace_id": trace_id,
+            })
+        except Exception:
+            logger.warning("[card-v2] notice 推送失败（忽略）")
+
     # ④ 确定性 seed + ⑤/⑥ 多角度生成与回检
     poses = poses or ["front"]
     results = []
     for pose in poses:
         seed = derive_seed(name, pose)  # 同角色同姿势 → 永远一致
+        # M3（§4.1）：把「导演选了哪个底模/节点/seed」推给悬浮球（决策可视化）
+        if project_id and cap is not None:
+            try:
+                from realtime import publish_translator_selection
+                publish_translator_selection(project_id, trace_id, "character_genesis", {
+                    "checkpoint": (cap.get("checkpoint") or {}).get("name"),
+                    "node": "IPAdapterFaceID",
+                    "loras": [l.get("name") for l in (cap.get("loras") or []) if l],
+                    "seed": seed,
+                })
+            except Exception:
+                logger.warning("[card-v2] translator 推送失败（忽略）")
         # ⑤ 委托既有 generate_character_card（复用其模板路由 + 落库）；外部缺失诚实抛错
         card_path = generate_character_card(
             asset_id, attrs=attrs, style_tags=style_tags,
@@ -1625,6 +1651,23 @@ def generate_character_card_v2(asset_id, setting_text=None, era=None,
             "pose": pose, "seed": seed, "card_path": card_path,
             "face_vector": fv_status, "qc": qc,
         })
+
+    # M3（§4.1）：管线结束 → 导演品控结论（insight，可回看）
+    if project_id:
+        try:
+            from realtime import publish_director_insight
+            passed = sum(1 for r in results if (r.get("qc") or {}).get("passed"))
+            publish_director_insight(project_id, {
+                "message": "角色「%s」生成完成：%d/%d 姿势通过品控" % (name, passed, len(results)),
+                "phase": "P3", "asset_id": asset_id, "trace_id": trace_id,
+                "qc": {
+                    "total": len(results), "passed": passed,
+                    "face_vector": [r.get("face_vector") for r in results],
+                },
+            })
+        except Exception:
+            logger.warning("[card-v2] insight 推送失败（忽略）")
+
     return {
         "asset_id": asset_id,
         "five_elements": five,

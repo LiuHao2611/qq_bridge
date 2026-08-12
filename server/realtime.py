@@ -108,3 +108,31 @@ async def handle_ws(websocket):
 def connection_count():
     with _LOCK:
         return len(_CONNS)
+
+
+# ----------------------------------------------------------------------
+# 导演 Agent · M3 悬浮球前端化（手册 §4.1）：三类导演事件 + translator 频道
+# 以下封装均为薄包装，复用既有 publish()，非破坏性；WS 不可用时 publish 自动 no-op。
+# ----------------------------------------------------------------------
+
+def publish_director_notice(project_id, data=None):
+    """director.notice：导演主动告知（发现的问题 / 下一步动作）。"""
+    publish("director:%s" % project_id, "notice", data or {})
+
+
+def publish_director_insight(project_id, data=None):
+    """director.insight：导演判断 / 品控结论（可回看）。"""
+    publish("director:%s" % project_id, "insight", data or {})
+
+
+def publish_translator_selection(project_id, trace_id, task_type, selected):
+    """translator:{project_id}：推送「当前使用的模型/节点/参数」（决策可视化，设计 §7.3）。
+
+    :param selected: 字典，建议含 checkpoint / node / loras / seed 等选型字段。
+    """
+    publish("translator:%s" % project_id, "selection", {
+        "trace_id": trace_id,
+        "task_type": task_type,
+        "selected": selected or {},
+        "timestamp": _now(),
+    })

@@ -1219,6 +1219,39 @@ async def generate_character_card_endpoint(asset_id: str, req: Request):
     return ok({"asset_id": asset_id, "cover_url": path})
 
 
+# ----------------------------------------------------------------------
+# P1 角色卡增强管线（M3 · 六步确定性管线）：产出定妆照并推送 translator/insight 到悬浮球
+# 手册 §4.2「从剧本生成角色」入口后端落地；项目作用域，project_id 用于 WS 频道范围。
+# ----------------------------------------------------------------------
+
+@app.post("/projects/{project_id}/assets/{asset_id}/generate-card-v2")
+async def generate_character_card_v2_endpoint(project_id: str, asset_id: str, req: Request):
+    """六步确定性角色卡生成（设计 §8）：LLM 五要素 → 能力匹配 → 结构化 prompt
+    → 确定性 seed → 多角度参考图 + 512 向量入库 → 品控回检。
+
+    请求体（均可选）：{"style_tags":["写实","电影感"], "era":"民国",
+                       "poses":["front","side"], "setting_text":"角色设定原文"}
+    project_id 仅用于把 translator/insight 事件推到正确的悬浮球频道（director/translator:{pid}）。
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    style_tags = body.get("style_tags")
+    era = body.get("era")
+    poses = body.get("poses")
+    setting_text = body.get("setting_text")
+    try:
+        import ai_local
+        res = ai_local.generate_character_card_v2(
+            asset_id, setting_text=setting_text, era=era,
+            style_tags=style_tags, poses=poses, project_id=project_id)
+    except Exception as e:
+        code = getattr(e, "code", "CHARACTER_CARD_V2_FAILED")
+        raise ApiError(code, str(e))
+    return ok({"asset_id": asset_id, "project_id": project_id, "result": res})
+
+
 # ======================================================================
 # DirectorOrb v2（悬浮球化身）路由挂载
 # ----------------------------------------------------------------------

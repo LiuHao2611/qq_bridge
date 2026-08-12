@@ -14,6 +14,7 @@ import {
   unreadCount,
   dismissSuggestion,
   runOrbBatch,
+  resolveDecision,
 } from '../composables/useDirectorOrb'
 
 const router = useRouter()
@@ -160,6 +161,10 @@ const expanded = reactive({ live: true })
 function toggleFeed(id) { expanded[id] = !expanded[id] }
 function toggleSection(key) { expanded[key] = !expanded[key] }
 const activeFeedCount = computed(() => state.feed.filter((f) => f.status === 'running').length)
+
+// M3：待确认决策点（排除已解决/已跳过）
+const pendingDecisions = computed(() =>
+  state.decisions.filter((d) => d.status !== 'resolved' && d.status !== 'skipped'))
 
 // 折叠区
 const showDag = ref(false)
@@ -445,6 +450,46 @@ onBeforeUnmount(() => {
 
         <!-- ===== DirectorOrb v2 管家视图（化身层 · 信息架构优先级最高） ===== -->
         <div v-if="state.orbEnabled" class="orb-persona">
+
+          <!-- ===== M3 悬浮球前端化：三卡（决策 / 选型 / 对话） ===== -->
+
+          <!-- 决策卡：A 类决策请示（director.decision_request），点选回传 resolve -->
+          <div v-if="pendingDecisions.length" class="persona-decision m3-decision">
+            <div class="pd-title">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16.5" x2="12.01" y2="16.5"/></svg>
+              待确认决策（{{ pendingDecisions.length }}）
+            </div>
+            <div v-for="d in pendingDecisions" :key="d.decision_id" class="pd-item">
+              <div class="pd-name">{{ d.title }} <span class="pd-phase">{{ d.phase }}</span></div>
+              <div class="pd-detail" v-if="d.description">{{ d.description }}</div>
+              <div class="pd-options">
+                <button
+                  v-for="(opt, i) in (d.options && d.options.length ? d.options : ['确认'])"
+                  :key="i" class="pd-btn primary" @click="resolveDecision(d.decision_id, opt)">{{ opt }}</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 选型卡：translator 频道（导演选了哪个底模/节点/seed，决策可视化） -->
+          <div v-if="state.translator" class="m3-translator">
+            <div class="mt-title">🎬 导演选型</div>
+            <div class="mt-row"><span class="mt-k">底模</span><span class="mt-v">{{ state.translator.checkpoint || '—' }}</span></div>
+            <div class="mt-row"><span class="mt-k">节点</span><span class="mt-v">{{ state.translator.node || '—' }}</span></div>
+            <div class="mt-row" v-if="state.translator.loras && state.translator.loras.length">
+              <span class="mt-k">LoRA</span><span class="mt-v">{{ state.translator.loras.join('、') }}</span>
+            </div>
+            <div class="mt-row"><span class="mt-k">Seed</span><span class="mt-v">{{ (state.translator.seed != null && state.translator.seed !== '') ? state.translator.seed : '—' }}</span></div>
+            <div class="mt-sub" v-if="state.translator.task_type">任务类型：{{ state.translator.task_type }}</div>
+          </div>
+
+          <!-- 对话气泡：notice / insight（导演主动发言 + 品控结论） -->
+          <div v-if="state.conversation.length" class="m3-conv">
+            <div v-for="c in state.conversation.slice().reverse()" :key="c.id" class="conv-bubble" :class="c.kind">
+              <span class="conv-tag">{{ c.kind === 'notice' ? '通知' : '品控' }}</span>
+              <span class="conv-text">{{ c.text }}</span>
+              <span class="conv-t">{{ fmtTime(c.ts) }}</span>
+            </div>
+          </div>
 
           <!-- 需决策（error 级建议，带操作按钮，L3 主动提醒） -->
           <div v-if="decisionItems.length" class="persona-decision">
@@ -750,6 +795,29 @@ onBeforeUnmount(() => {
 .pd-btn:hover { filter: brightness(1.08); }
 .pd-btn.primary { background: linear-gradient(135deg, #7c6af0, #4f8bf7); color: #fff; }
 .pd-btn.ghost { background: rgba(255,255,255,.08); color: var(--txt, #eee); }
+/* M3 决策卡：A 类决策请示 */
+.m3-decision { border-color: rgba(124,106,240,.45); background: rgba(124,106,240,.1); }
+.m3-decision .pd-title { color: #a6aaff; }
+.m3-decision .pd-item { border-bottom-color: rgba(124,106,240,.28); }
+.pd-phase { font-size: 9.5px; font-weight: 700; color: var(--sub, #7a8094); padding: 1px 6px; border-radius: 6px; background: rgba(255,255,255,.07); margin-left: 4px; }
+.pd-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+
+/* M3 选型卡：translator 决策可视化 */
+.m3-translator { border: 1px solid rgba(79,139,247,.42); background: rgba(79,139,247,.08); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+.mt-title { font-size: 11.5px; font-weight: 800; color: #6f9bff; margin-bottom: 7px; }
+.mt-row { display: flex; align-items: baseline; gap: 8px; font-size: 11px; padding: 2px 0; }
+.mt-k { flex-shrink: 0; width: 38px; color: var(--sub, #7a8094); }
+.mt-v { color: var(--txt, #e8e8ef); font-weight: 600; word-break: break-all; }
+.mt-sub { font-size: 10px; color: var(--sub, #6d7286); margin-top: 5px; }
+
+/* M3 对话气泡：notice / insight */
+.m3-conv { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.conv-bubble { display: flex; align-items: flex-start; gap: 7px; padding: 7px 10px; border-radius: 10px; background: color-mix(in srgb, var(--bg-2, #20202c) 60%, transparent); border: 1px solid var(--line, #2a2a38); }
+.conv-bubble.notice { border-left: 3px solid #6f9bff; }
+.conv-bubble.insight { border-left: 3px solid #4ade80; }
+.conv-tag { flex-shrink: 0; font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 6px; background: rgba(255,255,255,.08); color: var(--sub, #b9bccb); }
+.conv-text { flex: 1; min-width: 0; font-size: 11px; color: var(--txt, #e8e8ef); line-height: 1.45; }
+.conv-t { flex-shrink: 0; font-size: 9px; color: var(--sub, #6d7286); align-self: center; }
 
 /* 管家建议（可忽略） */
 .persona-advice { border: 1px solid var(--line, #2a2a38); background: color-mix(in srgb, var(--bg-2, #20202c) 60%, transparent); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }

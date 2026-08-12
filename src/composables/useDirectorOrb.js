@@ -13,7 +13,7 @@
 // ============================================================
 import { reactive, computed } from 'vue'
 import { subscribe, wsConnected } from '../ws'
-import { directorRuns, directorRunStatus, listProjectAssets, listSegments, getProduction, orbApi } from '../api'
+import { directorRuns, directorRunStatus, listProjectAssets, listSegments, getProduction, orbApi, resolveDecision as resolveDecisionApi, listDecisions as listDecisionsApi } from '../api'
 
 // DAG 节点中文标签（与 ProductionStage.vue NODE_TXT 对齐）
 export const NODE_TXT = {
@@ -107,14 +107,21 @@ const state = reactive({
   synthReport: null,    // 接口6：成片质检（P5）
   suggestions: [],      // 管家建议（含 WS 推送 + 轮询派生，稳定 id）
   dismissed: [],        // 用户忽略的建议 id（localStorage 持久）
+  // ---- M3 悬浮球前端化（手册 §4）：三卡信息流 ----
+  translator: null,     // 最新选型可视化：{ task_type, checkpoint, node, loras, seed, ts }
+  translatorHistory: [],// 最近若干次选型（最多 5）
+  decisions: [],        // 待确认 / 已确认决策点（decision_request 推送 + 拉取合并）
+  conversation: [],     // 对话气泡：{ id, kind:'notice'|'insight', text, ts }
 })
 
 let _unsub = null
+let _unsubTr = null
 let _pollTimer = null
 let _orbPollTimer = null
 let _feedSeq = 0
 let _activePid = ''
 let _suggestedSeq = 0
+let _convSeq = 0
 
 const LS_DISMISSED = 'orb_dismissed'
 
@@ -151,6 +158,11 @@ function _resetOrb() {
   state.runSummary = null
   state.synthReport = null
   state.suggestions = []
+  // M3 三卡状态重置
+  state.translator = null
+  state.translatorHistory = []
+  state.decisions = []
+  state.conversation = []
 }
 
 function _ensureNodes() {
@@ -160,8 +172,27 @@ function _ensureNodes() {
 }
 
 // ---- WS 事件处理 ----------------------------------------------------------
-function _onEvent(event, data) {
+function _onEvent(event, data, msg) {
   const d = data || {}
+  const channel = (msg && msg.channel) || ''
+  // translator 频道：选型可视化（导演选了哪个底模/节点/seed）—— 与 director 频道分离
+  if (channel.indexOf('translator:') === 0) {
+    _onTranslator(event, d)
+    return
+  }
+  // director 频道：M3 新增 decision_request / notice / insight + 既有事件
+  if (event === 'decision_request') {
+    const list = Array.isArray(d.decisions) ? d.decisions : []
+    state.decisions = list.map(_normalizeDecision).filter(Boolean)
+    _recomputeOrbState()
+    return
+  } else if (event === 'notice') {
+    _pushConversation('notice', d.message || d.text || '')
+    return
+  } else if (event === 'insight') {
+    _pushConversation('insight', d.message || d.summary || d.text || '')
+    return
+  }
   if (event === 'progress') {
     if (d.run_id && !state.runId) {
       state.runId = d.run_id
@@ -231,9 +262,54 @@ function _onEvent(event, data) {
 }
 
 // ---- 订阅 / 轮询 ----------------------------------------------------------
+// M3：决策点规范化（options 可能为 JSON 字符串）
+function _normalizeDecision(x) {
+  if (!x) return null
+  let opts = x.options
+  if (typeof opts === 'string') {
+    try { opts = JSON.parse(opts) } catch (e) { opts = [] }
+  }
+  return {
+    decision_id: x.decision_id,
+    phase: x.phase || '',
+    category: x.category || 'A',
+    title: x.title || '',
+    description: x.description || '',
+    options: Array.isArray(opts) ? opts : [],
+    status: x.status || 'pending',
+    answer: x.answer != null ? x.answer : null,
+  }
+}
+
+// M3：对话气泡（notice/insight）
+function _pushConversation(kind, text) {
+  if (!text) return
+  state.conversation.push({ id: 'conv-' + (++_convSeq), kind, text: String(text), ts: _now() })
+  if (state.conversation.length > 30) state.conversation.splice(0, state.conversation.length - 30)
+}
+
+// M3：translator 选型可视化事件
+function _onTranslator(event, d) {
+  if (event !== 'selection') return
+  const sel = {
+    task_type: d.task_type || '',
+    trace_id: d.trace_id || '',
+    checkpoint: (d.selected && d.selected.checkpoint) || '',
+    node: (d.selected && d.selected.node) || '',
+    loras: (d.selected && d.selected.loras) || [],
+    seed: (d.selected && d.selected.seed) != null ? d.selected.seed : '',
+    ts: d.timestamp || _now(),
+  }
+  state.translator = sel
+  state.translatorHistory = [sel, ...(state.translatorHistory || [])].slice(0, 5)
+}
+
 function _subscribe(pid) {
   if (_unsub) { try { _unsub() } catch (e) { /* noop */ }; _unsub = null }
+  if (_unsubTr) { try { _unsubTr() } catch (e) { /* noop */ }; _unsubTr = null }
   _unsub = subscribe('director:' + pid, _onEvent)
+  // M3：订阅 translator:{pid} 选型可视化频道（导演选了哪个底模/节点/seed）
+  _unsubTr = subscribe('translator:' + pid, _onEvent)
 }
 
 function _pollFallback() {
@@ -418,6 +494,7 @@ export function directorOrbInit(pid, phase) {
     _resetRun()
     _resetOrb()
     _subscribe(pid)
+    refreshDecisions()  // M3：兜底拉取待确认决策点（与 WS 推送合并）
     fetchStageStats(pid)
   }
   if (!_pollTimer) {
@@ -513,6 +590,35 @@ export async function runOrbBatch(action, segmentIds, params) {
     return r
   } catch (e) {
     _pushLog('error', '', `管家操作 ${action} 失败：${e && e.message ? e.message : e}`)
+    return null
+  }
+}
+
+// M3：拉取项目待确认决策点（与 WS 推送合并，避免错过已推送的清单）
+export async function refreshDecisions() {
+  if (!state.pid) return
+  try {
+    const r = await listDecisionsApi(state.pid, 'pending')
+    const list = (r && r.decisions) || []
+    const norm = list.map(_normalizeDecision).filter(Boolean)
+    const byId = {}
+    for (const x of state.decisions) byId[x.decision_id] = x
+    for (const x of norm) if (!byId[x.decision_id]) byId[x.decision_id] = x
+    state.decisions = Object.values(byId)
+  } catch (e) { /* 忽略：WS 推送为主，拉取为兜底 */ }
+}
+
+// M3：用户提交决策答案（决策卡点选回传 → POST /decisions/{id}/resolve）
+export async function resolveDecision(decisionId, answer) {
+  if (!state.pid) return null
+  try {
+    const r = await resolveDecisionApi(state.pid, decisionId, answer)
+    state.decisions = state.decisions.map((x) =>
+      (x.decision_id === decisionId ? { ...x, status: 'resolved', answer: answer } : x))
+    _pushLog('success', '', `已提交决策「${decisionId || ''}」：${answer || ''}`)
+    return r
+  } catch (e) {
+    _pushLog('error', '', `决策提交失败：${e && e.message ? e.message : e}`)
     return null
   }
 }

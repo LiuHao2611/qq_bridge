@@ -322,6 +322,17 @@ export const extractStageFaceVector = (assetId, stageId) =>
 export const generateCharacterCard = (assetId, body = {}) =>
   post('/assets/' + assetId + '/generate-card', body).then((r) => r || {})
 
+// M3 悬浮球前端化 · 导演决策点 + 角色卡增强管线（手册 §4.2）
+// ① 决策点：列出项目待确认/已确认清单；提交用户答案回传悬浮球决策卡
+export const listDecisions = (projectId, status) =>
+  get('/projects/' + projectId + '/decisions' + (status ? ('?status=' + status) : ''))
+    .then((r) => r || { decisions: [], count: 0 })
+export const resolveDecision = (projectId, decisionId, answer) =>
+  post('/projects/' + projectId + '/decisions/' + decisionId + '/resolve', { answer }).then((r) => r || {})
+// ② 从剧本生成角色（六步确定性管线 v2）：projectId 作用域，触发 translator/insight 推送
+export const generateCharacterCardV2 = (projectId, assetId, body = {}) =>
+  post('/projects/' + projectId + '/assets/' + assetId + '/generate-card-v2', body).then((r) => r || {})
+
 // ---- §09 API-05 通知删除 ----
 export const deleteNotification = (id) => del('/notifications/' + id)
 

@@ -9,7 +9,7 @@ import {
   updateAsset, deleteAsset,
   listStagesWithPoses, addStage, delStage, addPose, delPose,
   extractAssetsFromStory, batchCreateProjectAssets, getOllamaStatus,
-  getLocalModels, testModelConnection,
+  getLocalModels, testModelConnection, generateCharacterCardV2,
 } from '../api'
 import { saveDraft, loadDraft, clearDraft, draftAge, draftKey } from '../composables/useDraft'
 import { pushHistory, genKey } from '../composables/useGenHistory'
@@ -816,6 +816,30 @@ const openImportDialog = async () => {
     importDialog.loading = false
   }
 }
+
+// M3 悬浮球前端化 · 「从剧本生成角色」入口：对本集角色资产批量触发六步确定性管线（v2）。
+// 命中真实 ComfyUI / 剧本设定时推送 translator / insight 到悬浮球；失败单条跳过不阻断其余。
+const genRolesBusy = ref(false)
+const generateRolesFromScript = async () => {
+  const roles = (project.assets.characters || []).filter((a) => a.type === 'role')
+  if (!roles.length) { toast('本集暂无角色资产，请先「从剧本提取」角色'); return }
+  if (genRolesBusy.value) return
+  genRolesBusy.value = true
+  let okCount = 0, failCount = 0
+  for (const r of roles) {
+    pushGeneration('image', '角色定妆照·' + (r.name || r.id), 'running', '六步确定性管线生成中…')
+    try {
+      await generateCharacterCardV2(pid, r.id, {})
+      pushGeneration('image', '角色定妆照·' + (r.name || r.id), 'done', '生成完成')
+      okCount++
+    } catch (e) {
+      pushGeneration('image', '角色定妆照·' + (r.name || r.id), 'failed', e.message || '生成失败')
+      failCount++
+    }
+  }
+  genRolesBusy.value = false
+  toast(`角色生成完成：${okCount} 成功 / ${failCount} 失败（详见悬浮球选型与品控）`)
+}
 const filteredImportItems = computed(() => {
   const k = importDialog.keyword.trim().toLowerCase()
   if (!k) return importDialog.items
@@ -999,6 +1023,9 @@ onMounted(load)
       </label>
       <button v-if="scope === 'project'" class="btn import-btn" @click="openExtractDialog">📝 从剧本提取</button>
       <button v-if="scope === 'project'" class="btn import-btn" @click="openImportDialog">🌐 从全集导入</button>
+      <button v-if="scope === 'project'" class="btn import-btn accent" :disabled="genRolesBusy" @click="generateRolesFromScript">
+        🎬 从剧本生成角色{{ genRolesBusy ? '…' : '' }}
+      </button>
     </div>
 
     <!-- 拖拽上传区（空状态 or 常驻快捷区） -->
