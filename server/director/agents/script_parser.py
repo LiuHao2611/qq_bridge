@@ -88,6 +88,18 @@ class ScriptParserAgent(BaseAgent):
         self._log("agent_done", level="info", segment_count=len(segs),
                   bound_segments=len(bound), asset_lib_size=lib_size,
                   needs_review=len([w for w in rule_warnings if "待人工确认" in w]))
+        # M3（手册 §4.1 / 契约 P2）：拆解完成 → 导演发言「共 N 分镜，其中 M 待绑定资产」
+        if ctx.project_id:
+            try:
+                from realtime import publish as ws_publish
+                _n = len(segs)
+                _m = sum(1 for s in segs if s.get("segment_id") not in bound)
+                ws_publish("director:%s" % ctx.project_id, "notice", {
+                    "message": "拆解完成，共 %d 个分镜，其中 %d 个待绑定资产" % (_n, _m),
+                    "phase": "P2",
+                })
+            except Exception:
+                pass
         return AgentResult(
             status="success",
             data={"segments": segs, "meta": meta, "bound_assets": bound, "asset_lib_size": lib_size},

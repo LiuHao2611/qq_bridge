@@ -182,8 +182,18 @@ function _onEvent(event, data, msg) {
   }
   // director 频道：M3 新增 decision_request / notice / insight + 既有事件
   if (event === 'decision_request') {
-    const list = Array.isArray(d.decisions) ? d.decisions : []
-    state.decisions = list.map(_normalizeDecision).filter(Boolean)
+    // M3 修复：按 decision_id 合并（upsert）而非整组替换，避免后阶段批次推送
+    // 覆盖前阶段仍 pending 的决策（pendingDecisions 显示全部阶段）。
+    const incoming = (Array.isArray(d.decisions) ? d.decisions : [])
+      .map(_normalizeDecision).filter(Boolean)
+    const byId = {}
+    for (const x of state.decisions) byId[x.decision_id] = x
+    for (const x of incoming) {
+      const prev = byId[x.decision_id]
+      // 已在本端作答(resolved)的保留本地状态，其余用服务端最新快照覆盖
+      byId[x.decision_id] = (prev && prev.status !== 'pending') ? prev : x
+    }
+    state.decisions = Object.values(byId)
     _recomputeOrbState()
     return
   } else if (event === 'notice') {

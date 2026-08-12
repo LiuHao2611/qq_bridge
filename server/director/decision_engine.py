@@ -48,6 +48,27 @@ A_CLASS_DEFAULTS = [
         "default": "纯 AI 生成",
     },
     {
+        "phase": "P2",
+        "title": "单片段时长上限选多少？",
+        "description": "按套餐/节奏约束单场次最大时长；超出自动切分为多分镜（手册 §2 粒度切分）。",
+        "options": ["3s", "6s", "9s", "12s"],
+        "default": "9s",
+    },
+    {
+        "phase": "P3",
+        "title": "seed 策略",
+        "description": "分镜出图 seed 策略：固定 seed 保证同角色同镜可复现；每镜随机增强多样性。",
+        "options": ["固定seed（可复现）", "每镜随机"],
+        "default": "固定seed（可复现）",
+    },
+    {
+        "phase": "P3",
+        "title": "真人资产开关",
+        "description": "是否开启真人资产注入（N03 将 512 维身份向量注入扩散模型交叉注意力层）。关闭=纯风格化生成。",
+        "options": ["开启", "关闭"],
+        "default": "开启",
+    },
+    {
         "phase": "P3",
         "title": "画幅比例",
         "description": "分镜成片画幅（竖屏短剧 9:16 / 横屏 16:9 等）。",

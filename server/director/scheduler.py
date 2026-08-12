@@ -238,6 +238,19 @@ class GlobalScheduler:
         agent = self.agents[node.agent]
         agent.init(ctx)                       # 手册 §3 Init
         child_ctx = ctx.child(upstream=dict(upstream))
+        # M3 决策预检（手册 §3.2.3）：进入该阶段即攒批推送 A 类决策点。
+        # 幂等：同项目+阶段+标题已 pending 复用、已 resolved 跳过（不重复问）。
+        # 映射 agent→阶段：script_parser→P2 / visual_control→P3 / sequence_scheduler→P4
+        # （post_production=P5 按契约无强制决策；scheduler 自身 N01/N09 跳过）。
+        _phase = {"script_parser": "P2", "visual_control": "P3",
+                  "sequence_scheduler": "P4"}.get(node.agent)
+        if _phase and ctx.project_id:
+            try:
+                from director.decision_engine import preflight_check
+                preflight_check(ctx.project_id, _phase)
+            except Exception as _e:
+                blog(trace_id, "scheduler", "preflight_failed", level="warning",
+                     phase=_phase, error=str(_e)[:160])
         return agent.run(child_ctx)           # 手册 §3 Run
 
     def _n01_receive(self, ctx):

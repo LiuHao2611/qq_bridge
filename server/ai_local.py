@@ -1603,6 +1603,18 @@ def generate_character_card_v2(asset_id, setting_text=None, era=None,
     name = (attrs or {}).get("name") or (five or {}).get("appearance") or asset_id
     intent = _build_character_intent_for_v2(name, style_tags or [], era)
     positive = build_generation_prompt(intent, subject=subject)
+
+    # M3（手册 §4.1 / 契约 P1）：管线起始 → 导演主动告知「正在提取角色五要素」，
+    # 让悬浮球在 P1 阶段即出现该发言（与下方 P3 定妆照发言、P3 选型/品控并列）。
+    if project_id:
+        try:
+            from realtime import publish_director_notice
+            publish_director_notice(project_id, {
+                "message": "正在提取角色「%s」的五要素（年龄/外貌/服装/气质/时代）" % name,
+                "phase": "P1", "asset_id": asset_id, "trace_id": trace_id,
+            })
+        except Exception:
+            logger.warning("[card-v2] P1 五要素 notice 推送失败（忽略）")
     negative = build_character_negative_prompt()
 
     # M3（手册 §4.1）：管线开始 → 导演主动告知（project_id 缺省则跳过推送）

@@ -66,6 +66,7 @@ class SequenceSchedulerAgent(BaseAgent):
         trace_id = ctx.trace_id or "DR-unknown"
         project_id = ctx.project_id
         resolution0 = ctx.params.get("resolution") or "720p"
+        self._translator_pushed = False   # M3：本批次仅推送一次「导演选型」可视化
 
         try:
             from director.enqueue import (enqueue_segment, fetch_task_statuses,
@@ -168,6 +169,30 @@ class SequenceSchedulerAgent(BaseAgent):
                 "asset_inject_config": asset_inject_config,
                 "global_style_ref": global_style_ref,
             }
+            # M3（手册 §4.1 / 契约 P3）：入队首个分镜时 → 推送「导演选型」可视化
+            # （已为分镜匹配生成底模 + IP-Adapter/LoRA 注入策略），悬浮球选型卡展示。
+            if (not self._translator_pushed) and ws_publish and project_id:
+                self._translator_pushed = True
+                _ip_node = "IP-Adapter" if asset_inject_config else None
+                _loras = []
+                try:
+                    _loras = [l.get("name") for l in (asset_inject_config.get("roles") or {}).values()
+                              if isinstance(l, dict) and l.get("name")]
+                except Exception:
+                    _loras = []
+                ws_publish("translator:%s" % project_id, "selection", {
+                    "trace_id": trace_id,
+                    "task_type": "shot_gen",
+                    "selected": {
+                        "checkpoint": model_id,
+                        "node": _ip_node,
+                        "ip_adapter_weight": (asset_inject_config.get("roles") or {})
+                                          and 0.85 or None,
+                        "loras": _loras,
+                        "seed": seed,
+                    },
+                    "timestamp": int(time.time()),
+                })
             try:
                 task_id, _local_task_id, _pre_auth_id = enqueue_segment(
                     real_seg_id, trace_id, duration=duration, model_id=model_id,

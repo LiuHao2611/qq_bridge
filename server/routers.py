@@ -120,6 +120,25 @@ async def split_story(project_id: str, req: Request):
         if not meta.get("error"):
             meta["error"] = "LLM 未返回有效场次，已回退正则拆分"
 
+    # M3（手册 §4.1 / 契约 P2）：拆解完成 → 导演发言「共 N 分镜，其中 M 待绑定资产」
+    # + 攒批推送 P2 A 类决策点（单片段时长上限；幂等）。
+    try:
+        from director.decision_engine import preflight_check
+        preflight_check(project_id, "P2")
+    except Exception as _e:
+        logger.warning("[split] preflight P2 失败（忽略）: %s", _e)
+    if segments:
+        _n = len(segments)
+        _m = sum(1 for s in segments if not s.get("asset_refs"))
+        try:
+            from realtime import publish_director_notice
+            publish_director_notice(project_id, {
+                "message": "拆解完成，共 %d 个分镜，其中 %d 个待绑定资产" % (_n, _m),
+                "phase": "P2",
+            })
+        except Exception:
+            logger.warning("[split] P2 拆解 notice 推送失败（忽略）")
+
     return ok({
         "segments": segments,
         "count": len(segments),
@@ -407,6 +426,13 @@ async def extract_assets(project_id: str, req: Request):
     if not story:
         raise ApiError("NO_STORY", "项目中暂无场次/分镜，请在请求体提供 story 文本")
     model_config = b.get("model_config") or {}
+    # M3（手册 §3.2.3）：进入 P1 资产初始化即攒批推送 A 类决策点（视觉风格/真人参考），
+    # 幂等：已 pending 复用、已 resolved 跳过（不重复问）。
+    try:
+        from director.decision_engine import preflight_check
+        preflight_check(project_id, "P1")
+    except Exception as _e:
+        logger.warning("[extract-assets] preflight P1 失败（忽略）: %s", _e)
     # 同上：用 asyncio.to_thread 包装同步 Ollama 调用，避免事件循环被 extract 卡死（修根因）
     result = await asyncio.to_thread(extract_assets_from_story, story, model_config)
     # 即使 LLM 失败也把 meta.error 返回给前端，前端可提示用户
@@ -1241,6 +1267,12 @@ async def generate_character_card_v2_endpoint(project_id: str, asset_id: str, re
     era = body.get("era")
     poses = body.get("poses")
     setting_text = body.get("setting_text")
+    # M3（手册 §3.2.3）：角色卡生成属 P1 资产初始化，攒批推送 A 类决策点（幂等）。
+    try:
+        from director.decision_engine import preflight_check
+        preflight_check(project_id, "P1")
+    except Exception as _e:
+        logger.warning("[card-v2] preflight P1 失败（忽略）: %s", _e)
     try:
         import ai_local
         # M3 §4.1：防御式构建资源目录（离线注入静态 resource_catalog.json，不触网），

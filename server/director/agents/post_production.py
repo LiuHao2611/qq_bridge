@@ -112,6 +112,25 @@ class PostProductionAgent(BaseAgent):
                                      "failed_shot_list": failed_shots, "quality_alerts": alerts},
                                error={"key": "COMPOSITION_FAILED", "message": note})
 
+        # M3（手册 §4.1 / 契约 P5）：合成完成 → 导演品控结论（真实人脸相似度均值）。
+        try:
+            _sims = [r["face_sim"] for r in qc.get("reports", [])
+                     if isinstance(r.get("face_sim"), (int, float))]
+            if _sims:
+                _avg = sum(_sims) / len(_sims)
+                _pass = _avg >= FACE_SIM_THRESHOLD
+                _msg = "合成完成，人脸相似度 %.2f，%s" % (_avg, "达标" if _pass else "未达标")
+            else:
+                _avg, _pass = None, None
+                _msg = "合成完成（人脸相似度引擎缺失，未比对）"
+            if ws_publish:
+                ws_publish("director:%s" % project_id, "insight", {
+                    "message": _msg, "phase": "P5",
+                    "face_similarity": _avg, "pass": _pass,
+                })
+        except Exception:
+            pass
+
         self._set_state("done", 100.0, output=out_path)
         self._log("agent_done", level="info", output=out_path, level_detail=level, note=note)
         return AgentResult(
