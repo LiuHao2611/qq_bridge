@@ -455,3 +455,15 @@ export const STATUS_TXT = {
   error: '失败',
   draft: '草稿',
 }
+
+// ---- DirectorOrb v2（悬浮球化身）接口 ----
+// 全部挂在 /api/v1/orb 下，受 module_flags.director_orb_v2 灰度开关保护（默认关闭）。
+// 任一接口返回 ApiError(code:'ORB_DISABLED') 时，前端回退到旧版悬浮球。
+export const orbApi = {
+  assetReadiness: (pid) => get('/orb/projects/' + pid + '/asset-readiness'),
+  scriptAnalysis: (pid) => get('/orb/projects/' + pid + '/script-analysis'),
+  intentPreview: (shotId) => get('/orb/shots/' + shotId + '/intent-preview'),
+  runSummary: (pid) => get('/orb/projects/' + pid + '/run-summary'),
+  synthesizeReport: (pid) => get('/orb/projects/' + pid + '/synthesize-report'),
+  batchAction: (pid, body) => post('/orb/projects/' + pid + '/batch-action', body),
+}

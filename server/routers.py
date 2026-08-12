@@ -948,6 +948,11 @@ def _director_on_progress(project_id, run_id, node_id, status, progress, info):
         "run_id": run_id, "node": node_id, "status": status,
         "progress": progress, "info": info,
     })
+    # DirectorOrb v2：同一频道推送 orb_dag_state（悬浮球「正在执行」呼吸态数据源）
+    ws_publish("director:%s" % project_id, "orb_dag_state", {
+        "run_id": run_id, "node": node_id, "status": status,
+        "progress": progress, "info": info,
+    })
 
 
 @api.post("/projects/{project_id}/director-run")
@@ -1153,3 +1158,14 @@ async def extract_stage_face_vector(asset_id: str, stage_id: str):
     if not stored:
         raise ApiError("FACE_STORE_FAILED", "512 维向量提取成功但落库失败")
     return ok({"stage_id": stage_id, "has_vector": True, "dim": FACE_VECTOR_DIM})
+
+
+# ======================================================================
+# DirectorOrb v2（悬浮球化身）路由挂载
+# ----------------------------------------------------------------------
+# 设计（方案 §二）：悬浮球 = 导演 Agent 的前台人格化化身，只聚合既有数据，
+# 不新增独立检测。全部接口挂在既有 api（prefix=/api/v1）下，受
+# module_flags.director_orb_v2 灰度开关保护（默认关闭）。
+# ======================================================================
+from orb.routes import register_orb_routes  # noqa: E402
+register_orb_routes(api)

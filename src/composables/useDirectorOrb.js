@@ -5,13 +5,15 @@
 //   - WS 不可用时按 REDUN-01 回退轮询 directorRuns / directorRunStatus
 //   - 维护 N01–N09 DAG 节点状态、虚拟日志、告警、0–1 成片结果
 //   - 提供 pushGeneration(kind,title,status,detail) 供各阶段页上报「正在生成的文本/图/视频」
-//     实时小任务，满足悬浮窗「可折叠虚拟日志窗口显示小任务生命周期」
-//   - 导出 P1–P5 阶段技能清单，供 DirectorOrb.vue 按当前阶段聚焦展示
+//   - DirectorOrb v2：订阅 orb_* 事件，聚合导演 Agent 已有数据，呈现「管家」人格化建议
+//
+// 设计（方案 §二/§四）：悬浮球没有独立大脑，只做翻译/聚合/代理；建议去重节流（5 分钟）、
+// 用户「忽略」存前端 localStorage（不持久化到后端，与导演 Agent 状态始终一致）。
 // 纯内存状态，不写文件、不进 C 盘；模块级 reactive 即单例。
 // ============================================================
-import { reactive } from 'vue'
+import { reactive, computed } from 'vue'
 import { subscribe, wsConnected } from '../ws'
-import { directorRuns, directorRunStatus, listProjectAssets, listSegments, getProduction } from '../api'
+import { directorRuns, directorRunStatus, listProjectAssets, listSegments, getProduction, orbApi } from '../api'
 
 // DAG 节点中文标签（与 ProductionStage.vue NODE_TXT 对齐）
 export const NODE_TXT = {
@@ -96,18 +98,41 @@ const state = reactive({
   feed: [],             // 实时生成小任务：{ id, kind, title, status, progress, steps, log, ts }
   stageStats: null,     // 阶段统计：{ assets, segments, production, ts }
   phase: 1,             // 当前阶段 1..5，由 DirectorOrb.vue 按路由同步
+  // ---- DirectorOrb v2 ----
+  orbEnabled: true,     // 灰度开关（后端 ORB_DISABLED 时置 false，前端回退旧版）
+  orbState: 'idle',     // 六态机：idle/watching/suggestion/warning/error/success
+  readiness: null,      // 接口1：资产就绪度（P1）
+  scriptAnalysis: null, // 接口2：叙事结构（P2）
+  runSummary: null,     // 接口4：品控摘要（P4）
+  synthReport: null,    // 接口6：成片质检（P5）
+  suggestions: [],      // 管家建议（含 WS 推送 + 轮询派生，稳定 id）
+  dismissed: [],        // 用户忽略的建议 id（localStorage 持久）
 })
 
 let _unsub = null
 let _pollTimer = null
+let _orbPollTimer = null
 let _feedSeq = 0
 let _activePid = ''
+let _suggestedSeq = 0
+
+const LS_DISMISSED = 'orb_dismissed'
 
 // ---- 内部工具 -------------------------------------------------------------
 function _now() { return Date.now() }
 function _pushLog(level, node, msg) {
   state.logs.push({ ts: _now(), level, node: node || '', msg })
   if (state.logs.length > 200) state.logs.splice(0, state.logs.length - 200)
+}
+function _loadDismissed() {
+  try {
+    const raw = localStorage.getItem(LS_DISMISSED)
+    if (raw) return JSON.parse(raw) || []
+  } catch (e) { /* ignore */ }
+  return []
+}
+function _saveDismissed() {
+  try { localStorage.setItem(LS_DISMISSED, JSON.stringify(state.dismissed)) } catch (e) { /* ignore */ }
 }
 function _resetRun() {
   state.runId = ''
@@ -119,6 +144,13 @@ function _resetRun() {
   state.result = null
   state.alerts = []
   state.logs = []
+}
+function _resetOrb() {
+  state.readiness = null
+  state.scriptAnalysis = null
+  state.runSummary = null
+  state.synthReport = null
+  state.suggestions = []
 }
 
 function _ensureNodes() {
@@ -144,6 +176,33 @@ function _onEvent(event, data) {
       if (d.progress != null) state.nodes[node].progress = Math.round(d.progress * 100)
     }
     _pushLog('info', node, `节点 ${NODE_TXT[node] || node} → ${d.status || ''}`)
+  } else if (event === 'orb_dag_state') {
+    // DirectorOrb v2：导演运行态呼吸数据源
+    if (d.run_id && !state.runId) state.runId = d.run_id
+    if (d.run_id) state.runId = d.run_id
+    if (d.status === 'running' && state.runStatus === 'idle') state.runStatus = 'running'
+    const node = d.node
+    if (node && state.nodes[node]) {
+      state.nodes[node].status = d.status || 'running'
+      if (d.progress != null) state.nodes[node].progress = Math.round(d.progress * 100)
+    }
+  } else if (event === 'orb_suggestion') {
+    // 后端生产者推送的建议（已后端去重）；前端再按 dismissed 过滤
+    const s = d.data || d
+    if (!s || !s.id) return
+    if (state.dismissed.includes(s.id)) return
+    if (!state.suggestions.find((x) => x.id === s.id)) {
+      state.suggestions.push({
+        id: s.id, project_id: s.project_id || state.pid, phase: s.phase || '',
+        severity: s.severity || 'suggestion', category: s.category || '',
+        metric_name: s.metric_name, metric_value: s.metric_value, threshold: s.threshold,
+        title: s.title || '', detail: s.detail || '', action_type: s.action_type || null,
+        action_payload: s.action_payload || null, target_id: s.target_id || null,
+        created_at: s.created_at || _now(),
+      })
+    }
+  } else if (event === 'orb_quality_check') {
+    state.synthReport = d.data || d || null
   } else if (event === 'completed') {
     state.runStatus = d.ok ? 'done' : 'failed'
     state.progress = 100
@@ -154,7 +213,6 @@ function _onEvent(event, data) {
       }
     }
     _pushLog(d.ok ? 'success' : 'error', '', d.ok ? '导演全链路完成' : '导演全链路失败')
-    // 拉取完整快照（quality_report / global_style_ref）
     if (state.runId) {
       directorRunStatus(state.pid, state.runId)
         .then((r) => { state.result = (r && r.snapshot) || null; if (r && r.final_output) state.finalOutput = r.final_output })
@@ -169,6 +227,7 @@ function _onEvent(event, data) {
     if (state.alerts.length > 50) state.alerts.splice(0, state.alerts.length - 50)
     _pushLog('warning', '', `告警: ${d.reason || ''}${d.refunded_count ? ' (退冻结金 ' + d.refunded_count + ')' : ''}`)
   }
+  _recomputeOrbState()
 }
 
 // ---- 订阅 / 轮询 ----------------------------------------------------------
@@ -181,11 +240,9 @@ function _pollFallback() {
   // REDUN-01：WS 不可用时回退轮询
   if (wsConnected()) return
   if (!state.pid) return
-  // 1) 检测是否有进行中/新产生的运行
   directorRuns(state.pid).then((res) => {
     const runs = (res && res.runs) || []
     if (!state.runId && runs.length) {
-      // 取最新一条作为当前跟踪对象
       const latest = runs[runs.length - 1]
       if (latest.status === 'running' || latest.status === 'done' || latest.status === 'failed') {
         state.runId = latest.run_id
@@ -212,6 +269,140 @@ function _pollFallback() {
   }).catch(() => {})
 }
 
+// ---- DirectorOrb v2：六态机 + 建议派生 ------------------------------------
+function _severityRank(sev) {
+  return { info: 0, suggestion: 1, warning: 2, error: 3 }[sev] || 0
+}
+
+function _recomputeOrbState() {
+  const errorFromAlerts = state.alerts.some((a) => a.level === 'error')
+  const vis = visibleSuggestions.value
+  const hasError = errorFromAlerts || state.runStatus === 'error' || vis.some((s) => s.severity === 'error')
+  if (hasError) { state.orbState = 'error'; return }
+  if (vis.some((s) => s.severity === 'warning')) { state.orbState = 'warning'; return }
+  if (vis.some((s) => s.severity === 'suggestion')) { state.orbState = 'suggestion'; return }
+  if (state.runStatus === 'running') { state.orbState = 'watching'; return }
+  if (state.runStatus === 'done') { state.orbState = 'success'; return }
+  state.orbState = 'idle'
+}
+
+// 从导演 Agent 已有数据派生「管家建议」（稳定 id：der-xxx，便于去重/消解）
+function _deriveSuggestions() {
+  const out = []
+  const now = _now()
+  // P1 资产就绪度
+  const rd = state.readiness
+  if (rd) {
+    const primaries = (rd.characters && rd.characters.items) || []
+    for (const c of primaries) {
+      if (c.is_primary && !c.ready) {
+        out.push({
+          id: 'der-p1-primary-' + c.id, phase: 'P1', severity: 'warning', category: 'asset_quality',
+          title: '主角未就绪', detail: `角色「${c.name}」存在问题：${(c.issues || []).join('、') || '未通过质量检查'}`,
+          action_type: 'navigate', action_payload: { path: '/assets' }, target_id: c.id, created_at: now,
+        })
+      }
+    }
+    const miss = rd.missing_role_segments || []
+    for (const m of miss.slice(0, 6)) {
+      out.push({
+        id: 'der-p1-missrole-' + m.segment_id, phase: 'P1', severity: 'suggestion', category: 'asset_quality',
+        title: `场次 ${m.index} 缺角色绑定`, detail: '该场次没有绑定任何角色资产，进入 P4 前建议补绑',
+        action_type: 'navigate', action_payload: { path: '/editor' }, target_id: m.segment_id, created_at: now,
+      })
+    }
+  }
+  // P2 叙事结构
+  const sa = state.scriptAnalysis
+  if (sa) {
+    const cons = sa.consecutive_same_scene || []
+    if (cons.length) {
+      const seg = cons.map((c) => `${c.start}-${c.end}`).join('、')
+      out.push({
+        id: 'der-p2-consecutive', phase: 'P2', severity: 'suggestion', category: 'script_structure',
+        title: `连续同场景 ${cons.length} 处`, detail: `场次 ${seg} 连续同场景，建议变化景别/运镜`,
+        action_type: null, created_at: now,
+      })
+    }
+    const empty = sa.empty_description_segments || []
+    if (empty.length) {
+      out.push({
+        id: 'der-p2-empty', phase: 'P2', severity: 'warning', category: 'script_structure',
+        title: `${empty.length} 场缺描述`, detail: `场次 ${empty.join('、')} 缺少场景描述，影响后续生成`,
+        action_type: null, created_at: now,
+      })
+    }
+  }
+  // P4 品控摘要
+  const rs = state.runSummary
+  if (rs) {
+    const failed = rs.failed_segments || []
+    if (failed.length) {
+      for (const f of failed.slice(0, 6)) {
+        out.push({
+          id: 'der-p4-fail-' + f.segment_id, phase: 'P4', severity: 'error', category: 'qc_face',
+          title: `场次 ${f.index} 生成失败`, detail: '该分镜生成失败，可一键重生成（消耗积分）',
+          action_type: 'regenerate', action_payload: { segment_ids: [f.segment_id] }, target_id: f.segment_id, created_at: now,
+        })
+      }
+    }
+    if (rs.face_similarity_pass_rate > 0 && rs.face_similarity_pass_rate < 100) {
+      out.push({
+        id: 'der-p4-face', phase: 'P4', severity: 'warning', category: 'qc_face',
+        title: '人脸相似度未全通过', detail: `人脸相似度通过率 ${rs.face_similarity_pass_rate}%（标准≥80%）`,
+        action_type: null, metric_name: 'face_similarity_pass_rate', metric_value: rs.face_similarity_pass_rate, threshold: 100, created_at: now,
+      })
+    }
+  }
+  // P5 成片质检
+  const sr = state.synthReport
+  if (sr && sr.degrade_summary && sr.degrade_summary !== '无降级') {
+    out.push({
+      id: 'der-p5-degrade', phase: 'P5', severity: 'warning', category: 'synth_quality',
+      title: '成片存在降级', detail: sr.degrade_summary, action_type: null, created_at: now,
+    })
+  }
+  return out
+}
+
+// 合并派生建议（更新稳定 id，移除已消解项；不触碰 WS 推送的 uuid 建议）
+function _mergeDerived(derived) {
+  const derivedIds = new Set(derived.map((d) => d.id))
+  const byId = {}
+  for (const d of derived) byId[d.id] = d
+  for (const s of state.suggestions) {
+    if (s.id && s.id.startsWith('der-') && derivedIds.has(s.id)) {
+      const d = byId[s.id]
+      s.title = d.title; s.detail = d.detail; s.severity = d.severity
+      s.action_type = d.action_type; s.action_payload = d.action_payload
+      s.target_id = d.target_id; s.phase = d.phase; s.category = d.category
+      s.metric_name = d.metric_name; s.metric_value = d.metric_value; s.threshold = d.threshold
+    }
+  }
+  // 移除已消解的派生项
+  state.suggestions = state.suggestions.filter((s) => !(s.id && s.id.startsWith('der-') && !derivedIds.has(s.id)))
+  // 新增派生项
+  for (const d of derived) {
+    if (!state.suggestions.find((x) => x.id === d.id)) state.suggestions.push(d)
+  }
+}
+
+async function refreshOrb() {
+  if (!state.pid || !state.orbEnabled) return
+  const pid = state.pid
+  const tasks = [
+    orbApi.assetReadiness(pid).then((r) => { state.readiness = r }).catch((e) => { if (e && e.code === 'ORB_DISABLED') state.orbEnabled = false }),
+    orbApi.scriptAnalysis(pid).then((r) => { state.scriptAnalysis = r }).catch((e) => { if (e && e.code === 'ORB_DISABLED') state.orbEnabled = false }),
+    orbApi.runSummary(pid).then((r) => { state.runSummary = r }).catch((e) => { if (e && e.code === 'ORB_DISABLED') state.orbEnabled = false }),
+    orbApi.synthesizeReport(pid).then((r) => { state.synthReport = r }).catch((e) => { if (e && e.code === 'ORB_DISABLED') state.orbEnabled = false }),
+  ]
+  await Promise.all(tasks)
+  if (state.orbEnabled) {
+    _mergeDerived(_deriveSuggestions())
+    _recomputeOrbState()
+  }
+}
+
 // ---- 对外 API -------------------------------------------------------------
 export function useDirectorOrb() {
   return { state, NODE_TXT, NODE_KIND, NODE_ORDER, PHASE_SKILLS }
@@ -223,19 +414,25 @@ export function directorOrbInit(pid, phase) {
     _activePid = pid
     state.pid = pid
     state.phase = phase || 1
+    state.dismissed = _loadDismissed()
     _resetRun()
+    _resetOrb()
     _subscribe(pid)
-    // 进入项目即拉阶段统计（异步、不阻塞）
     fetchStageStats(pid)
   }
   if (!_pollTimer) {
     _pollTimer = setInterval(_pollFallback, 3000)
+  }
+  if (!_orbPollTimer) {
+    _orbPollTimer = setInterval(refreshOrb, 5000)
+    refreshOrb()
   }
 }
 
 export function directorOrbDestroy() {
   if (_unsub) { try { _unsub() } catch (e) { /* noop */ }; _unsub = null }
   if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null }
+  if (_orbPollTimer) { clearInterval(_orbPollTimer); _orbPollTimer = null }
   _activePid = ''
 }
 
@@ -282,12 +479,42 @@ export function appendGenerationLog(kind, title, level, msg) {
 export async function fetchStageStats(pid) {
   if (!pid) return
   const out = { ts: Date.now(), assets: null, segments: null, production: null }
-  // P1 资产库（本集）
   try { out.assets = await listProjectAssets(pid) } catch (e) { /* ignore */ }
-  // P2 / P3 分镜
   try { out.segments = await listSegments(pid) } catch (e) { /* ignore */ }
-  // P4 生产视图（含任务状态分布）
   try { out.production = await getProduction(pid) } catch (e) { /* ignore */ }
   state.stageStats = out
   return out
 }
+
+// ---- DirectorOrb v2 对外状态/操作 ----------------------------------------
+const visibleSuggestions = computed(() =>
+  state.suggestions.filter((s) => !state.dismissed.includes(s.id))
+)
+const decisionItems = computed(() =>
+  visibleSuggestions.value.filter((s) => s.severity === 'error')
+)
+const unreadCount = computed(() => visibleSuggestions.value.length)
+
+export function dismissSuggestion(id) {
+  if (!state.dismissed.includes(id)) {
+    state.dismissed.push(id)
+    _saveDismissed()
+  }
+  _recomputeOrbState()
+}
+
+// 批量操作代理（P4 重生成/跳过/降档）：CLOSE-04 由后端 pre_auth 保证
+export async function runOrbBatch(action, segmentIds, params) {
+  if (!state.pid) return null
+  try {
+    const r = await orbApi.batchAction(state.pid, { action, segment_ids: segmentIds, params: params || {} })
+    _pushLog('success', '', `管家操作 ${action} 已提交（${r.queued || 0} 个分镜）`)
+    await refreshOrb()
+    return r
+  } catch (e) {
+    _pushLog('error', '', `管家操作 ${action} 失败：${e && e.message ? e.message : e}`)
+    return null
+  }
+}
+
+export { visibleSuggestions, decisionItems, unreadCount }

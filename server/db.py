@@ -332,6 +332,14 @@ def _migrate(conn):
         # 空间站位预规划蓝图（设计逻辑「空间站位预规划」/ §3.4.4）：多人分镜角色相对位置/朝向/视线，
         # 由 ScriptParserAgent(N02) 计算并随 shots 落库，前端站位条可视化；GET 端点 SELECT * 自动带回。
         ("shots", "stage_blueprint TEXT"),
+        # DirectorOrb v2（悬浮球化身）所需可观测性字段：全部 ADD COLUMN，向后兼容，无创性。
+        # 设计：悬浮球不新增独立检测，只聚合导演 Agent 已有数据，这些列用于承接既有品控/质量结果。
+        ("assets", "quality_flags TEXT NOT NULL DEFAULT '{}'"),   # P1 单体质量标记（人脸/角度/姿势/描述）
+        ("assets", "color_signature TEXT"),                        # P1 风格一致性（颜色直方图指纹）
+        ("generation_tasks", "face_similarity REAL"),             # P4 品控：人脸相似度(≥0.8 通过)
+        ("generation_tasks", "first_frame_match REAL"),           # P4 品控：首尾帧衔接匹配度
+        ("generation_tasks", "degrade_reason TEXT"),              # P4 降级原因透出（诚实告知用户）
+        ("shots", "recipe_override TEXT NOT NULL DEFAULT '{}'"),  # P3 用户手动配方覆盖(user > style_tags)
     ]
     for tbl, col_def in alters:
         col = col_def.split(" ", 1)[0]
@@ -457,6 +465,15 @@ def _migrate(conn):
              updated_at   INTEGER NOT NULL DEFAULT 0
            )"""
     )
+    # DirectorOrb v2 灰度开关：默认关闭（enabled=0）。前端导航守卫 + orb 接口均依赖 get_flags()。
+    # 设计 §4.5：悬浮球高频交互组件，先灰度验证建议质量与打扰程度后再默认开启。
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO module_flags (module_key, enabled, updated_at) "
+            "VALUES ('director_orb_v2', 0, strftime('%s','now'))"
+        )
+    except Exception:
+        pass
 
     # 2026-08-09 修正：asset_stages.stage_name 原枚举 CHECK 限制自由/层级命名（如 周岩-青年），迁移移除。
     _migrate_asset_stages_free_stage_name(conn)

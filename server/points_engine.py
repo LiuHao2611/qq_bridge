@@ -21,6 +21,16 @@ def _get_balance(conn):
     return fetch_one(conn, "SELECT points_balance FROM users WHERE user_id=?", (SINGLE_USER_ID,))["points_balance"]
 
 
+def get_points_balance() -> int:
+    """查询当前用户（单用户模式）积分余额。供 orb 批量操作前校验（CLOSE-04 资金安全）。"""
+    conn = get_conn()
+    try:
+        row = fetch_one(conn, "SELECT points_balance FROM users WHERE user_id=?", (SINGLE_USER_ID,))
+        return int(row["points_balance"]) if row else 0
+    finally:
+        conn.close()
+
+
 def pre_auth(amount, segment_id, idempotency_key):
     """冻结一笔积分（estimated）。CLOSE-04：冻结即真实扣减并冻结余额。
 

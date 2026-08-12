@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch, reactive, onMounted, onBeforeUnmount } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   useDirectorOrb,
   directorOrbInit,
@@ -9,7 +9,14 @@ import {
   NODE_TXT,
   NODE_ORDER,
   PHASE_SKILLS,
+  visibleSuggestions,
+  decisionItems,
+  unreadCount,
+  dismissSuggestion,
+  runOrbBatch,
 } from '../composables/useDirectorOrb'
+
+const router = useRouter()
 
 const route = useRoute()
 const { state } = useDirectorOrb()
@@ -176,6 +183,46 @@ function fmtTime(ts) {
   const d = new Date(ts)
   return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
+
+/* ===================== DirectorOrb v2 —— 管家化身层 ===================== */
+// 悬浮球按钮悬浮提示（随六态机变化）
+const orbTitle = computed(() => {
+  const map = {
+    idle: '待命', watching: '监督中', suggestion: '有管家建议',
+    warning: '需注意', error: '需决策', success: '已完成',
+  }
+  return (map[state.orbState] || '待命') + ' · 拖动可移动 · 点击查看导演管家'
+})
+
+function sevTxt(s) { return { suggestion: '建议', warning: '提醒', error: '错误' }[s] || '建议' }
+function goPath(p) { if (p) router.push(p) }
+
+// 阶段核心视图派生（严格对齐 orb/routes.py 返回字段）
+const p1Core = computed(() => {
+  const r = state.readiness
+  if (!r) return null
+  return {
+    score: r.readiness_score,
+    groups: [
+      { label: '角色', ready: r.characters.ready, total: r.characters.total },
+      { label: '场景', ready: r.scenes.ready, total: r.scenes.total },
+      { label: '道具', ready: r.props.ready, total: r.props.total },
+    ],
+    missing: r.missing_role_segments || [],
+  }
+})
+const p2Core = computed(() => {
+  const s = state.scriptAnalysis
+  if (!s) return null
+  return {
+    segment_count: s.segment_count,
+    consecutive: s.consecutive_same_scene || [],
+    empty: s.empty_description_segments || [],
+    appearances: s.character_appearances || {},
+  }
+})
+const p4Core = computed(() => state.runSummary || null)
+const p5Core = computed(() => state.synthReport || null)
 
 // 0-1 成片
 const qrReports = computed(() => (state.result && state.result.quality_report && state.result.quality_report.reports) || [])
@@ -396,6 +443,104 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        <!-- ===== DirectorOrb v2 管家视图（化身层 · 信息架构优先级最高） ===== -->
+        <div v-if="state.orbEnabled" class="orb-persona">
+
+          <!-- 需决策（error 级建议，带操作按钮，L3 主动提醒） -->
+          <div v-if="decisionItems.length" class="persona-decision">
+            <div class="pd-title">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16.5" x2="12.01" y2="16.5"/></svg>
+              需决策（{{ decisionItems.length }}）
+            </div>
+            <div v-for="s in decisionItems" :key="s.id" class="pd-item">
+              <div class="pd-name">{{ s.title }}</div>
+              <div class="pd-detail">{{ s.detail }}</div>
+              <div class="pd-actions" v-if="s.action_type">
+                <button v-if="s.action_type === 'regenerate'" class="pd-btn primary" @click="runOrbBatch('regenerate', s.action_payload.segment_ids, {})">一键重生成</button>
+                <button v-if="s.action_type === 'skip'" class="pd-btn ghost" @click="runOrbBatch('skip', s.action_payload.segment_ids, {})">跳过</button>
+                <button class="pd-btn ghost" @click="dismissSuggestion(s.id)">暂不处理</button>
+              </div>
+              <div class="pd-actions" v-else>
+                <button class="pd-btn ghost" @click="dismissSuggestion(s.id)">忽略</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 管家建议（suggestion/warning，可忽略，L2 状态暗示） -->
+          <div v-if="visibleSuggestions.length" class="persona-advice">
+            <div class="pa-title">
+              管家建议 <span class="pa-sub">（可忽略）</span>
+              <span class="pa-clear" @click="visibleSuggestions.forEach((s) => dismissSuggestion(s.id))">全部忽略</span>
+            </div>
+            <div v-for="s in visibleSuggestions" :key="s.id" class="advice-item">
+              <span class="ai-sev" :class="s.severity">{{ sevTxt(s.severity) }}</span>
+              <div class="ai-body">
+                <div class="ai-name">{{ s.title }}</div>
+                <div class="ai-detail">{{ s.detail }}</div>
+                <button v-if="s.action_type === 'navigate'" class="ai-btn" @click="goPath((s.action_payload || {}).path)">去处理</button>
+                <button v-else-if="s.action_type === 'regenerate'" class="ai-btn" @click="runOrbBatch('regenerate', s.action_payload.segment_ids, {})">重生成</button>
+                <button v-else-if="s.action_type === 'skip'" class="ai-btn" @click="runOrbBatch('skip', s.action_payload.segment_ids, {})">跳过</button>
+              </div>
+              <button class="ai-dismiss" @click="dismissSuggestion(s.id)" title="忽略">×</button>
+            </div>
+          </div>
+
+          <!-- 阶段核心视图（按 effectiveStep 动态展示导演 Agent 已有数据） -->
+          <div class="persona-core">
+            <div v-if="effectiveStep === 1 && p1Core" class="core-block">
+              <div class="core-title">资产就绪度 <span class="core-score" :class="{ low: p1Core.score < 50 }">{{ p1Core.score }} 分</span></div>
+              <div class="core-metric-row">
+                <div v-for="g in p1Core.groups" :key="g.label" class="cm-cell">
+                  <div class="cm-val">{{ g.ready }}/{{ g.total }}</div>
+                  <div class="cm-lab">{{ g.label }}</div>
+                </div>
+              </div>
+              <div v-if="p1Core.missing.length" class="core-note warn">缺角色绑定场次：{{ p1Core.missing.map((m) => m.index).join('、') }}</div>
+            </div>
+
+            <div v-else-if="effectiveStep === 2 && p2Core" class="core-block">
+              <div class="core-title">叙事结构（共 {{ p2Core.segment_count }} 场）</div>
+              <div v-if="p2Core.consecutive.length" class="core-note">连续同场景 {{ p2Core.consecutive.length }} 处：{{ p2Core.consecutive.map((c) => c.start + '-' + c.end).join('、') }}</div>
+              <div v-if="p2Core.empty.length" class="core-note warn">{{ p2Core.empty.length }} 场缺描述：{{ p2Core.empty.join('、') }}</div>
+              <div v-if="!p2Core.consecutive.length && !p2Core.empty.length" class="core-note ok">结构健康，无连续同场景 / 空描述</div>
+            </div>
+
+            <div v-else-if="effectiveStep === 3" class="core-block">
+              <div class="core-title">配方透明度</div>
+              <div class="core-note">分镜级配方（风格 / 资产权重 / 运镜）可在「分镜编排」页选中分镜后由导演 Agent 实时解析呈现。</div>
+            </div>
+
+            <div v-else-if="effectiveStep === 4 && p4Core" class="core-block">
+              <div class="core-title">品控摘要 <span class="core-score" :class="{ low: p4Core.failed > 0 }">失败 {{ p4Core.failed }}</span></div>
+              <div class="core-metric-row">
+                <div class="cm-cell"><div class="cm-val">{{ p4Core.completed }}</div><div class="cm-lab">已完成</div></div>
+                <div class="cm-cell"><div class="cm-val">{{ p4Core.running }}</div><div class="cm-lab">生成中</div></div>
+                <div class="cm-cell"><div class="cm-val">{{ p4Core.failed }}</div><div class="cm-lab">失败</div></div>
+              </div>
+              <div v-if="p4Core.face_similarity_pass_rate > 0" class="core-note" :class="{ warn: p4Core.face_similarity_pass_rate < 100 }">人脸相似度通过率 {{ p4Core.face_similarity_pass_rate }}%</div>
+              <div v-for="f in (p4Core.failed_segments || [])" :key="f.segment_id" class="core-fail">
+                <span>场次 {{ f.index }} 失败</span>
+                <button class="ai-btn" @click="runOrbBatch('regenerate', [f.segment_id], {})">重生成</button>
+              </div>
+            </div>
+
+            <div v-else-if="effectiveStep === 5 && p5Core" class="core-block">
+              <div class="core-title">成片质检（{{ p5Core.generated }} 段）</div>
+              <div class="core-metric-row">
+                <div class="cm-cell"><div class="cm-val">{{ p5Core.face_similarity_pass_rate }}%</div><div class="cm-lab">人脸通过率</div></div>
+                <div class="cm-cell"><div class="cm-val">{{ p5Core.first_frame_match_avg }}</div><div class="cm-lab">首帧匹配</div></div>
+              </div>
+              <div class="core-note" :class="{ warn: p5Core.degrade_summary && p5Core.degrade_summary !== '无降级' }">
+                降级：{{ p5Core.degrade_summary || '无' }}
+              </div>
+            </div>
+
+            <div v-else class="core-block">
+              <div class="core-note">管家视图聚合导演 Agent 数据 · 进入各阶段后展示核心指标</div>
+            </div>
+          </div>
+        </div>
+
         <!-- 实时小任务 -->
         <div class="live-section">
           <div class="live-head" @click="toggleSection('live')">
@@ -509,12 +654,12 @@ onBeforeUnmount(() => {
       </div>
     </transition>
 
-    <!-- 悬浮球按钮 -->
+    <!-- 悬浮球按钮（六态机：idle/watching/suggestion/warning/error/success） -->
     <button
       class="orb-btn"
-      :class="{ active: state.runStatus === 'running' }"
+      :class="'orb-' + state.orbState"
       @pointerdown="onPointerDown"
-      :title="(state.runStatus === 'running' ? '监督中' : '待命') + ' · 拖动可移动 · 点击查看导演管家'"
+      :title="orbTitle"
     >
       <span class="orb-core">
         <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
@@ -524,8 +669,17 @@ onBeforeUnmount(() => {
           <circle cx="17" cy="12" r="1.5" fill="currentColor" stroke="none" />
         </svg>
       </span>
-      <span v-if="state.runStatus === 'running'" class="orb-pulse"></span>
-      <span v-if="activeFeedCount" class="orb-badge">{{ activeFeedCount }}</span>
+      <!-- 状态环 -->
+      <span v-if="state.orbState === 'watching' || state.runStatus === 'running'" class="orb-pulse"></span>
+      <span v-else-if="state.orbState === 'warning'" class="orb-ring ring-warning"></span>
+      <span v-else-if="state.orbState === 'error'" class="orb-ring ring-error"></span>
+      <span v-else-if="state.orbState === 'success'" class="orb-ring ring-success"></span>
+      <!-- 琥珀/橙角标点（suggestion/warning） -->
+      <span v-if="state.orbState === 'suggestion' || state.orbState === 'warning'" class="orb-corner"></span>
+      <!-- 状态徽标（优先级：error > warning/suggestion > 实时生成数） -->
+      <span v-if="state.orbState === 'error'" class="orb-badge orb-badge-err">{{ decisionItems.length }}</span>
+      <span v-else-if="state.orbState === 'warning' || state.orbState === 'suggestion'" class="orb-badge orb-badge-adv">{{ unreadCount }}</span>
+      <span v-else-if="activeFeedCount" class="orb-badge">{{ activeFeedCount }}</span>
     </button>
   </div>
 </template>
@@ -546,19 +700,91 @@ onBeforeUnmount(() => {
 }
 .dir-orb-root.dragging .orb-btn { cursor: grabbing; }
 .orb-btn:hover { transform: scale(1.06); box-shadow: 0 10px 30px rgba(79, 139, 247, .48); }
-.orb-btn.active { animation: orbGlow 2s ease-in-out infinite; }
+
+/* 六态机配色 */
+.orb-btn.orb-watching { background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.18), transparent 50%), linear-gradient(135deg, #8a93a8 0%, #5b6478 100%); box-shadow: 0 8px 24px rgba(120,130,150,.4); animation: orbBreath 2.6s ease-in-out infinite; }
+.orb-btn.orb-warning { background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.18), transparent 50%), linear-gradient(135deg, #f0a85a 0%, #e07b3a 100%); box-shadow: 0 8px 24px rgba(224,123,58,.42); }
+.orb-btn.orb-error { background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.18), transparent 50%), linear-gradient(135deg, #ff6b7d 0%, #e23b54 100%); box-shadow: 0 8px 26px rgba(226,59,84,.5); }
+.orb-btn.orb-success { background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.18), transparent 50%), linear-gradient(135deg, #4ade80 0%, #22b35e 100%); box-shadow: 0 8px 24px rgba(34,179,94,.42); }
+/* idle (默认蓝) 与 suggestion (蓝+琥珀角标) 沿用基础 .orb-btn 渐变 */
+
 .orb-core { display: flex; align-items: center; justify-content: center; }
 .orb-core svg { filter: drop-shadow(0 1px 2px rgba(0,0,0,.25)); }
+
+/* 状态环 */
+.orb-ring { position: absolute; inset: -5px; border-radius: 50%; pointer-events: none; opacity: 0; }
+.orb-ring.ring-warning { border: 2px solid rgba(240,168,90,.75); animation: orbRing 1.8s ease-out infinite; }
+.orb-ring.ring-error { border: 2px solid rgba(255,94,125,.85); animation: orbRing 1.2s ease-out infinite; }
+.orb-ring.ring-success { border: 2px solid rgba(74,222,128,.7); animation: orbDiffuse 2s ease-out infinite; }
+@keyframes orbRing { 0% { transform: scale(1); opacity: .6 } 100% { transform: scale(1.5); opacity: 0 } }
+@keyframes orbDiffuse { 0% { transform: scale(1); opacity: .5 } 60% { opacity: 0 } 100% { transform: scale(1.65); opacity: 0 } }
+@keyframes orbBreath { 0%,100% { box-shadow: 0 8px 24px rgba(120,130,150,.4) } 50% { box-shadow: 0 8px 34px rgba(120,130,150,.72) } }
+
 .orb-pulse {
   position: absolute; inset: -5px; border-radius: 50%;
   border: 2px solid rgba(124, 106, 240, .7);
   animation: orbPulse 2s ease-out infinite; opacity: 0; pointer-events: none;
 }
+/* 琥珀/橙角标点（置于右下角，避让右上角徽标） */
+.orb-corner { position: absolute; bottom: -3px; right: -3px; width: 13px; height: 13px; border-radius: 50%; background: #ffb454; border: 2px solid #1b1b26; box-shadow: 0 0 8px rgba(255,180,84,.85); }
 .orb-badge {
   position: absolute; top: -4px; right: -4px; min-width: 20px; height: 20px; padding: 0 5px;
   border-radius: 10px; background: #ff5e7d; color: #fff; font-size: 12px; font-weight: 700;
   display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(255,94,125,.45);
 }
+.orb-badge-err { background: #ff3b54; box-shadow: 0 2px 8px rgba(255,59,84,.5); }
+.orb-badge-adv { background: #ffb454; color: #3a2a10; box-shadow: 0 2px 8px rgba(255,180,84,.5); }
+
+/* ===== 管家视图（DirectorOrb v2 化身层） ===== */
+.orb-persona { margin-bottom: 12px; }
+
+/* 需决策（error） */
+.persona-decision { border: 1px solid rgba(255,94,125,.42); background: rgba(255,94,125,.08); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+.pd-title { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 800; color: #ff8da0; margin-bottom: 8px; }
+.pd-item { padding: 7px 0; border-bottom: 1px dashed rgba(255,94,125,.25); }
+.pd-item:last-child { border-bottom: none; }
+.pd-name { font-size: 12px; font-weight: 600; color: var(--txt, #f0f0f5); }
+.pd-detail { font-size: 10.5px; color: var(--sub, #b9bccb); line-height: 1.45; margin-top: 2px; }
+.pd-actions { display: flex; gap: 6px; margin-top: 7px; }
+.pd-btn { font-size: 11px; padding: 4px 11px; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; transition: filter .15s; }
+.pd-btn:hover { filter: brightness(1.08); }
+.pd-btn.primary { background: linear-gradient(135deg, #7c6af0, #4f8bf7); color: #fff; }
+.pd-btn.ghost { background: rgba(255,255,255,.08); color: var(--txt, #eee); }
+
+/* 管家建议（可忽略） */
+.persona-advice { border: 1px solid var(--line, #2a2a38); background: color-mix(in srgb, var(--bg-2, #20202c) 60%, transparent); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+.pa-title { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: #a6aaff; margin-bottom: 6px; }
+.pa-sub { font-size: 10px; color: var(--sub, #7a8094); font-weight: 500; }
+.pa-clear { margin-left: auto; font-size: 10px; color: var(--sub, #7a8094); cursor: pointer; padding: 1px 6px; border-radius: 6px; }
+.pa-clear:hover { background: rgba(255,255,255,.06); color: var(--txt, #eee); }
+.advice-item { display: flex; align-items: flex-start; gap: 8px; padding: 7px 0; border-bottom: 1px dashed var(--line, #2f2f3d); }
+.advice-item:last-child { border-bottom: none; }
+.ai-sev { flex-shrink: 0; font-size: 9px; padding: 2px 6px; border-radius: 6px; font-weight: 700; margin-top: 1px; }
+.ai-sev.suggestion { background: rgba(124,106,240,.16); color: #a6aaff; }
+.ai-sev.warning { background: rgba(255,180,84,.16); color: #ffb454; }
+.ai-sev.error { background: rgba(255,94,125,.16); color: #ff8da0; }
+.ai-body { flex: 1; min-width: 0; }
+.ai-name { font-size: 12px; color: var(--txt, #e8e8ef); font-weight: 600; }
+.ai-detail { font-size: 10.5px; color: var(--sub, #9095a8); line-height: 1.45; margin-top: 2px; }
+.ai-btn { margin-top: 5px; font-size: 10.5px; padding: 3px 10px; border-radius: 7px; border: none; cursor: pointer; font-weight: 600; background: rgba(124,106,240,.18); color: #a6aaff; transition: filter .15s; }
+.ai-btn:hover { filter: brightness(1.12); }
+.ai-dismiss { flex-shrink: 0; background: transparent; border: none; color: var(--sub, #6d7286); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; border-radius: 6px; }
+.ai-dismiss:hover { color: var(--txt, #fff); background: rgba(255,255,255,.06); }
+
+/* 阶段核心视图 */
+.persona-core { display: flex; flex-direction: column; gap: 8px; }
+.core-block { border: 1px solid var(--line, #2a2a38); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--bg-2, #20202c) 55%, transparent); }
+.core-title { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; color: var(--txt, #e8e8ef); margin-bottom: 8px; }
+.core-score { font-size: 11px; padding: 2px 8px; border-radius: 8px; background: rgba(74,222,128,.14); color: #4ade80; font-weight: 700; }
+.core-score.low { background: rgba(255,180,84,.16); color: #ffb454; }
+.core-metric-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.cm-cell { padding: 7px 4px; border-radius: 9px; background: color-mix(in srgb, var(--bg-2, #252532) 55%, transparent); text-align: center; }
+.cm-val { font-size: 14px; font-weight: 700; color: var(--txt, #e8e8ef); line-height: 1.2; }
+.cm-lab { font-size: 9.5px; color: var(--sub, #7a8094); margin-top: 2px; }
+.core-note { font-size: 11px; color: var(--sub, #9095a8); line-height: 1.5; margin-top: 8px; padding-top: 7px; border-top: 1px dashed var(--line, #2f2f3d); }
+.core-note.ok { color: #4ade80; border-top: none; padding-top: 0; }
+.core-note.warn { color: #ffb454; }
+.core-fail { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #ff8da0; margin-top: 6px; padding: 4px 0; border-top: 1px dashed rgba(255,94,125,.25); }
 @keyframes orbPulse { 0% { transform: scale(1); opacity: .55 } 100% { transform: scale(1.55); opacity: 0 } }
 @keyframes orbGlow { 0%,100% { box-shadow: 0 8px 24px rgba(79,139,247,.38) } 50% { box-shadow: 0 8px 34px rgba(124,106,240,.65) } }
 
