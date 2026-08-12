@@ -1,0 +1,16 @@
+{
+  "_doc": "图生图（首帧锚定）工作流模板（手册 SPEC-DIR-001 §3.3.4 首尾帧锚定）。以 init_image 为锚点去噪，保留相邻分镜像素级承接；denoise 控制重绘强度（<1.0 才不会破坏锚点）。真实 ComfyUI API 格式；{{占位符}} 由意图翻译引擎填充。节点拼装归模板（铁律1.2：禁止手搓）。",
+  "prompt": {
+    "3": {"class_type": "KSampler", "inputs": {
+      "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}",
+      "sampler_name": "euler", "scheduler": "normal", "denoise": "{{denoise}}",
+      "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["10", 0]}},
+    "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "{{checkpoint}}"}},
+    "5": {"class_type": "LoadImage", "inputs": {"image": "{{init_image}}"}},
+    "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{positive_prompt}}", "clip": ["4", 1]}},
+    "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{negative_prompt}}", "clip": ["4", 1]}},
+    "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+    "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_tpl_i2i"}},
+    "10": {"class_type": "VAEEncode", "inputs": {"pixels": ["5", 0], "vae": ["4", 2]}}
+  }
+}

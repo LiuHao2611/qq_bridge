@@ -113,7 +113,10 @@ def _get_comfy_checkpoint():
                 break
     return comfy_env.discover_weight(
         "checkpoints", ["*.safetensors", "*.ckpt", "*.pt"],
-        explicit=explicit, what="底模(checkpoint) 权重")
+        explicit=explicit, what="底模(checkpoint) 权重",
+        # 漫画/角色出图优先挑选动漫/漫画底模；未安装则回退首个可用底模（诚实降级）
+        prefer=["*anime*", "*manga*", "*counterfeit*", "*meina*",
+                "*anything*", "*illustrious*", "*meinamix*", "*cetus*"])
 
 
 def _get_comfy_ipadapter():
@@ -1086,10 +1089,11 @@ def _comfy_run(wf, timeout, output_dir=None):
 
 
 def _comfy_text2img(prompt, width=1280, height=720, steps=20, cfg=7.0,
-                    seed=-1, timeout=240):
+                    seed=-1, timeout=240, negative=None):
     """调用秋叶 ComfyUI /prompt 出图，返回输出图绝对路径；失败抛 RuntimeError。"""
     if seed is None or int(seed) < 0:
         seed = random.randint(0, 2 ** 31 - 1)
+    neg = negative or "low quality, blurry, watermark, text"
     wf = {
         "3": {"class_type": "KSampler", "inputs": {
             "seed": int(seed), "steps": steps, "cfg": float(cfg),
@@ -1098,7 +1102,7 @@ def _comfy_text2img(prompt, width=1280, height=720, steps=20, cfg=7.0,
         "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
         "5": {"class_type": "EmptyLatentImage", "inputs": {"width": width, "height": height, "batch_size": 1}},
         "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
-        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "low quality, blurry, watermark, text", "clip": ["4", 1]}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": neg, "clip": ["4", 1]}},
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
         "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_seg"}},
     }
@@ -1107,7 +1111,7 @@ def _comfy_text2img(prompt, width=1280, height=720, steps=20, cfg=7.0,
 
 def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name=None, weight=0.85,
                                    width=1280, height=720, steps=20, cfg=7.0,
-                                   seed=-1, timeout=240,
+                                   seed=-1, timeout=240, negative=None,
                                    style_comfy_name=None, style_weight=0.4,
                                    first_30_steps_boost=0.0):
     """带 IP-Adapter 的文生图：用参考图（角色定妆照）约束角色一致性（手册 §5.2 身份权重注入）。
@@ -1126,12 +1130,23 @@ def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name=None, weight=0.85,
     if seed is None or int(seed) < 0:
         seed = random.randint(0, 2 ** 31 - 1)
     ip_name = _get_comfy_ipadapter()
-    cv_name = _get_comfy_clip_vision()
-    # 手册 §5.2：first_30_steps_boost（前 30 步身份权重上浮）→ IP-Adapter 早步增强
-    # （weight_type="ease in" 把角色/风格约束集中到采样前段）。cross_attn_layers=2-4 由
-    # ipadapter-plus-face 内部最优交叉注意力层实现，非节点暴露参数，故此处不伪造该字段。
-    boost = float(first_30_steps_boost or 0.0)
-    weight_type = "ease in" if boost > 0 else "standard"
+    neg = negative or "low quality, blurry, watermark, text"
+    # 当前 ComfyUI 环境（ComfyUI_IPAdapter_plus）要求用 IPAdapterUnifiedLoader 把 checkpoint 模型
+    # 与 ipadapter 权重统一加载到 pipeline，随后简单 IPAdapter 节点才能正确执行；
+    # 直接让 IPAdapter 节点引用 IPAdapterModelLoader 会报 "IPAdapter model not present in the pipeline"。
+    name_l = ip_name.lower()
+    if "vit-g" in name_l:
+        preset = "VIT-G"
+    elif "full face" in name_l or "full-face" in name_l:
+        preset = "FULL FACE - SD1.5 only (portraits stronger)"
+    elif "plus face" in name_l or "plus-face" in name_l or "face" in name_l:
+        preset = "PLUS FACE (portraits)"
+    elif "plus" in name_l:
+        preset = "PLUS (high strength)"
+    elif "light" in name_l:
+        preset = "LIGHT - SD1.5 only (low strength)"
+    else:
+        preset = "STANDARD (medium strength)"
     wf = {
         "3": {"class_type": "KSampler", "inputs": {
             "seed": int(seed), "steps": steps, "cfg": float(cfg),
@@ -1140,40 +1155,72 @@ def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name=None, weight=0.85,
         "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
         "5": {"class_type": "EmptyLatentImage", "inputs": {"width": width, "height": height, "batch_size": 1}},
         "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
-        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "low quality, blurry, watermark, text", "clip": ["4", 1]}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": neg, "clip": ["4", 1]}},
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
         "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_seg_ip"}},
     }
-    # 身份路（角色/资产参考图）：ref_comfy_name 提供才注入；否则以底模为上游
+    # 共享节点：IPAdapterModelLoader 提供 IPADAPTER；UnifiedLoader 把底模与 IP-Adapter 注入 pipeline。
+    wf["11"] = {"class_type": "IPAdapterModelLoader", "inputs": {"ipadapter_file": ip_name}}
+    wf["10"] = {"class_type": "IPAdapterUnifiedLoader", "inputs": {
+        "model": ["4", 0], "preset": preset, "ipadapter": ["11", 0]}}
+    # 身份路（角色/资产参考图）
+    prev_model = ["10", 0]
     if ref_comfy_name:
-        wf["10"] = {"class_type": "IPAdapter", "inputs": {
-            "ipadapter": ["11", 0], "clip_vision": ["12", 0],
-            "image": ["13", 0], "model": ["4", 0],
-            "weight": float(weight),
-            "start_at": 0.0, "end_at": 1.0, "weight_type": weight_type}}
-        wf["11"] = {"class_type": "IPAdapterModelLoader", "inputs": {"ipadapter_file": ip_name}}
-        wf["12"] = {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": cv_name}}
         wf["13"] = {"class_type": "LoadImage", "inputs": {"image": ref_comfy_name}}
-        prev_model = ["10", 0]
-    else:
-        prev_model = ["4", 0]
+        wf["15"] = {"class_type": "IPAdapter", "inputs": {
+            "model": ["10", 0], "ipadapter": ["11", 0], "image": ["13", 0],
+            "weight": float(weight), "start_at": 0.0, "end_at": 1.0,
+            "weight_type": "standard"}}
+        prev_model = ["15", 0]
     # 风格路：第二路 IP-Adapter（全局风格参考图），链式接在身份路（或底模）之后
     if style_comfy_name:
-        wf["20"] = {"class_type": "IPAdapter", "inputs": {
-            "ipadapter": ["11", 0], "clip_vision": ["12", 0],
-            "image": ["23", 0], "model": prev_model,
-            "weight": float(style_weight),
-            "start_at": 0.0, "end_at": 1.0, "weight_type": "standard"}}
         wf["23"] = {"class_type": "LoadImage", "inputs": {"image": style_comfy_name}}
+        wf["20"] = {"class_type": "IPAdapter", "inputs": {
+            "model": prev_model, "ipadapter": ["11", 0], "image": ["23", 0],
+            "weight": float(style_weight), "start_at": 0.0, "end_at": 1.0,
+            "weight_type": "style transfer"}}
         wf["3"]["inputs"]["model"] = ["20", 0]
     else:
         wf["3"]["inputs"]["model"] = prev_model
     return _comfy_run(wf, timeout)
 
 
+def _comfy_text2img_via_template(intent, timeout=240):
+    """模板驱动出图（铁律 1.2：禁止手搓 ComfyUI 节点 JSON）。
+
+    流程：意图翻译引擎 translate_intent_to_workflow() 依据 resource_catalog.json +
+    workflow_templates/ 产出工作流 JSON → Layer0 ComfyUIService 提交并取回输出图。
+
+    若意图含本地首帧锚定图（init_image 为本地面路径），先经 Layer0 upload_image 上传
+    并回填为 ComfyUI 内部文件名，再交给模板（上传归 Layer0，节点拼装归模板）。
+
+    一切节点拓扑由模板决定，本函数与调用方不再构造任何 ComfyUI 节点。失败抛 RuntimeError
+    （缺 catalog/模板/IP 权重等），由调用方捕获后诚实报错或跳过（不再回退手搓构建）。
+    """
+    try:
+        import intent_translator
+        from layer0 import comfyui_service
+    except Exception as e:
+        raise RuntimeError("意图翻译引擎/服务不可用: %s" % e)
+    # 首帧锚定：本地 init_image 需先上传 ComfyUI 取得内部文件名
+    init_local = intent.get("init_image")
+    if init_local and isinstance(init_local, str) and os.path.isfile(init_local):
+        try:
+            svc = comfyui_service.get_service()
+            comfy_name = svc.upload_image(init_local)
+            intent = dict(intent)
+            intent["init_image"] = comfy_name
+        except Exception as e:
+            raise RuntimeError("首帧锚定图上传失败: %s" % e)
+    wf = intent_translator.translate_intent_to_workflow(intent)
+    svc = comfyui_service.get_service()
+    out_dir = comfy_env.get_comfy_output_dir()
+    return svc.generate(wf, out_dir, timeout=timeout)
+
+
 def _comfy_img2img(first_frame_path, prompt, strength=0.6,
                    width=1280, height=720, steps=20, cfg=7.0,
-                   seed=-1, timeout=240):
+                   seed=-1, timeout=240, negative=None):
     """图生图：以首帧(first_frame)为锚点去噪，实现首尾帧像素级承接（手册 §3.3.4 首尾帧锚定）。
 
     仅在前序分镜尾帧作为下一分镜首帧参考时调用；依赖 ComfyUI 与底模权重，失败抛 RuntimeError。
@@ -1182,6 +1229,7 @@ def _comfy_img2img(first_frame_path, prompt, strength=0.6,
         raise RuntimeError("ComfyUI 未启动")
     if seed is None or int(seed) < 0:
         seed = random.randint(0, 2 ** 31 - 1)
+    neg = negative or "low quality, blurry, watermark, text"
     wf = {
         "3": {"class_type": "KSampler", "inputs": {
             "seed": int(seed), "steps": steps, "cfg": float(cfg),
@@ -1190,7 +1238,7 @@ def _comfy_img2img(first_frame_path, prompt, strength=0.6,
         "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
         "5": {"class_type": "LoadImage", "inputs": {"image": _upload_to_comfy(first_frame_path)}},
         "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
-        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "low quality, blurry, watermark, text", "clip": ["4", 1]}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": neg, "clip": ["4", 1]}},
         "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
         "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_seg_anchor"}},
         "10": {"class_type": "VAEEncode", "inputs": {"pixels": ["5", 0], "vae": ["4", 2]}},
@@ -3169,6 +3217,58 @@ _COMIC_CONCRETE_RULES = [
     (("白猫",), "small white cat, white fur, cat ears, tail, whiskers"),
 ]
 
+# 规则兜底分镜用的「主体 / 对象 / 场景」关键词表（覆盖常见漫画题材）。
+# 用于在 Ollama 不可用、且故事为单句无自然断句时，合成起承转合的递进分镜。
+_COMIC_SUBJECT_KEYWORDS = [
+    "男孩", "少年", "男生", "男孩子", "女孩", "少女", "女生", "女孩子",
+    "男人", "女人", "老人", "小孩", "宝宝", "婴儿", "机器人", "骑士",
+    "公主", "王子", "侦探", "医生", "老师", "学生", "战士", "勇者",
+]
+_COMIC_OBJECT_KEYWORDS = [
+    "猫", "狗", "兔", "鸟", "鱼", "龙", "花", "书", "剑", "宝石", "蛋",
+    "玩偶", "熊", "狐狸", "鹿", "狼", "马", "精灵", "机器人",
+]
+_COMIC_SCENE_KEYWORDS = [
+    "雨夜", "下雨", "雪夜", "森林", "城市", "街道", "海边", "花园", "窗台",
+    "屋顶", "车站", "学校", "教室", "医院", "战场", "山", "河", "湖", "沙漠",
+    "废墟", "古堡", "夜", "雨",
+]
+
+
+def _comic_subject_object_scene(story):
+    """从故事中粗提取主体(人物)/对象(被作用的事物)/场景，供规则兜底分镜合成。
+
+    返回 (subject, obj, scene)；未命中时返回通用占位词（'主角'/'关键对象'/'场景'）。
+    仅用于 Ollama 不可用时的兜底，不追求精确，只需能拼出可渲染的递进分镜。
+    """
+    subject = ""
+    for k in _COMIC_SUBJECT_KEYWORDS:
+        if k in story:
+            subject = k
+            break
+    # 对象优先捕获带修饰的词（白猫/黑猫/小花猫…），否则回退到单字关键词
+    obj = ""
+    m = re.search(r"([白黑小大花老可爱受伤的]+?(猫|狗|兔|鸟|狐狸|熊|鹿|龙|狼|马|精灵))", story)
+    if m:
+        obj = m.group(1)
+    else:
+        for k in _COMIC_OBJECT_KEYWORDS:
+            if k in story:
+                obj = k
+                break
+    scene = ""
+    for k in _COMIC_SCENE_KEYWORDS:
+        if k in story:
+            scene = k
+            break
+    if not subject:
+        subject = "主角"
+    if not obj:
+        obj = "关键对象"
+    if not scene:
+        scene = "场景"
+    return subject, obj, scene
+
 
 def _comic_ensure_entities(story, en_prompt):
     """实体强制：保证翻译后的英文提示词包含故事关键主体/对象/状态/动作，缺失则加权补回。"""
@@ -3211,8 +3311,11 @@ def _comic_dynamic_negative(story, base_neg):
         add += ["girl", "woman", "female", "lady", "extra person", "multiple people", "duplicate character"]
     if has_cat:
         add += ["cat missing", "no cat", "mutated cat", "dog"]
-    # 漫画统一禁项（避免随机竖排字/气泡/签名）
-    add += ["text", "speech bubble", "watermark", "signature", "letters", "manga sfx", "logo"]
+    # 漫画统一禁项（避免随机竖排字/气泡/签名/内嵌多格）
+    add += ["text", "speech bubble", "word", "letter", "watermark", "signature",
+            "logo", "manga sfx", "multiple panels", "comic page layout", "grid",
+            "collage", "split screen", "divided frame", "panel border",
+            "two panels", "four panels"]
     # 重建：base 词与追加词统一去重，避免把 base 自身重复拼接
     seen = set()
     tokens = []
@@ -3300,6 +3403,39 @@ def _split_story_to_panels(story, style, orchestrator="ollama", panels=4):
         parts.append(buf.strip())
     if not parts:
         parts = [story]
+
+    # 单句（无自然断句）：Ollama 不可用且故事为一整句时，按「起承转合」合成递进分镜，
+    # 避免 4 格都回到同一句话导致画面无叙事推进。主体/对象/场景从关键词粗提取。
+    if len(parts) == 1:
+        subject, obj, scene = _comic_subject_object_scene(story)
+        if scene and scene != "场景":
+            beats = [
+                ("开端", "%s在%s发现了%s" % (subject, scene, obj)),
+                ("发展", "%s慢慢走近，蹲下轻轻触碰%s" % (subject, obj)),
+                ("转折", "%s小心地把%s抱进怀里" % (subject, obj)),
+                ("高潮", "%s用衣服裹住%s，在%s里转身离开" % (subject, obj, scene)),
+            ]
+        else:
+            beats = [
+                ("开端", "%s发现了%s" % (subject, obj)),
+                ("发展", "%s慢慢走近，蹲下轻轻触碰%s" % (subject, obj)),
+                ("转折", "%s小心地把%s抱进怀里" % (subject, obj)),
+                ("高潮", "%s抱着%s走向光亮处" % (subject, obj)),
+            ]
+        out = []
+        for i in range(panels):
+            beat, text = beats[i] if i < len(beats) else beats[-1]
+            prompt = "%s，%s，必须出现主要角色与关键对象，不要只画空背景或静物" % (beat, text)
+            out.append({
+                "caption": text[:20],
+                "characters": main_subject or subject,
+                "action": beat,
+                "scene": scene if scene != "场景" else "",
+                "prompt": prompt,
+            })
+        return out
+
+    # 多句：按句分组到各格（含主角锚定），保证每格有递进内容
     out = []
     per = max(1, (len(parts) + panels - 1) // panels)
     beats = ["开端", "发展", "转折", "高潮", "结局"]
@@ -3309,9 +3445,7 @@ def _split_story_to_panels(story, style, orchestrator="ollama", panels=4):
             chunk = parts[-1:]
         text = "。".join(chunk)
         beat = beats[i] if i < len(beats) else "后续"
-        prompt = "（同一主角），%s，%s，必须出现主要角色，不要只画风景或物品" % (beat, text)
-        if main_subject:
-            prompt = "（%s），" % main_subject + prompt
+        prompt = "%s，%s，必须出现主要角色，不要只画空背景或静物" % (beat, text)
         out.append({
             "caption": text[:20],
             "characters": main_subject,
@@ -3323,7 +3457,11 @@ def _split_story_to_panels(story, style, orchestrator="ollama", panels=4):
 
 
 def _extract_main_subject(story):
-    """从故事中简单提取主要角色/主体，用于兜底权重注入。优先使用 Ollama，失败则规则提取前两个名词短语。"""
+    """从故事中简单提取主要角色/主体（干净中文名词，不含截断/权重语法），用于兜底分镜主角锚定。
+
+    优先用 Ollama 结构化提取；Ollama 不可用时回退到关键词规则提取，返回「人物,对象」式
+    干净名词（如「男孩,白猫」），绝不返回被截断的垃圾片段或中文权重语法。
+    """
     if not story:
         return ""
     if ollama_available():
@@ -3343,30 +3481,211 @@ def _extract_main_subject(story):
                     return subj
         except Exception:
             pass
-    # 规则兜底：取开头连续的名词性短句，最多 8 个字符
-    m = re.search(r"^([^，,。！？\n]{2,8})", story.strip())
+    # 规则兜底：用关键词粗提取主体与对象，组合为干净名词（如「男孩,白猫」）
+    subject, obj, _ = _comic_subject_object_scene(story)
+    parts = []
+    if subject and subject != "主角":
+        parts.append(subject)
+    if obj and obj != "关键对象":
+        parts.append(obj)
+    if parts:
+        return "，".join(parts)
+    # 末路：取开头连续中文名词短语（上限 6 字，避免在半词处截断）
+    m = re.search(r"^([\u4e00-\u9fff]{2,6})", story.strip())
     if m:
-        return m.group(1).strip()
-    return story.strip()[:8]
+        return m.group(1)
+    return story.strip()[:6]
 
 
-def generate_comic(story, style="日漫", negative="", resolution="1024", ratio="16:9",
-                   steps=20, seed=-1, enhance=True, orchestrator="ollama",
-                   character_refs=None, panels=4, on_progress=None):
+class AssetInjectBlocked(RuntimeError):
+    """铁律 1.1：角色资产(IP-Adapter)注入被阻断且处于强制注入模式。
+
+    当调用方传入角色参考图且 IP-Adapter 权重可用时，角色生成必须经由 IP-Adapter
+    注入该角色特征；若该注入链路失败，禁止静默降级为「仅靠 Prompt 生成角色」
+    （会导致角色跨格不一致 / 图文不符），改为明确阻断并向上抛出本异常。
+    """
+
+
+def _comic_load_font(size):
+    """尽力加载中文字体，失败回退 PIL 默认位图字体（仅 ASCII 清晰）。"""
+    for fp in ("C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/simhei.ttf",
+               "C:/Windows/Fonts/msyh.ttf"):
+        if os.path.isfile(fp):
+            try:
+                from PIL import ImageFont
+                return ImageFont.truetype(fp, size)
+            except Exception:
+                pass
+    try:
+        from PIL import ImageFont
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+
+def _render_text_placeholder_panel(text, width, height, out_path):
+    """L2 降级（设计手册 §5.4）：用 PIL 将每格文本描述渲染为占位图，替代真实漫画渲染。"""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (width, height), (24, 26, 32))
+    draw = ImageDraw.Draw(img)
+    font = _comic_load_font(max(18, width // 30))
+    max_chars = max(8, width // 30)
+    lines, cur = [], ""
+    for ch in (text or ""):
+        cur += ch
+        if len(cur) >= max_chars:
+            lines.append(cur)
+            cur = ""
+    if cur:
+        lines.append(cur)
+    line_h = (font.size if font else 18) + 8
+    total_h = len(lines) * line_h
+    y = max(12, (height - total_h) // 2)
+    for ln in lines[-max(1, height // line_h):]:
+        try:
+            bbox = draw.textbbox((0, 0), ln, font=font)
+            tw = bbox[2] - bbox[0]
+        except Exception:
+            tw = len(ln) * (font.size if font else 12)
+        x = max(10, (width - tw) // 2)
+        draw.text((x, y), ln, fill=(220, 224, 232), font=font)
+        y += line_h
+    img.save(out_path)
+    return out_path
+
+
+def _render_maintenance_card(width, height, out_path):
+    """L3 降级（设计手册 §5.4）：生成服务（ComfyUI 与 Ollama）均不可用时的系统维护中标题卡。"""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (width, height), (18, 20, 26))
+    draw = ImageDraw.Draw(img)
+    title_font = _comic_load_font(max(28, width // 16))
+    sub_font = _comic_load_font(max(15, width // 32))
+    title, sub = "系统维护中", "ComfyUI 与 Ollama 生成服务暂时不可用，请稍后重试"
+    for txt, font, dy, fill in ((title, title_font, -height // 16, (230, 180, 90)),
+                                (sub, sub_font, height // 22, (180, 186, 196))):
+        try:
+            bbox = draw.textbbox((0, 0), txt, font=font)
+            tw = bbox[2] - bbox[0]
+        except Exception:
+            tw = len(txt) * (font.size if font else 14)
+        draw.text(((width - tw) // 2, height // 2 + dy), txt, fill=fill, font=font)
+    img.save(out_path)
+    return out_path
+
+
+def _comic_degrade_l2(story, style, panels, W, H, orchestrator):
+    """L2 降级（设计手册 §5.4）：ComfyUI 不可用但 Ollama 可用。
+
+    保留分镜拆分（Ollama 在线），用 Ollama 产出每格文本描述并以 PIL 渲染为占位图，
+    返回与正常 generate_comic 同构的 dict，便于前端不改即可展示降级态。
+    """
+    start_ts = time.time()
+    panel_specs = _split_story_to_panels(story, style, orchestrator, panels)
+    while len(panel_specs) < panels:
+        panel_specs.append(panel_specs[-1] if panel_specs else {"caption": "", "prompt": story})
+    images, panels_out = [], []
+    for idx, spec in enumerate(panel_specs):
+        text = "%s\n%s" % (spec.get("caption") or "", spec.get("prompt") or story)
+        dst_name = "t2i_%s_L2_%d.png" % (uuid.uuid4().hex[:12], idx)
+        dst = os.path.join(OUTPUTS, dst_name)
+        _render_text_placeholder_panel(text[:240], W, H, dst)
+        images.append({"url": "/file?name=" + dst_name, "seed": 0, "width": W, "height": H,
+                       "final_prompt": spec.get("prompt", ""), "model": "L2-placeholder",
+                       "steps": 0, "cfg": 0, "sampler": "text", "style": style,
+                       "size": "%dx%d" % (W, H), "degrade": "L2"})
+        panels_out.append({"index": idx, "caption": spec.get("caption") or "",
+                           "prompt": spec.get("prompt", ""), "degrade": "L2"})
+    elapsed_ms = int((time.time() - start_ts) * 1000)
+    return {
+        "images": images, "panels": panels_out, "style_ref": None, "style_ref_local": "",
+        "orchestrator_used": "ollama(L2-degrade)", "model": "L2-placeholder",
+        "note": "L2 降级：ComfyUI 不可用，以 Ollama 文本占位图呈现分镜（非真实渲染）",
+        "elapsed_ms": elapsed_ms, "params": {"kind": "comic", "degrade": "L2",
+        "panels": len(images), "width": W, "height": H, "style": style},
+    }
+
+
+def _comic_degrade_l3(panels, W, H):
+    """L3 降级（设计手册 §5.4）：ComfyUI 与 Ollama 均不可用，返回系统维护中标题卡。"""
+    start_ts = time.time()
+    dst_name = "t2i_%s_L3.png" % uuid.uuid4().hex[:12]
+    dst = os.path.join(OUTPUTS, dst_name)
+    _render_maintenance_card(W, H, dst)
+    images, panels_out = [], []
+    for idx in range(panels):
+        images.append({"url": "/file?name=" + dst_name, "seed": 0, "width": W, "height": H,
+                       "final_prompt": "", "model": "L3-maintenance", "steps": 0, "cfg": 0,
+                       "sampler": "none", "style": "", "size": "%dx%d" % (W, H), "degrade": "L3"})
+        panels_out.append({"index": idx, "caption": "系统维护中", "prompt": "", "degrade": "L3"})
+    elapsed_ms = int((time.time() - start_ts) * 1000)
+    return {
+        "images": images, "panels": panels_out, "style_ref": None, "style_ref_local": "",
+        "orchestrator_used": "none(L3-degrade)", "model": "L3-maintenance",
+        "note": "L3 降级：生成服务（ComfyUI 与 Ollama）均不可用，显示系统维护中标题卡",
+        "elapsed_ms": elapsed_ms, "params": {"kind": "comic", "degrade": "L3",
+        "panels": len(images), "width": W, "height": H},
+    }
+
+
+def _comic_panel_generate(final_prompt, W, H, steps, cfg, s, neg,
+                          char_comfy, style_ref_comfy, ip_available,
+                          first_local, idx, style_arg,
+                          enforce_asset=False):
+    """单格出图：严格模板驱动（铁律 1.2，禁止手搓 ComfyUI 节点 JSON）。
+
+    统一经 intent_translator + workflow_templates 产出工作流并提交 ComfyUI：
+    - 首帧锚定（idx>0 且 first_local 存在）：走 shot_image_img2img 模板（纯像素承接，不叠 IP）。
+    - 有身份图/风格图且 IP 可用：走 shot_image_gen_ip 模板（身份路/风格路）。
+    - 否则：走 shot_image_gen 基础文生图模板。
+
+    任何模板提交失败均诚实抛出（不再回退手搓构建）；仅当 enforce_asset 且身份注入失败时
+    升级为 AssetInjectBlocked（铁律 1.1 禁止仅靠 Prompt 生成角色）。
+    """
+    import intent_translator
+    identity_intended = bool(char_comfy) and bool(ip_available)
+    identity = char_comfy[0] if identity_intended else None
+    style_img = style_ref_comfy if (style_ref_comfy and ip_available) else None
+    intent = intent_translator.build_shot_image_intent(
+        prompt_text=final_prompt,
+        style_tags=[style_arg, "通用"] if style_arg else ["通用"],
+        negative_prompt=neg,
+        identity_image=identity,
+        style_image=style_img,
+        style_weight=0.4,
+        generation_params={"width": W, "height": H, "seed": s,
+                           "steps": steps, "cfg": cfg})
+    # 首帧锚定：经 img2img 模板（同理禁止手搓）
+    if first_local and idx > 0:
+        intent["task_type"] = "shot_image_img2img"
+        intent["init_image"] = first_local
+        intent["denoise"] = 0.5
+    try:
+        return _comfy_text2img_via_template(intent, timeout=180)
+    except Exception as e:
+        if enforce_asset and identity_intended:
+            raise AssetInjectBlocked(
+                "角色资产(IP-Adapter)注入失败，按铁律1.1禁止仅靠Prompt生成角色: %s" % e)
+        # 非强制场景：模板失败诚实抛出，交由 generate_comic 跳过该格（不回退手搓）
+        raise
+
+
+def generate_comic(story, style="日漫", negative="", resolution="1024", ratio="3:4",
+                   steps=28, seed=42, enhance=True, orchestrator="ollama",
+                   character_refs=None, panels=4, on_progress=None, cfg=8.5):
     """一键生成 4 格漫画：复用 Director 生图约束逻辑。
 
     1) 分镜拆分：_split_story_to_panels（Ollama 优先，规则兜底）——对应导演「剧本→分镜」。
     2) 全局风格参考图（N03 复用）：以漫画风格基调出一张参考图，作为第二路 IP-Adapter
        风格条件，统一 4 格色调/质感/光影；无 ComfyUI 或 IP-Adapter 权重缺失则诚实降级
        为提示词风格强调（与 N03 下游不注入风格条件一致）。
-    3) 逐格出图：每格用「分镜提示词 + 漫画风格后缀 + 负向」调用 ComfyUI；若提供角色参考图
-       则走 _comfy_text2img_with_ipadapter（身份路 + 风格路），保证角色跨格一致（§5.2 复用）。
+    3) 逐格出图：每格用「分镜提示词 + 漫画风格后缀 + 负向」经 intent_translator + 模板
+       调用 ComfyUI；若提供角色参考图则走 shot_image_gen_ip 模板（身份路 + 风格路），
+       保证角色跨格一致（§5.2 复用，铁律 1.2 禁止手搓）；首帧锚定走 shot_image_img2img 模板。
     返回 dict：{images, panels, style_ref, style_ref_local, orchestrator_used, model, note,
                 elapsed_ms, params}
     """
     start_ts = time.time()
-    if not comfy_available():
-        raise RuntimeError("本地 ComfyUI 未启动（%s），无法生成漫画" % COMFY_URL)
 
     # 分辨率/比例 → 宽高（与 t2i 一致：长边=resolution，按比例算短边，8 整除）
     try:
@@ -3386,6 +3705,16 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
     else:  # 16:9 默认
         W, H = base, int(base * 9 / 16)
     W, H = max(64, (W // 8) * 8), max(64, (H // 8) * 8)
+
+    # 设计手册 §5.4 降级原则：ComfyUI 不可用时分层降级，绝不静默崩溃
+    comfy_ok = comfy_available()
+    ollama_ok = ollama_available()
+    if not comfy_ok:
+        if ollama_ok:
+            logger.warning("[comic] ComfyUI 不可用，进入 L2 降级（Ollama 文本占位图）")
+            return _comic_degrade_l2(story, style, panels, W, H, orchestrator)
+        logger.error("[comic] ComfyUI 与 Ollama 均不可用，进入 L3 降级（系统维护中标题卡）")
+        return _comic_degrade_l3(panels, W, H)
 
     style_suffix = COMIC_STYLE_SUFFIX.get(style, COMIC_STYLE_SUFFIX["日漫"])
     # 动态负向：按故事主体/对象追加针对性排除词（如单主角→排除异性/多余人物、提猫→排除猫缺失/狗）
@@ -3441,6 +3770,9 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
         except Exception:
             pass
 
+    # 逐格出图严格走模板驱动（铁律 1.2：catalog + workflow_templates 齐备即经
+    # intent_translator 产出工作流；模板不可用由 translate 诚实抛出，无手搓兜底）。
+
     # 3) 逐格出图
     used = None
     images = []
@@ -3448,32 +3780,30 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
     total = len(panel_specs)
     rnd = random.Random()
     first_local = None  # 首格出图本地路径，用于第 2 格起的首帧锚定
+    # 铁律 1.1：提供了角色参考图且 IP-Adapter 可用时，强制角色资产注入；
+    # 该模式下 IP 失败必须阻断（抛出 AssetInjectBlocked），禁止降级为纯 Prompt 生成角色。
+    enforce_asset = bool(char_comfy) and bool(ip_available)
     for idx, spec in enumerate(panel_specs):
         s = (int(seed) + idx) if seed and int(seed) > 0 else rnd.randint(0, 2 ** 31 - 1)
         zh_prompt = spec["prompt"]
         chars = (spec.get("characters") or main_subject or "").strip()
         action = (spec.get("action") or "").strip()
 
-        # 构造带权重的中文提示词：主角权重 1.35，动作权重 1.15，强化图文一致
-        weighted_zh = zh_prompt
-        if chars:
-            weighted_zh = "（%s:1.35），%s" % (chars, weighted_zh)
-        if action:
-            weighted_zh = "（%s:1.15），%s" % (action, weighted_zh)
-
+        # 直接翻译中文分镜描述（不注入中文权重语法，避免把「（男孩:1.35）」之类
+        # 中文括号权重送入 CLIP 变成噪音；角色/动作一致性由下方英文 weight_prefix 保证）。
         if orchestrator == "ollama" or enhance:
-            tr = translate_to_sd_prompt(weighted_zh, "", style)
+            tr = translate_to_sd_prompt(zh_prompt, "", style)
             if tr:
                 en_p = tr[0]
                 used = used or "ollama"
             else:
-                en_p = _dict_fallback_translate(weighted_zh, "", style)[0]
+                en_p = _dict_fallback_translate(zh_prompt, "", style)[0]
                 used = used or "dict_fallback"
         else:
-            en_p = _dict_fallback_translate(weighted_zh, "", style)[0]
+            en_p = _dict_fallback_translate(zh_prompt, "", style)[0]
             used = used or "dict_fallback"
 
-        # 翻译后再叠加主角与动作权重（SD 权重语法），并追加风格后缀与一致性约束
+        # 英文权重前缀（角色/动作一致性），与中文分镜解耦，避免 CLIP 解析中文权重
         weight_prefix = ""
         if chars:
             weight_prefix += "(same main character:1.35), (character consistency:1.2), "
@@ -3485,43 +3815,23 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
         # 2) 抽象→具象：把「受伤/雨夜/捡到」等转成可渲染视觉短语
         base_final = _comic_ensure_entities(story, base_final)
         base_final = _comic_append_concrete(story, base_final)
-        final_prompt = ("%s, narrative comic panel, no text, no speech bubbles, "
-                        "4-koma panel, panel border, reading order left-to-right, top-to-bottom"
+        # 单格只描述一个画面；4 格排版交给前端网格，这里禁止模型在单张图内画内嵌多格
+        final_prompt = ("%s, single comic panel, one scene, no text, no speech bubbles, "
+                        "no panel border, no multiple panels, no grid, no collage, no split screen"
                         % base_final)
         try:
-            if char_comfy and ip_available:
-                path = _comfy_text2img_with_ipadapter(
-                    final_prompt, char_comfy[0], weight=0.9,
-                    width=W, height=H, steps=steps, seed=s, timeout=180,
-                    style_comfy_name=style_ref_comfy, style_weight=0.4)
-            elif style_ref_comfy and ip_available:
-                # 仅风格路注入（无角色参考）：复用 IP-Adapter 风格路径保持 4 格统一
-                path = _comfy_text2img_with_ipadapter(
-                    final_prompt, ref_comfy_name=None,
-                    width=W, height=H, steps=steps, seed=s, timeout=180,
-                    style_comfy_name=style_ref_comfy, style_weight=0.4)
-            else:
-                # 无 IP-Adapter（常见降级场景）：第 2 格起用首帧 img2img 锚定，
-                # 保持同场景/同主角连续，避免 4 格各自随机；失败诚实回退纯文生图。
-                if first_local and idx > 0:
-                    try:
-                        path = _comfy_img2img(first_local, final_prompt, strength=0.55,
-                                              width=W, height=H, steps=steps, seed=s, timeout=180)
-                    except Exception as e:
-                        logger.warning("[comic] 第 %d 格首帧锚定失败，回退基础文生图: %s" % (idx, e))
-                        path = _comfy_text2img(final_prompt, width=W, height=H, steps=steps,
-                                               cfg=7.0, seed=s, timeout=180)
-                else:
-                    path = _comfy_text2img(final_prompt, width=W, height=H, steps=steps,
-                                           cfg=7.0, seed=s, timeout=180)
+            path = _comic_panel_generate(
+                final_prompt, W, H, steps, cfg, s, neg,
+                char_comfy, style_ref_comfy, ip_available,
+                first_local, idx, style,
+                enforce_asset=enforce_asset)
+        except AssetInjectBlocked:
+            # 强制资产注入被阻断：直接抛出，不降级（铁律 1.1）
+            raise
         except Exception as e:
-            # IP-Adapter 失败诚实降级为基础文生图（与 Director 一致，不阻塞生成）
-            logger.warning("[comic] 第 %d 格 IP-Adapter 出图失败，降级基础文生图: %s" % (idx, e))
-            try:
-                path = _comfy_text2img(final_prompt, width=W, height=H, steps=steps,
-                                       cfg=7.0, seed=s, timeout=180)
-            except Exception as e2:
-                raise RuntimeError("ComfyUI 第 %d 格出图失败: %s" % (idx, e2))
+            # 模板路径失败（非强制）：诚实跳过该格，不回退手搓（铁律 1.2）
+            logger.warning("[comic] 第 %d 格模板出图失败，跳过该格（不回退手搓）: %s" % (idx, e))
+            continue
         if idx == 0 and path and os.path.isfile(path):
             first_local = path
         if not path or not os.path.isfile(path):
@@ -3535,7 +3845,7 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
         img = {
             "url": "/file?name=" + dst_name, "seed": s, "width": W, "height": H,
             "final_prompt": final_prompt, "model": _get_comfy_checkpoint(),
-            "steps": steps, "cfg": 7.0, "sampler": "euler", "style": style,
+            "steps": steps, "cfg": cfg, "sampler": "euler", "style": style,
             "size": "%dx%d" % (W, H),
         }
         images.append(img)
@@ -3580,7 +3890,7 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
         "height": H,
         "steps": steps,
         "seed": seed,
-        "cfg": 7.0,
+        "cfg": cfg,
         "sampler": "euler",
         "orchestrator": used or orchestrator or "dict_fallback",
         "enhance": enhance,
@@ -3814,9 +4124,8 @@ def _comfy_img2img_with_ipadapter(image_path, style_image_path, weight=0.8, prom
     if not comfy_available():
         raise RuntimeError("风格迁移失败：ComfyUI 未启动（请先启动秋葉 ComfyUI :8188）")
     ip_name = _get_comfy_ipadapter()
-    cv_name = _get_comfy_clip_vision()
-    if not ip_name or not cv_name:
-        raise RuntimeError("风格迁移失败：缺少 IP-Adapter 或 CLIP-Vision 权重（请安装 ComfyUI_IPAdapter_plus 并放入权重）")
+    if not ip_name:
+        raise RuntimeError("风格迁移失败：缺少 IP-Adapter 权重（请安装 ComfyUI_IPAdapter_plus 并放入权重）")
     up = _upload_to_comfy(image_path)
     up_style = _upload_to_comfy(style_image_path)
     if not up or not up_style:
@@ -3824,6 +4133,19 @@ def _comfy_img2img_with_ipadapter(image_path, style_image_path, weight=0.8, prom
     if seed is None or int(seed) < 0:
         seed = random.randint(0, 2 ** 31 - 1)
     neg = negative or _EDefault_NEG
+    name_l = ip_name.lower()
+    if "vit-g" in name_l:
+        preset = "VIT-G"
+    elif "full face" in name_l or "full-face" in name_l:
+        preset = "FULL FACE - SD1.5 only (portraits stronger)"
+    elif "plus face" in name_l or "plus-face" in name_l or "face" in name_l:
+        preset = "PLUS FACE (portraits)"
+    elif "plus" in name_l:
+        preset = "PLUS (high strength)"
+    elif "light" in name_l:
+        preset = "LIGHT - SD1.5 only (low strength)"
+    else:
+        preset = "STANDARD (medium strength)"
     wf = {
         "3": {"class_type": "KSampler", "inputs": {
             "seed": int(seed), "steps": steps, "cfg": float(cfg),
@@ -3837,10 +4159,11 @@ def _comfy_img2img_with_ipadapter(image_path, style_image_path, weight=0.8, prom
         "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_ip"}},
         "10": {"class_type": "VAEEncode", "inputs": {"pixels": ["5", 0], "vae": ["4", 2]}},
         "11": {"class_type": "IPAdapterModelLoader", "inputs": {"ipadapter_file": ip_name}},
-        "12": {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": cv_name}},
+        "12": {"class_type": "IPAdapterUnifiedLoader", "inputs": {
+            "model": ["4", 0], "preset": preset, "ipadapter": ["11", 0]}},
         "13": {"class_type": "LoadImage", "inputs": {"image": up_style}},
         "20": {"class_type": "IPAdapter", "inputs": {
-            "ipadapter": ["11", 0], "clip_vision": ["12", 0], "image": ["13", 0], "model": ["4", 0],
-            "weight": float(weight), "start_at": 0.0, "end_at": 1.0, "weight_type": "standard"}},
+            "model": ["12", 0], "ipadapter": ["11", 0], "image": ["13", 0],
+            "weight": float(weight), "start_at": 0.0, "end_at": 1.0, "weight_type": "style transfer"}},
     }
     return _comfy_run(wf, timeout)
