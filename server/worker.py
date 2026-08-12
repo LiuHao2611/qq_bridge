@@ -124,9 +124,70 @@ def _mark_failed(conn, task, note):
     push_message(conn, "task", "片段生成失败", "原因：%s" % str(note)[:120], action_url="/tasks")
 
 
+def select_submission_strategy(task):
+    """提交策略选择（纯函数，可单测）：workflow_json 非空 → 本地 ComfyUI 提交；否则既有 RunningHub。"""
+    if task.get("workflow_json"):
+        return "local_comfy"
+    return "runninghub"
+
+
+def _serve_local_workflow(task):
+    """本地 ComfyUI 提交分支（M2 §6）：消费翻译后的 workflow_json 提交到 ComfyUI /prompt。
+
+    仅当 generation_tasks.workflow_json 非空时由 _serve_one 调度；现有 RunningHub 任务
+    workflow_json 为 NULL，不受影响（非破坏性）。结果写入 result_url + 段状态；
+    失败抛错由 _serve_one 统一 CLOSE-03 重试/退款。ComfyUI 未启动 → svc.generate 诚实抛错。
+    """
+    import json as _json
+    from layer0 import comfyui_service
+
+    conn = get_conn()
+    try:
+        conn.execute(
+            "UPDATE generation_tasks SET status='running', started_at=?, progress=0 WHERE task_id=?",
+            (int(time.time()), task["task_id"]))
+        conn.commit()
+        ws_publish("task:%s" % task["task_id"], "status_update", {"status": "processing", "progress": 0})
+
+        try:
+            wf = _json.loads(task["workflow_json"])
+        except Exception as e:
+            raise RuntimeError("workflow_json 解析失败: %s" % e)
+
+        svc = comfyui_service.get_service()
+        out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs")
+        local = svc.generate(wf, out_dir, timeout=VIDEO_TIMEOUT_SECS)
+
+        # 成功：实扣积分（翻转冻结）+ 写结果
+        cost = task.get("cost_credits") or 0
+        try:
+            settle(task["pre_auth_id"])
+        except ApiError:
+            pass
+        rel_url = "/file?name=" + os.path.basename(local)
+        seg = fetch_one(conn, "SELECT * FROM segments WHERE segment_id=?", (task["segment_id"],))
+        if seg:
+            conn.execute(
+                "UPDATE segments SET status='succeeded', video_url=?, thumbnail_url=? WHERE segment_id=?",
+                (rel_url, rel_url, task["segment_id"]))
+        _task_status(conn, task, "succeeded", progress=100, result_url=rel_url)
+        _task_log(conn, task, "info", "本地 ComfyUI 生成完成")
+        push_message(conn, "task", "片段生成完成",
+                     "片段《%s》已本地生成" % ((seg or {}).get("title", "")),
+                     action_url="/projects/%s/production" % ((seg or {}).get("project_id") or ""))
+        ws_publish("credits", "balance_update", {"task_id": task["task_id"], "cost": cost})
+        log_operation(conn, "segment_generate_local", "segment", task["segment_id"], cost_credits=cost)
+        _emit(task, "info", "task_succeeded", cost_credits=cost, note="local_comfy")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _serve_one(task):
     if task.get("model_id") == "synthesize":
         return _serve_synthesize(task)
+    if select_submission_strategy(task) == "local_comfy":
+        return _serve_local_workflow(task)
     conn = get_conn()
     try:
         conn.execute("UPDATE generation_tasks SET status='running', started_at=?, progress=0 WHERE task_id=?",

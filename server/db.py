@@ -340,6 +340,8 @@ def _migrate(conn):
         ("generation_tasks", "first_frame_match REAL"),           # P4 品控：首尾帧衔接匹配度
         ("generation_tasks", "degrade_reason TEXT"),              # P4 降级原因透出（诚实告知用户）
         ("shots", "recipe_override TEXT NOT NULL DEFAULT '{}'"),  # P3 用户手动配方覆盖(user > style_tags)
+        # 导演Agent能力增强 M2（决策点 + 意图翻译产物落库）：generation_tasks 存翻译后的 ComfyUI workflow
+        ("generation_tasks", "workflow_json TEXT"),
     ]
     for tbl, col_def in alters:
         col = col_def.split(" ", 1)[0]
@@ -474,6 +476,31 @@ def _migrate(conn):
         )
     except Exception:
         pass
+
+    # 导演Agent能力增强 M2（管家统筹 + 角色卡管线）：决策点表（A 类必须上报 / B 类自主决策）。
+    # decision_id 用 uuid4（禁 hash()/random，§9/§11 红线）；category ∈ {A,B}；status ∈ {pending,resolved,skipped}。
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS decisions (
+             decision_id TEXT PRIMARY KEY,
+             project_id  TEXT NOT NULL,
+             phase       TEXT NOT NULL,
+             category    TEXT NOT NULL CHECK (category IN ('A','B')),
+             title       TEXT NOT NULL,
+             description TEXT,
+             options     TEXT NOT NULL DEFAULT '[]',
+             status      TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN ('pending','resolved','skipped')),
+             answer      TEXT,
+             created_at  TIMESTAMP DEFAULT (strftime('%s','now')),
+             updated_at  TIMESTAMP DEFAULT (strftime('%s','now'))
+           )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_decisions_project ON decisions(project_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_decisions_project_status ON decisions(project_id, status)"
+    )
 
     # 2026-08-09 修正：asset_stages.stage_name 原枚举 CHECK 限制自由/层级命名（如 周岩-青年），迁移移除。
     _migrate_asset_stages_free_stage_name(conn)

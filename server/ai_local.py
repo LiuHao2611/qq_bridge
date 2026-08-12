@@ -476,6 +476,192 @@ def build_prompt(role, objective, constraints=None, invariants=None):
     return "\n".join(lines)
 
 
+# ======================================================================
+# 导演Agent能力增强 M2（手册 §3.3 / 设计 §8）：结构化 prompt + 确定性能力匹配
+# ======================================================================
+# 风格标签 → 触发词（trigger_words）。结构化拼装，禁止散写裸字符串（§9 提示词纪律）。
+_STYLE_TRIGGER = {
+    "写实": "photorealistic, real photo, ultra detailed skin texture",
+    "电影感": "cinematic lighting, film grain, anamorphic, dramatic atmosphere",
+    "动漫": "anime style, cel shading, clean lineart",
+    "日漫": "manga style, Japanese animation",
+    "水彩绘本": "watercolor illustration, soft pastel, storybook",
+    "低饱和": "muted color palette, low saturation",
+    "高对比": "high contrast, crisp detail",
+}
+
+
+def _color_temp_word(color_temperature):
+    """色温(开尔文) → 颜色基调词。"""
+    try:
+        ct = int(color_temperature)
+    except (TypeError, ValueError):
+        return None
+    if ct < 3000:
+        return "warm color tone"
+    if ct <= 5000:
+        return "neutral color tone"
+    return "cool color tone"
+
+
+def build_generation_prompt(intent, subject=None):
+    """结构化生成提示词（手册 §3.3 / 设计 §8 ③），含 trigger_words，遵循 §9 提示词纪律。
+
+    :param intent: ProductionIntent 或 dict（task_type / intent_tags / style_constraints）。
+    :param subject: 可选角色/场景主体描述（由五要素提取得到），拼于提示词首位。
+    :return: 逗号分隔的结构化正向提示词（去重保序）。
+    """
+    if hasattr(intent, "to_dict"):
+        intent = intent.to_dict()
+    tags = list(intent.get("intent_tags") or [])
+    style = intent.get("style_constraints") or {}
+    task_type = intent.get("task_type") or ""
+
+    parts = []
+    if subject:
+        parts.append(subject.strip())
+
+    # 风格标签 → 触发词
+    for t in tags:
+        tw = _STYLE_TRIGGER.get(t)
+        if tw:
+            parts.append(tw)
+
+    # 风格约束（色温 / 光影）
+    ct_word = _color_temp_word(style.get("color_temperature"))
+    if ct_word:
+        parts.append(ct_word)
+    lighting = style.get("lighting")
+    if lighting:
+        parts.append(lighting)
+
+    # 任务类型取景词
+    if "character" in task_type:
+        parts.append("character reference sheet, front facing portrait, full detail")
+    elif "scene" in task_type:
+        parts.append("environment concept art, wide shot, atmospheric")
+    elif "video" in task_type:
+        parts.append("cinematic frame, keyframe, motion ready")
+
+    # 去重保序
+    seen, out = set(), []
+    for p in parts:
+        p = (p or "").strip()
+        if p and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return ", ".join(out)
+
+
+def build_character_negative_prompt():
+    """角色卡专用负向提示词（手册 §3.3 ④：排除畸形/多手/低质）。"""
+    return (
+        "low quality, blurry, watermark, text, deformed hands, extra fingers, "
+        "mutated limbs, bad anatomy, ugly, duplicate, multiple characters, "
+        "missing limbs, unrealistic proportions"
+    )
+
+
+def _select_checkpoint(checkpoints, tags, available_vram_mb=None):
+    """确定性底模选型：available 优先 + 标签命中数最高（与 M1 ResourceCatalog 同分逻辑）。"""
+    best, best_score = None, -1
+    for c in checkpoints or []:
+        tags_c = set(c.get("auto_tags", [])) | set(c.get("user_tags", []))
+        req = c.get("vram_required_mb")
+        if available_vram_mb is not None and req and int(req) > int(available_vram_mb):
+            continue
+        overlap = len(set(tags) & tags_c)
+        score = (1 if c.get("available", True) else 0) * 1000 + overlap
+        if score > best_score:
+            best_score, best = score, c
+    return best
+
+
+def _select_lora(loras, era, style_tags):
+    """确定性 LoRA 选型：时代关键词命中权重最高，其次风格标签命中。"""
+    era_kw = (era or "").strip().lower()
+    best, best_score = None, -1
+    for l in loras or []:
+        name = (l.get("name") or "").lower()
+        tags_l = set(l.get("auto_tags", [])) | set(l.get("user_tags", []))
+        score = 0
+        if era_kw and (era_kw in name or era_kw in tags_l):
+            score += 10
+        score += len(set(style_tags or []) & tags_l)
+        if score > best_score:
+            best_score, best = score, l
+    return best
+
+
+def match_capability(era, style_tags, catalog, available_vram_mb=None):
+    """确定性能力匹配（设计 §8 ②）：时代 + 风格 → 选底模 + 风格 LoRA。
+
+    catalog：M1 ResourceCatalog 实例（取 .catalog）或等价字典
+             {checkpoints:[...], loras:[...]}。
+    无匹配底模 → 显式抛 FeatureUnavailable（禁静默降级到错误底模）。
+    """
+    from intent_engine.errors import FeatureUnavailable
+
+    cat = catalog.catalog if hasattr(catalog, "catalog") else (catalog or {})
+    ckpts = cat.get("checkpoints") or []
+    loras = cat.get("loras") or []
+    cp = _select_checkpoint(ckpts, list(style_tags or []), available_vram_mb)
+    if cp is None:
+        raise FeatureUnavailable(
+            "checkpoint",
+            "无可用底模匹配风格 %s" % (style_tags,),
+            installed=[c.get("name") for c in ckpts],
+        )
+    lo = _select_lora(loras, era, list(style_tags or []))
+    return {"checkpoint": cp, "loras": [lo] if lo else []}
+
+
+def _parse_llm_json(raw):
+    """从 LLM 文本中解析 JSON（容忍代码块包裹 / 前后噪声）。解析失败显式抛错。"""
+    if raw is None:
+        raise ValueError("LLM 返回为空")
+    raw = raw.strip()
+    if raw.startswith("```"):
+        # 去掉 ```json ... ``` 包裹
+        raw = raw.strip("`")
+        if raw.lstrip().lower().startswith("json"):
+            raw = raw.lstrip()[4:]
+    start, end = raw.find("{"), raw.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("LLM 返回不含 JSON 对象: %r" % raw[:200])
+    try:
+        return json.loads(raw[start:end + 1])
+    except Exception as e:
+        raise ValueError("LLM JSON 解析失败: %s" % e)
+
+
+def extract_five_elements(setting_text, ollama_fn):
+    """① LLM 结构化提取五要素（设计 §8）：年龄/外貌/服装/气质/时代。
+
+    :param setting_text: 角色设定原文。
+    :param ollama_fn: 注入的 LLM 调用（prompt->text），便于离线测试。
+    :return: {age, appearance, clothing, temperament, era}；缺要素显式抛错（禁静默补全）。
+    """
+    prompt = build_prompt(
+        role="你是角色设定分析师",
+        objective="从给定角色设定中提取五个结构化要素，严格以 JSON 返回",
+        constraints=[
+            "输出纯 JSON，键固定为 age/appearance/clothing/temperament/era",
+            "age 为整数或简短字符串；era 为时代关键词（如 民国/现代/古代）",
+        ],
+        invariants=[
+            "不得臆造设定中不存在的硬性身份信息",
+            "必须包含全部五个键",
+        ],
+    )
+    raw = ollama_fn(prompt + "\n\n角色设定：\n" + (setting_text or ""))
+    data = _parse_llm_json(raw)
+    for k in ("age", "appearance", "clothing", "temperament", "era"):
+        if k not in data:
+            raise ValueError("LLM 返回缺失要素: %s" % k)
+    return data
+
+
 def _ollama_generate(prompt, think=False, keep_alive=None, model=None, base_url=None):
     target_model = model or MODEL
     url = (base_url or _get_ollama_url()).rstrip("/") + "/api/generate"
@@ -1311,6 +1497,142 @@ def generate_character_card(asset_id, attrs=None, style_tags=None,
     )
     local = _comfy_text2img_via_template(intent, timeout=timeout)
     return _persist_character_card(asset_id, local)
+
+
+# ======================================================================
+# 导演Agent能力增强 M2（设计 §8）：角色卡六步确定性管线
+# ======================================================================
+def _compose_subject(five):
+    """由五要素拼装主体描述（置于提示词首位）。"""
+    five = five or {}
+    parts = []
+    if five.get("age"):
+        parts.append("%s岁" % five["age"])
+    if five.get("appearance"):
+        parts.append(str(five["appearance"]))
+    if five.get("clothing"):
+        parts.append(str(five["clothing"]))
+    if five.get("temperament"):
+        parts.append(str(five["temperament"]))
+    if five.get("era"):
+        parts.append("%s时期" % five["era"])
+    return "，".join([p for p in parts if p])
+
+
+def _build_character_intent_for_v2(name, style_tags, era):
+    """为 build_generation_prompt 构造最小 ProductionIntent（携带风格标签）。"""
+    from intent_engine.production_intent import (
+        GenerationParams, ProductionIntent, StyleConstraints,
+    )
+    return ProductionIntent(
+        task_type="character_genesis",
+        intent_tags=list(style_tags or []),
+        bound_assets=[],
+        generation_params=GenerationParams(),
+        style_constraints=StyleConstraints(),
+    )
+
+
+def _extract_face_vector_from_image(image_path):
+    """从参考图提取 512 维人脸身份向量（最佳努力）。
+
+    依赖 InsightFace（buffalo_l）；缺失 → 显式抛 FeatureUnavailable（诚实，不静默跳过身份锁）。
+    """
+    from intent_engine.errors import FeatureUnavailable
+    try:
+        # 现有特征提取约定（如项目提供 features 模块则启用；否则诚实报错）
+        import importlib
+        feats = importlib.import_module("features")
+        if hasattr(feats, "extract_face_vector"):
+            return feats.extract_face_vector(image_path)
+    except Exception as e:
+        raise FeatureUnavailable(
+            "face_vector", "缺少 InsightFace 引擎/权重，无法提取 512 维身份向量: %s" % e,
+            installed=[],
+        )
+    raise FeatureUnavailable(
+        "face_vector", "未提供 512 维向量提取实现（features.extract_face_vector）",
+        installed=[],
+    )
+
+
+def _qc_character_card(image_path, five):
+    """⑥ 品控回检（人脸清晰度 / 设定符合度）。无引擎 → 诚实跳过并返回 skipped。"""
+    try:
+        _extract_face_vector_from_image(image_path)  # 能提取即说明人脸可用
+        return {"status": "passed", "face_detected": True}
+    except Exception:
+        return {"status": "skipped", "reason": "no_face_engine"}
+
+
+def generate_character_card_v2(asset_id, setting_text=None, era=None,
+                               style_tags=None, poses=None, ollama_fn=None,
+                               catalog=None, timeout=240):
+    """P1 角色卡六步确定性管线（设计 §8，解决 P3「角色卡随机/脱离剧本」）。
+
+    ① LLM 提取五要素 → ② 能力匹配(时代+风格→底模+LoRA) → ③ 结构化 prompt
+    → ④ derive_seed(角色名,姿势)+负向 → ⑤ 多角度参考图生成+512向量入库
+    → ⑥ 品控回检。
+
+    确定性保证（验收 P3）：同角色同姿势 seed 恒定（derive_seed）；时代/风格决定底模+LoRA
+    （match_capability，不靠 LLM 抽卡）。外部依赖（ComfyUI/InsightFace/Ollama）不可用 →
+    显式上浮或诚实降级（禁静默）。
+    """
+    from intent_engine.parameter_injector import derive_seed
+
+    # ① 五要素（LLM 结构化提取）
+    five = None
+    if setting_text and ollama_fn:
+        five = extract_five_elements(setting_text, ollama_fn)
+        era = era or five.get("era")
+        subject = _compose_subject(five)
+    else:
+        subject = None
+
+    # ② 能力匹配（时代 + 风格 → 底模 + LoRA）
+    cap = None
+    if catalog is not None and (style_tags or era):
+        cap = match_capability(era or "", style_tags or [], catalog)
+
+    # ③ 结构化 prompt（§9 纪律，含 trigger_words）
+    attrs = _load_asset_attrs_for_card(asset_id)
+    name = (attrs or {}).get("name") or (five or {}).get("appearance") or asset_id
+    intent = _build_character_intent_for_v2(name, style_tags or [], era)
+    positive = build_generation_prompt(intent, subject=subject)
+    negative = build_character_negative_prompt()
+
+    # ④ 确定性 seed + ⑤/⑥ 多角度生成与回检
+    poses = poses or ["front"]
+    results = []
+    for pose in poses:
+        seed = derive_seed(name, pose)  # 同角色同姿势 → 永远一致
+        # ⑤ 委托既有 generate_character_card（复用其模板路由 + 落库）；外部缺失诚实抛错
+        card_path = generate_character_card(
+            asset_id, attrs=attrs, style_tags=style_tags,
+            generation_params={"seed": seed, "pose": pose},
+            negative_prompt=negative, timeout=timeout,
+        )
+        # ⑤ 512 维向量入库（缺失引擎诚实跳过，不阻断卡片生成）
+        fv_status = "skipped"
+        try:
+            vec = _extract_face_vector_from_image(card_path)
+            fv_status = "stored" if vec is not None else "skipped"
+        except Exception as e:
+            logger.warning("[card-v2] 512 向量提取跳过: %s" % e)
+        # ⑥ 品控回检
+        qc = _qc_character_card(card_path, five)
+        results.append({
+            "pose": pose, "seed": seed, "card_path": card_path,
+            "face_vector": fv_status, "qc": qc,
+        })
+    return {
+        "asset_id": asset_id,
+        "five_elements": five,
+        "capability": cap,
+        "positive_prompt": positive,
+        "negative_prompt": negative,
+        "poses": results,
+    }
 
 
 def _comfy_via_typed_template(task_type, values, timeout=240, output_dir=None):

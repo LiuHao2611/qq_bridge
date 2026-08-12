@@ -1109,6 +1109,34 @@ def _resolve_stage_ref_images(stage_id):
     return out
 
 
+# ----------------------------------------------------------------------
+# 导演 Agent 管家统筹 · 决策点 API（M2：手册 §3.2.4）
+# ----------------------------------------------------------------------
+
+@api.get("/projects/{project_id}/decisions")
+async def list_project_decisions(project_id: str, status: str = None):
+    """列出项目决策点（A 类待确认 / B 类自主）。status 可选 pending|resolved|skipped 过滤。"""
+    from director.decision_engine import list_decisions
+    decisions = list_decisions(project_id, status=status)
+    return ok({
+        "project_id": project_id,
+        "decisions": [d.to_dict() for d in decisions],
+        "count": len(decisions),
+    })
+
+
+@api.post("/projects/{project_id}/decisions/{decision_id}/resolve")
+async def resolve_project_decision(project_id: str, decision_id: str, req: Request):
+    """提交用户对某决策点的答案（手册 §3.2.4）。body: { answer: str }。"""
+    from director.decision_engine import resolve_decision
+    b = await _body(req)
+    answer = (b.get("answer") if isinstance(b, dict) else None)
+    if answer is None:
+        raise ApiError("40001", "缺少 answer 字段")
+    dp = resolve_decision(project_id, decision_id, str(answer))
+    return ok({"decision": dp.to_dict()})
+
+
 @api.get("/assets/{asset_id}/face-vectors")
 async def get_asset_face_vectors(asset_id: str):
     """批量返回该角色资产下每个阶段的 512 维向量状态（前端一次拉取渲染徽标）。"""
