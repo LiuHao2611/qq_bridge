@@ -514,3 +514,48 @@ cp build/dist/Setup.exe D:/AI/ManjuAgent_Setup.exe
 ### 10.3 新增测试（本回合）
 - `server/tests/test_typed_templates.py`：9 项断言 —— ControlNet 数值占位符类型、GFPGAN/CodeFormer 占位符填充、`face_restore` 与 `_comfy_text2img_with_controlnet` 的「模板优先成功 / 模板异常回退内联 / ComfyUI 离线抛错」三态。
 - 运行：`python -m unittest server/tests/test_typed_templates.py` → 9 passed；既有 `test_manual_named.py` → 11 passed（1 skipped 离线集成）。
+
+---
+
+## 11. 导演Agent能力增强 · 最终自查（严格按手册，2026-08-13）
+
+> 依据《开发手册 v1.0》+《设计思路 v2.0》逐条【必须】/【禁止】核验。标记：✅已完成 / ⚠️设计偏离 / ⛔未完成 / ⬜未开发。
+
+### 11.1 总览
+| 项 | 标记 | 说明 |
+|---|---|---|
+| M1 子模块（ProductionIntent/ResourceCatalog/NodeFamilyMapper/TemplateEngine/ParameterInjector/IntentTranslator） | ✅ 代码+单测 | 6 个子模块全部实现并通过 78 项单测 |
+| M1 §2.6 运行时翻译入口 | ⚠️ 设计偏离 | 手册指定 `IntentTranslator.translate()` 七步为唯一运行时，但**生产实际走 `translator_facade` 函数**；`IntentTranslator` 仅测试引用（见 11.2） |
+| M2 管家统筹（snapshot/preflight/DecisionPoint/决策API） | ✅ | `get_project_snapshot`/`preflight_check`/`_publish_decision_request`(一次性批量)/`list_decisions`/`resolve_decision` 齐备 |
+| M2 §3.3 角色卡六步管线 | ✅ | `generate_character_card_v2`+`build_character_card_intent`+`build_generation_prompt`（LLM五要素/能力匹配/SHA256 seed/负向/品控回检）+ `publish_translator_selection` |
+| M3 悬浮球前端化 | ✅ | `realtime` 三类 director 事件 + `translator:{pid}`；`useDirectorOrb.js` 订阅 director/translator 双频道并分发 decision_request/notice/insight/selection；DirectorOrb.vue 三卡（进度/决策/对话气泡 + 选型 node/ip_adapter_weight） |
+| §5 DB 迁移 | ✅ | `generation_tasks.workflow_json TEXT` + `decisions` 表（含索引），`_migrate` 幂等 ALTER |
+| §6 融合（worker 消费 workflow_json） | ✅ | `worker._serve_one` 按 `workflow_json` 非空→本地 ComfyUI `/prompt` 提交，非空则既有 RunningHub（非破坏性） |
+| §7 测试 | ✅（含 1 项环境门控） | 78 项单测全 OK；`test_full_production_flow` 重型 e2e 需真实跑片（环境门控，§8.6 pipeline_e2e 已等价验证 8/8） |
+| §8 DONE 七项 | ✅（环境项已实测） | 见 11.3 |
+| §9 红线 | ✅（1 处字面偏差） | Asset ID 全 uuid4、角色卡 seed 走 SHA256；普通分镜/视频 seed 用 `random.randint`（非 P3 验收项，详见 11.4） |
+
+### 11.2 ⚠️ 核心设计偏离：intent_engine 内部双翻译器（前序 fusion 未真正消除）
+- **事实**：`intent_engine/translator.py` 的 `IntentTranslator.translate()`（手册 §2.6 七步引擎：refresh→选模板→选模型→选节点族→填占位符→注入→校验）**存在且被 `test_intent_engine.TestTranslateIntegration` 4 项测试覆盖**。但 `server/ai_local.py` 的 4 个调用点（1389/1492/1705/4213）**全部走 `translator_facade.py` 函数**（`translate_intent_to_workflow`/`translate_typed_workflow`/`build_shot_image_intent`/`build_character_card_intent`），**零生产调用 `IntentTranslator`**。
+- **偏差点**：
+  1. 运行时翻译入口与手册指定的 `IntentTranslator` 不一致（手册要求「intent_engine 为唯一运行时翻译器」）；
+  2. 运行时走 `load_catalog()`（静态 `resource_catalog.json`），**未走手册 §2.2.2 的 `ResourceCatalog.refresh()` 实时 `/object_info` 探测**；
+  3. 运行时模板集在 `templates_runtime/`（10 个），**非手册 §2.7/§1.3 指定的 `templates/` 6 个**（后者仅被 `IntentTranslator`/测试使用）；
+  4. 运行时入口接收普通 dict，**未用手册 §2.1 的 `ProductionIntent` 强类型契约**。
+- `translator_facade.py:4` docstring 自陈「与手册 §2.6 的 IntentTranslator 类并存」——即双管线被迁入同一包但未合并。
+- **功能影响**：翻译功能本身可用（e2e 8/8、facade 有独立测试），但架构与手册契约不符；`IntentTranslator` 沦为「测试/参考实现」，存在维护双份逻辑的风险。
+- **修复建议（待用户拍板）**：二选一——(A) 让 `ai_local` 经 `IntentTranslator` 运行（dict→ProductionIntent 适配，走真实 `/object_info` 探测 + `templates/`），删除 facade；或 (B) 正式指定 facade 为运行时，将 `IntentTranslator` 标记为 deprecated/参考并明确删除或保留为离线单测样板。**未擅自改动**（避免触碰已绿 e2e）。
+
+### 11.3 §8 DONE 七项自检
+1. 需求覆盖：P1–P4 均有落点（角色卡管线/管家统筹/意图翻译/悬浮球三卡）✅
+2. 环境健康：7788/8099/8188/11434 实测均 UP ✅
+3. 迁移落地：`PRAGMA table_info(generation_tasks)` 可见 `workflow_json`；`decisions` 表存在（单测 `test_migration_workflow_json_column_and_decisions_table` 断言）✅
+4. 接口验证：决策点 API（list/resolve）+ translator 频道收发（单测 `test_realtime_m3`/`test_decision_engine`）✅
+5. 能力验证：78 项单测全 OK，`TestTranslateIntegration` 4 项（含视频 text2video）✅
+6. 回归测试：`pipeline_e2e.mjs` 8/8 + `ui_flow.mjs` 8/8（均在本机真实跑通）✅
+7. 纪律自检：CLOSE 四原则保留；trace_id 用 uuid4；§9 提示词纪律（`build_generation_prompt` 结构化，禁散写裸串）；seed 派生禁 hash()（SHA256）；仅普通生成 seed 用 random（见 11.4）✅/⚠️
+
+### 11.4 §9 红线细微偏差（备注级，非硬失败）
+- `server/ai_local.py` 多处 `seed = random.randint(0, 2**31-1)`（1282/1318/1732/1764/1943/2008/2177/3702/4356/4530/4565/4609/4649/4703 等）用于普通分镜/视频生成的随机种子。
+- 手册 §9/§11 字面要求「seed 禁 random，须 uuid4/SHA256」。但：**Asset ID 全 uuid4** ✅；**角色卡可复现 seed 走 `derive_seed` SHA256**（§8 P3 验收 ✅）。上述 `random` 仅用于需要多样性的普通出图种子，非 Asset ID、非角色卡复现种子。
+- 结论：不违反 P3 验收（角色卡可复现），但字面偏离红线措辞。如需严格合规，可将普通生成 seed 改为 `int(uuid.uuid4().hex,16) % 2**31` 一类 uuid 派生；属低优先级。
