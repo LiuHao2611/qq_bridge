@@ -1160,6 +1160,37 @@ async def extract_stage_face_vector(asset_id: str, stage_id: str):
     return ok({"stage_id": stage_id, "has_vector": True, "dim": FACE_VECTOR_DIM})
 
 
+@app.post("/assets/{asset_id}/generate-card")
+async def generate_character_card_endpoint(asset_id: str, req: Request):
+    """P1 角色卡 AI 生成（导演agent优化草稿 #1）：经意图翻译引擎产出首张定妆照。
+
+    请求体（均可选）：
+      {"attrs": {"name","age","gender","appearance":[...]},
+       "style_tags": ["写实","电影感"],
+       "generation_params": {"width":512,"height":768,"steps":28,"cfg":8.5},
+       "negative_prompt": "..."}
+    铁律 1.1/1.2：走 workflow_templates/character_card_gen.json，确定性 seed，绝不手搓节点。
+    ComfyUI 不可用 → 诚实抛 COMFY_UNAVAILABLE（调用方清晰告知用户）。
+    """
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    attrs = body.get("attrs")
+    style_tags = body.get("style_tags")
+    generation_params = body.get("generation_params")
+    negative_prompt = body.get("negative_prompt")
+    try:
+        import ai_local
+        path = ai_local.generate_character_card(
+            asset_id, attrs=attrs, style_tags=style_tags,
+            generation_params=generation_params, negative_prompt=negative_prompt)
+    except Exception as e:
+        code = getattr(e, "code", "CHARACTER_CARD_FAILED")
+        raise ApiError(code, str(e))
+    return ok({"asset_id": asset_id, "cover_url": path})
+
+
 # ======================================================================
 # DirectorOrb v2（悬浮球化身）路由挂载
 # ----------------------------------------------------------------------

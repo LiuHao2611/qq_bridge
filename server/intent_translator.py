@@ -19,6 +19,7 @@
 import os
 import re
 import json
+import hashlib
 
 _BASE = os.path.dirname(os.path.abspath(__file__))
 _CATALOG_PATH = os.path.join(_BASE, "resource_catalog.json")
@@ -214,6 +215,9 @@ def translate_intent_to_workflow(intent, catalog=None):
         tpl = load_template("shot_video_gen")
     elif base_task == "shot_image_img2img":
         tpl = load_template("shot_image_img2img")
+    elif base_task == "character_card":
+        # P1 角色卡首张参考图：纯文生图（鸡生蛋环节，尚无资产参考图），由结构化属性驱动
+        tpl = load_template("character_card_gen")
     elif need_ip:
         tpl = load_template("shot_image_gen_ip")
     else:
@@ -290,4 +294,103 @@ def build_shot_image_intent(prompt_text, style_tags=None, generation_params=None
         "generation_params": generation_params or {},
         "init_image": init_image,
         "denoise": denoise,
+    }
+
+
+def _deterministic_seed(key):
+    """由稳定字符串（角色ID/名）派生确定性种子，保证同一角色多次生成结果一致。
+
+    直接回应草稿 #1 的「每次随机」问题：角色卡首图不再依赖随机 seed，而是锚定
+    角色身份（character_id）稳定产出，后续 IP 复用也以此图为参考，跨阶段一致。
+    """
+    h = hashlib.md5(str(key).encode("utf-8")).hexdigest()
+    return int(h[:8], 16) % (2 ** 31 - 1)
+
+
+def _build_character_positive(attrs, style_tags):
+    """由结构化角色属性确定性拼接正向提示词（中文，与项目既有中文 prompt 风格一致）。
+
+    属性来自剧本/资产定义（铁律 1.1：锚定资产，禁止自由创意 Prompt 凭空生成角色）。
+    """
+    parts = []
+    gender = (attrs or {}).get("gender") or ""
+    if gender:
+        parts.append(str(gender))
+    age = (attrs or {}).get("age")
+    if age is not None:
+        try:
+            age = int(age)
+            if age <= 12:
+                parts.append("儿童")
+            elif age < 18:
+                parts.append("青少年")
+            elif age < 35:
+                parts.append("青年")
+            elif age < 55:
+                parts.append("中年")
+            else:
+                parts.append("老年")
+        except Exception:
+            pass
+    for ap in ((attrs or {}).get("appearance") or []):
+        if ap:
+            parts.append(str(ap))
+    for st in (style_tags or []):
+        if st and st not in ("通用",):
+            parts.append(str(st))
+    parts.append("角色定妆照")
+    parts.append("单人半身肖像")
+    parts.append("高清细节")
+    # 去重保序
+    seen, out = set(), []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return "，".join(out)
+
+
+def build_character_card_intent(attrs, character_id=None, style_tags=None,
+                                generation_params=None, negative_prompt=None):
+    """构造角色卡（定妆照/概念图）生成意图——属性驱动，确定性种子（草稿 #1）。
+
+    解决草稿 #1 点名的「鸡生蛋」矛盾：角色卡首张参考图必须在资产 ID 可用前生成，
+    但铁律 1.1 禁止仅靠自由 Prompt 生成角色。本函数以**结构化角色属性**
+    （name/age/gender/appearance）确定性拼装正向提示词，并以 character_id 哈希
+    派生确定性 seed —— 既锚定资产（属性来自剧本/资产定义），又保证稳定不随机。
+
+    :param attrs: 角色结构化属性 dict，至少含
+        {"name": "林浩", "age": 32, "gender": "男",
+         "appearance": ["黑色短发", "单眼皮", "方脸", "中等身材"]}
+    :param character_id: 角色资产 ID（派生确定性 seed 的锚点；缺省回退 name）。
+    :param style_tags: 风格标签（写实/电影感…），参与底模匹配。
+    :param generation_params: 可选覆盖 {width,height,seed,steps,cfg}。
+    :param negative_prompt: 可选覆盖负向词（默认角色卡专用负向词）。
+    :return: intent dict（task_type="character_card"），可直接交 translate_intent_to_workflow。
+    """
+    attrs = attrs or {}
+    seed_key = character_id or attrs.get("name") or "character"
+    gp = dict(generation_params or {})
+    if "seed" not in gp:
+        gp["seed"] = _deterministic_seed(seed_key)   # 修复「每次随机」
+    gp.setdefault("width", 512)    # 默认肖像比例 2:3
+    gp.setdefault("height", 768)
+    gp.setdefault("steps", 28)
+    gp.setdefault("cfg", 8.5)
+    positive = _build_character_positive(attrs, style_tags)
+    default_neg = (
+        "low quality, blurry, watermark, text, extra limbs, deformed hands, "
+        "mutated fingers, bad anatomy, asymmetric eyes, deformed face, "
+        "extra fingers, missing limbs, distorted proportions, ugly, disfigured"
+    )
+    return {
+        "task_type": "character_card",
+        "style_tags": style_tags or ["写实", "通用"],
+        "bound_assets": [],            # 首张卡无参考图，纯文生图（鸡生蛋环节）
+        "prompt_text": positive,
+        "negative_prompt": negative_prompt or default_neg,
+        "identity_image": "",
+        "style_image": "",
+        "style_weight": 0.4,
+        "generation_params": gp,
     }

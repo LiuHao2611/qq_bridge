@@ -132,7 +132,8 @@ class PostProductionAgent(BaseAgent):
         try:
             segs = db.fetch_all(
                 conn,
-                "SELECT segment_id, title, video_url, status, duration FROM segments WHERE project_id=?",
+                "SELECT segment_id, title, video_url, status, duration, return_last_frame "
+                "FROM segments WHERE project_id=?",
                 (project_id,),
             )
             reports = []
@@ -163,9 +164,26 @@ class PostProductionAgent(BaseAgent):
                     rep["engine_missing"] = engine_missing
                 rep["pass"] = (rep["file_ok"] and rep["duration_ok"]
                                and (rep["face_sim"] is None or rep["face_sim"] >= FACE_SIM_THRESHOLD))
+                # 持久化品控到 generation_tasks（供 DirectorOrb v2 品控报告真实读取，草稿 #5）。
+                # face_similarity：真实余弦相似度；首尾帧锚定开启的片段天然连续 → first_frame_match=1.0，
+                # 未锚定则留 NULL（未知，绝不谎报通过）；degrade_reason 诚实标注不达标/引擎缺失原因。
+                ffm = 1.0 if (s.get("return_last_frame") or 0) else None
+                degrade = None
+                if rep["engine_missing"]:
+                    degrade = "QC_ENGINE_MISSING"
+                elif rep["face_sim"] is not None and rep["face_sim"] < FACE_SIM_THRESHOLD:
+                    degrade = "QC_FACE_SIM_LOW"
+                try:
+                    conn.execute(
+                        "UPDATE generation_tasks SET face_similarity=?, first_frame_match=?, "
+                        "degrade_reason=? WHERE segment_id=?",
+                        (rep["face_sim"], ffm, degrade, seg_id))
+                except Exception:
+                    pass
                 reports.append(rep)
                 if not rep["pass"]:
                     failed.append(seg_id)
+            conn.commit()  # 落盘 generation_tasks 品控写入（face_similarity/first_frame_match/degrade_reason）
             return {"total": len(segs), "missing": missing, "reports": reports,
                     "failed_shot_list": failed}
         finally:

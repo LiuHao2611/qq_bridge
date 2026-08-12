@@ -318,6 +318,9 @@ export const getStageFaceVector = (assetId, stageId) =>
   get('/assets/' + assetId + '/stages/' + stageId + '/face-vector').then((r) => r)
 export const extractStageFaceVector = (assetId, stageId) =>
   post('/assets/' + assetId + '/stages/' + stageId + '/face-vector/extract').then((r) => r)
+// 角色卡 AI 生成（导演agent优化草稿 #1）：经意图翻译引擎产出首张定妆照，确定性 seed 不随机
+export const generateCharacterCard = (assetId, body = {}) =>
+  post('/assets/' + assetId + '/generate-card', body).then((r) => r || {})
 
 // ---- §09 API-05 通知删除 ----
 export const deleteNotification = (id) => del('/notifications/' + id)

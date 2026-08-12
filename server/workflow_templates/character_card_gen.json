@@ -1,0 +1,15 @@
+{
+  "_doc": "角色卡（定妆照/概念图）文生图模板（导演agent优化草稿 #1）。真实 ComfyUI API 格式；{{占位符}} 由意图翻译引擎填充。用于 P1 角色卡「首张参考图」生成——此时尚无资产参考图可用（鸡生蛋环节），故为纯文生图（不叠 IP 路），由结构化角色属性驱动（铁律 1.1：禁止仅靠自由 Prompt 生成角色，必须锚定资产属性）。节点编号结构与 shot_image_gen.json 一致。",
+  "prompt": {
+    "3": {"class_type": "KSampler", "inputs": {
+      "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}",
+      "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0,
+      "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
+    "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "{{checkpoint}}"}},
+    "5": {"class_type": "EmptyLatentImage", "inputs": {"width": "{{width}}", "height": "{{height}}", "batch_size": 1}},
+    "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{positive_prompt}}", "clip": ["4", 1]}},
+    "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{negative_prompt}}", "clip": ["4", 1]}},
+    "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+    "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_char_card"}}
+  }
+}

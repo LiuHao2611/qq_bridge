@@ -1219,6 +1219,100 @@ def _comfy_text2img_via_template(intent, timeout=240):
     return svc.generate(wf, out_dir, timeout=timeout)
 
 
+# 角色卡 AI 生成落盘根目录（与 worker / VisualControlAgent 一致：仓库根 /outputs/assets）
+_ASSET_CARD_OUT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs", "assets")
+
+
+def _load_asset_attrs_for_card(asset_id):
+    """从 DB 回退角色属性（当调用方未显式传 attrs 时）：name + 主阶段 age。"""
+    import db
+    conn = db.get_conn()
+    try:
+        row = db.fetch_one(conn, "SELECT name FROM assets WHERE asset_id=?", (asset_id,))
+        name = (row or {}).get("name") or asset_id
+        srow = db.fetch_one(
+            conn,
+            "SELECT age FROM asset_stages WHERE asset_id=? ORDER BY selected DESC, stage_id LIMIT 1",
+            (asset_id,),
+        )
+        age = (srow or {}).get("age")
+    finally:
+        conn.close()
+    return {"name": name, "age": age, "gender": "", "appearance": []}
+
+
+def _persist_character_card(asset_id, local_path):
+    """把生成的角色卡落到 outputs/assets/card-<asset_id>.png（扁平，供 /file?name= 服务），
+    并更新 assets.cover_url + 主阶段 reference_image_url 为该可服务 URL。
+
+    返回可服务 URL（前端 cover_url 直接引用，便于后续 IP 复用与一致性锁定）。
+    """
+    import db
+    os.makedirs(_ASSET_CARD_OUT, exist_ok=True)
+    fname = "card-%s.png" % asset_id
+    dest = os.path.join(_ASSET_CARD_OUT, fname)
+    if os.path.abspath(local_path) != os.path.abspath(dest):
+        import shutil
+        shutil.copyfile(local_path, dest)
+    url = "/file?name=" + fname
+    conn = db.get_conn()
+    try:
+        conn.execute(
+            "UPDATE assets SET cover_url=?, updated_at=strftime('%s','now') WHERE asset_id=?",
+            (url, asset_id),
+        )
+        srow = db.fetch_one(
+            conn,
+            "SELECT stage_id, age FROM asset_stages WHERE asset_id=? AND selected=1 LIMIT 1",
+            (asset_id,),
+        )
+        if srow:
+            conn.execute(
+                "UPDATE asset_stages SET reference_image_url=? WHERE stage_id=?",
+                (url, srow["stage_id"]),
+            )
+        else:
+            sid = "STAGE-%s-primary" % asset_id
+            age = (srow or {}).get("age", 0) if srow else 0
+            conn.execute(
+                "INSERT OR REPLACE INTO asset_stages "
+                "(stage_id, asset_id, stage_name, age, reference_image_url, selected, created_at) "
+                "VALUES (?,?,?,?,?,1,strftime('%s','now'))",
+                (sid, asset_id, "主阶段", age, url),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return url
+
+
+def generate_character_card(asset_id, attrs=None, style_tags=None,
+                            generation_params=None, negative_prompt=None, timeout=240):
+    """P1 角色卡 AI 生成（导演agent优化草稿 #1）：经意图翻译引擎产出首张定妆照，落资产封面。
+
+    铁律 1.1：首卡由结构化角色属性驱动（非自由 prompt），确定性 seed 保证稳定不随机；
+    经 _comfy_text2img_via_template 走 workflow_templates/character_card_gen.json，
+    绝不手搓节点（铁律 1.2）。ComfyUI 不可用抛 RuntimeError，由调用方诚实报错。
+
+    :param asset_id: 角色资产 ID（确定性 seed 锚点 + 落库目标）。
+    :param attrs: 角色结构化属性 {name, age, gender, appearance:[...]}；缺省从 DB 回退 name+age。
+    :param style_tags: 风格标签（写实/电影感…）。
+    :param generation_params: 可选覆盖 {width,height,seed,steps,cfg}。
+    :param negative_prompt: 可选覆盖角色卡专用负向词。
+    :return: 生成的角色卡本地图绝对路径（同时已写入 assets.cover_url + 主阶段 reference_image_url）。
+    """
+    import intent_translator
+    if attrs is None:
+        attrs = _load_asset_attrs_for_card(asset_id)
+    intent = intent_translator.build_character_card_intent(
+        attrs, character_id=asset_id, style_tags=style_tags,
+        generation_params=generation_params, negative_prompt=negative_prompt,
+    )
+    local = _comfy_text2img_via_template(intent, timeout=timeout)
+    return _persist_character_card(asset_id, local)
+
+
 def _comfy_via_typed_template(task_type, values, timeout=240, output_dir=None):
     """通用模板驱动提交（铁律 1.2）：按 task_type 填充 workflow_templates 并提交 Layer0。
 

@@ -2,7 +2,7 @@
 import { ref, reactive, computed, watch, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  updateAsset, uploadImage, listStagesWithPoses,
+  updateAsset, uploadImage, listStagesWithPoses, generateCharacterCard,
   addStage, delStage, addPose, delPose,
   getAssetFaceVectors, getStageFaceVector, extractStageFaceVector,
 } from '../api'
@@ -50,6 +50,7 @@ const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 // 手册 §5.1：真人资产身份特征向量维度固定 512；§5.3：资产调用前必须权限校验
 const FACE_VECTOR_DIM = 512
 const busyVectorStage = ref('') // 当前正在提取 512 维向量的阶段 ID
+const busyCard = ref(false) // 当前正在经意图翻译引擎生成角色卡
 
 const form = reactive({
   id: '',
@@ -263,8 +264,34 @@ const stopVoicePreview = () => {
   isSpeaking.value = false
 }
 
-const onAIGenerate = () => {
-  toast('AI 角色设定生成：将基于参考图与定位扩写（本地模型待接入）')
+// 角色卡 AI 生成（导演agent优化草稿 #1）：经意图翻译引擎产出首张定妆照。
+// 铁律 1.1：由结构化角色属性驱动（非自由 Prompt）；确定性 seed 保证跨次一致（修复「每次随机」）。
+// 经后端 /assets/{id}/generate-card → workflow_templates/character_card_gen.json，绝不手搓节点。
+const onAIGenerate = async () => {
+  if (!form.id) { toast('请先保存角色后再生成定妆照'); return }
+  busyCard.value = true
+  try {
+    const sel = stages.value.find((s) => s.stage_id === selectedStageId.value) || stages.value[0]
+    const attrs = {
+      name: form.name || '',
+      age: sel ? Number(sel.age) || 25 : 25,
+      gender: '',
+      appearance: [],
+    }
+    const r = await generateCharacterCard(form.id, { attrs, style_tags: ['写实', '电影感'] })
+    if (r && r.cover_url) {
+      form.coverUrl = r.cover_url
+      await loadStages({ id: form.id })
+      emit('stagesChanged')
+      toast('定妆照已生成（确定性种子，跨次一致）')
+    } else {
+      toast('生成未返回图像')
+    }
+  } catch (e) {
+    toast('生成失败: ' + (e.message || e))
+  } finally {
+    busyCard.value = false
+  }
 }
 
 const goCanvas = () => {
@@ -583,7 +610,7 @@ const removePose = async (st, p) => {
           <el-icon><EditPen /></el-icon> 去画布编辑
         </el-button>
         <div class="re-footer-right">
-          <el-button type="primary" plain @click="onAIGenerate">
+          <el-button type="primary" plain :loading="busyCard" @click="onAIGenerate">
             <el-icon><MagicStick /></el-icon> AI 生成设定
           </el-button>
           <span class="re-autosave" :class="saveStatus">{{ { saving: '保存中…', saved: '已自动保存', error: '保存失败' }[saveStatus] || '自动保存开启' }}</span>
