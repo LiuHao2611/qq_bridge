@@ -454,11 +454,12 @@ onBeforeUnmount(() => {
           <!-- ===== M3 悬浮球前端化：三卡（决策 / 选型 / 对话） ===== -->
 
           <!-- 决策卡：A 类决策请示（director.decision_request），点选回传 resolve -->
-          <div v-if="pendingDecisions.length" class="persona-decision m3-decision">
+          <div class="persona-decision m3-decision">
             <div class="pd-title">
               <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8" x2="12" y2="13"/><line x1="12" y1="16.5" x2="12.01" y2="16.5"/></svg>
               待确认决策（{{ pendingDecisions.length }}）
             </div>
+            <div v-if="!pendingDecisions.length" class="orb-empty">暂无待确认决策</div>
             <div v-for="d in pendingDecisions" :key="d.decision_id" class="pd-item">
               <div class="pd-name">{{ d.title }} <span class="pd-phase">{{ d.phase }}</span></div>
               <div class="pd-detail" v-if="d.description">{{ d.description }}</div>
@@ -471,20 +472,27 @@ onBeforeUnmount(() => {
           </div>
 
           <!-- 选型卡：translator 频道（导演选了哪个底模/节点/seed，决策可视化） -->
-          <div v-if="state.translator" class="m3-translator">
+          <div class="m3-translator">
             <div class="mt-title">🎬 导演选型</div>
-            <div class="mt-row"><span class="mt-k">底模</span><span class="mt-v">{{ state.translator.checkpoint || '—' }}</span></div>
-            <div class="mt-row"><span class="mt-k">IP节点</span><span class="mt-v">{{ state.translator.node || '未使用 IP 适配器' }}</span></div>
-            <div class="mt-row" v-if="state.translator.ip_adapter_weight != null"><span class="mt-k">IP权重</span><span class="mt-v">{{ state.translator.ip_adapter_weight }}</span></div>
-            <div class="mt-row" v-if="state.translator.loras && state.translator.loras.length">
-              <span class="mt-k">LoRA</span><span class="mt-v">{{ state.translator.loras.join('、') }}</span>
-            </div>
-            <div class="mt-row"><span class="mt-k">Seed</span><span class="mt-v">{{ (state.translator.seed != null && state.translator.seed !== '') ? state.translator.seed : '—' }}</span></div>
-            <div class="mt-sub" v-if="state.translator.task_type">任务类型：{{ state.translator.task_type }}</div>
+            <div v-if="!state.translator" class="orb-empty">暂无导演选型（进入 P4 生成后将自动展示）</div>
+            <template v-else>
+              <div class="mt-row"><span class="mt-k">底模</span><span class="mt-v">{{ state.translator.checkpoint || '—' }}</span></div>
+              <div class="mt-row"><span class="mt-k">IP节点</span><span class="mt-v">{{ state.translator.node || '未使用 IP 适配器' }}</span></div>
+              <div class="mt-row" v-if="state.translator.ip_adapter_weight != null"><span class="mt-k">IP权重</span><span class="mt-v">{{ state.translator.ip_adapter_weight }}</span></div>
+              <div class="mt-row" v-if="state.translator.loras && state.translator.loras.length">
+                <span class="mt-k">LoRA</span><span class="mt-v">{{ state.translator.loras.join('、') }}</span>
+              </div>
+              <div class="mt-row"><span class="mt-k">Seed</span><span class="mt-v">{{ (state.translator.seed != null && state.translator.seed !== '') ? state.translator.seed : '—' }}</span></div>
+              <div class="mt-sub" v-if="state.translator.task_type">任务类型：{{ state.translator.task_type }}</div>
+            </template>
           </div>
 
           <!-- 对话气泡：notice / insight（导演主动发言 + 品控结论） -->
-          <div v-if="state.conversation.length" class="m3-conv">
+          <div class="m3-conv">
+            <div v-if="!state.conversation.length" class="conv-bubble empty">
+              <span class="conv-tag">通知</span>
+              <span class="conv-text">暂无通知或品控消息</span>
+            </div>
             <div v-for="c in state.conversation.slice().reverse()" :key="c.id" class="conv-bubble" :class="c.kind">
               <span class="conv-tag">{{ c.kind === 'notice' ? '通知' : '品控' }}</span>
               <span class="conv-text">{{ c.text }}</span>
@@ -816,6 +824,8 @@ onBeforeUnmount(() => {
 .conv-bubble { display: flex; align-items: flex-start; gap: 7px; padding: 7px 10px; border-radius: 10px; background: color-mix(in srgb, var(--bg-2, #20202c) 60%, transparent); border: 1px solid var(--line, #2a2a38); }
 .conv-bubble.notice { border-left: 3px solid #6f9bff; }
 .conv-bubble.insight { border-left: 3px solid #4ade80; }
+.conv-bubble.empty { opacity: .65; }
+.conv-bubble.empty .conv-text { color: var(--sub, #7a8094); font-style: italic; }
 .conv-tag { flex-shrink: 0; font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 6px; background: rgba(255,255,255,.08); color: var(--sub, #b9bccb); }
 .conv-text { flex: 1; min-width: 0; font-size: 11px; color: var(--txt, #e8e8ef); line-height: 1.45; }
 .conv-t { flex-shrink: 0; font-size: 9px; color: var(--sub, #6d7286); align-self: center; }
