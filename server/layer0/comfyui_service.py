@@ -153,6 +153,25 @@ class ComfyUIService:
         except Exception:
             return False
 
+    # ---- 资源目录运行时探测（手册 §2.2 / §4.3）----
+
+    def object_info(self, timeout=10):
+        """GET /object_info，返回全部已安装节点类的输入/输出定义字典。
+
+        用于 ResourceCatalog 探测可装节点（CheckpointLoaderSimple / LoraLoader /
+        IPAdapter* / ControlNetLoader / VAELoader / 视频采样器等）。
+        失败诚实抛 RuntimeError（CLOSE-03 精神），不静默返回空。
+        """
+        return json.loads(_http_get(self.base_url + "/object_info", timeout))
+
+    def system_stats(self, timeout=10):
+        """GET /system_stats，返回显存/算力等硬件信息（手册 §4.3 硬件探测源）。
+
+        典型返回 {"system": {"devices": [{"name","type","index","vram_total",
+        "vram_free","vram_total_bytes",...}]}}。失败诚实抛错。
+        """
+        return json.loads(_http_get(self.base_url + "/system_stats", timeout))
+
 
 # 模块级便捷实例（与 ai_local 全局 COMFY_URL 约定一致）
 _default_service = None

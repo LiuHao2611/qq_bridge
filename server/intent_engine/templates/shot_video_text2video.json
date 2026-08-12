@@ -1,0 +1,55 @@
+{
+  "template_id": "shot_video_text2video",
+  "description": "分镜文生视频（纯文本→视频）。视频采样器节点按目标机 object_info 校准（当前为 WANVideoSampler 骨架）。按模型族默认帧率由 translator 注入。",
+  "required_node_families": ["checkpoint_loader", "video_sampler", "save_image"],
+  "optional_node_families": ["controlnet_openpose", "upscaler"],
+  "semantic_nodes": {
+    "checkpoint_loader": {
+      "class_type": "CheckpointLoaderSimple",
+      "inputs": { "ckpt_name": "{{checkpoint}}" }
+    },
+    "prompt_positive": {
+      "class_type": "CLIPTextEncode",
+      "inputs": { "text": "{{positive_prompt}}", "clip": ["checkpoint_loader", 1] }
+    },
+    "prompt_negative": {
+      "class_type": "CLIPTextEncode",
+      "inputs": { "text": "{{negative_prompt}}", "clip": ["checkpoint_loader", 1] }
+    },
+    "video_sampler": {
+      "class_type": "WanVideoSampler",
+      "inputs": {
+        "model": ["checkpoint_loader", 0],
+        "positive": ["prompt_positive", 0],
+        "negative": ["prompt_negative", 0],
+        "width": "{{width}}",
+        "height": "{{height}}",
+        "length": "{{num_frames}}",
+        "fps": "{{fps}}",
+        "seed": "{{seed}}",
+        "steps": "{{steps}}"
+      }
+    },
+    "vae_decode": {
+      "class_type": "VAEDecode",
+      "inputs": { "samples": ["video_sampler", 0], "vae": ["checkpoint_loader", 2] }
+    },
+    "save_image": {
+      "class_type": "SaveImage",
+      "inputs": { "images": ["vae_decode", 0] }
+    }
+  },
+  "placeholder_schema": {
+    "{{checkpoint}}":      { "type": "string", "source": "catalog.match", "required": true },
+    "{{positive_prompt}}": { "type": "string", "source": "prompt_builder.build", "required": true },
+    "{{negative_prompt}}": { "type": "string", "source": "literal", "default": "low quality, blurry, watermark, distorted, text" },
+    "{{num_frames}}":      { "type": "int",    "default": 49, "range": [1, 200] },
+    "{{fps}}":             { "type": "int",    "default": 8 },
+    "{{seed}}":            { "type": "int",    "source": "style_anchor.derive_seed", "required": true },
+    "{{steps}}":           { "type": "int",    "default": 30, "range": [10, 50] },
+    "{{width}}":           { "type": "int",    "default": 512 },
+    "{{height}}":          { "type": "int",    "default": 768 },
+    "{{sampler}}":         { "type": "string", "default": "euler" },
+    "{{scheduler}}":       { "type": "string", "default": "normal" }
+  }
+}
