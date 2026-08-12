@@ -97,14 +97,25 @@ async function main(){
     else bad('Phase 导航 5 阶段', new Error('未检测到流程导航文本'))
 
     // ---- Phase 3：@提及 → 引用资产 chips ----
-    // 全局库里已有 阿浩_E2E（由 pipeline 测试创建）；保险起见再建一个本测试用角色资产
-    const g = await api('/assets/upload', { method:'POST',
-      body: (()=>{ const fd=new FormData(); fd.append('file', new Blob([Buffer.from(PNG_B64,'base64')],{type:'image/png'}),'a.png'); fd.append('name','UI阿浩'); fd.append('type','role'); return fd })() })
+    // 产品规则（resolveRefByName）：角色须按「阶段名」引用；场景/道具按资产名直接引用。
+    // 故为本集(pid)创建一个「场景」资产，并用 @场景名 触发引用，避免角色名不解析导致的假失败。
+    await api('/projects/'+pid+'/assets/batch', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ assets:[{ name:'UI客厅', type:'scene' }] }) })
     // 重新加载编辑器以刷新资产库
     await page.goto(WEB + '/projects/'+pid+'/editor', { waitUntil:'networkidle' })
-    const voice = page.locator('.shot-block').first().locator('.sg.full:has(> label:has-text("画外音")) .el-textarea__inner')
-    await voice.fill('@UI阿浩 走进昏暗的房间')
-    await page.waitForTimeout(800)
+    // 空项目无章节时编辑区(v-if="activeChapter")不渲染 shot-block；先「新增片段」(onAddChapter 同时建章节+首个分镜)
+    if (await page.locator('.shot-block').count() === 0) {
+      await page.locator('button:has-text("新增片段")').first().click()
+      await page.waitForSelector('.shot-block', { timeout: 8000 })
+    }
+    // 画外音字段包裹类为 .sg.drop-field（非旧选择器 .sg.full）；el-mention 的 textarea 为 .el-textarea__inner
+    const voice = page.locator('.shot-block').first().locator('.sg.drop-field:has(> label:has-text("画外音")) .el-textarea__inner')
+    await voice.fill('@UI客厅 走进昏暗的房间')
+    // 等待 @提及 被 syncMentionRefs 解析为引用并渲染 .shot-refs .asset-tag
+    await page.waitForFunction(() => {
+      const b = document.querySelector('.shot-block')
+      return b && b.querySelectorAll('.shot-refs .asset-tag').length >= 1
+    }, { timeout: 15000 })
     const chipCount = await page.locator('.shot-block').first().locator('.shot-refs .asset-tag').count()
     if (chipCount >= 1) ok('Phase3 @提及→引用资产 chip ('+chipCount+')')
     else bad('Phase3 @提及→引用资产', new Error('未生成引用 chip'))
