@@ -1,0 +1,17 @@
+{
+  "_doc": "分镜视频生成模板（手册 P4）。当前为文生图+首尾帧锚定占位结构：以首帧 {{input_image}} 作 img2img 锚点（实现首尾帧像素级承接），后续接入视频模型（Wan/CogVideoX）由 SequenceScheduler 编排。{{占位符}} 由意图翻译引擎填充。",
+  "prompt": {
+    "3": {"class_type": "KSampler", "inputs": {
+      "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}",
+      "sampler_name": "euler", "scheduler": "normal", "denoise": "{{denoise}}",
+      "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
+    "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "{{checkpoint}}"}},
+    "5": {"class_type": "EmptyLatentImage", "inputs": {"width": "{{width}}", "height": "{{height}}", "batch_size": 1}},
+    "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{positive_prompt}}", "clip": ["4", 1]}},
+    "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{negative_prompt}}", "clip": ["4", 1]}},
+    "10": {"class_type": "LoadImage", "inputs": {"image": "{{input_image}}"}},
+    "11": {"class_type": "VAEEncode", "inputs": {"pixels": ["10", 0], "vae": ["4", 2]}},
+    "12": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+    "13": {"class_type": "SaveImage", "inputs": {"images": ["12", 0], "filename_prefix": "manju_tpl_vid"}}
+  }
+}

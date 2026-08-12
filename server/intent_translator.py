@@ -253,6 +253,19 @@ def translate_intent_to_workflow(intent, catalog=None):
 
 
 # 便捷单图生成意图构造（供 ai_local 漫画管线等调用）
+def translate_typed_workflow(task_type, values):
+    """通用模板填充（手册 §3.3）：给定 task_type 与占位符值字典，返回填充后的工作流。
+
+    用于视频生成 / 人脸修复 / ControlNet 等场景——具体权重名/尺寸已由调用方
+    解析（如 Wan 模型名、GFPGAN 权重、ControlNet 名），此处只做结构化模板填充，
+    **不构造任何节点拓扑**（拓扑由 workflow_templates/* 决定，铁律 1.2）。
+    """
+    tpl = load_template(task_type)
+    prompt = {k: v for k, v in tpl["prompt"].items()}
+    return _fill_placeholders(prompt, values)
+
+
+# 便捷单图生成意图构造（供 ai_local 漫画管线等调用）
 def build_shot_image_intent(prompt_text, style_tags=None, generation_params=None,
                             identity_image=None, style_image=None, style_weight=0.4,
                             bound_assets=None, negative_prompt=None,

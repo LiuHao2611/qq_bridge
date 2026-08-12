@@ -437,3 +437,28 @@ cp build/dist/Setup.exe D:/AI/ManjuAgent_Setup.exe
 - **F2 修复（角色卡拖拽矛盾）**：`Assets.vue` 角色卡改为不可拖拽（`draggable` 仅 scene/prop），scene/prop 改用规范 `application/x-manju-asset` MIME；前端已重建部署（`frontend/dist` 新包）。详见 AGENTS.md §3.2 F2 ✅。
 - **F1（删除级联清理引用）**：删除路由可用且返回成功；但 `segment_asset_refs` 引用级联清理逻辑位于编译后端模块，本次未在安全编辑范围内改动编译产物。建议通过 UI 实操（删除阶段/资产后检查分镜 `@引用` 是否悬空）做最终确认；若发现悬空引用，需把对应删除端点从 `routers_compiled` 平移为明文并重注册（门面支持定点覆盖）。
 - **服务状态（验收基线）**：`7788 /api/v1/health`=200、`8099 /health`=200、`8910 /api/health`=200、`8900 /health`=200，四端在线。
+
+---
+
+## 10. SPEC-DIR-001 铁律 1.2 覆盖收口（2026-08-12）
+
+> 目标机为另一台电脑（非本机），本机仅做代码开发与单测；联网/硬件依赖项（InsightFace 权重下载、Ollama 模型显存、模型下载脚本）按用户指令排除。
+
+手动自查两类缺口「非已完成、非联网」已全部立项收口：
+
+### 10.1 铁律 1.2（绝对禁止手搓 JSON）覆盖补全
+- **视频两条路径**（Wan / AnimateDiff）：已改为 `workflow_templates/*.json` 模板驱动，模板缺失时**诚实回退**内联手搓（防御性，正常运行不触发）。
+- **人脸修复 `face_restore`（GFPGAN / CodeFormer）**：新增 `face_restore_gfpgan.json` / `face_restore_codeformer.json`；`face_restore` 重写为**模板优先 + 内联手搓兜底**，保留节点可用性探测与上传逻辑，`out_path` 落盘目录经 `_comfy_via_typed_template(output_dir=)` 透传（非破坏性）。
+- **ControlNet 文生图 `_comfy_text2img_with_controlnet`**：新增 `shot_image_controlnet.json`（修复原模板 `"denoise": 1.0"` 非法 JSON 笔误）；函数重写为**模板优先 + 内联手搓兜底**。数值占位符（seed/steps/cfg/width/height/control_weight）填充后保持真实数字类型（非字符串），满足 ComfyUI API 要求。
+- **三栏编辑器 `ProjectFragmentEditor.vue`**：确认 `.frag-body { grid-template-columns: 280px 1fr 360px }`（左资产库/中分镜编辑/右视频预览+参数+日志），铁律 1.2 之外的 UI 缺口已实质满足。
+
+### 10.2 未开发项补齐（均已编译/单测通过）
+- **依赖清单 `requirements.txt`**：对齐手册 §1.2，注释说明已剔除 psycopg2/sqlalchemy/redis（本地化适配）。
+- **性能测试 `server/tests/test_performance.py`**：意图翻译 P95 < 50ms、漫画单格批处理 < 50ms/格（全 mock，不依赖真实渲染）。
+- **Prometheus 监控 `server/metrics.py` + `/metrics` 端点**：Counter/Histogram/Gauge，缺失 `prometheus_client` 时优雅降级为 no-op（`ai_local` 出图/`worker` 队列深度与活动运行数埋点）。
+- **Docker 部署**：`Dockerfile.backend` / `Dockerfile.frontend` / `nginx.conf` / `docker-compose.yml` / `.dockerignore`（SQLite/本地 FS/SQLite 队列均为有意本地化适配，保持不动）。
+- **集成测试 `server/tests/test_manual_named.py`**：集成类改由环境变量 `MANJU_INTEGRATION_TEST=1` 强制跑（目标机可用）。
+
+### 10.3 新增测试（本回合）
+- `server/tests/test_typed_templates.py`：9 项断言 —— ControlNet 数值占位符类型、GFPGAN/CodeFormer 占位符填充、`face_restore` 与 `_comfy_text2img_with_controlnet` 的「模板优先成功 / 模板异常回退内联 / ComfyUI 离线抛错」三态。
+- 运行：`python -m unittest server/tests/test_typed_templates.py` → 9 passed；既有 `test_manual_named.py` → 11 passed（1 skipped 离线集成）。

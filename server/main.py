@@ -14,7 +14,7 @@ import time
 import uuid
 
 from fastapi import FastAPI, Request, WebSocket
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from db import init_db, DB_PATH, get_conn, log_operation, uid, SINGLE_USER_ID
@@ -131,6 +131,14 @@ async def serve_file(name: str, request: Request):
     logger.info("[FILE] 200 name=%s path=%s bytes=%d ua=%s" % (
         safe, p, os.path.getsize(p), request.headers.get("User-Agent", "-")))
     return FileResponse(p)
+
+
+# Prometheus 监控指标端点（手册 §7.2）。目标机由 Prometheus 抓取 :7788/metrics。
+@app.get("/metrics")
+async def metrics_endpoint():
+    from metrics import metrics_response
+    data, ctype = metrics_response()
+    return Response(content=data, media_type=ctype)
 
 
 if __name__ == "__main__":

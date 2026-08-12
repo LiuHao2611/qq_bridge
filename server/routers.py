@@ -615,13 +615,15 @@ async def t2i_comic(req: Request):
             b.get("style") or "日漫",
             b.get("negative") or "",
             b.get("resolution") or "1024",
-            b.get("ratio") or "16:9",
-            int(b.get("steps") or 20),
-            int(b.get("seed") or -1),
+            b.get("ratio") or "3:4",
+            int(b.get("steps") or 28),
+            int(b.get("seed") or 42),
             bool(b.get("enhance", True)),
             b.get("orchestrator") or "ollama",
             char_refs,
             int(b.get("panels") or 4),
+            None,  # on_progress
+            float(b.get("cfg") or 8.5),
         )
     except ApiError:
         raise
@@ -645,9 +647,10 @@ async def t2i_comic(req: Request):
                             "style": b.get("style") or "日漫",
                             "panels": int(b.get("panels") or 4),
                             "resolution": b.get("resolution") or "1024",
-                            "ratio": b.get("ratio") or "16:9",
-                            "steps": int(b.get("steps") or 20),
-                            "seed": int(b.get("seed") or -1),
+                            "ratio": b.get("ratio") or "3:4",
+                            "steps": int(b.get("steps") or 28),
+                            "seed": int(b.get("seed") or 42),
+                            "cfg": float(b.get("cfg") or 8.5),
                         },
                         ensure_ascii=False,
                     ),

@@ -1,0 +1,29 @@
+{
+  "_doc": "分镜视频生成（Wan2.1-T2V）模板（手册 P4）。拓扑与已验证手搓实现一致，由意图翻译引擎填充权重名/提示词/尺寸。首帧锚定由序列调度另行叠加。",
+  "prompt": {
+    "1": {"class_type": "WanVideoModelLoader", "inputs": {
+      "model": "{{wan_model}}", "base_precision": "bf16",
+      "quantization": "disabled", "load_device": "offload_device"}},
+    "2": {"class_type": "WanVideoVAELoader", "inputs": {
+      "model_name": "{{wan_vae}}", "precision": "bf16"}},
+    "3": {"class_type": "LoadWanVideoT5TextEncoder", "inputs": {
+      "model_name": "{{wan_t5}}", "precision": "bf16",
+      "load_device": "offload_device", "quantization": "disabled"}},
+    "4": {"class_type": "WanVideoTextEncode", "inputs": {
+      "positive_prompt": "{{positive_prompt}}",
+      "negative_prompt": "{{negative_prompt}}",
+      "t5": ["3", 0]}},
+    "5": {"class_type": "WanVideoEmptyEmbeds", "inputs": {
+      "width": "{{width}}", "height": "{{height}}", "num_frames": "{{num_frames}}"}},
+    "6": {"class_type": "WanVideoSampler", "inputs": {
+      "model": ["1", 0], "image_embeds": ["5", 0], "text_embeds": ["4", 0],
+      "steps": "{{steps}}", "cfg": "{{cfg}}", "shift": "{{shift}}", "seed": "{{seed}}",
+      "scheduler": "unipc", "force_offload": true, "riflex_freq_index": 0}},
+    "7": {"class_type": "WanVideoDecode", "inputs": {
+      "vae": ["2", 0], "samples": ["6", 0], "enable_vae_tiling": false,
+      "tile_x": 272, "tile_y": 272, "tile_stride_x": 144, "tile_stride_y": 128}},
+    "8": {"class_type": "VHS_VideoCombine", "inputs": {
+      "images": ["7", 0], "frame_rate": 25.0, "filename_prefix": "manju_vid",
+      "format": "video/h264-mp4", "pingpong": false, "save_output": true, "loop_count": 0}}
+  }
+}

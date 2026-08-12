@@ -2,7 +2,7 @@ import { ref, nextTick } from 'vue'
 import {
   getProject, listSegments, getSegment, createSegment, updateProject, updateSegment, putShots, putAssetRefs,
   deleteSegment, generateSegment, estimatePoints, preAuthPoints, getTask,
-  listProjectAssets, listStagesWithPoses,
+  listProjectAssets, listStagesWithPoses, pruneAssetRefs,
 } from '../api'
 import { mockProject, mockMemoir, normalizeShotEnums } from '../mock'
 import { toast } from '../store'
@@ -77,7 +77,17 @@ const applyActiveSegment = (p, activeSeg, shots) => {
     thumb: s.image_url || '',
     voiceover: s.voiceover || '',
     dialogue: s.dialogue || '',
-    refs: (safeJson(s.asset_refs, [])).map((r) => r?.asset_id || r).filter(Boolean),
+    // 引用对象化：refs 升级为 { asset_id, asset_type, stage_id, name }[]，
+    // 以「阶段」为最小引用单元（BR：角色须经由阶段引用）。兼容历史字符串 refs / mock 的 s.refs。
+    refs: (() => {
+      const raw = s.asset_refs != null ? s.asset_refs : (s.refs || [])
+      const arr = typeof raw === 'string' ? safeJson(raw, []) : (Array.isArray(raw) ? raw : [])
+      return arr.map((r) => {
+        if (!r) return null
+        if (typeof r === 'string') return { asset_id: r, asset_type: 'role', stage_id: null, name: '' }
+        return { asset_id: r.asset_id, asset_type: r.asset_type || 'role', stage_id: r.stage_id || null, name: r.name || (r.stage_name || '') }
+      }).filter((r) => r && r.asset_id)
+    })(),
     setting: s.setting || '',
   }))
 }
@@ -172,7 +182,19 @@ const toFrontend = (project, segments, segmentWithShots, assets, kind) => {
   return out
 }
 
+// F1/F4 跨组件共享：同一 (id,kind) 复用同一份 project 状态，
+// 确保资产面板删除阶段/资产后，keep-alive 缓存的编辑器内存态也能即时反映（避免悬空 @chip）。
+const _PROJECT_INSTANCES = new Map()
+
 export function useProject(id, kind) {
+  const key = id + ':' + (kind || 'short')
+  if (_PROJECT_INSTANCES.has(key)) return _PROJECT_INSTANCES.get(key)
+  const inst = _createProject(id, kind)
+  _PROJECT_INSTANCES.set(key, inst)
+  return inst
+}
+
+function _createProject(id, kind) {
   const project = ref(null)
   const loading = ref(false)
 
@@ -322,7 +344,8 @@ export function useProject(id, kind) {
         dialogue: s.dialogue,
         negative_prompt: s.negative_prompt || '',
         setting: s.setting || '',
-        asset_refs: s.refs.map((rid) => ({ asset_id: rid, asset_type: 'role', used_in: 'shot' })),
+        // 序列化回后端：携带 stage_id（segment_asset_refs 已支持），后端按 stage_id 注入对应阶段人脸向量（512 维）
+        asset_refs: s.refs.map((rf) => ({ asset_id: rf.asset_id, asset_type: rf.asset_type || 'role', stage_id: rf.stage_id || null, used_in: 'shot' })),
       }))
       await putShots(pid, sid, shots)
       toast('已保存')
@@ -383,4 +406,38 @@ export function useProject(id, kind) {
   }
 
   return { project, loading, load, save, generate, pollTask, switchSegment, addSegment, removeSegment, refreshAssets }
+}
+
+// F1：删除资产/阶段后清理悬空 @引用。
+//   1) 后端级联（pruneAssetRefs）：按 asset_id（可选 stage_id）全局清理 segment_asset_refs
+//      与 shots.asset_refs —— 覆盖所有片段，含当前未在内存加载的；
+//   2) 内存态：清理共享 useProject 实例中「活动片段」的悬空引用，
+//      使 keep-alive 缓存的编辑器即时生效，且下次保存不会把悬空引用写回 DB。
+export async function pruneRefs(projectId, { assetId, stageId } = {}) {
+  if (!assetId) return
+  // 后端级联（pruneAssetRefs）：按 asset_id（可选 stage_id）全局清理 segment_asset_refs
+  // 与 shots.asset_refs —— 覆盖所有片段，含当前未在内存加载的。
+  // projectId 为可选项：全局资产（GlobalAssets）无项目上下文时传 null/undefined，
+  // 仍触发后端全局清理（路由占位符 '_' 仅用于拼 URL，后端不按 project_id 过滤）。
+  try {
+    await pruneAssetRefs(projectId || '_', { assetId, stageId })
+  } catch (e) {
+    console.warn('[pruneRefs] 后端级联清理失败', e)
+  }
+  // 内存态：仅当已知 projectId 时清理共享 useProject 实例中「活动片段」的悬空引用，
+  // 使 keep-alive 缓存的编辑器即时生效，且下次保存不会把悬空引用写回 DB。
+  if (!projectId) return
+  const inst = _PROJECT_INSTANCES.get(projectId + ':short')
+  if (inst && inst.project && inst.project.value && Array.isArray(inst.project.value.scenes)) {
+    let changed = false
+    for (const s of inst.project.value.scenes) {
+      if (!Array.isArray(s.refs)) continue
+      const before = s.refs.length
+      s.refs = s.refs.filter(
+        (r) => !(r && r.asset_id === assetId && (!stageId || (r.stage_id || null) === stageId))
+      )
+      if (s.refs.length !== before) changed = true
+    }
+    if (changed) await nextTick()
+  }
 }

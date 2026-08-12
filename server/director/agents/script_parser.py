@@ -160,8 +160,12 @@ class ScriptParserAgent(BaseAgent):
                 if name in text:                      # 精确包含 → 高置信
                     conf, needs_review = 1.0, False
                 else:
-                    toks = [t for t in name if len(t) >= 2]
-                    if any(tok in text for tok in toks):   # 分词重叠 → 低置信
+                    # F11 修复：原 `toks = [t for t in name if len(t) >= 2]` 将字符串当字符列表迭代，
+                    # 单字符 len 恒为 1 → toks 恒为空，导致「分词重叠→低置信」分支为死代码（永不触发）。
+                    # 现改为相邻二元组（bigram）切分：中文按字邻切分，英文/数字按等长窗口，
+                    # 覆盖「部分重叠」语义，使低于阈值的弱匹配进入 needs_review 路径（非破坏性）。
+                    toks = [name[i:i + 2] for i in range(len(name) - 1)]
+                    if any(tok in text for tok in toks):   # 分词重叠 → 低置信（待人工确认）
                         conf, needs_review = 0.6, True
                     else:
                         continue

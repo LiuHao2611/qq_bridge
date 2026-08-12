@@ -381,8 +381,9 @@ const comic = reactive({
   style: '日漫',
   panels: 4,
   resolution: '1024',
-  ratio: '16:9',
-  steps: 24,
+  ratio: '3:4',
+  steps: 28,
+  seed: 42,
   charRefs: [],
 })
 const comicGenerating = ref(false)
@@ -474,6 +475,8 @@ async function generateComic() {
       resolution: comic.resolution,
       ratio: comic.ratio,
       steps: comic.steps,
+      seed: parseInt(comic.seed) || 42,
+      cfg: 8.5,
       enhance: true,
       orchestrator: 'ollama',
       character_refs: comic.charRefs,

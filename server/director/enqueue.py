@@ -270,15 +270,19 @@ def persist_segment(seg, project_id, index, bound_assets_for_seg=None, resolutio
             ar = sh.get("asset_refs")
             if isinstance(ar, (list, dict)):
                 ar = json.dumps(ar, ensure_ascii=False)
+            # 空间站位预规划蓝图（N02 计算）：多人分镜角色相对位置/朝向/视线，随 shots 落库供前端可视化
+            sb = sh.get("stage_blueprint")
+            sb_json = json.dumps(sb, ensure_ascii=False) if isinstance(sb, (dict, list)) else (sb or None)
             conn.execute(
                 """INSERT INTO shots
                    (shot_id, segment_id, "index", duration, shot_type, camera_movement,
-                    camera_angle, focal_length, description, voiceover, dialogue, asset_refs)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    camera_angle, focal_length, description, voiceover, dialogue, asset_refs,
+                    stage_blueprint)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (shot_id, real_id, j, int(sh.get("duration") or 4),
                  sh.get("shot_type"), sh.get("camera_movement"), sh.get("camera_angle"),
                  sh.get("focal_length"), sh.get("description"), sh.get("voiceover"),
-                 sh.get("dialogue"), ar))
+                 sh.get("dialogue"), ar, sb_json))
         for b in (bound_assets_for_seg or []):
             conn.execute(
                 "INSERT INTO segment_asset_refs (ref_id, segment_id, asset_id, asset_type, stage_id, used_in) "

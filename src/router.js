@@ -17,6 +17,7 @@ import ProductionStage from './components/ProductionStage.vue'
 import Img2Prompt from './components/Img2Prompt.vue'
 import History from './components/History.vue'
 import Membership from './components/Membership.vue'
+import MyData from './components/MyData.vue'
 import Messages from './components/Messages.vue'
 import Help from './components/Help.vue'
 import Logs from './components/Logs.vue'
@@ -39,6 +40,7 @@ const router = createRouter({
     { path: '/img2prompt', component: Img2Prompt, meta: { moduleKey: 'creative' } },
     { path: '/history', component: History },
     { path: '/membership', component: Membership },
+    { path: '/my-data', component: MyData },
     { path: '/messages', component: Messages },
     { path: '/help', component: Help },
     { path: '/logs', component: Logs },

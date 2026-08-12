@@ -64,3 +64,15 @@ __pycache__/pyc_strings.txt
 # ===== 系统 =====
 Thumbs.db
 .DS_Store
+
+# ===== 工作区临时 / 智能体记忆 / 调试探针（绝不入库） =====
+.tmp/
+.workbuddy/
+frontend/dist.bak*/
+server/_deploy_write_probe
+*.lnk
+_writetest.txt
+web.err
+web_app.err
+pytest.ini
+

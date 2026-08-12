@@ -57,6 +57,9 @@ def _drop(ws):
 
 async def handle_ws(websocket):
     """/ws 连接处理器：鉴权、订阅管理、心跳。"""
+    # 必须显式完成握手（Starlette 1.4+ 要求），否则 uvicorn 报
+    # "ASGI callable returned without completing handshake" → 500。
+    await websocket.accept()
     token = websocket.query_params.get("token")
     # 本地单用户：记录 token，不强制校验；云端应在此校验 JWT 并返回 4401。
     loop = asyncio.get_running_loop()

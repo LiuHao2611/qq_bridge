@@ -1,14 +1,28 @@
-# 后端镜像：FastAPI + SQLite（零依赖标准库前端服务也在此仓，但后端只需 server/）。
-FROM python:3.13-slim
-WORKDIR /app
+# 万能短剧 AI 创作平台 · 后端镜像
+# 运行：uvicorn server/main.py（:7788）。ComfyUI(:8188) / Ollama(:11434) 为外部可选服务。
+FROM python:3.11-slim
+
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app \
+    PYTHONDONTWRITEBYTECODE=1 \
     MANJU_DB_PATH=/data/app.db \
-    MANJU_LOG_DIR=/data/logs
-# 仅复制后端所需（server/ + 仓根作为 manju_agent 包，便于 web_app 等复用）
+    MANJU_LOG_DIR=/data/logs \
+    MANJU_FRONTEND_DIR=/app/frontend/dist
+
+WORKDIR /app
+
+# 依赖分层缓存
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 后端代码（含 workflow_templates / resource_catalog.json / intent_translator）
 COPY server/ ./server/
-COPY __init__.py ./__init__.py
-COPY pyproject.toml ./pyproject.toml
-RUN pip install --no-cache-dir fastapi uvicorn[standard] python-multipart httpx 2>/dev/null || true
+
+# 运行用户（非 root）
+RUN useradd -m -u 1000 manju && mkdir -p /data /app/outputs \
+    && chown -R manju:manju /data /app/outputs
+USER manju
+
 EXPOSE 7788
+VOLUME ["/data", "/app/outputs"]
+
 CMD ["python", "server/main.py"]

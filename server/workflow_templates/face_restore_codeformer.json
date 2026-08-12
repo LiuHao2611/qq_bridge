@@ -1,0 +1,10 @@
+{
+  "_doc": "人脸修复（CodeFormer）模板（手册 §3.4.4 全局后处理）。拓扑与已验证手搓实现一致；{{input_image}} 为已上传至 ComfyUI 的内部文件名。",
+  "prompt": {
+    "1": {"class_type": "LoadImage", "inputs": {"image": "{{input_image}}"}},
+    "2": {"class_type": "CodeFormer", "inputs": {
+      "image": ["1", 0], "upscale": "{{upscale}}", "codeformer_weight": "{{codeformer_weight}}",
+      "fidelity": "{{fidelity}}", "seed": "{{seed}}", "blur_amount": "{{blur_amount}}", "blur_kernel": "{{blur_kernel}}"}},
+    "3": {"class_type": "SaveImage", "inputs": {"images": ["2", 0], "filename_prefix": "manju_facefix"}}
+  }
+}

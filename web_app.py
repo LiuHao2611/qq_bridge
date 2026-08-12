@@ -470,7 +470,7 @@ class Handler(BaseHTTPRequestHandler):
                 body = self.rfile.read(int(cl))
             req = urllib.request.Request(url, data=body, method=self.command,
                                          headers={h: self.headers[h] for h in self.headers if h.lower() not in ("host", "content-length")})
-            with urllib.request.urlopen(req, timeout=180) as resp:
+            with urllib.request.urlopen(req, timeout=600) as resp:
                 self.send_response(resp.status)
                 for h, v in resp.headers.items():
                     if h.lower() not in ("transfer-encoding", "content-length", "connection"):

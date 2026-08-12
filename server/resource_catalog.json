@@ -1,0 +1,52 @@
+{
+  "_doc": "资源目录（手册 SPEC-DIR-001 §3.2 A）。描述本地 ComfyUI 环境中可用的模型资源，由意图翻译引擎查询匹配预设模板。name 为 ComfyUI 节点所需的文件名（非绝对路径），须真实存在于 ComfyUI/models/<subdir>。available=true 表示本机已具备权重；available=false 表示手册设计需要、待用户放入（放入后即生效）。",
+  "checkpoints": [
+    {
+      "name": "v1-5-pruned-emaonly.safetensors",
+      "type": "image",
+      "tags": ["写实", "真人", "通用", "SD1.5"],
+      "available": true,
+      "description": "SD1.5 基础写实底模（秋葉 ComfyUI 自带），当前唯一可用 checkpoint。"
+    },
+    {
+      "name": "AnythingV5Ink_safetensors.safetensors",
+      "type": "image",
+      "tags": ["日漫", "动漫", "二次元", "SD1.5"],
+      "available": false,
+      "description": "动漫底模（手册漫画创作所需），用户放入 ComfyUI/models/checkpoints 即在 catalog 中可用，prefer 优先匹配「日漫/动漫」标签。"
+    },
+    {
+      "name": "CogVideoX-2b.safetensors",
+      "type": "video",
+      "tags": ["视频", "通用"],
+      "available": false,
+      "description": "视频生成底模（手册 P4），用户自备。"
+    }
+  ],
+  "ip_adapters": [
+    {
+      "name": "ip-adapter-plus-face_sd15.safetensors",
+      "type": "face",
+      "compatible_checkpoint": "v1-5-pruned-emaonly",
+      "requires_clip_vision": "CLIP-ViT-H-14-laion2B-s32B-b4K.safetensors",
+      "preset": "PLUS FACE (portraits)",
+      "tags": ["人脸", "身份一致性", "SD1.5"],
+      "available": true,
+      "description": "IP-Adapter plus-face（SD1.5），角色/资产身份一致性注入；依赖 CLIP-ViT-H-14 clip_vision 权重。"
+    }
+  ],
+  "clip_vision": [
+    {
+      "name": "CLIP-ViT-H-14-laion2B-s32B-b4K.safetensors",
+      "tags": ["IP-Adapter依赖"],
+      "available": true,
+      "description": "IPAdapterUnifiedLoader 运行必需的 CLIP Vision 权重。"
+    }
+  ],
+  "controlnets": [
+    {"name": "control_v11f1p_sd15_depth.pth", "type": "depth", "tags": ["深度"], "available": true},
+    {"name": "control_v11p_sd15_canny.pth", "type": "canny", "tags": ["边缘"], "available": true},
+    {"name": "control_v11p_sd15_lineart.pth", "type": "lineart", "tags": ["线稿"], "available": true},
+    {"name": "control_v11p_sd15_openpose.pth", "type": "openpose", "tags": ["姿态"], "available": true}
+  ]
+}

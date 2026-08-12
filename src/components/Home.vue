@@ -132,7 +132,7 @@ const formatNumber = (n) => {
     <!-- top bar -->
     <div class="dash-header">
       <div class="dash-title">
-        <h1>万能短剧 · 创作驾驶舱</h1>
+        <h1>创作驾驶舱</h1>
         <div class="muted">数据实时更新于 {{ dashboard.updated_at || '-' }}</div>
       </div>
       <div class="dash-actions">

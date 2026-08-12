@@ -84,6 +84,11 @@ class PostProductionAgent(BaseAgent):
             "bgm": bool(ctx.params.get("bgm", False)),
             "subtitle": bool(ctx.params.get("subtitle", False)),
             "bgm_path": ctx.params.get("bgm_path") or "",
+            # §3.4.4 多音轨分层音量控制：人声/音效/背景乐分别增益（默认 1.0，范围 0~2）
+            "voice_volume": ctx.params.get("voice_volume", 1.0),
+            "bgm_volume": ctx.params.get("bgm_volume", 1.0),
+            "sfx_volume": ctx.params.get("sfx_volume", 1.0),
+            "sfx_path": ctx.params.get("sfx_path") or "",
             # 项 ⑦：转场（按镜头类型自适应）+ 全局后处理（帧率/降噪/锐化/调色），默认开启
             "transitions": bool(ctx.params.get("transitions", True)),
             "post_process": bool(ctx.params.get("post_process", True)),

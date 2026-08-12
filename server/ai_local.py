@@ -22,6 +22,7 @@ import sys
 import glob
 
 import comfy_env  # 秋葉 ComfyUI 根目录 + 权重自动发现（手册 §5.1/§5.2）
+import metrics  # 手册 §7.2 Prometheus 监控指标
 
 logger = logging.getLogger("ai_local")
 
@@ -1218,6 +1219,33 @@ def _comfy_text2img_via_template(intent, timeout=240):
     return svc.generate(wf, out_dir, timeout=timeout)
 
 
+def _comfy_via_typed_template(task_type, values, timeout=240, output_dir=None):
+    """通用模板驱动提交（铁律 1.2）：按 task_type 填充 workflow_templates 并提交 Layer0。
+
+    values 中若出现本地图片路径（存在且为图片后缀），自动经 Layer0 上传并回填为
+    ComfyUI 内部文件名（上传归 Layer0，节点拼装归模板）。调用方与本项目不再手搓任何节点拓扑。
+
+    output_dir: 可选，覆盖默认 ComfyUI 输出目录（用于人脸修复等需指定落盘目录的场景）；
+    为 None 时回退 comfy_env.get_comfy_output_dir()（与既有手搓路径行为一致）。
+    """
+    try:
+        import intent_translator
+        from layer0 import comfyui_service
+    except Exception as e:
+        raise RuntimeError("意图翻译引擎/服务不可用: %s" % e)
+    svc = comfyui_service.get_service()
+    _IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+    for k, v in list(values.items()):
+        if isinstance(v, str) and v.lower().endswith(_IMG_EXT) and os.path.isfile(v):
+            try:
+                values[k] = svc.upload_image(v)
+            except Exception as e:
+                raise RuntimeError("模板参考图上传失败(%s): %s" % (k, e))
+    wf = intent_translator.translate_typed_workflow(task_type, values)
+    out_dir = output_dir or comfy_env.get_comfy_output_dir()
+    return svc.generate(wf, out_dir, timeout=timeout)
+
+
 def _comfy_img2img(first_frame_path, prompt, strength=0.6,
                    width=1280, height=720, steps=20, cfg=7.0,
                    seed=-1, timeout=240, negative=None):
@@ -1443,33 +1471,44 @@ def _comfy_text2video(prompt, ref_comfy_name=None, width=832, height=480,
     wan_model = _get_comfy_wan_model()
     wan_t5 = _get_comfy_wan_t5()
     wan_vae = _get_comfy_wan_vae()
-    wf = {
-        "1": {"class_type": "WanVideoModelLoader", "inputs": {
-            "model": wan_model, "base_precision": "bf16",
-            "quantization": "disabled", "load_device": "offload_device"}},
-        "2": {"class_type": "WanVideoVAELoader", "inputs": {
-            "model_name": wan_vae, "precision": "bf16"}},
-        "3": {"class_type": "LoadWanVideoT5TextEncoder", "inputs": {
-            "model_name": wan_t5, "precision": "bf16",
-            "load_device": "offload_device", "quantization": "disabled"}},
-        "4": {"class_type": "WanVideoTextEncode", "inputs": {
+    # 优先模板驱动（铁律 1.2）；模板/目录缺失时诚实回退手搓（防御性，正常运行不触发）
+    try:
+        return _comfy_via_typed_template("shot_video_gen_wan", {
+            "wan_model": wan_model, "wan_t5": wan_t5, "wan_vae": wan_vae,
             "positive_prompt": prompt,
             "negative_prompt": "low quality, blurry, watermark, text, distorted, jittery",
-            "t5": ["3", 0]}},
-        "5": {"class_type": "WanVideoEmptyEmbeds", "inputs": {
-            "width": int(width), "height": int(height), "num_frames": int(num_frames)}},
-        "6": {"class_type": "WanVideoSampler", "inputs": {
-            "model": ["1", 0], "image_embeds": ["5", 0], "text_embeds": ["4", 0],
-            "steps": 30, "cfg": 6.0, "shift": 5.0, "seed": int(seed),
-            "scheduler": "unipc", "force_offload": True, "riflex_freq_index": 0}},
-        "7": {"class_type": "WanVideoDecode", "inputs": {
-            "vae": ["2", 0], "samples": ["6", 0], "enable_vae_tiling": False,
-            "tile_x": 272, "tile_y": 272, "tile_stride_x": 144, "tile_stride_y": 128}},
-        "8": {"class_type": "VHS_VideoCombine", "inputs": {
-            "images": ["7", 0], "frame_rate": 25.0, "filename_prefix": "manju_vid",
-            "format": "video/h264-mp4", "pingpong": False, "save_output": True, "loop_count": 0}},
-    }
-    return _comfy_run_video(wf, timeout)
+            "width": int(width), "height": int(height), "num_frames": int(num_frames),
+            "seed": int(seed), "steps": 30, "cfg": 6.0, "shift": 5.0,
+        }, timeout=timeout)
+    except Exception as e:
+        logger.warning("[video] Wan 模板不可用，回退手搓: %s" % e)
+        wf = {
+            "1": {"class_type": "WanVideoModelLoader", "inputs": {
+                "model": wan_model, "base_precision": "bf16",
+                "quantization": "disabled", "load_device": "offload_device"}},
+            "2": {"class_type": "WanVideoVAELoader", "inputs": {
+                "model_name": wan_vae, "precision": "bf16"}},
+            "3": {"class_type": "LoadWanVideoT5TextEncoder", "inputs": {
+                "model_name": wan_t5, "precision": "bf16",
+                "load_device": "offload_device", "quantization": "disabled"}},
+            "4": {"class_type": "WanVideoTextEncode", "inputs": {
+                "positive_prompt": prompt,
+                "negative_prompt": "low quality, blurry, watermark, text, distorted, jittery",
+                "t5": ["3", 0]}},
+            "5": {"class_type": "WanVideoEmptyEmbeds", "inputs": {
+                "width": int(width), "height": int(height), "num_frames": int(num_frames)}},
+            "6": {"class_type": "WanVideoSampler", "inputs": {
+                "model": ["1", 0], "image_embeds": ["5", 0], "text_embeds": ["4", 0],
+                "steps": 30, "cfg": 6.0, "shift": 5.0, "seed": int(seed),
+                "scheduler": "unipc", "force_offload": True, "riflex_freq_index": 0}},
+            "7": {"class_type": "WanVideoDecode", "inputs": {
+                "vae": ["2", 0], "samples": ["6", 0], "enable_vae_tiling": False,
+                "tile_x": 272, "tile_y": 272, "tile_stride_x": 144, "tile_stride_y": 128}},
+            "8": {"class_type": "VHS_VideoCombine", "inputs": {
+                "images": ["7", 0], "frame_rate": 25.0, "filename_prefix": "manju_vid",
+                "format": "video/h264-mp4", "pingpong": False, "save_output": True, "loop_count": 0}},
+        }
+        return _comfy_run_video(wf, timeout)
 
 
 def _get_comfy_animatediff_model():
@@ -1510,31 +1549,42 @@ def _comfy_text2video_animatediff(prompt, ref_comfy_name=None, width=512, height
     ckpt = comfy_env.discover_weight(
         "checkpoints", ["*.safetensors", "*.ckpt"], what="SD1.5 检查点权重")
     motion = _get_comfy_animatediff_model()
-    wf = {
-        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt}},
-        "2": {"class_type": "ADE_AnimateDiffLoaderGen1", "inputs": {
-            "model": ["1", 0], "model_name": motion, "beta_schedule": "autoselect",
-            "context_options": ["9", 0]}},
-        "3": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["1", 1], "text": prompt}},
-        "4": {"class_type": "CLIPTextEncode", "inputs": {
-            "clip": ["1", 1],
-            "text": "low quality, blurry, watermark, text, distorted, jittery, oversaturated"}},
-        "5": {"class_type": "EmptyLatentImage", "inputs": {
-            "width": width, "height": height, "batch_size": num_frames}},
-        "6": {"class_type": "KSampler", "inputs": {
-            "model": ["2", 0], "positive": ["3", 0], "negative": ["4", 0],
-            "latent_image": ["5", 0], "seed": int(seed), "steps": 24,
-            "cfg": 7.5, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0}},
-        "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["1", 2]}},
-        "8": {"class_type": "VHS_VideoCombine", "inputs": {
-            "images": ["7", 0], "frame_rate": 12.0, "filename_prefix": "manju_ad",
-            "format": "video/h264-mp4", "pingpong": False, "save_output": True, "loop_count": 0}},
-        "9": {"class_type": "ADE_AnimateDiffUniformContextOptions", "inputs": {
-            "context_length": 8, "context_stride": 1, "context_overlap": 4,
-            "context_schedule": "uniform", "closed_loop": False, "fuse_method": "flat",
-            "use_on_equal_length": False, "start_percent": 0.0, "guarantee_steps": 1}},
-    }
-    return _comfy_run_video(wf, timeout)
+    # 优先模板驱动（铁律 1.2）；模板/目录缺失时诚实回退手搓（防御性，正常运行不触发）
+    try:
+        return _comfy_via_typed_template("shot_video_gen_animatediff", {
+            "ckpt_name": ckpt, "motion_module": motion,
+            "positive_prompt": prompt,
+            "negative_prompt": "low quality, blurry, watermark, text, distorted, jittery, oversaturated",
+            "width": width, "height": height, "num_frames": num_frames,
+            "seed": int(seed), "steps": 24, "cfg": 7.5,
+        }, timeout=timeout)
+    except Exception as e:
+        logger.warning("[video] AnimateDiff 模板不可用，回退手搓: %s" % e)
+        wf = {
+            "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt}},
+            "2": {"class_type": "ADE_AnimateDiffLoaderGen1", "inputs": {
+                "model": ["1", 0], "model_name": motion, "beta_schedule": "autoselect",
+                "context_options": ["9", 0]}},
+            "3": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["1", 1], "text": prompt}},
+            "4": {"class_type": "CLIPTextEncode", "inputs": {
+                "clip": ["1", 1],
+                "text": "low quality, blurry, watermark, text, distorted, jittery, oversaturated"}},
+            "5": {"class_type": "EmptyLatentImage", "inputs": {
+                "width": width, "height": height, "batch_size": num_frames}},
+            "6": {"class_type": "KSampler", "inputs": {
+                "model": ["2", 0], "positive": ["3", 0], "negative": ["4", 0],
+                "latent_image": ["5", 0], "seed": int(seed), "steps": 24,
+                "cfg": 7.5, "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0}},
+            "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["1", 2]}},
+            "8": {"class_type": "VHS_VideoCombine", "inputs": {
+                "images": ["7", 0], "frame_rate": 12.0, "filename_prefix": "manju_ad",
+                "format": "video/h264-mp4", "pingpong": False, "save_output": True, "loop_count": 0}},
+            "9": {"class_type": "ADE_AnimateDiffUniformContextOptions", "inputs": {
+                "context_length": 8, "context_stride": 1, "context_overlap": 4,
+                "context_schedule": "uniform", "closed_loop": False, "fuse_method": "flat",
+                "use_on_equal_length": False, "start_percent": 0.0, "guarantee_steps": 1}},
+        }
+        return _comfy_run_video(wf, timeout)
 
 
 def _concat_video_clips(clips, out_path, W, H, fps=25):
@@ -1573,12 +1623,15 @@ def _comfy_has_node(node_class):
         return False
 
 
+@metrics.track_generation("face_restore")
 def face_restore(image_path, method="GFPGAN", out_path=None):
     """人脸修复（手册 §3.4.4 全局后处理）：经 ComfyUI 的 GFPGAN / CodeFormer 节点修复单图人脸。
 
+    铁律 1.2：优先走 workflow_templates 模板驱动（face_restore_gfpgan /
+    face_restore_codeformer）；模板不可用时诚实回退内联手搓（防御性，正常运行不触发）。
     环境要求（缺则诚实报错，绝不静默跳过人脸修复 / 绝不假装已修复）：
       - ComfyUI 已启动（comfy_available）
-      - 已安装对应自定义节点（ComfyUI-GBLP/ComfyUI_GFPGAN 或对应 CodeFormer 节点）
+      - 已安装对应自定义节点（GFPGAN / CodeFormer）
       - 已放入模型权重（GFPGAN/CodeFormer 权重文件）
     返回修复后图像绝对路径；失败抛 RuntimeError（含真实原因），由上层据 REDUN-01 诚实降级。
     """
@@ -1593,26 +1646,46 @@ def face_restore(image_path, method="GFPGAN", out_path=None):
     up = _upload_to_comfy(image_path)
     if not up:
         raise RuntimeError("人脸修复失败：参考图上传 ComfyUI 失败")
-    if node_name == "GFPGAN":
-        wf = {
-            "1": {"class_type": "LoadImage", "inputs": {"image": up}},
-            "2": {"class_type": "GFPGAN", "inputs": {
-                "ckpt_name": "GFPGANv1.4.pth", "restore_model": "GFPGANv1.4",
-                "input_image": ["1", 0], "use_builtin": False, "weight": 1.0, "upscale": 2}},
-            "3": {"class_type": "SaveImage", "inputs": {"images": ["2", 0], "filename_prefix": "manju_facefix"}},
-        }
-    else:
-        wf = {
-            "1": {"class_type": "LoadImage", "inputs": {"image": up}},
-            "2": {"class_type": "CodeFormer", "inputs": {
-                "image": ["1", 0], "upscale": 2, "codeformer_weight": 0.5,
-                "fidelity": 0.5, "seed": 0, "blur_amount": 0, "blur_kernel": 5}},
-            "3": {"class_type": "SaveImage", "inputs": {"images": ["2", 0], "filename_prefix": "manju_facefix"}},
-        }
+    out_dir = out_path and os.path.dirname(out_path)
     try:
-        return _comfy_run(wf, timeout=180, output_dir=out_path and os.path.dirname(out_path))
-    except RuntimeError as e:
-        raise RuntimeError("人脸修复(%s)执行失败: %s" % (method, e))
+        if node_name == "GFPGAN":
+            return _comfy_via_typed_template("face_restore_gfpgan", {
+                "input_image": up,
+                "ckpt_name": "GFPGANv1.4.pth",
+                "restore_model": "GFPGANv1.4",
+            }, timeout=180, output_dir=out_dir)
+        else:
+            return _comfy_via_typed_template("face_restore_codeformer", {
+                "input_image": up,
+                "upscale": 2,
+                "codeformer_weight": 0.5,
+                "fidelity": 0.5,
+                "seed": 0,
+                "blur_amount": 0,
+                "blur_kernel": 5,
+            }, timeout=180, output_dir=out_dir)
+    except Exception as e:
+        logger.warning("[facefix] %s 模板不可用，回退内联手搓: %s" % (method, e))
+        if node_name == "GFPGAN":
+            wf = {
+                "1": {"class_type": "LoadImage", "inputs": {"image": up}},
+                "2": {"class_type": "GFPGAN", "inputs": {
+                    "ckpt_name": "GFPGANv1.4.pth", "restore_model": "GFPGANv1.4",
+                    "input_image": ["1", 0], "use_builtin": False, "weight": 1.0, "upscale": 2}},
+                "3": {"class_type": "SaveImage", "inputs": {"images": ["2", 0], "filename_prefix": "manju_facefix"}},
+            }
+        else:
+            wf = {
+                "1": {"class_type": "LoadImage", "inputs": {"image": up}},
+                "2": {"class_type": "CodeFormer", "inputs": {
+                    "image": ["1", 0], "upscale": 2, "codeformer_weight": 0.5,
+                    "fidelity": 0.5, "seed": 0, "blur_amount": 0, "blur_kernel": 5}},
+                "3": {"class_type": "SaveImage", "inputs": {"images": ["2", 0], "filename_prefix": "manju_facefix"}},
+            }
+        try:
+            return _comfy_run(wf, timeout=180, output_dir=out_dir)
+        except RuntimeError as e2:
+            raise RuntimeError("人脸修复(%s)执行失败: %s" % (method, e2))
 
 
 def _comfy_text2img_with_controlnet(prompt, ref_comfy_name, control_type="depth",
@@ -1620,6 +1693,8 @@ def _comfy_text2img_with_controlnet(prompt, ref_comfy_name, control_type="depth"
                                     seed=-1, timeout=240):
     """带 ControlNet 的文生图：用场景参考图约束构图（深度/姿态/线稿）。
 
+    铁律 1.2：优先走 workflow_templates/shot_image_controlnet.json 模板驱动；
+    模板不可用时诚实回退内联手搓（防御性，正常运行不触发）。
     仅在 detect_comfy_controlnet() 为 True 时由调用方启用；任何节点不匹配/执行失败都抛
     RuntimeError，由调用方捕获后回退基础文生图（构图约束降级为提示词强调）。
     """
@@ -1630,26 +1705,46 @@ def _comfy_text2img_with_controlnet(prompt, ref_comfy_name, control_type="depth"
     preprocess_map = {"depth": "DepthPreprocessor", "canny": "CannyEdgePreprocessor",
                       "openpose": "OpenposePreprocessor", "lineart": "LineArtPreprocessor"}
     pre = preprocess_map.get(control_type, "DepthPreprocessor")
-    wf = {
-        "3": {"class_type": "KSampler", "inputs": {
-            "seed": int(seed), "steps": steps, "cfg": float(cfg),
-            "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0,
-            "model": ["4", 0], "positive": ["14", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
-        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
-        "5": {"class_type": "EmptyLatentImage", "inputs": {"width": width, "height": height, "batch_size": 1}},
-        "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
-        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "low quality, blurry, watermark, text", "clip": ["4", 1]}},
-        "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
-        "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_seg_cn"}},
-        "10": {"class_type": "LoadImage", "inputs": {"image": ref_comfy_name}},
-        "11": {"class_type": pre, "inputs": {"image": ["10", 0]}},
-        "12": {"class_type": "ControlNetLoader", "inputs": {"control_net_name": _get_comfy_controlnet(control_type)}},
-        "13": {"class_type": "ControlNetApply", "inputs": {
-            "conditioning": ["6", 0], "control_net": ["12", 0], "image": ["11", 0], "strength": float(weight)}},
-        "14": {"class_type": "ControlNetApply", "inputs": {
-            "conditioning": ["13", 0], "control_net": ["12", 0], "image": ["11", 0], "strength": float(weight)}},
+    cn_name = _get_comfy_controlnet(control_type)
+    negative = "low quality, blurry, watermark, text"
+    values = {
+        "checkpoint": _get_comfy_checkpoint(),
+        "positive_prompt": prompt,
+        "negative_prompt": negative,
+        "seed": int(seed),
+        "steps": int(steps),
+        "cfg": float(cfg),
+        "width": int(width),
+        "height": int(height),
+        "ref_image": ref_comfy_name,
+        "preprocess_node": pre,
+        "control_net_name": cn_name,
+        "control_weight": float(weight),
     }
-    return _comfy_run(wf, timeout)
+    try:
+        return _comfy_via_typed_template("shot_image_controlnet", values, timeout=timeout)
+    except Exception as e:
+        logger.warning("[controlnet] 模板不可用，回退内联手搓: %s" % e)
+        wf = {
+            "3": {"class_type": "KSampler", "inputs": {
+                "seed": int(seed), "steps": steps, "cfg": float(cfg),
+                "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0,
+                "model": ["4", 0], "positive": ["14", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
+            "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": _get_comfy_checkpoint()}},
+            "5": {"class_type": "EmptyLatentImage", "inputs": {"width": width, "height": height, "batch_size": 1}},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
+            "7": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["4", 1]}},
+            "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+            "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_seg_cn"}},
+            "10": {"class_type": "LoadImage", "inputs": {"image": ref_comfy_name}},
+            "11": {"class_type": pre, "inputs": {"image": ["10", 0]}},
+            "12": {"class_type": "ControlNetLoader", "inputs": {"control_net_name": cn_name}},
+            "13": {"class_type": "ControlNetApply", "inputs": {
+                "conditioning": ["6", 0], "control_net": ["12", 0], "image": ["11", 0], "strength": float(weight)}},
+            "14": {"class_type": "ControlNetApply", "inputs": {
+                "conditioning": ["13", 0], "control_net": ["12", 0], "image": ["11", 0], "strength": float(weight)}},
+        }
+        return _comfy_run(wf, timeout)
 
 
 def generate_segment_video(segment, shots, asset_refs, out_path, params=None):
@@ -3670,6 +3765,7 @@ def _comic_panel_generate(final_prompt, W, H, steps, cfg, s, neg,
         raise
 
 
+@metrics.track_generation("comic_image")
 def generate_comic(story, style="日漫", negative="", resolution="1024", ratio="3:4",
                    steps=28, seed=42, enhance=True, orchestrator="ollama",
                    character_refs=None, panels=4, on_progress=None, cfg=8.5):

@@ -5,16 +5,19 @@
 // 不是「任务中心」式的全局浏览页 —— 任务在此是生产流程的跨切面关注点，内嵌于编辑器。
 // 实时：优先 WebSocket（task:{id} 频道）；WS 不可用时回退轮询（REDUN-01）。
 // ============================================================
+defineOptions({ name: 'ProductionPhase' })
 import { ref, reactive, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   getProduction, inferenceHealth, estimatePoints, preAuthPoints, getTask,
-  generateSegment, regenerateSegment, cancelTask, retryTask, synthesizeProject,
+  generateSegment, regenerateSegment, cancelTask, retryTask, pauseTask, resumeTask, synthesizeProject,
   directorRun, directorRunStatus,
 } from '../api'
 import { subscribeTask, subscribe, wsConnected, connectWs } from '../ws'
 import { toast } from '../store'
 import { fmtTime } from '../api'
+import { pushGeneration } from '../composables/useDirectorOrb'
+import { pushHistory, genKey } from '../composables/useGenHistory'
 import ProjectFlowNav from './ProjectFlowNav.vue'
 import VideoLogPanel from './VideoLogPanel.vue'
 
@@ -51,12 +54,16 @@ const directorParams = reactive({
   seed_strategy: 'inherit',        // fixed | random | inherit（§3.2.5 跨镜继承+微扰）
   enable_real_asset: true,         // N03 真人资产 512 维特征注入（§3.2.2 / §5.1）
   enable_tail_frame: true,         // N04 首尾帧锚定（§3.3.5 默认开启）
+  enable_tail_depth: true,         // N04 首尾帧深度复用（§3.3.4，缺 depth ControlNet 诚实降级）
   priority_level: 0,               // N04 算力队列优先级（§3.3.2）
   enable_quality_check: true,      // N06 自动化品控（§3.4.2）
   face_restore: 'GFPGAN',          // N08 人脸修复：'' | 'GFPGAN' | 'CodeFormer'（§3.4.4）
   tts: true, bgm: false, subtitle: true,
   transitions: true, post_process: true,
   target_fps: 25, target_resolution: '',
+  // §3.4.4 多音轨分层音量控制（人声/背景乐/音效分别增益，0~2，默认 1.0）
+  voice_volume: 1.0, bgm_volume: 0.6, sfx_volume: 1.0,
+  bgm_path: '', sfx_path: '',
 })
 const showDirectorParams = ref(false)
 // Director 运行结果快照（N03 风格参考图 / N06 品控报告，手册 §3.2.2 输出 / §3.4.5）
@@ -210,6 +217,18 @@ function ensureWatch(seg) {
     }
     if (event === 'completed' || event === 'failed') {
       task.status = event === 'completed' ? 'succeeded' : 'failed'
+      pushGeneration('video', '视频生成·' + (seg.title || seg.segment_id), event === 'completed' ? 'done' : 'failed', event === 'failed' ? (task.error_message || '生成失败') : undefined)
+      if (event === 'completed' && seg.video_url) {
+        try {
+          pushHistory(genKey.prod(pid), {
+            kind: 'video',
+            title: (seg.title || seg.segment_id || '片段') + ' · 视频',
+            preview: seg.thumb || seg.cover_url || '',
+            previewText: '视频',
+            payload: { video_url: seg.video_url, task_id: tid, title: seg.title || seg.segment_id },
+          })
+        } catch { /* 历史写入失败不阻塞生成主流程 */ }
+      }
       stopWatch(tid)
       refreshHealth()
     }
@@ -307,6 +326,7 @@ async function dispatchSegment(seg) {
     // 分发立即返回 task_id（异步推理，dispatch 不阻塞）
     seg.latest_task = { task_id: res.task_id, status: res.status || 'queued', progress: 0, result_url: '', error_message: '' }
     toast('已分发给推理引擎：' + (seg.title || seg.segment_id))
+    pushGeneration('video', '视频生成·' + (seg.title || seg.segment_id), 'running')
     ensureWatch(seg)
     refreshHealth()
   } catch (e) {
@@ -333,6 +353,31 @@ async function retry(seg) {
   const tid = seg.latest_task?.task_id
   if (!tid) return
   try { await retryTask(tid); toast('已重试'); seg.latest_task.status = 'queued'; seg.latest_task.progress = 0; ensureWatch(seg) } catch (e) { toast('重试失败: ' + (e.message || e)) }
+}
+
+// 断点续跑：导演流水线已内置 resume（scheduler 默认跳过已成功片段），再次发起即从上次断点继续。
+// 适用于中途失败/取消后，仅补齐未完成的片段与合成，不重复已生成内容。
+async function resumeDirector() {
+  if (directorRunning.value) { toast('导演生成进行中，请稍候'); return }
+  toast('已从断点续跑（跳过已成功片段）')
+  await onDirectorRun()
+}
+
+// 导演一站式生成的逐片段任务控制（复用后端 /tasks/:id/{pause,resume,cancel}，worker 级断点控制）
+async function pauseSeg(s) {
+  const tid = s.task_id
+  if (!tid) return
+  try { await pauseTask(tid); toast('已暂停片段任务'); s.status = 'paused' } catch (e) { toast('暂停失败: ' + (e.message || e)) }
+}
+async function resumeSeg(s) {
+  const tid = s.task_id
+  if (!tid) return
+  try { await resumeTask(tid); toast('已恢复片段任务'); if (s.status === 'paused') s.status = 'running' } catch (e) { toast('恢复失败: ' + (e.message || e)) }
+}
+async function cancelSeg(s) {
+  const tid = s.task_id
+  if (!tid) return
+  try { await cancelTask(tid); toast('已取消片段任务'); s.status = 'cancelled' } catch (e) { toast('取消失败: ' + (e.message || e)) }
 }
 
 async function onSynthesize() {
@@ -368,6 +413,16 @@ async function onSynthesize() {
   } catch (e) { toast('合成失败: ' + (e.message || e)) }
 }
 
+// 生产阶段历史面板「覆盖使用」：视频生成结果无法直接回填到某片段，故复制视频链接到剪贴板供粘贴使用
+function onUseProdHist(it) {
+  const url = it && it.payload && it.payload.video_url
+  if (!url) { toast('该记录无可用视频链接'); return }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url)
+  } catch { /* 剪贴板不可用时忽略 */ }
+  toast('已复制视频链接：' + (it.title || '视频'))
+}
+
 const engineChips = computed(() => [
   { name: 'ComfyUI', role: '视频/图像推理', ok: !!health.value.comfyui?.reachable },
   { name: 'Ollama', role: 'LLM 策划/润色', ok: !!health.value.ollama?.reachable },
@@ -393,6 +448,16 @@ onUnmounted(() => {
   <div class="page prod">
     <ProjectFlowNav :pid="pid" :step="4" @synthesize="onSynthesize" />
 
+    <!-- 左侧：历史生成记录（页面级，固定在内容区左侧，默认折叠，点击展开可选择覆盖使用） -->
+    <HistoryPanel
+      ref="prodHist"
+      :storage-key="genKey.prod(pid)"
+      title="生成历史"
+      kind-filter="video"
+      :floating="true"
+      @use="onUseProdHist"
+    />
+
     <div class="page-head">
       <div>
         <h1>生成生产</h1>
@@ -400,6 +465,7 @@ onUnmounted(() => {
       </div>
       <div class="ops">
         <el-button type="success" @click="onDirectorRun" :loading="directorRunning">🎬 导演一站式生成</el-button>
+        <el-button v-if="directorRunId || directorOutput" :disabled="directorRunning" @click="resumeDirector">↻ 断点续跑</el-button>
         <el-button text @click="showDirectorParams = !showDirectorParams">⚙ 参数</el-button>
         <el-button type="primary" @click="dispatchAll">一键分发全部</el-button>
         <el-button @click="onSynthesize">合成全集</el-button>
@@ -447,6 +513,9 @@ onUnmounted(() => {
           <label>首尾帧锚定(N04)
             <input type="checkbox" v-model="directorParams.enable_tail_frame" />
           </label>
+          <label>首尾帧深度复用(N04)
+            <input type="checkbox" v-model="directorParams.enable_tail_depth" />
+          </label>
           <label>队列优先级
             <input type="number" v-model.number="directorParams.priority_level" min="-10" max="10" />
           </label>
@@ -475,6 +544,26 @@ onUnmounted(() => {
           <label>全局后处理
             <input type="checkbox" v-model="directorParams.post_process" />
           </label>
+          <label>背景音乐(BGM)
+            <input type="checkbox" v-model="directorParams.bgm" />
+          </label>
+          <label class="dp-wide">背景乐路径
+            <input type="text" v-model="directorParams.bgm_path"
+                   placeholder="本地音乐文件绝对路径，如 D:\AI\bgm.mp3（开启 BGM 后生效）" />
+          </label>
+          <label class="dp-slider">人声音量（§3.4.4）
+            <el-slider v-model="directorParams.voice_volume" :min="0" :max="2" :step="0.05" show-input />
+          </label>
+          <label class="dp-slider">背景乐音量（§3.4.4）
+            <el-slider v-model="directorParams.bgm_volume" :min="0" :max="2" :step="0.05" show-input />
+          </label>
+          <label class="dp-slider">音效音量（§3.4.4）
+            <el-slider v-model="directorParams.sfx_volume" :min="0" :max="2" :step="0.05" show-input />
+          </label>
+          <label class="dp-wide">音效路径(SFX，可选)
+            <input type="text" v-model="directorParams.sfx_path"
+                   placeholder="可选：本地音效文件绝对路径，如 D:\AI\sfx.wav（留空则不叠加音效轨）" />
+          </label>
         </div>
       </div>
     </el-collapse-transition>
@@ -499,7 +588,12 @@ onUnmounted(() => {
           <span class="sid">{{ sid.slice(0, 8) }}</span>
           <span class="sst">{{ STATUS_TXT[s.status] || s.status }}</span>
           <el-progress :percentage="s.progress || 0" :stroke-width="6" class="sp" />
-          <a v-if="s.video_url" :href="s.video_url" target="_blank" class="sout">视频</a>
+          <span class="seg-ops">
+            <el-button size="small" v-if="s.status === 'running'" @click="pauseSeg(s)">暂停</el-button>
+            <el-button size="small" v-if="s.status === 'paused'" @click="resumeSeg(s)">恢复</el-button>
+            <el-button size="small" type="danger" plain v-if="s.status === 'running' || s.status === 'paused'" @click="cancelSeg(s)">取消</el-button>
+            <a v-if="s.video_url" :href="s.video_url" target="_blank" class="sout">视频</a>
+          </span>
         </div>
       </div>
       <a v-if="directorOutput" :href="directorOutput" target="_blank" class="out">查看成片</a>
@@ -614,6 +708,8 @@ onUnmounted(() => {
 .seg-row.failed .sst { color: var(--pink); }
 .seg-row .sp { flex: 1; min-width: 120px; max-width: 280px; }
 .seg-row .sout { color: var(--blue); text-decoration: none; font-weight: 700; }
+.seg-row .seg-ops { margin: 0 0 0 auto; gap: 4px; }
+.seg-row .seg-ops .el-button { margin-left: 0; }
 .seg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
 .seg-card { display: flex; gap: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; flex-wrap: wrap; }
 .seg-thumb { flex: 0 0 84px; height: 84px; border-radius: 10px; background: linear-gradient(135deg, var(--pink), var(--pur)); display: flex; align-items: center; justify-content: center; color: #fff; font-size: 24px; font-weight: 800; overflow: hidden; }
@@ -635,6 +731,9 @@ onUnmounted(() => {
 .dir-params .dp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px 16px; }
 .dir-params label { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--sub); }
 .dir-params label select, .dir-params label input[type=number] { width: 96px; background: var(--card-2); color: var(--txt); border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; }
+.dir-params label input[type=text] { width: 100%; background: var(--card-2); color: var(--txt); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font-size: 12px; }
+.dir-params label.dp-wide { grid-column: 1 / -1; }
+.dir-params label.dp-slider { grid-column: 1 / -1; flex-direction: column; align-items: stretch; gap: 4px; }
 .director-quality { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
 .director-quality h3 { margin: 0 0 8px; font-size: 14px; }
 .director-quality .style-ref { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 12px; }

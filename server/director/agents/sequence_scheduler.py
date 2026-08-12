@@ -57,6 +57,7 @@ class SequenceSchedulerAgent(BaseAgent):
 
         bound = ctx.upstream.get("bound_assets") or {}
         enable_tail = ctx.params.get("enable_tail_frame", True)   # 手册 §3.3.5 默认开启
+        enable_tail_depth = ctx.params.get("enable_tail_depth", True)  # §3.3.4 首尾帧深度复用（缺 depth CN 诚实降级）
         resume = ctx.params.get("resume", True)                    # 断点续跑默认开启
         priority = int(ctx.params.get("priority_level", 0) or 0)
         # N03 透传：资产注入配置 + 全局风格参考图（经 upstream 由 VisualControlAgent 产出）
@@ -159,6 +160,7 @@ class SequenceSchedulerAgent(BaseAgent):
                 "seed": seed,
                 "first_frame": first_frame,   # N04/N05 首尾帧锚定：前序尾帧作首帧
                 "enable_tail_frame": enable_tail,
+                "enable_tail_depth": enable_tail_depth,  # §3.3.4 深度复用开关
                 "priority_level": prio,
                 "audio": True,
                 "gen_timeout": gen_timeout,    # N04/N05 队列超时（§3.3.5）

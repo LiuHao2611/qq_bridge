@@ -1,0 +1,10 @@
+{
+  "_doc": "人脸修复（GFPGAN）模板（手册 §3.4.4 全局后处理）。拓扑与已验证手搓实现一致；{{input_image}} 为已上传至 ComfyUI 的内部文件名。",
+  "prompt": {
+    "1": {"class_type": "LoadImage", "inputs": {"image": "{{input_image}}"}},
+    "2": {"class_type": "GFPGAN", "inputs": {
+      "ckpt_name": "{{ckpt_name}}", "restore_model": "{{restore_model}}",
+      "input_image": ["1", 0], "use_builtin": false, "weight": 1.0, "upscale": 2}},
+    "3": {"class_type": "SaveImage", "inputs": {"images": ["2", 0], "filename_prefix": "manju_facefix"}}
+  }
+}

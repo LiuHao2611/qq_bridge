@@ -1,0 +1,26 @@
+{
+  "_doc": "分镜视频生成（SD1.5 + AnimateDiff-Evolved 轻量路线）模板（手册 P4）。拓扑与已验证手搓实现一致，由意图翻译引擎填充权重名/提示词/尺寸/帧数。",
+  "prompt": {
+    "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "{{ckpt_name}}"}},
+    "2": {"class_type": "ADE_AnimateDiffLoaderGen1", "inputs": {
+      "model": ["1", 0], "model_name": "{{motion_module}}", "beta_schedule": "autoselect",
+      "context_options": ["9", 0]}},
+    "3": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["1", 1], "text": "{{positive_prompt}}"}},
+    "4": {"class_type": "CLIPTextEncode", "inputs": {
+      "clip": ["1", 1], "text": "{{negative_prompt}}"}},
+    "5": {"class_type": "EmptyLatentImage", "inputs": {
+      "width": "{{width}}", "height": "{{height}}", "batch_size": "{{num_frames}}"}},
+    "6": {"class_type": "KSampler", "inputs": {
+      "model": ["2", 0], "positive": ["3", 0], "negative": ["4", 0],
+      "latent_image": ["5", 0], "seed": "{{seed}}", "steps": "{{steps}}",
+      "cfg": "{{cfg}}", "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0}},
+    "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["1", 2]}},
+    "8": {"class_type": "VHS_VideoCombine", "inputs": {
+      "images": ["7", 0], "frame_rate": 12.0, "filename_prefix": "manju_ad",
+      "format": "video/h264-mp4", "pingpong": false, "save_output": true, "loop_count": 0}},
+    "9": {"class_type": "ADE_AnimateDiffUniformContextOptions", "inputs": {
+      "context_length": 8, "context_stride": 1, "context_overlap": 4,
+      "context_schedule": "uniform", "closed_loop": false, "fuse_method": "flat",
+      "use_on_equal_length": false, "start_percent": 0.0, "guarantee_steps": 1}}
+  }
+}

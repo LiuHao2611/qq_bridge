@@ -1,14 +1,20 @@
 <script setup>
 import { ref, reactive, onMounted, watch, computed } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   listStagesWithPoses, addStage, delStage, addPose, delPose, uploadImage,
 } from '../api'
 import { toast } from '../store'
 import { ASSET_STAGE_OPTIONS, ASSET_POSE_OPTIONS } from '../mock'
+import { stageNameFor } from '../assetMeta'
+import { pruneRefs } from '../composables/useProject'
 
+const route = useRoute()
 const props = defineProps({
   // 资产的 asset_id；传 null/空时不加载
   assetId: { type: [String, Number], default: '' },
+  // 父资产名（role 型用于生成层级阶段名 roleName-suffix；scene/prop 可省略）
+  assetName: { type: String, default: '' },
   // 初始阶段数据（父组件已预加载时传入可减少一次请求）；为空则用 API 拉取
   initialStages: { type: Array, default: null },
   // 资产类型：决定文案与是否显示年龄输入
@@ -125,8 +131,9 @@ const submitStage = async () => {
   busy.value = true
   try {
     const up = await uploadImage(stageForm.file)
+    // F4：阶段命名统一（role→层级名 roleName-suffix；scene/prop→裸名），三处一致
     await addStage(props.assetId, {
-      stage_name: stageForm.stage_name.trim(),
+      stage_name: stageNameFor(props.assetName, props.type, stageForm.stage_name),
       age: showAge.value ? (Number(stageForm.age) || 25) : 0,
       reference_image_url: up.url || '',
     })
@@ -144,11 +151,21 @@ const removeStage = async (st) => {
   if (!confirm(i18n.value.delStageConfirm)) return
   try {
     await delStage(props.assetId, st.stage_id)
+    // F1：级联清理该阶段在所有片段中的悬空 @引用
+    await pruneRefs(route.params.id, { assetId: props.assetId, stageId: st.stage_id })
     await load()
     emit('changed')
   } catch (e) {
     toast('删除失败: ' + e.message)
   }
+}
+// strip 模式阶段卡作为「提示词素材」：拖拽写入引用对象（含 stage_id），由分镜编辑器合并 shot.refs（阶段即最小引用单元）
+const onStageDragStart = (event, st) => {
+  const ref = { asset_id: props.assetId, asset_type: props.type, stage_id: st.stage_id, name: st.stage_name }
+  const payload = JSON.stringify(ref)
+  event.dataTransfer.setData('application/x-manju-asset', payload)
+  event.dataTransfer.setData('text/plain', payload)
+  event.dataTransfer.effectAllowed = 'copy'
 }
 
 const openPoseForm = (st) => {
@@ -230,6 +247,9 @@ watch(() => props.initialStages, (v) => { if (Array.isArray(v)) stages.value = v
         :class="{ 'stage-mini-add': false }"
         v-for="st in stages"
         :key="st.stage_id"
+        draggable="true"
+        :title="'拖入右侧提示词以引用该阶段：@[' + st.stage_name + ']'"
+        @dragstart="onStageDragStart($event, st)"
         @click="emit('select', st)"
       >
         <div class="stage-mini-img"><img :src="st.reference_image_url || PLACEHOLDER" /></div>
@@ -305,7 +325,7 @@ watch(() => props.initialStages, (v) => { if (Array.isArray(v)) stages.value = v
 .stage-name { font-weight: 700; font-size: 13px; }
 .compact .stage-name { font-size: 12px; }
 .stage-img { aspect-ratio: 16/9; background: var(--bg); border-radius: 8px; overflow: hidden; }
-.stage-img img { width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; }
+.stage-img img { width: 100%; height: 100%; object-fit: contain; cursor: zoom-in; }
 .pose-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
 .compact .pose-row { gap: 6px; margin-top: 8px; }
 .pose-chip { position: relative; width: 64px; }
@@ -321,9 +341,10 @@ watch(() => props.initialStages, (v) => { if (Array.isArray(v)) stages.value = v
 /* ===== strip 内联横条 ===== */
 .asm-root.strip { background: transparent; border: 0; border-radius: 0; padding: 0; }
 .stage-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
-.stage-mini { flex: 0 0 64px; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; }
+.stage-mini { flex: 0 0 64px; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: grab; }
+.stage-mini:active { cursor: grabbing; }
 .stage-mini-img { width: 64px; height: 64px; border-radius: 8px; overflow: hidden; background: var(--bg); border: 1px solid var(--line); }
-.stage-mini-img img { width: 100%; height: 100%; object-fit: cover; }
+.stage-mini-img img { width: 100%; height: 100%; object-fit: contain; }
 .stage-mini-name { width: 100%; font-size: 11px; color: var(--text); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stage-mini-age { width: 100%; font-size: 10px; color: var(--sub); text-align: center; }
 .stage-mini-add { width: 64px; height: 64px; border-radius: 8px; border: 1px dashed var(--line); background: transparent; color: var(--sub); cursor: pointer; display: flex; align-items: center; justify-content: center; }

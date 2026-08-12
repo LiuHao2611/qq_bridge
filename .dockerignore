@@ -1,0 +1,20 @@
+# 构建上下文排除（减小镜像体积、避免泄露）
+server/.venv
+.venv
+node_modules
+.git
+.gitignore
+.backups
+.tmp
+.pytest_cache
+__pycache__
+*.pyc
+outputs
+data
+logs
+frontend/dist.bak.*
+_check_*.png
+_shot_*.png
+archive
+_uploads
+.workbuddy

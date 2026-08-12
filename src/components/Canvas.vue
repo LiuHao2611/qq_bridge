@@ -1,4 +1,5 @@
 <script setup>
+defineOptions({ name: 'CanvasPhase' })
 import { ref, reactive, onMounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { LiteGraph, LGraph, LGraphCanvas } from 'litegraph.js'

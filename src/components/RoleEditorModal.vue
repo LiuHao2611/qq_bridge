@@ -1,13 +1,14 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   updateAsset, uploadImage, listStagesWithPoses,
   addStage, delStage, addPose, delPose,
   getAssetFaceVectors, getStageFaceVector, extractStageFaceVector,
 } from '../api'
 import { toast } from '../store'
-import { splitVoice, joinVoice } from '../assetMeta'
+import { splitVoice, joinVoice, stageNameFor } from '../assetMeta'
+import { pruneRefs } from '../composables/useProject'
 import { useAutoSave } from '../composables/useAutoSave'
 import { ElMessageBox } from 'element-plus'
 import {
@@ -17,10 +18,15 @@ import {
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
   role: { type: Object, default: null },
+  // F1：所属项目 id（用于删除阶段后级联清理悬空 @引用）；未传则回退到路由参数
+  projectId: { type: String, default: '' },
 })
 const emit = defineEmits(['update:modelValue', 'saved', 'preview', 'stagesChanged'])
 
 const router = useRouter()
+const route = useRoute()
+// F1：删除阶段后级联清理悬空 @引用；优先用显式 projectId prop，否则回退路由参数
+const pid = computed(() => props.projectId || route.params.id)
 
 const PLACEHOLDER = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0%25' stop-color='%2320242e'/><stop offset='100%25' stop-color='%233a3f4d'/></linearGradient></defs><rect width='200' height='200' fill='url(%23g)'/><text x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' fill='%236b7283' font-size='70'>🖼️</text></svg>"
 
@@ -339,7 +345,8 @@ const submitStage = async () => {
   if (!suffix) { toast('请输入阶段名称后缀'); return }
   const parentName = (form.name || '').trim()
   if (!parentName) { toast('当前角色名称为空，无法生成层级阶段名'); return }
-  const fullName = parentName + '-' + suffix
+  // F4：角色阶段统一为层级命名（roleName-suffix），与 AssetStageManager / Assets.vue 一致
+  const fullName = stageNameFor(parentName, 'role', suffix)
   busy.value = true
   try {
     const up = await uploadImage(stageForm.file)
@@ -366,6 +373,8 @@ const removeStage = async (st) => {
   try {
     await ElMessageBox.confirm('删除该阶段及其姿势？', '删除确认', { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' })
     await delStage(form.id, st.stage_id)
+    // F1：级联清理该角色阶段在所有片段中的悬空 @引用
+    await pruneRefs(pid.value, { assetId: form.id, stageId: st.stage_id })
     if (selectedStageId.value === st.stage_id) selectedStageId.value = ''
     await loadStages({ id: form.id })
     emit('stagesChanged')

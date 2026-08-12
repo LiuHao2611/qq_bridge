@@ -1,12 +1,17 @@
 <script setup>
+defineOptions({ name: 'PlanningPhase' })
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 import { useProject } from '../composables/useProject'
 import { toast } from '../store'
-import { splitStory, createSegment, putShots, getLocalModels } from '../api'
+import { splitStory, createSegment, putShots, getLocalModels, getOllamaStatus } from '../api'
+import { saveDraft, loadDraft, clearDraft as clearDraftByKey, draftAge, draftKey } from '../composables/useDraft'
+import { pushHistory, genKey } from '../composables/useGenHistory'
+import { pushGeneration } from '../composables/useDirectorOrb'
 import { parseDocx } from '../parseDocx'
 import ProjectFlowNav from './ProjectFlowNav.vue'
+import HistoryPanel from './HistoryPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -40,6 +45,46 @@ const draftAvailable = ref(false)
 const pendingDraft = ref(null)
 const draftSavedAt = ref(0)
 let draftTimer = null
+// 模型分场输出草稿（P2）：doSplit 成功后保存，下次进入可恢复
+const splitDraft = ref(null)
+const splitHist = ref(null)
+// 历史生成面板：覆盖使用某次分场结果
+function onUseSplitHist(record) {
+  const segs = (record.payload?.segments || []).map((s, i) => ({
+    ...s,
+    _id: 'tmp_' + i,
+    origIndex: i + 1,
+    duration: s.duration || 10,
+    shots: (s.shots || []).map((sh, j) => ({ ...sh, no: j + 1, duration: sh.duration || 4 })),
+  }))
+  segments.value = segs
+  selected.value = segs.map((s) => s._id)
+  keyword.value = ''
+  expanded.value = []
+  trimMap.value = {}
+  toast(`已覆盖使用历史分场（${segs.length} 个场次）`)
+}
+function restoreSplitDraft() {
+  const d = splitDraft.value
+  if (!d || !d.data) return
+  segments.value = (d.data.segments || []).map((s, i) => ({
+    ...s,
+    _id: 'tmp_' + i,
+    origIndex: i + 1,
+    duration: s.duration || 10,
+    shots: (s.shots || []).map((sh, j) => ({ ...sh, no: j + 1, duration: sh.duration || 4 })),
+  }))
+  selected.value = segments.value.map((s) => s._id)
+  keyword.value = ''
+  expanded.value = []
+  trimMap.value = {}
+  splitDraft.value = null
+  toast(`已恢复 ${draftAge(d.ts)} 的分场草稿（${segments.value.length} 个场次）`)
+}
+function discardSplitDraft() {
+  if (splitDraft.value) clearDraftByKey(draftKey.split(pid))
+  splitDraft.value = null
+}
 function persistDraft() {
   if (USE_MOCK) return
   try {
@@ -191,6 +236,9 @@ onMounted(() => {
   load()
   refreshLocalModels()
   checkDraft()
+  // 检测模型分场输出草稿（P2）
+  const d = loadDraft(draftKey.split(pid))
+  splitDraft.value = d && d.data && Array.isArray(d.data.segments) && d.data.segments.length ? d : null
 })
 
 const canSplit = computed(() => (story.value || '').trim().length >= 20)
@@ -222,6 +270,16 @@ const clearProgress = () => {
   pendingTimers.forEach(clearTimeout)
   pendingTimers = []
 }
+
+// 分场/推理可中断：用 AbortController 持有在途请求，停止按钮调用 abort()
+// 提取可中断：持有在途请求，停止按钮调用 abort()
+// gpuTimer 改模块级单例：避免用户多次点「开始」造成 setInterval 累积（曾经出现过 15 个并发的风暴）
+let _gpuTimerSplit = null
+function _clearGpuTimerSplit() { if (_gpuTimerSplit) { clearInterval(_gpuTimerSplit); _gpuTimerSplit = null } }
+const splitController = ref(null)
+const stopSplit = () => {
+  if (splitController.value) splitController.value.abort()
+}
 const startProgress = () => {
   splitLogs.value = []
   splitElapsed.value = 0
@@ -242,11 +300,31 @@ const clearLogs = () => {
 
 const doSplit = async () => {
   if (!canSplit.value) { toast('故事文本太短，请至少输入 20 字'); return }
+  // 防重入：上次分场还在跑就拒绝（防止用户多次点「开始」启动多个并发闭包 = 历史上 15 个 setInterval 风暴的根因）
+  if (loading.value) {
+    toast('分场进行中，请先点「⏹ 停止」后再启动')
+    return
+  }
   loading.value = true
   startProgress()
+  splitController.value = new AbortController()
+  pushGeneration('text', '分场拆解', 'running')
+  _clearGpuTimerSplit() // 任何残留旧 timer 启动前先清，防爆
+  // 推理期间轮询 Ollama 运行分布，打印 GPU/CPU 占比，避免误以为在 CPU 跑
+  let lastGpuLine = ''
+  _gpuTimerSplit = setInterval(async () => {
+    try {
+      const st = await getOllamaStatus()
+      const ms = (st.models || [])
+      if (ms.length) {
+        const line = '🖥️ Ollama 运行分布：' + ms.map((m) => `${m.name} → GPU ${m.gpu_pct}% / CPU ${m.cpu_pct}%（显存 ${m.size_vram_gb}/${m.size_gb}GB）`).join('；')
+        if (line !== lastGpuLine) { lastGpuLine = line; logStep(line) }
+      }
+    } catch (e) { /* 轮询失败忽略 */ }
+  }, 5000)
   const t0 = Date.now()
   try {
-    const res = await splitStory(pid, buildSplitPayload(), { signal: AbortSignal.timeout(120000) })
+    const res = await splitStory(pid, buildSplitPayload(), { signal: splitController.value.signal })
     const duration = Date.now() - t0
     const source = res.source || 'regex'
     const meta = res.meta || {}
@@ -262,9 +340,8 @@ const doSplit = async () => {
       }
     } else {
       logStep(`⚠️ 当前未调用本地模型，已回退正则分场。共 ${res.count || 0} 个场次。`)
-      logStep('原因：' + (meta.error || 'Ollama 服务未运行，或目标模型 qwen3.5:9b 未加载。'))
-      logStep('解决：启动 Ollama 并执行 ollama pull qwen3.5:9b && ollama run qwen3.5:9b')
-      logStep('提示：后端需重启一次以识别模型名改动。')
+      logStep('原因：' + (meta.error || 'Ollama 服务未运行，或目标模型未加载。'))
+      logStep('解决：启动 Ollama 并执行 ollama pull <模型名> && ollama run <模型名>')
     }
     segments.value = (res.segments || []).map((s, i) => ({
       ...s,
@@ -278,10 +355,30 @@ const doSplit = async () => {
     expanded.value = []
     trimMap.value = {}
     toast(`已拆分为 ${segments.value.length} 个场次`)
+    // 模型分场成功后立即写草稿（防误关/导航丢失，可一键恢复）
+    const saved = saveDraft(draftKey.split(pid), { segments: segments.value, meta: { model, source } })
+    if (saved) logStep('🗂 分场草稿已自动保存（下次进入本页可恢复）')
+    // 记录到左侧历史生成面板
+    const h = pushHistory(genKey.split(pid), {
+      kind: 'text',
+      title: '分场拆解 · ' + model,
+      preview: (segments.value.length || 0) + ' 个场次 · ' +
+        (segments.value.reduce((a, s) => a + (s.shots?.length || 0), 0)) + ' 个分镜',
+      payload: { segments: segments.value, meta: { model, source } },
+    })
+    if (h && splitHist.value) splitHist.value.refresh()
+    pushGeneration('text', '分场拆解', 'done')
   } catch (e) {
-    logStep('❌ 分场失败：' + (e.message || '未知错误'))
-    toast('分场失败：' + (e.message || '未知错误'))
+    if (e && e.name === 'AbortError') {
+      logStep('⏹ 已手动停止分场（在途请求已中断）')
+      pushGeneration('text', '分场拆解', 'failed', '已手动停止')
+    } else {
+      logStep('❌ 分场失败：' + (e.message || '未知错误'))
+      toast('分场失败：' + (e.message || '未知错误'))
+      pushGeneration('text', '分场拆解', 'failed', e.message)
+    }
   } finally {
+    _clearGpuTimerSplit() // 模块级单例：清理此轮推理的 timer 引用
     clearProgress()
     loading.value = false
   }
@@ -324,6 +421,43 @@ const toggleExpand = (id) => {
 const maxShots = (s) => trimMap.value[s._id] ?? (s.shots?.length || 0)
 const setTrim = (id, v) => { trimMap.value[id] = v }
 const visibleShots = (s) => (s.shots || []).slice(0, maxShots(s))
+
+// 空间站位预规划蓝图（设计逻辑「空间站位预规划」）：在分镜卡片展示多人场景角色相对站位。
+// 优先取导演流水线落库的 stage_blueprint（精准：含角色名/朝向/视线）；否则按角色引用数量
+// 推导左/中/右布局（与后端 script_parser._layout_positions 同构），保证多人分镜必有站位提示。
+function _parseBP(bp) {
+  if (!bp) return null
+  if (typeof bp === 'string') { try { return JSON.parse(bp) } catch { return null } }
+  return bp
+}
+function _deriveLayout(n) {
+  if (n === 2) return [{ position: 'left' }, { position: 'right' }]
+  if (n === 3) return [{ position: 'left' }, { position: 'center' }, { position: 'right' }]
+  const out = []
+  for (let i = 0; i < n; i++) {
+    if (i === 0) out.push({ position: 'far_left' })
+    else if (i === n - 1) out.push({ position: 'far_right' })
+    else out.push({ position: 'center_' + i })
+  }
+  return out
+}
+function stagePositions(sh) {
+  const bp = _parseBP(sh && sh.stage_blueprint)
+  if (bp && Array.isArray(bp.positions) && bp.positions.length) {
+    return bp.positions.map((p) => ({ role: p.role, position: p.position, facing: p.facing }))
+  }
+  const refs = (sh && sh.refs) || []
+  if (refs.length >= 2) {
+    return _deriveLayout(refs.length).map((p, i) => ({ role: refs[i], position: p.position }))
+  }
+  return []
+}
+function posLabel(pos) {
+  const m = { left: '左', right: '右', center: '中', far_left: '最左', far_right: '最右' }
+  if (m[pos]) return m[pos]
+  if (typeof pos === 'string' && pos.indexOf('center_') === 0) return '中'
+  return pos || ''
+}
 
 // 防御性兜底：split-story 返回的分镜时长之和可能不等于片段时长（BR-003 会拦截导入），
 // 导入前按片段时长重新均摊，保证 PUT /shots 不被 BR-003 拦截。
@@ -438,11 +572,29 @@ onBeforeUnmount(() => {
   <div v-if="p" class="planning">
     <ProjectFlowNav :pid="pid" :step="2" />
 
+    <!-- 左侧：历史生成记录（页面级，固定在内容区左侧，默认折叠，点击展开可选择覆盖使用） -->
+    <HistoryPanel
+      ref="splitHist"
+      :storage-key="genKey.split(pid)"
+      title="分场历史"
+      kind-filter="text"
+      :floating="true"
+      @use="onUseSplitHist"
+    />
+
     <div v-if="draftAvailable" class="draft-banner">
       <span class="draft-tip">💡 检测到上次未导入的剧本草稿，是否恢复？</span>
       <div class="draft-actions">
         <el-button size="small" type="primary" @click="restoreDraft">恢复草稿</el-button>
         <el-button size="small" text @click="discardDraft">丢弃</el-button>
+      </div>
+    </div>
+
+    <div v-if="splitDraft" class="draft-banner" style="border-color:#67c23a;background:rgba(103,194,58,.08)">
+      <span class="draft-tip">🗂 检测到 {{ draftAge(splitDraft.ts) }} 的模型分场草稿（{{ (splitDraft.data.segments||[]).length }} 个场次）</span>
+      <div class="draft-actions">
+        <el-button size="small" type="success" @click="restoreSplitDraft">恢复分场</el-button>
+        <el-button size="small" text @click="discardSplitDraft">丢弃</el-button>
       </div>
     </div>
 
@@ -591,6 +743,11 @@ onBeforeUnmount(() => {
                     <span class="shot-caption">{{ sh.caption || '分镜' + (idx + 1) }}</span>
                     <span class="shot-type">{{ sh.shot_type || 'medium' }}</span>
                     <span class="shot-dur">{{ sh.duration }}秒</span>
+                    <div v-if="stagePositions(sh).length" class="shot-stage" title="空间站位预规划（多人场景相对位置）">
+                      <span v-for="(p, i) in stagePositions(sh)" :key="i" class="stage-chip" :class="'pos-' + p.position">
+                        {{ p.role || ('角色' + (i + 1)) }}<i class="stage-pos">{{ posLabel(p.position) }}</i>
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -606,6 +763,7 @@ onBeforeUnmount(() => {
         <div class="log-actions">
           <el-button size="small" text @click.stop="toggleLog">{{ logCollapsed ? '展开' : '最小化' }}</el-button>
           <el-button size="small" text @click.stop="clearLogs">清空</el-button>
+          <el-button v-if="!logCollapsed && loading" size="small" type="danger" plain @click.stop="stopSplit">⏹ 停止</el-button>
           <span v-if="!logCollapsed && loading" class="muted">已运行 {{ splitElapsed }} 秒</span>
         </div>
       </div>
@@ -711,13 +869,16 @@ h3 { font-size: 13px; color: var(--sub); text-transform: uppercase; letter-spaci
 .trim-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .shot-items { display: flex; flex-direction: column; gap: 6px; }
 .shot-item {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
   background: var(--bg-2); border-radius: 8px; padding: 8px 10px; font-size: 12px;
 }
 .shot-no { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--pur); color: #fff; font-size: 11px; font-weight: 700; }
 .shot-caption { flex: 1; min-width: 0; color: var(--txt); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .shot-type { color: var(--sub); text-transform: lowercase; }
 .shot-dur { color: var(--sub); background: var(--card); padding: 2px 8px; border-radius: 20px; }
+.shot-stage { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; padding-top: 5px; border-top: 1px dashed var(--line); }
+.stage-chip { font-size: 10px; background: var(--card-2); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; color: var(--sub); display: inline-flex; align-items: center; gap: 3px; }
+.stage-chip .stage-pos { color: var(--pur); font-style: normal; font-weight: 700; }
 .loading { padding: 40px; text-align: center; color: var(--sub); }
 
 .draft-banner {

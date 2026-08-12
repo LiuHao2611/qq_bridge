@@ -21,6 +21,7 @@ from common import ApiError
 from points_engine import settle, refund
 from ai_local import generate_segment_video, txt2img_generate, synthesize_project_video
 from realtime import publish as ws_publish
+import metrics  # 手册 §7.2 Prometheus 监控指标
 
 logger = logging.getLogger("manju.worker")
 
@@ -505,7 +506,6 @@ def _loop():
                 try:
                     _serve_one(row_to_dict(task))
                 except Exception as e:
-                    # 兜底：_serve_one 内部已处理，这里再保障一次，绝不遗留永久 running
                     try:
                         c2 = get_conn()
                         try:
@@ -543,8 +543,23 @@ def _loop():
         except Exception:
             # 队列读取异常：短暂退避后继续，不退出线程
             pass
+        # 手册 §7.2：刷新队列深度 / 活跃运行数指标
+        try:
+            mconn = get_conn()
+            try:
+                pending = fetch_one(mconn,
+                    "SELECT (SELECT COUNT(*) FROM generation_tasks WHERE status IN ('queued','retrying'))"
+                    " + (SELECT COUNT(*) FROM image_tasks WHERE status IN ('queued','retrying')) AS c")
+                running = fetch_one(mconn,
+                    "SELECT (SELECT COUNT(*) FROM generation_tasks WHERE status='running')"
+                    " + (SELECT COUNT(*) FROM image_tasks WHERE status='running') AS c")
+                metrics.set_queue_depth((pending or {}).get("c", 0) or 0)
+                metrics.set_active_runs((running or {}).get("c", 0) or 0)
+            finally:
+                mconn.close()
+        except Exception:
+            pass
         _stop_event.wait(POLL_INTERVAL)
-
 
 def recover():
     """CLOSE-01 崩溃恢复：把上次进程退出遗留的 running 任务复位为 queued。"""

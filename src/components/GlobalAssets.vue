@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { listAssets, createAsset, updateAsset, deleteAsset, uploadGlobalAsset, importScene, importProp, listProjects } from '../api'
 import RoleEditorModal from './RoleEditorModal.vue'
 import { splitVoice } from '../assetMeta'
+import { pruneRefs } from '../composables/useProject'
 
 // ---------- Tab ----------
 const TAB_MAP = {
@@ -71,6 +72,8 @@ const total = computed(() => (assets[tab.value] || []).length)
 const remove = async (item) => {
   try {
     await deleteAsset(item.id)
+    // F1：全局资产删除后级联清理所有项目中指向它的悬空 @引用（无项目上下文 → 后端全局清理）
+    await pruneRefs(null, { assetId: item.id })
     const arr = assets[tab.value]
     const i = arr.findIndex((a) => a.id === item.id)
     if (i > -1) arr.splice(i, 1)

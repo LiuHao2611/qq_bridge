@@ -1,4 +1,5 @@
 <script setup>
+defineOptions({ name: 'FragmentEditorPhase' })
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProject } from '../composables/useProject'
@@ -7,7 +8,11 @@ import { useAutoSave } from '../composables/useAutoSave'
 import { toast } from '../store'
 import { ElMessageBox } from 'element-plus'
 import { aiPolish, estimatePoints, preAuthPoints, regenerateSegment, exportSegment, updateProject, batchCreateProjectAssets, synthesizeProject } from '../api'
+import { saveDraft, loadDraft, clearDraft, draftAge, draftKey } from '../composables/useDraft'
+import { pushHistory, genKey } from '../composables/useGenHistory'
+import { pushGeneration } from '../composables/useDirectorOrb'
 import ProjectFlowNav from './ProjectFlowNav.vue'
+import HistoryPanel from './HistoryPanel.vue'
 import AssetRichInput from './AssetRichInput.vue'
 import RoleEditorModal from './RoleEditorModal.vue'
 import AssetStageManager from './AssetStageManager.vue'
@@ -44,7 +49,56 @@ const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 const PLACEHOLDER = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0%25' stop-color='%2320242e'/><stop offset='100%25' stop-color='%233a3f4d'/></linearGradient></defs><rect width='200' height='200' fill='url(%23g)'/><text x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' fill='%236b7283' font-size='70'>🖼️</text></svg>"
 const { project: p, load, save, generate, pollTask, switchSegment, addSegment, removeSegment, refreshAssets } = useProject(route.params.id, 'short')
 
-onMounted(load)
+// 模型输出自动草稿（P3）：AI 润色成功后保存 descriptions，导航离开/丢改动后可一键还原
+const polishDraft = ref(null)
+const editorHist = ref(null)
+// 历史生成面板（P3 润色 / P4 重新生成 / P5 合成全集）：按 kind 覆盖使用
+function onUseEditorHist(record) {
+  const pid = p.value?.id || route.params.id
+  if (record.kind === 'text') {
+    // 润色结果：按 key 还原到当前 activeScenes 的 description
+    const map = new Map((record.payload?.items || []).map((it) => [it.key, it.description]))
+    let n = 0
+    activeScenes.value.forEach((s, i) => {
+      const key = SID(s, i)
+      if (map.has(key)) { s.description = map.get(key); n++ }
+    })
+    dirty.value = true
+    toast(`已覆盖使用历史润色（${n} 条）`)
+  } else if (record.kind === 'video') {
+    // 视频结果（重新生成 / 合成全集）：覆盖当前项目视频
+    p.value.video_url = record.payload?.video_url || p.value.video_url
+    p.value.thumb = record.payload?.thumb || p.value.thumb
+    p.value.status = 'done'
+    toast('已覆盖使用历史视频')
+  }
+  if (editorHist.value) editorHist.value.refresh()
+}
+const SID = (s, i) => s.id || s.scene_id || s.shot_id || `idx_${i}`
+function restorePolishDraft() {
+  const d = polishDraft.value
+  if (!d || !d.data || !Array.isArray(d.data.items)) return
+  const map = new Map(d.data.items.map((it) => [it.key, it.description]))
+  let applied = 0
+  activeScenes.value.forEach((s, i) => {
+    const k = SID(s, i)
+    if (map.has(k)) { s.description = map.get(k); applied++ }
+  })
+  dirty.value = true
+  toast(`已还原 ${draftAge(d.ts)} 的 AI 润色草稿（应用 ${applied} 条）`)
+  polishDraft.value = null
+}
+function discardPolishDraft() {
+  if (polishDraft.value) clearDraft(draftKey.polish(route.params.id))
+  polishDraft.value = null
+}
+
+onMounted(() => {
+  load()
+  // 检测 P3 AI 润色草稿
+  const d = loadDraft(draftKey.polish(route.params.id))
+  polishDraft.value = d && d.data && Array.isArray(d.data.items) && d.data.items.length ? d : null
+})
 
 // activeChapterId 与活动片段（_activeSegmentId）双向联动：
 // 真实模式下切换片段前先保存当前未保存修改，再从后端拉取目标片段分镜；切换期间抑制 dirty 误标。
@@ -100,10 +154,42 @@ const br003Mismatch = computed(() => shotSum.value !== (Number(p.value?.duration
 const MAX_REFS = 9
 const segRefCount = computed(() => {
   const s = new Set()
-  activeScenes.value.forEach((sh) => (sh.refs || []).forEach((r) => s.add(r)))
+  activeScenes.value.forEach((sh) => (sh.refs || []).forEach((r) => s.add(refKeyOf(r))))
   return s.size
 })
 const br009Exceed = computed(() => segRefCount.value > MAX_REFS)
+
+// 引用对象工具：引用以 { asset_id, asset_type, stage_id, name } 表示；
+// 唯一键 = asset_id + '::' + stage_id —— 同一角色的不同阶段算不同引用（阶段即最小引用单元）。
+// F8 修复：stage_id 可能为 0（整数主键），`||` 会误判为空导致 key 冲突/计数错误，改用 `??` 仅对 null/undefined 兜底
+const refKeyOf = (r) => (r && r.asset_id) ? (r.asset_id + '::' + (r.stage_id ?? '')) : ''
+const sameRef = (a, b) => refKeyOf(a) === refKeyOf(b)
+// 资产名（含阶段名）→ 引用对象。阶段名优先（如「周岩-青年」），其次资产名（「周岩」）。
+// F3 修复（R2/R3）：仅匹配「阶段名」（含 stage_id）与「场景/道具资产名」（无阶段概念，stage_id 为空合法）；
+// 角色名（非阶段名）不再生成 stage_id:null 的角色级引用，返回 null 由 UI 提示用户改用具体阶段名（如「周岩-青年」）。
+const resolveRefByName = (name) => {
+  if (!p.value || !name) return null
+  // 阶段名优先（如「周岩-青年」）：匹配角色的任一阶段，返回含 stage_id 的引用（阶段即最小引用单元）
+  for (const c of (p.value.characters || [])) {
+    for (const st of (c.stages || [])) {
+      if (st.stage_name === name) return { asset_id: c.id, asset_type: 'role', stage_id: st.stage_id, name: st.stage_name }
+    }
+  }
+  // 场景 / 道具按资产名解析（它们无阶段概念，stage_id 为空是合法的资产级引用）
+  for (const a of (p.value.assets?.scenes || [])) {
+    if (a.name === name) return { asset_id: a.id, asset_type: 'scene', stage_id: null, name: a.name }
+  }
+  for (const a of (p.value.assets?.images || [])) {
+    if (a.name === name) return { asset_id: a.id, asset_type: 'scene', stage_id: null, name: a.name }
+  }
+  for (const a of (p.value.assets?.props || [])) {
+    if (a.name === name) return { asset_id: a.id, asset_type: 'prop', stage_id: null, name: a.name }
+  }
+  // 角色名（非阶段名）不生成引用：违反「阶段为引用单元 / 角色须≥1阶段才可引用」
+  return null
+}
+// 由资产对象构造基础引用对象（资产级，无阶段）
+const assetRefObj = (a, type) => ({ asset_id: a.id, asset_type: type, stage_id: null, name: a.name })
 
 // 状态机：is_dirty + 自动保存（spec §2.1）
 const dirty = ref(false)
@@ -168,33 +254,39 @@ const vstat = computed(() => {
 const mentionOptions = computed(() => {
   if (!p.value) return []
   const out = []
-  p.value.characters.forEach((c) => out.push({ value: c.name, label: c.name, kind: 'character' }))
+  p.value.characters.forEach((c) => {
+    out.push({ value: c.name, label: c.name, kind: 'character' })
+    // 阶段名也纳入 @ 联想，使「周岩-青年」这类阶段可直接 @ 引用
+    ;(c.stages || []).forEach((st) => out.push({ value: st.stage_name, label: st.stage_name, kind: 'character' }))
+  })
   ;['scenes', 'images'].forEach((k) => (p.value.assets[k] || []).forEach((a) => out.push({ value: a.name, label: a.name, kind: 'scene' })))
   ;(p.value.assets.props || []).forEach((a) => out.push({ value: a.name, label: a.name, kind: 'prop' }))
   return out
 })
 
-const assetKind = (id) => {
-  const c = p.value?.characters.find((x) => x.id === id)
-  if (c) return 'character'
-  const all = [...(p.value?.assets.scenes || []), ...(p.value?.assets.images || []), ...(p.value?.assets.props || [])]
-  const a = all.find((x) => x.id === id)
-  return a ? (a.type === 'prop' ? 'prop' : 'scene') : 'scene'
+// 接收引用对象（{asset_type}）返回标签类型用于着色
+const assetKind = (ref) => {
+  if (!ref) return 'scene'
+  const t = ref.asset_type || 'role'
+  return (t === 'character' || t === 'role') ? 'character' : (t === 'prop' ? 'prop' : 'scene')
 }
-const assetName = (id) => {
+// 接收引用对象返回展示名（优先 ref.name，否则按 asset_id 反查资产名兜底）
+const assetName = (ref) => {
+  if (!ref) return ''
+  if (ref.name) return ref.name
   const all = [
     ...(p.value?.characters || []),
     ...(p.value?.assets.scenes || []),
     ...(p.value?.assets.images || []),
     ...(p.value?.assets.props || []),
   ]
-  return all.find((x) => x.id === id)?.name || id
+  return all.find((x) => x.id === ref.asset_id)?.name || ref.asset_id
 }
 const escapeRegExp = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 // 点击 shot-refs 的 × 时：从 refs 移除，同时把对应 @[name]/[name] 标记从所有解析字段里清除
-const removeRef = (shot, refId) => {
-  const name = assetName(refId)
-  if (name && name !== refId) {
+const removeRef = (shot, ref) => {
+  const name = assetName(ref)
+  if (name && name !== ref.asset_id) {
     const reMarker = new RegExp(`@\\[${escapeRegExp(name)}\\]`, 'g')
     const reLegacy = new RegExp(`\\[${escapeRegExp(name)}\\]`, 'g')
     const reLoose = new RegExp(`@${escapeRegExp(name)}(?![\\w\\u4e00-\u9fa5])`, 'g')
@@ -207,7 +299,7 @@ const removeRef = (shot, refId) => {
     shot.voiceover = clean(shot.voiceover)
     shot.dialogue = clean(shot.dialogue)
   }
-  shot.refs = (shot.refs || []).filter((x) => x !== refId)
+  shot.refs = (shot.refs || []).filter((x) => refKeyOf(x) !== refKeyOf(ref))
   dirty.value = true
 }
 
@@ -215,7 +307,7 @@ const removeRef = (shot, refId) => {
 const referencedAssets = computed(() => {
   if (!p.value) return []
   const ids = new Set()
-  ;(p.value.scenes || []).forEach((s) => (s.refs || []).forEach((r) => ids.add(r)))
+  ;(p.value.scenes || []).forEach((s) => (s.refs || []).forEach((r) => ids.add(r.asset_id)))
   const all = [
     ...(p.value.assets.scenes || []),
     ...(p.value.assets.images || []),
@@ -318,84 +410,87 @@ const assetOptions = computed(() => {
   ;(p.value.assets?.props || []).forEach((a) => out.push({ value: a.id, label: a.name, type: '道具' }))
   return out
 })
-// 弹窗选择器用的资产列表（带缩略图）
+// 弹窗选择器用的资产列表（带缩略图）。角色按「阶段」拆分——每个阶段是一个可引用单元（BR：角色须经由阶段引用）；
+// 无阶段的角色不会出现在此，从而天然满足「无阶段角色不可使用」。
 const refAssetOptions = computed(() => {
   if (!p.value) return []
   const out = []
-  const add = (list, typeLabel) => (list || []).forEach((a) => {
-    if (a && a.id && a.name) out.push({ id: a.id, name: a.name, type: typeLabel, thumb: a.thumb || '' })
+  const pushRef = (refObj, typeLabel, thumb) => out.push({ ...refObj, type: typeLabel, thumb: thumb || '', _ref: refObj })
+  ;(p.value.characters || []).forEach((c) => {
+    ;(c.stages || []).forEach((st) => pushRef(
+      { asset_id: c.id, asset_type: 'role', stage_id: st.stage_id, name: st.stage_name },
+      '角色·阶段', st.reference_image_url || c.thumb,
+    ))
   })
-  add(p.value.characters, '角色')
-  add(p.value.assets?.scenes, '场景')
-  add(p.value.assets?.images, '图片')
-  add(p.value.assets?.props, '道具')
+  ;(p.value.assets?.scenes || []).forEach((a) => pushRef(assetRefObj(a, 'scene'), '场景', a.thumb))
+  ;(p.value.assets?.images || []).forEach((a) => pushRef(assetRefObj(a, 'scene'), '图片', a.thumb))
+  ;(p.value.assets?.props || []).forEach((a) => pushRef(assetRefObj(a, 'prop'), '道具', a.thumb))
   return out
 })
-// 富文本提示词组件用的资产列表（带缩略图）
+// 富文本提示词组件用的资产列表（带缩略图）；角色按阶段展开，使阶段名也能被 @ 联想 / 拖入气泡显示阶段缩略图
 const richInputAssets = computed(() => {
   if (!p.value) return []
-  return [
-    ...(p.value.characters || []),
-    ...(p.value.assets?.scenes || []),
-    ...(p.value.assets?.images || []),
-    ...(p.value.assets?.props || []),
-  ]
+  const out = []
+  ;(p.value.characters || []).forEach((c) => {
+    out.push(c)
+    ;(c.stages || []).forEach((st) => out.push({
+      id: c.id, name: st.stage_name, type: c.relation || 'role',
+      thumb: st.reference_image_url || c.thumb, asset_id: c.id, stage_id: st.stage_id,
+    }))
+  })
+  ;(p.value.assets?.scenes || []).forEach((a) => out.push(a))
+  ;(p.value.assets?.images || []).forEach((a) => out.push(a))
+  ;(p.value.assets?.props || []).forEach((a) => out.push(a))
+  return out
 })
 const openRefPicker = (shot) => {
   refShot.value = shot
-  refDraft.value = [...(shot.refs || [])]
+  refDraft.value = (shot.refs || []).map((r) => ({ ...r }))
   refDialogVisible.value = true
 }
-const toggleRefDraft = (id) => {
-  const idx = refDraft.value.indexOf(id)
+const isRefSelected = (item) => refDraft.value.some((r) => refKeyOf(r) === refKeyOf(item._ref))
+const toggleRefDraft = (item) => {
+  const key = refKeyOf(item._ref)
+  const idx = refDraft.value.findIndex((r) => refKeyOf(r) === key)
   if (idx >= 0) {
     refDraft.value.splice(idx, 1)
     return
   }
   const others = new Set()
-  activeScenes.value.forEach((s) => { if (s !== refShot.value) (s.refs || []).forEach((r) => others.add(r)) })
-  if (!others.has(id) && others.size + refDraft.value.length >= MAX_REFS) {
+  activeScenes.value.forEach((s) => { if (s !== refShot.value) (s.refs || []).forEach((r) => others.add(refKeyOf(r))) })
+  if (!others.has(key) && others.size + refDraft.value.length >= MAX_REFS) {
     toast('片段资产引用最多 9 个（BR-009），无法再加入该引用')
     return
   }
-  refDraft.value.push(id)
+  refDraft.value.push({ ...item._ref })
 }
 const confirmRefs = () => {
   const shot = refShot.value
   if (!shot) return
-  // BR-009 守卫：去掉本镜后片段其余唯一引用 + 候选去重，总数不得 > 9
-  const others = new Set()
-  activeScenes.value.forEach((s) => { if (s !== shot) (s.refs || []).forEach((r) => others.add(r)) })
-  const merged = new Set([...others, ...refDraft.value])
-  if (merged.size > MAX_REFS) {
-    toast('片段资产引用最多 9 个（BR-009），当前将达 ' + merged.size + ' 个')
+  // BR-009 守卫：去掉本镜后片段其余唯一引用（保留其对象）+ 候选去重，总数不得 > 9
+  const others = []
+  activeScenes.value.forEach((s) => { if (s !== shot) (s.refs || []).forEach((r) => { if (!others.some((x) => refKeyOf(x) === refKeyOf(r))) others.push(r) }) })
+  const map = new Map()
+  others.forEach((r) => map.set(refKeyOf(r), r))
+  refDraft.value.forEach((r) => map.set(refKeyOf(r), r))
+  if (map.size > MAX_REFS) {
+    toast('片段资产引用最多 9 个（BR-009），当前将达 ' + map.size + ' 个')
     return
   }
-  shot.refs = [...new Set(refDraft.value)]
+  shot.refs = [...map.values()]
   refDialogVisible.value = false
   dirty.value = true
   toast('已更新引用资产')
 }
 
 // ---- Phase 3：@提及 → 资产引用（refs）----
-// 解析分镜画外音 / 对白里的 @角色 / @场景，把命中的资产 id 写回 shot.refs，
-// 供后端多模态注入（IP-Adapter / ControlNet）。去重并受 BR-009（≤9）约束。
-const buildMentionMap = () => {
-  const m = new Map() // 资产名 -> 资产 id
-  if (!p.value) return m
-  const add = (list) => (list || []).forEach((a) => { if (a && a.name) m.set(a.name, a.id) })
-  add(p.value.characters)
-  add(p.value.assets?.scenes)
-  add(p.value.assets?.images)
-  add(p.value.assets?.props)
-  return m
-}
-// override: { field:'voiceover'|'dialogue', value } —— 用于 @update:modelValue 实时同步，
-// 因 v-model 在 emit 时未必已回写到 shot.*，故以 emit 值优先解析。
+// 解析分镜画外音 / 对白里的 @角色 / @场景 / @阶段，把命中的引用对象写回 shot.refs，
+// 供后端多模态注入（IP-Adapter / ControlNet，按 stage_id 注入对应阶段人脸向量）。去重并受 BR-009（≤9）约束。
+// 引用以对象 { asset_id, asset_type, stage_id, name } 表示；resolveRefByName 负责按名解析（阶段名优先）。
 const syncMentionRefs = (shot, override) => {
   if (!shot) return
-  const map = buildMentionMap()
-  const ids = new Set((shot.refs || []).filter(Boolean))
+  const existing = new Map() // refKey -> ref
+  ;(shot.refs || []).forEach((rf) => { if (rf && rf.asset_id) existing.set(refKeyOf(rf), rf) })
   const vv = override && override.field === 'voiceover' ? override.value : (shot.voiceover || '')
   const dd = override && override.field === 'dialogue' ? override.value : (shot.dialogue || '')
   const pp = override && override.field === 'prompt' ? override.value : (shot.prompt || '')
@@ -405,11 +500,18 @@ const syncMentionRefs = (shot, override) => {
   const re = /@\[([^\]]+)\]|@([\u4e00-\u9fa5A-Za-z0-9_·.\-]+)/g
   let mt
   while ((mt = re.exec(text))) {
-    const id = map.get(mt[1] || mt[2])
-    if (id) ids.add(id)
+    const ref = resolveRefByName(mt[1] || mt[2])
+    if (ref) existing.set(refKeyOf(ref), ref)
   }
-  const merged = [...ids].slice(0, MAX_REFS)
-  if (merged.length !== (shot.refs || []).length || merged.some((x, i) => (shot.refs || [])[i] !== x)) {
+  // F7 修复：原 `[...].slice(0, MAX_REFS)` 在 @提及合并超过 9 个时「静默截断」丢弃引用，用户无感知。
+  // 现改为：超上限时保留前 9 个并显式提示，避免无声数据丢失（BR-009 守卫）。
+  let merged = [...existing.values()]
+  if (merged.length > MAX_REFS) {
+    toast('片段资产引用最多 9 个（BR-009），部分提及未纳入引用')
+    merged = merged.slice(0, MAX_REFS)
+  }
+  const changed = merged.length !== (shot.refs || []).length || merged.some((rf, i) => !sameRef(rf, (shot.refs || [])[i]))
+  if (changed) {
     shot.refs = merged
     dirty.value = true
   }
@@ -423,39 +525,46 @@ const onChipRemoved = (shot, name) => {
   const re = new RegExp(`@\\[${escapeRegExp(name)}\\]|\\[${escapeRegExp(name)}\\]|@${escapeRegExp(name)}(?![\\w\\u4e00-\\u9fa5])`)
   const stillMentioned = ['description', 'prompt', 'voiceover', 'dialogue'].some((f) => re.test(shot[f] || ''))
   if (stillMentioned) return
-  const id = buildMentionMap().get(name)
-  if (id) {
-    shot.refs = (shot.refs || []).filter((x) => x !== id)
+  const ref = resolveRefByName(name)
+  if (ref) {
+    const key = refKeyOf(ref)
+    shot.refs = (shot.refs || []).filter((x) => refKeyOf(x) !== key)
     dirty.value = true
   }
 }
 
-// ---- KB §5.3.4 资产拖拽引用：DragStart 记录 assetId → Drop 到分镜文本 → 插入 @[资产名] → 合并 shot.refs ----
+// ---- KB §5.3.4 资产拖拽引用：DragStart 记录引用对象 → Drop 到分镜文本 → 插入 @[资产名] → 合并 shot.refs ----
 const DRAG_MIME = 'application/x-manju-asset'
-const onAssetDragStart = (event, asset, kind) => {
-  const payload = JSON.stringify({ asset_id: asset.id, name: asset.name, kind })
+// 拖拽源统一写入引用对象（含 stage_id）；角色卡的拖拽已由 AssetStageManager 的 stage-mini 接管，故此处接收对象即可。
+const onAssetDragStart = (event, ref) => {
+  const payload = JSON.stringify(ref)
   // 同时写自定义 MIME 与 text/plain 回退（部分浏览器要求 text/plain 才允许拖拽）
   event.dataTransfer.setData(DRAG_MIME, payload)
   event.dataTransfer.setData('text/plain', payload)
   event.dataTransfer.effectAllowed = 'copy'
 }
-// 段级别（跨本片段所有分镜，排除自身）唯一引用集合，用于 BR-009 守卫
+// 段级别（跨本片段所有分镜，排除自身）唯一引用键集合，用于 BR-009 守卫
 const segUniqueExcept = (shot) => {
   const s = new Set()
-  activeScenes.value.forEach((sh) => { if (sh !== shot) (sh.refs || []).forEach((r) => s.add(r)) })
+  activeScenes.value.forEach((sh) => { if (sh !== shot) (sh.refs || []).forEach((r) => s.add(refKeyOf(r))) })
   return s
 }
-// 尝试把资产 id 并入 shot.refs，受 BR-009（片段唯一引用 ≤9）约束；返回是否成功并入
-const tryMergeRef = (shot, assetId) => {
-  if (!assetId) return false
+// 尝试把引用对象并入 shot.refs，受 BR-009（片段唯一引用 ≤9）约束；返回是否成功并入
+const tryMergeRef = (shot, ref) => {
+  if (!ref || !ref.asset_id) return false
+  const key = refKeyOf(ref)
   const others = segUniqueExcept(shot)
-  if (!others.has(assetId) && others.size >= MAX_REFS) {
+  // F9 修复：原守卫仅检查 `others.size`（排除当前分镜），当「当前分镜已有引用 + 其他分镜也有引用」
+  // 时仍可加入，使【片段级（跨全分镜）唯一引用总数】突破 9，与 segRefCount（片段级口径）不一致。
+  // 现以片段级总量 segRefCount 为准：仅当待加入的 key 为全新引用且片段已达上限时才拦截。
+  const selfKeys = new Set((shot.refs || []).map(refKeyOf))
+  if (!others.has(key) && !selfKeys.has(key) && segRefCount.value >= MAX_REFS) {
     toast('片段资产引用最多 9 个（BR-009），无法再加入该引用')
     return false
   }
-  const ids = new Set(shot.refs || [])
-  ids.add(assetId)
-  shot.refs = [...ids].slice(0, MAX_REFS)
+  const map = new Map((shot.refs || []).map((rf) => [refKeyOf(rf), rf]))
+  map.set(key, ref)
+  shot.refs = [...map.values()].slice(0, MAX_REFS)
   return true
 }
 // 文本域接收 drag-drop：在光标处插入 @[资产名]，并同步 shot.refs（与手动 @ 输入共用解析逻辑）
@@ -463,10 +572,10 @@ const onFieldDrop = (event, shot, field) => {
   event.preventDefault()
   const raw = event.dataTransfer.getData(DRAG_MIME) || event.dataTransfer.getData('text/plain')
   if (!raw) return
-  let asset
-  try { asset = JSON.parse(raw) } catch { return }
-  if (!asset || !asset.name) return
-  const marker = `@[${asset.name}]`
+  let ref
+  try { ref = JSON.parse(raw) } catch { return }
+  if (!ref || !ref.name || !ref.asset_id) return
+  const marker = `@[${ref.name}]`
   const el = event.target // 实际发生 drop 的 textarea / input
   const cur = shot[field] || ''
   const start = (typeof el?.selectionStart === 'number') ? el.selectionStart : cur.length
@@ -476,17 +585,14 @@ const onFieldDrop = (event, shot, field) => {
   dirty.value = true
   if (field === 'voiceover') syncMentionRefs(shot, { field: 'voiceover', value: next })
   else if (field === 'dialogue') syncMentionRefs(shot, { field: 'dialogue', value: next })
-  else {
-    const id = buildMentionMap().get(asset.name)
-    if (id) tryMergeRef(shot, id)
-  }
-  toast('已插入资产引用 @[' + asset.name + ']')
+  else tryMergeRef(shot, ref)
+  toast('已插入资产引用 @[' + ref.name + ']')
 }
 const onFieldDragOver = (event) => { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy' }
-// 提示词富文本输入：拖入资产后由组件插入 @[name]，父级仅负责合并 shot.refs
-const onPromptDrop = (shot, asset) => {
-  const id = buildMentionMap().get(asset.name)
-  if (id) tryMergeRef(shot, id)
+// 提示词富文本输入：拖入资产后由组件插入 @[name]，父级仅负责合并 shot.refs（收到完整引用对象）
+const onPromptDrop = (shot, ref) => {
+  if (!ref || !ref.asset_id) return
+  tryMergeRef(shot, ref)
 }
 // 拖拽高亮反馈（标出可放置的文本域）
 const dropActive = ref('')
@@ -528,12 +634,11 @@ const saveDescModal = () => {
   closeDescModal()
 }
 // 弹窗内拖入资产：直接插入到弹窗编辑器的 modelValue，由 AssetRichInput 内部处理插入点
-const onModalAssetDrop = (asset) => {
+const onModalAssetDrop = (ref) => {
   // AssetRichInput 内部已经插入并 emit update:modelValue，这里只需同步 refs
   const s = descModalShot.value
-  if (!s || !asset || !asset.name) return
-  const id = buildMentionMap().get(asset.name)
-  if (id) tryMergeRef(s, id)
+  if (!s || !ref || !ref.asset_id) return
+  tryMergeRef(s, ref)
 }
 
 const onBack = () => router.push('/projects')
@@ -575,6 +680,15 @@ const onSyncAll = async () => {
         p.value.thumb = t.thumbnail_url || ''
         p.value.status = 'done'
         toast('合成全集完成')
+        // 记录到左侧历史生成面板
+        const h = pushHistory(genKey.editor(pid), {
+          kind: 'video',
+          title: '合成全集',
+          preview: t.thumbnail_url || '',
+          previewText: '视频',
+          payload: { video_url: t.result_url || '', thumb: t.thumbnail_url || '' },
+        })
+        if (h && editorHist.value) editorHist.value.refresh()
       } else if (t.status === 'failed') {
         p.value.status = 'failed'
         toast('合成失败: ' + (t.error_message || '未知'))
@@ -611,6 +725,15 @@ const onRegen = async () => {
         p.value.thumb = t.thumbnail_url || ''
         p.value.status = 'done'
         toast('视频重新生成完成')
+        // 记录到左侧历史生成面板
+        const h = pushHistory(genKey.editor(pid), {
+          kind: 'video',
+          title: '重新生成 · 片段',
+          preview: t.thumbnail_url || '',
+          previewText: '视频',
+          payload: { video_url: t.result_url || '', thumb: t.thumbnail_url || '' },
+        })
+        if (h && editorHist.value) editorHist.value.refresh()
       } else if (t.status === 'failed') {
         p.value.status = 'failed'
         toast('重新生成失败: ' + (t.error_message || '未知'))
@@ -621,15 +744,29 @@ const onRegen = async () => {
 const onPolish = async () => {
   const texts = activeScenes.value.map((s) => (s.description || s.caption || '')).filter(Boolean)
   if (!texts.length) { toast('没有可润色的分镜描述'); return }
+  pushGeneration('text', 'AI 润色', 'running')
   try {
     const res = await aiPolish(texts.join('\n'), 'cinematic')
     const polished = (res.polished || '').split('\n').map((t) => t.trim()).filter(Boolean)
     if (polished.length) {
       activeScenes.value.forEach((s, i) => { if (polished[i]) s.description = polished[i] })
+      // 模型输出成功后立即写草稿（P3）：保存 {key,description} 列表，可按当前 activeScenes key 还原
+      const items = []
+      activeScenes.value.forEach((s, i) => { if (polished[i]) items.push({ key: SID(s, i), description: polished[i] }) })
+      const saved = saveDraft(draftKey.polish(pid || route.params.id), { items })
+      if (saved) toast('AI 润色完成（已应用，🗂 草稿已自动保存；未保存就离开可点「↶ 还原润色」）')
+      // 记录到左侧历史生成面板
+      const h = pushHistory(genKey.editor(pid || route.params.id), {
+        kind: 'text',
+        title: 'AI 润色 · ' + activeScenes.value.length + ' 条',
+        preview: (polished[0] || '').slice(0, 60),
+        payload: { items },
+      })
+      if (h && editorHist.value) editorHist.value.refresh()
       dirty.value = true
-      toast('AI 润色完成（已应用，记得保存）')
-    } else { toast('润色返回为空，未改动') }
-  } catch (e) { toast('润色失败: ' + (e.message || e)) }
+      pushGeneration('text', 'AI 润色', 'done')
+    } else { toast('润色返回为空，未改动'); pushGeneration('text', 'AI 润色', 'done', '返回为空') }
+  } catch (e) { toast('润色失败: ' + (e.message || e)); pushGeneration('text', 'AI 润色', 'failed', e.message) }
 }
 const autoDistribute = () => {
   const arr = activeScenes.value
@@ -743,6 +880,16 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
     <!-- 0️⃣ 项目 5 步流程导航 -->
     <ProjectFlowNav :pid="route.params.id" :step="3" @synthesize="onSyncAll" />
 
+    <!-- 左侧：历史生成记录（页面级，固定在内容区左侧，默认折叠，点击展开可选择覆盖使用） -->
+    <HistoryPanel
+      ref="editorHist"
+      :storage-key="genKey.editor(route.params.id)"
+      title="生成历史"
+      kind-filter="all"
+      :floating="true"
+      @use="onUseEditorHist"
+    />
+
     <!-- ① 顶部窗口栏 -->
     <div class="frag-top">
       <button class="back" @click="onBack">← 返回</button>
@@ -819,6 +966,10 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
           </el-dropdown-menu></template>
         </el-dropdown>
         <el-button size="small" @click="onPolish">✨ AI 润色</el-button>
+        <template v-if="polishDraft">
+          <el-button size="small" type="success" plain @click="restorePolishDraft">↶ 还原润色（{{ draftAge(polishDraft.ts) }}）</el-button>
+          <el-button size="small" text @click="discardPolishDraft">丢弃草稿</el-button>
+        </template>
         <el-button type="primary" size="small" @click="onSyncAll">🎞️ 合成全集</el-button>
         <span class="credits-tag">预估 {{ estimatedCredits }} 积分</span>
       </div>
@@ -845,7 +996,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
         <div v-if="br009Exceed" class="br-bar bad">⚠ BR-009：片段资产引用 {{ segRefCount }} 个，超过上限 9 个</div>
         <div v-else class="br-bar ok">资产引用 {{ segRefCount }}/9（BR-009）</div>
         <template v-if="assetTab === '' || assetTab === '角色'">
-          <div v-for="c in p.characters" :key="c.id" class="char-card" :class="{ expanded: expandedAssets[c.id] }" draggable="true" :title="'拖拽到右侧分镜文本可插入 @[' + c.name + '] 引用'" @dragstart="onAssetDragStart($event, c, 'character')">
+          <div v-for="c in p.characters" :key="c.id" class="char-card" :class="{ expanded: expandedAssets[c.id], disabled: !(c.stages && c.stages.length) }">
             <div class="char-row">
               <img class="char-thumb" :src="c.thumb || PLACEHOLDER" />
               <div class="char-info">
@@ -858,12 +1009,14 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
               </div>
             </div>
             <div v-if="expandedAssets[c.id]" class="stage-strip-host">
-              <AssetStageManager :asset-id="c.id" :initial-stages="c.stages" type="role" mode="strip" @changed="onStageChanged" />
+              <AssetStageManager :asset-id="c.id" :asset-name="c.name" :initial-stages="c.stages" type="role" mode="strip" @changed="onStageChanged" />
             </div>
-            <div class="drag-hint">⠿ 拖入提示词</div>
-            <!-- 小云雀式角色卡片 hover 三按钮：拖动 / 编辑 / 预览 -->
+            <div class="drag-hint">
+              <template v-if="c.stages && c.stages.length">展开后拖入「阶段卡」到右侧提示词</template>
+              <template v-else>⚠ 请先添加阶段才能引用</template>
+            </div>
+            <!-- 角色卡本身不再作为提示词素材；编辑 / 预览按钮保留以便添加阶段 -->
             <div class="thumb-overlay role-overlay">
-              <button class="role-btn" title="拖动角色卡" @mousedown.stop><el-icon><Grid /></el-icon></button>
               <button class="role-btn" title="编辑角色" @click.stop="openRoleEditor(c)"><el-icon><EditPen /></el-icon></button>
               <button class="role-btn" title="预览角色图" @click.stop="previewRoleImg = c.thumb || ''"><el-icon><ZoomIn /></el-icon></button>
             </div>
@@ -871,7 +1024,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
           <button class="add-line" @click="openCreateAsset('role')">＋ 新建角色</button>
         </template>
         <template v-if="assetTab === '' || assetTab === '场景'">
-          <div v-for="a in p.assets.scenes" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧分镜文本可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'scene')">
+          <div v-for="a in p.assets.scenes" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧分镜文本可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, assetRefObj(a, 'scene'))">
             <div class="char-row">
               <img class="char-thumb" :src="a.thumb || PLACEHOLDER" />
               <div class="char-info">
@@ -895,7 +1048,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
           <button class="add-line" @click="openCreateAsset('scene')">＋ 新建场景</button>
         </template>
         <template v-if="assetTab === '' || assetTab === '道具'">
-          <div v-for="a in p.assets.props" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧分镜文本可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'prop')">
+          <div v-for="a in p.assets.props" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧分镜文本可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, assetRefObj(a, 'prop'))">
             <div class="char-row">
               <img class="char-thumb" :src="a.thumb || PLACEHOLDER" />
               <div class="char-info">
@@ -998,7 +1151,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
             </div>
             <div class="shot-refs">
               <span class="refs-label">引用资产：</span>
-              <span v-for="r in s.refs" :key="r" class="asset-tag" :class="assetKind(r)">{{ assetName(r) }} <span class="x" @click="removeRef(s, r)">×</span></span>
+              <span v-for="r in s.refs" :key="refKeyOf(r)" class="asset-tag" :class="assetKind(r)">{{ assetName(r) }} <span class="x" @click="removeRef(s, r)">×</span></span>
               <span v-if="!s.refs.length" class="muted">无</span>
               <span class="ref-add" @click="openRefPicker(s)">＋</span>
               <span class="ref-count">{{ s.refs.length }}/9</span>
@@ -1147,7 +1300,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
     <el-dialog v-model="refDialogVisible" title="引用资产到分镜" width="860px" append-to-body class="ref-picker-dialog" destroy-on-close>
       <p class="muted small">选择资产加入该分镜引用。片段内唯一引用上限 9 个（BR-009）。</p>
       <div class="ref-picker-grid">
-        <div v-for="a in refAssetOptions" :key="a.id" class="ref-picker-card" :class="{ selected: refDraft.includes(a.id) }" @click="toggleRefDraft(a.id)">
+        <div v-for="a in refAssetOptions" :key="refKeyOf(a._ref)" class="ref-picker-card" :class="{ selected: isRefSelected(a) }" @click="toggleRefDraft(a)">
           <div class="ref-picker-thumb" @click.stop>
             <el-image v-if="a.thumb" :src="a.thumb" :preview-src-list="[a.thumb]" fit="cover" style="width:100%;height:100%;border-radius:8px;" hide-on-click-modal />
             <div v-else class="ref-picker-no-thumb">@</div>
@@ -1157,7 +1310,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
             <span class="ref-picker-type">{{ a.type }}</span>
           </div>
           <div class="ref-picker-check" @click.stop>
-            <el-checkbox :model-value="refDraft.includes(a.id)" size="small" @change="toggleRefDraft(a.id)" />
+            <el-checkbox :model-value="isRefSelected(a)" size="small" @change="toggleRefDraft(a)" />
           </div>
         </div>
       </div>
@@ -1178,7 +1331,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
           <div v-if="br009Exceed" class="br-bar bad">⚠ BR-009：片段资产引用 {{ segRefCount }} 个，超过上限 9 个</div>
           <div v-else class="br-bar ok">资产引用 {{ segRefCount }}/9（BR-009）</div>
           <template v-if="assetTab === '' || assetTab === '角色'">
-            <div v-for="c in p.characters" :key="c.id" class="char-card" :class="{ expanded: expandedAssets[c.id] }" draggable="true" :title="'拖拽到右侧编辑器可插入 @[' + c.name + '] 引用'" @dragstart="onAssetDragStart($event, c, 'character')">
+            <div v-for="c in p.characters" :key="c.id" class="char-card" :class="{ expanded: expandedAssets[c.id], disabled: !(c.stages && c.stages.length) }">
               <div class="char-row">
                 <img class="char-thumb" :src="c.thumb || PLACEHOLDER" />
                 <div class="char-info">
@@ -1191,12 +1344,13 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
                 </div>
               </div>
               <div v-if="expandedAssets[c.id]" class="stage-strip-host">
-                <AssetStageManager :asset-id="c.id" :initial-stages="c.stages" type="role" mode="strip" @changed="onStageChanged" />
+                <AssetStageManager :asset-id="c.id" :asset-name="c.name" :initial-stages="c.stages" type="role" mode="strip" @changed="onStageChanged" />
               </div>
-              <div class="drag-hint">⠿ 拖入编辑器</div>
-              <!-- 小云雀式角色卡片 hover 三按钮：拖动 / 编辑 / 预览 -->
+              <div class="drag-hint">
+                <template v-if="c.stages && c.stages.length">展开后拖入「阶段卡」到右侧编辑器</template>
+                <template v-else>⚠ 请先添加阶段才能引用</template>
+              </div>
               <div class="thumb-overlay role-overlay">
-                <button class="role-btn" title="拖动角色卡" @mousedown.stop><el-icon><Grid /></el-icon></button>
                 <button class="role-btn" title="编辑角色" @click.stop="openRoleEditor(c)"><el-icon><EditPen /></el-icon></button>
                 <button class="role-btn" title="预览角色图" @click.stop="previewRoleImg = c.thumb || ''"><el-icon><ZoomIn /></el-icon></button>
               </div>
@@ -1204,7 +1358,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
             <button class="add-line" @click="openCreateAsset('role')">＋ 新建角色</button>
           </template>
           <template v-if="assetTab === '' || assetTab === '场景'">
-            <div v-for="a in p.assets.scenes" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧编辑器可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'scene')">
+            <div v-for="a in p.assets.scenes" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧编辑器可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, assetRefObj(a, 'scene'))">
               <div class="char-row">
                 <img class="char-thumb" :src="a.thumb || PLACEHOLDER" />
                 <div class="char-info">
@@ -1228,7 +1382,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
             <button class="add-line" @click="openCreateAsset('scene')">＋ 新建场景</button>
           </template>
           <template v-if="assetTab === '' || assetTab === '道具'">
-            <div v-for="a in p.assets.props" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧编辑器可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, a, 'prop')">
+            <div v-for="a in p.assets.props" :key="a.id" class="asset-card" :class="{ expanded: expandedAssets[a.id] }" draggable="true" :title="'拖拽到右侧编辑器可插入 @[' + a.name + '] 引用'" @dragstart="onAssetDragStart($event, assetRefObj(a, 'prop'))">
               <div class="char-row">
                 <img class="char-thumb" :src="a.thumb || PLACEHOLDER" />
                 <div class="char-info">
@@ -1267,7 +1421,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
     <div class="modal-mask" v-if="previewRoleImg" @click="previewRoleImg = ''"><div class="modal"><img :src="previewRoleImg" @click.stop /></div></div>
 
     <!-- 小云雀式角色编辑弹窗 -->
-    <RoleEditorModal v-model="editorVisible" :role="editingRole" @saved="onRoleSaved" @stagesChanged="onStageChanged" @preview="previewRoleImg = $event" />
+    <RoleEditorModal v-model="editorVisible" :role="editingRole" :project-id="route.params.id" @saved="onRoleSaved" @stagesChanged="onStageChanged" @preview="previewRoleImg = $event" />
 
     <!-- 场景/道具阶段编辑弹窗（角色走 RoleEditorModal） -->
     <el-dialog v-model="assetStagePanel.open" title="编辑阶段 / 变体" width="820px" top="8vh" append-to-body destroy-on-close>
@@ -1327,14 +1481,14 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
 .add-asset { margin-left: auto; cursor: pointer; color: var(--sub); font-size: 15px; width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; }
 .add-asset:hover { color: var(--txt); background: var(--card-2); }
 
-.char-card, .asset-card { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; cursor: grab; transition: box-shadow .15s, border-color .15s, transform .05s; }
+.char-card, .asset-card { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-bottom: 6px; cursor: grab; transition: box-shadow .15s, border-color .15s, transform .05s; }
 .char-card:active, .asset-card:active { cursor: grabbing; }
 .char-card:hover, .asset-card:hover { border-color: var(--pur); box-shadow: 0 2px 8px rgba(0,0,0,.12); }
-.char-row { display: flex; gap: 10px; align-items: flex-start; }
-.char-thumb { width: 48px; height: 64px; object-fit: cover; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); flex: 0 0 auto; }
-.asset-card .char-thumb { width: 64px; height: 48px; }
+.char-row { display: flex; gap: 8px; align-items: flex-start; }
+.char-thumb { width: 42px; height: 56px; object-fit: cover; border-radius: 7px; background: var(--bg-2); border: 1px solid var(--line); flex: 0 0 auto; }
+.asset-card .char-thumb { width: 56px; height: 42px; }
 .char-info { flex: 1; min-width: 0; }
-.char-title { font-weight: 700; font-size: 14px; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.char-title { font-weight: 700; font-size: 13px; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
 .char-meta { font-size: 12px; color: var(--sub); margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .role-badge { font-size: 10px; padding: 1px 7px; border-radius: 8px; font-weight: 600; }
 .role-badge.lead { background: rgba(255,77,141,.18); color: #ff9cc1; }
@@ -1347,13 +1501,13 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
 .stage-toggle:hover { color: var(--pur); }
 .stage-toggle .chev { display: inline-block; transition: transform .15s ease; font-size: 10px; }
 .stage-toggle .chev.open { transform: rotate(90deg); }
-.stage-strip-host { margin-top: 8px; }
-/* 小云雀式角色卡片 hover 三按钮：覆盖层默认透明且不拦截拖拽，hover 时显示圆角按钮 */
-.thumb-overlay { position: absolute; inset: 0; display: flex; align-items: flex-start; justify-content: flex-end; gap: 8px; padding: 10px; opacity: 0; transition: .15s; z-index: 2; pointer-events: none; }
+.stage-strip-host { margin-top: 6px; }
+/* 小云雀式角色卡片 hover 按钮：覆盖层默认透明且不拦截拖拽，hover 时显示圆角按钮 */
+.thumb-overlay { position: absolute; inset: 0; display: flex; align-items: flex-start; justify-content: flex-end; gap: 6px; padding: 7px; opacity: 0; transition: .15s; z-index: 2; pointer-events: none; }
 .char-card:hover .thumb-overlay { opacity: 1; }
-.role-btn { width: 34px; height: 34px; border-radius: 10px; background: rgba(0,0,0,.55); color: #fff; border: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; backdrop-filter: blur(4px); transition: .15s; pointer-events: auto; }
+.role-btn { width: 28px; height: 28px; border-radius: 8px; background: rgba(0,0,0,.55); color: #fff; border: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; backdrop-filter: blur(4px); transition: .15s; pointer-events: auto; }
 .role-btn:hover { background: rgba(138,92,255,.9); transform: scale(1.05); }
-.add-line { width: 100%; margin-top: 10px; padding: 10px; border: 1px dashed var(--line); border-radius: 12px; background: transparent; color: var(--sub); cursor: pointer; font-size: 13px; font-weight: 600; transition: .15s; }
+.add-line { width: 100%; margin-top: 8px; padding: 8px; border: 1px dashed var(--line); border-radius: 10px; background: transparent; color: var(--sub); cursor: pointer; font-size: 13px; font-weight: 600; transition: .15s; }
 .add-line:hover { border-color: var(--pur); color: var(--txt); background: rgba(138,92,255,.06); }
 
 /* 角色图预览遮罩 */
@@ -1459,7 +1613,11 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
 .frag .asset-tag.prop { background: rgba(254,243,199,.15); color: #f5d97a; border-color: rgba(254,243,199,.4); }
 
 /* 资产卡片可拖拽 + 拖入提示 */
-.drag-hint { font-size: 10px; color: var(--sub); margin-top: 6px; opacity: .65; }
+.drag-hint { font-size: 10px; color: var(--sub); margin-top: 4px; opacity: .7; }
+/* 无阶段角色：灰显禁用态，提示先添加阶段 */
+.char-card { cursor: default; }
+.char-card.disabled { opacity: .55; filter: grayscale(.3); }
+.char-card.disabled .char-thumb { opacity: .6; }
 /* 可放置的文本域：默认虚线描边提示，拖拽悬停高亮 */
 .drop-field { border: 1px dashed transparent; border-radius: 10px; padding: 6px; margin: 0 -6px 8px; transition: box-shadow .15s, border-color .15s, background .15s; }
 .drop-field .drag-tip { font-size: 10px; color: var(--sub); font-weight: 400; margin-left: 6px; opacity: .7; }

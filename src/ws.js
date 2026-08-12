@@ -8,10 +8,20 @@
 
 const WS_PATH = '/ws'
 
+// WS 网关主机候选（personal_local_only 单机型）：
+//   1) 直连后端 WS 网关 127.0.0.1:7788（KB §18 /ws 由后端 FastAPI 直出，最稳）
+//   2) 回退前端同主机反代 location.host（若将来 8099 补齐 /ws 代理）
+// 默认直连后端，避免无谓的 8099 握手失败噪声；若 7788 不可用自动回退反代。
+const _WS_HOSTS = ['127.0.0.1:7788', location.host]
+let _wsHostIdx = 0
+function wsHost() {
+  return _WS_HOSTS[Math.min(_wsHostIdx, _WS_HOSTS.length - 1)]
+}
+
 function wsUrl() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
   const token = localStorage.getItem('wb_token') || 'local'
-  return proto + '//' + location.host + WS_PATH + '?token=' + encodeURIComponent(token)
+  return proto + '//' + wsHost() + WS_PATH + '?token=' + encodeURIComponent(token)
 }
 
 class WsClient {
@@ -58,7 +68,12 @@ class WsClient {
       this._stopPing()
       this._scheduleReconnect()
     }
-    sock.onerror = () => { /* 紧随 onclose 触发重连 */ }
+    sock.onerror = () => {
+      // 当前候选主机握手失败 → 切换到下一个候选（直连 7788 失败则回退前端反代）
+      if (!this.connected && _wsHostIdx < _WS_HOSTS.length - 1) {
+        _wsHostIdx += 1
+      }
+    }
   }
 
   _startPing() {

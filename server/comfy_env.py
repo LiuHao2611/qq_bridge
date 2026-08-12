@@ -56,13 +56,16 @@ def get_comfy_output_dir():
     return os.path.join(get_comfy_root(), "output")
 
 
-def discover_weight(subdir, patterns, explicit=None, what="权重文件"):
+def discover_weight(subdir, patterns, explicit=None, what="权重文件", prefer=None):
     """返回 ComfyUI 节点应填的权重文件名；缺失则抛清晰错误。
 
     subdir: 相对 models/ 的子目录，如 'checkpoints' / 'ipadapter' / 'clip_vision' / 'controlnet'
     patterns: 通配符列表，如 ['*.safetensors', '*.ckpt']
     explicit: 用户/设置显式指定的文件名（无需扫描，直接信任）
     what: 报错时对人友好的权重名称
+    prefer: 可选 glob 通配符列表（如 ['*anime*','*manga*']）。命中 prefer 的文件
+            优先排序在前，用于「自动挑选更合适的底模」（如漫画优先动漫底模）。
+            未命中 prefer 时回退到稳定排序的首个文件。
     """
     if explicit and isinstance(explicit, str) and explicit.strip():
         return explicit.strip()
@@ -78,8 +81,20 @@ def discover_weight(subdir, patterns, explicit=None, what="权重文件"):
         and os.path.basename(f).lower() not in _PLACEHOLDER_NAMES
     ]
     if found:
-        # 稳定排序后取首个，避免随机抖动
-        return os.path.basename(sorted(found)[0])
+        # 稳定排序后取首个，避免随机抖动；若指定 prefer 则把命中项排到最前
+        ordered = sorted(found)
+        if prefer:
+            preferred = []
+            rest = []
+            for f in ordered:
+                name = os.path.basename(f).lower()
+                if any(glob.fnmatch.fnmatch(name, p.lower()) for p in prefer):
+                    preferred.append(f)
+                else:
+                    rest.append(f)
+            if preferred:
+                ordered = preferred + rest
+        return os.path.basename(ordered[0])
     raise RuntimeError(
         "缺少%s：请在秋葉 ComfyUI 的 models/%s 目录放入对应权重文件"
         "（如 %s）。扫描目录: %s"

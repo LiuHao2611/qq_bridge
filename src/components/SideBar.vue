@@ -2,27 +2,42 @@
 import { computed, ref, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { healthCheck } from '../api'
-import { usePersistedState } from '../composables/usePersist.js'
 
 const props = defineProps({ pid: { type: String, default: '' } })
 const route = useRoute()
 const router = useRouter()
 
-// 记录最后一次打开的项目，离开项目后点击「项目中心」可回到该项目而非列表
-const lastProject = usePersistedState('manju_last_project', { id: '' })
-watch(() => route.params.id, (id) => { if (id) lastProject.id = id }, { immediate: true })
+// 「项目中心」tab 路径：会话级（内存 ref，不写 localStorage）记忆「最后一次项目中心上下文路径」。
+// 任意时刻位于 /projects 或 /projects/* 都记录当前完整路径；点击 tab 时恢复到该路径。
+// 语义覆盖两层需求：
+//   ① 项目内（含子页 /projects/:id/assets 等）切到首页再切回 → 停留原项目（用户原始功能，保留）
+//   ② 列表页（/projects）切到首页再切回 → 停留列表，不再自动打开历史项目（旧 BUG，已修）
+// 关键：仅内存 ref，刷新页面即重置为 /projects，避免旧 BUG（持久化记忆导致刷新/列表访问后自动跳历史项目）。
+const lastProjectCenterPath = ref('/projects')
+watch(
+  () => route.path,
+  (p) => {
+    if (p === '/projects' || p.startsWith('/projects/')) {
+      lastProjectCenterPath.value = p
+    }
+  },
+  { immediate: true }
+)
 
-const projectCenterPath = computed(() => {
-  const id = props.pid || lastProject.id
-  return id ? '/projects/' + id : '/projects'
-})
+// 点击「项目中心」时【实时】读取内存记忆路径（不把路径固化进 computed 数组，避免竞态）：
+//   - 已打开项目（route 在 /projects/:id*）→ 切走再切回仍回到该项目的精确位置
+//   - 没打开项目（route 仅为 /projects 列表）→ 回到项目中心主页面
+// 仅内存 ref，刷新页面即重置为 /projects（根除旧 BUG：持久化导致刷新/列表访问后自动跳历史项目）。
+const goProjectCenter = () => {
+  router.push(lastProjectCenterPath.value)
+}
 
 const groups = computed(() => {
   const base = [
     {
       name: '主导航', items: [
         { icon: '🏠', label: '首页', path: '/' },
-        { icon: '🎬', label: '项目中心', path: projectCenterPath.value },
+        { icon: '🎬', label: '项目中心', path: '/projects', action: goProjectCenter },
         { icon: '📝', label: '推理监控', path: '/tasks' },
       ],
     },
@@ -49,6 +64,11 @@ const groups = computed(() => {
       ],
     },
     {
+      name: '数据查询', items: [
+        { icon: '📊', label: '我的数据', path: '/my-data' },
+      ],
+    },
+    {
       name: '系统', items: [
         { icon: '📋', label: '操作日志', path: '/logs' },
         { icon: '⚙️', label: '设置', path: '/settings' },
@@ -65,6 +85,7 @@ const isActive = (path) => {
   if (path === '/') return p === '/'
   if (path === '/projects') return p === '/projects' || p.startsWith('/projects/')
   if (path === '/memoir') return p === '/memoir' || p.startsWith('/memoir/')
+  if (path === '/my-data') return p === '/my-data'
   if (path.startsWith('/projects/')) {
     if (p === path) return true
     // 项目入口 /projects/:id 在其任意子路由下都高亮
@@ -95,7 +116,7 @@ onMounted(async () => {
         :key="it.path"
         class="nav-item"
         :class="{ active: isActive(it.path) }"
-        @click="router.push(it.path)"
+        @click="it.action ? it.action() : router.push(it.path)"
       >
         <span class="icon">{{ it.icon }}</span>
         <span class="label">{{ it.label }}</span>

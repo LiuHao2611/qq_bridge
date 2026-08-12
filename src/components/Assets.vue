@@ -1,28 +1,38 @@
 <script setup>
+defineOptions({ name: 'AssetsPhase' })
 import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   getProject, listAssets, listProjectAssets, listSegments,
   uploadGlobalAsset, uploadProjectAsset, uploadImage,
   importRole, importScene, importProp,
   updateAsset, deleteAsset,
   listStagesWithPoses, addStage, delStage, addPose, delPose,
-  extractAssetsFromStory, batchCreateProjectAssets,
+  extractAssetsFromStory, batchCreateProjectAssets, getOllamaStatus,
+  getLocalModels, testModelConnection,
 } from '../api'
+import { saveDraft, loadDraft, clearDraft, draftAge, draftKey } from '../composables/useDraft'
+import { pushHistory, genKey } from '../composables/useGenHistory'
+import { pushGeneration } from '../composables/useDirectorOrb'
 import { toast } from '../store'
-import { splitVoice, joinVoice } from '../assetMeta'
+import { splitVoice, joinVoice, stageNameFor } from '../assetMeta'
+import { pruneRefs } from '../composables/useProject'
 import ProjectFlowNav from './ProjectFlowNav.vue'
 import RoleEditorModal from './RoleEditorModal.vue'
+import HistoryPanel from './HistoryPanel.vue'
 import {
   ASSET_TAB_OPTIONS, ASSET_STAGE_OPTIONS, ASSET_POSE_OPTIONS, ASSET_ROLE_TYPE_OPTIONS,
 } from '../mock'
 import { parseDocx } from '../parseDocx'
 
 const route = useRoute()
+const router = useRouter()
 const pid = route.params.id
 
 const TAB_MAP = Object.fromEntries(ASSET_TAB_OPTIONS.map((t) => [t.key, t.type]))
-const SCOPE = { project: '本集', global: '全集' }
+// 本集/全集 Tab 文案（直接内联到模板，避免任何 setup 短 const + minifier 重名引起的 `Cannot read properties of undefined` 报错。
+// 历史：曾用 `const SCOPE = { project: '本集', global: '全集' }` + `{{ SCOPE.project }}`，prod build 时 minifier 把 SCOPE 与其它 const 重名，
+// 触发 `r.project` 访问 `undefined`。改长名仍非零风险 → 直接字面量字符串最稳。）
 const STAGE_OPTS = ASSET_STAGE_OPTIONS
 const POSE_OPTS = ASSET_POSE_OPTIONS
 const ROLE_TYPE_OPTS = ASSET_ROLE_TYPE_OPTIONS
@@ -78,6 +88,17 @@ const extractDialog = reactive({
   dragCounter: 0,
   uploadedFileName: '',
   logs: [], // {time,level,msg} 提取过程实时日志
+  // ---- 模型选择 & 在线服务配置（P1：assets v1.1.0 新增） ----
+  localModels: [],                          // GET /models/local 拉取的本地模型名列表
+  modelKind: 'local',                       // 'local' | 'online'
+  selectedModel: '',                        // 当前选中的本地模型名
+  selectedOnlineId: '',                     // 当前选中的在线服务 id
+  providers: [],                            // 在线服务配置 [{id,name,baseUrl,apiKey,model,enabled}]，localStorage 持久化
+  providerEditorOpen: false,                // provider 编辑弹窗开关
+  editingProvider: null,                    // null=新增；字符串=编辑中的 provider id
+  providerForm: { id: '', name: '', baseUrl: '', apiKey: '', model: '', enabled: true },
+  testing: false,                           // 测试连接中
+  testResult: '',                           // 测试结果文案
 })
 const selectedCandidates = ref({}) // { 'roles:林浩': true }
 const editedCandidates = ref({}) // { 'roles:林浩': {...} }
@@ -88,6 +109,146 @@ const pushExtractLog = (msg, level = 'info') => {
     level,
     msg,
   })
+}
+
+// ---- 模型选择 & 在线服务配置（localStorage 持久化） ----
+const PROVIDERS_LS_KEY = 'manju_agent_model_providers_v1'
+const loadProviders = () => {
+  try {
+    const arr = JSON.parse(localStorage.getItem(PROVIDERS_LS_KEY) || '[]')
+    return Array.isArray(arr) ? arr : []
+  } catch { return [] }
+}
+const saveProviders = () => {
+  try { localStorage.setItem(PROVIDERS_LS_KEY, JSON.stringify(extractDialog.providers)) } catch {}
+}
+const newProviderId = () => 'p_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8)
+// 刷新本地模型列表（GET /models/local），并默认选中第一个
+const refreshLocalModels = async () => {
+  try {
+    extractDialog.localModels = await getLocalModels()
+    if (!extractDialog.selectedModel && extractDialog.localModels.length) {
+      extractDialog.selectedModel = extractDialog.localModels[0]
+    }
+  } catch (e) {
+    console.warn('load local models failed:', e.message)
+    extractDialog.localModels = []
+  }
+}
+// 组装最终发给后端的 model_config
+const buildModelConfig = () => {
+  if (extractDialog.modelKind === 'local') {
+    return extractDialog.selectedModel ? { provider: 'local', model: extractDialog.selectedModel } : null
+  }
+  const p = extractDialog.providers.find((x) => x.id === extractDialog.selectedOnlineId)
+  if (!p) return null
+  return { provider: 'openai-compatible', model: p.model, apiBase: p.baseUrl, apiKey: p.apiKey }
+}
+const currentOnlineProvider = computed(() =>
+  extractDialog.providers.find((p) => p.id === extractDialog.selectedOnlineId) || null
+)
+// 打开 provider 编辑弹窗（p=null 新增；p=对象 编辑）
+const openProviderEditor = (p) => {
+  if (p) {
+    extractDialog.editingProvider = p.id
+    extractDialog.providerForm = {
+      id: p.id, name: p.name || '', baseUrl: p.baseUrl || '', apiKey: p.apiKey || '', model: p.model || '', enabled: p.enabled !== false,
+    }
+  } else {
+    extractDialog.editingProvider = null
+    extractDialog.providerForm = { id: '', name: '', baseUrl: '', apiKey: '', model: '', enabled: true }
+  }
+  extractDialog.testResult = ''
+  extractDialog.providerEditorOpen = true
+}
+const saveProvider = () => {
+  const f = extractDialog.providerForm
+  if (!String(f.name).trim()) { toast('请填写服务名'); return }
+  if (!String(f.baseUrl).trim()) { toast('请填写 Base URL'); return }
+  if (!String(f.model).trim()) { toast('请填写模型名'); return }
+  if (extractDialog.editingProvider) {
+    const idx = extractDialog.providers.findIndex((x) => x.id === extractDialog.editingProvider)
+    if (idx >= 0) extractDialog.providers[idx] = { ...f }
+  } else {
+    f.id = newProviderId()
+    extractDialog.providers.push({ ...f })
+    extractDialog.selectedOnlineId = f.id
+    extractDialog.modelKind = 'online'
+  }
+  saveProviders()
+  extractDialog.providerEditorOpen = false
+  toast('已保存')
+}
+const deleteProvider = (id) => {
+  if (!confirm('删除该在线服务配置？')) return
+  extractDialog.providers = extractDialog.providers.filter((p) => p.id !== id)
+  if (extractDialog.selectedOnlineId === id) extractDialog.selectedOnlineId = ''
+  saveProviders()
+}
+const toggleProviderEnabled = (id) => {
+  const p = extractDialog.providers.find((x) => x.id === id)
+  if (p) { p.enabled = !p.enabled; saveProviders() }
+}
+// 测试连接（POST /models/test）
+const testProvider = async (p) => {
+  extractDialog.testing = true
+  extractDialog.testResult = ''
+  try {
+    const r = await testModelConnection({
+      provider: 'openai-compatible',
+      apiBase: p.baseUrl, apiKey: p.apiKey, model: p.model,
+    })
+    extractDialog.testResult = '✅ 连接成功' + (r && r.model ? `（模型 ${r.model}）` : '')
+    toast('连接成功')
+  } catch (e) {
+    extractDialog.testResult = '❌ ' + (e.message || '连接失败')
+    toast('连接失败：' + (e.message || ''))
+  } finally {
+    extractDialog.testing = false
+  }
+}
+
+// 提取可中断：持有在途请求，停止按钮调用 abort()
+// gpuTimer 改模块级单例：避免用户多次点「开始」造成 setInterval 累积（曾经出现过 15 个并发的风暴）
+let _gpuTimer = null
+function _clearGpuTimer() { if (_gpuTimer) { clearInterval(_gpuTimer); _gpuTimer = null } }
+const extractController = ref(null)
+const stopExtract = () => {
+  if (extractController.value) extractController.value.abort()
+}
+// 模型输出自动草稿（P1）：打开弹窗时检测，提取成功后保存
+const extractDraft = ref(null)
+const extractHist = ref(null)
+// 把候选集回填到 review 步骤（草稿恢复 / 历史覆盖共用）
+const applyCandidates = (candidates, meta) => {
+  extractDialog.candidates = candidates || { roles: [], scenes: [], props: [] }
+  extractDialog.meta = meta || {}
+  const next = {}
+  ;['roles', 'scenes', 'props'].forEach((t) => {
+    (extractDialog.candidates[t] || []).forEach((it) => {
+      next[candidateKey(t, it.name)] = !isExistingAssetName(it.name)
+    })
+  })
+  selectedCandidates.value = next
+  editedCandidates.value = {}
+  extractDialog.step = 'review'
+}
+const restoreExtractDraft = () => {
+  const d = extractDraft.value
+  if (!d) return
+  applyCandidates(d.data?.candidates, d.data?.meta)
+  extractDraft.value = null
+  toast(`已恢复 ${draftAge(d.ts)} 的提取草稿`)
+}
+// 历史生成面板：覆盖使用某次提取结果
+const onUseExtractHist = (record) => {
+  applyCandidates(record.payload?.candidates, record.payload?.meta)
+  toast('已覆盖使用历史提取结果')
+}
+const discardExtractDraft = () => {
+  const d = extractDraft.value
+  if (d) clearDraft(draftKey.extract(route.params.id))
+  extractDraft.value = null
 }
 
 const openExtractDialog = async () => {
@@ -104,6 +265,22 @@ const openExtractDialog = async () => {
   extractDialog.dragCounter = 0
   extractDialog.uploadedFileName = ''
   extractDialog.logs = []
+  // 初始化模型选择 & provider 状态（v1.1.0 新增）
+  extractDialog.modelKind = 'local'
+  extractDialog.selectedModel = ''
+  extractDialog.selectedOnlineId = ''
+  extractDialog.localModels = []
+  extractDialog.providerEditorOpen = false
+  extractDialog.editingProvider = null
+  extractDialog.providerForm = { id: '', name: '', baseUrl: '', apiKey: '', model: '', enabled: true }
+  extractDialog.testing = false
+  extractDialog.testResult = ''
+  extractDialog.providers = loadProviders()
+  // 默认选中第一个已启用的在线服务（如果有）
+  if (extractDialog.providers.length && !extractDialog.selectedOnlineId) {
+    const firstEnabled = extractDialog.providers.find((p) => p.enabled)
+    if (firstEnabled) extractDialog.selectedOnlineId = firstEnabled.id
+  }
   selectedCandidates.value = {}
   editedCandidates.value = {}
   try {
@@ -112,6 +289,11 @@ const openExtractDialog = async () => {
   } catch (e) {
     console.warn('load segments count failed:', e.message)
   }
+  // 拉取本地模型列表（异步，不阻塞弹窗）
+  refreshLocalModels()
+  // 检测模型输出草稿（P1）
+  const draft = loadDraft(draftKey.extract(pid))
+  extractDraft.value = draft && draft.data && (draft.data.candidates?.roles?.length || draft.data.candidates?.scenes?.length || draft.data.candidates?.props?.length) ? draft : null
 }
 
 const closeExtractDialog = () => {
@@ -135,6 +317,7 @@ const onExtractDragOver = (e) => {
   e.preventDefault()
 }
 const onExtractDragLeave = (e) => {
+  e.preventDefault()
   extractDialog.dragCounter--
   if (extractDialog.dragCounter <= 0) {
     extractDialog.dragCounter = 0
@@ -218,26 +401,53 @@ const updateCandidate = (type, oldName, field, value) => {
 }
 
 const runExtract = async () => {
+  // 防重入：上次提取还在跑就拒绝（防止用户多次点「开始」启动多个并发闭包 = 历史上 15 个 setInterval 风暴的根因）
+  if (extractDialog.loading) {
+    toast('提取进行中，请先点「⏹ 停止」后再启动')
+    return
+  }
   let story = ''
   if (extractDialog.storySource === 'paste') {
     story = extractDialog.pastedStory.trim()
     if (!story) { toast('请粘贴剧本/故事文本'); return }
   }
+  // 模型必须选好（v1.1.0 新增）
+  const modelConfig = buildModelConfig()
+  if (!modelConfig) {
+    toast(extractDialog.modelKind === 'local' ? '请选择本地模型' : '请选择在线服务')
+    return
+  }
   extractDialog.loading = true
   extractDialog.logs = []
   extractDialog.meta = {}
+  pushGeneration('text', '资产提取', 'running')
+  _clearGpuTimer() // 任何残留旧 timer 启动前先清，防爆
+  extractController.value = new AbortController()
+  // 推理期间轮询 Ollama 运行分布，打印 GPU/CPU 占比，避免误以为在 CPU 跑
+  let lastGpuLine = ''
+  _gpuTimer = setInterval(async () => {
+    try {
+      const st = await getOllamaStatus()
+      const ms = (st.models || [])
+      if (ms.length) {
+        const line = '🖥️ Ollama 运行分布：' + ms.map((m) => `${m.name} → GPU ${m.gpu_pct}% / CPU ${m.cpu_pct}%（显存 ${m.size_vram_gb}/${m.size_gb}GB）`).join('；')
+        if (line !== lastGpuLine) { lastGpuLine = line; pushExtractLog(line) }
+      }
+    } catch (e) { /* 轮询失败忽略 */ }
+  }, 5000)
   let elapsed = 0
   const elapsedTimer = setInterval(() => {
     elapsed++
     // 每 5 秒更新一次等待提示，避免日志刷屏
     if (elapsed % 5 === 0) {
-      pushExtractLog('模型推理中… 已等待 ' + elapsed + ' 秒（长文本可能需要 30~90 秒）')
+      pushExtractLog('模型推理中… 已等待 ' + elapsed + ' 秒（长文本可能需要 1~5 分钟）')
     }
   }, 1000)
   try {
     pushExtractLog('准备识别… 文本长度 ' + story.length + ' 字')
-    pushExtractLog('请求后端提取接口（项目ID: ' + pid + '），最长等待 120 秒')
-    const res = await extractAssetsFromStory(pid, story)
+    pushExtractLog('使用模型：' + (modelConfig.provider || 'local') + ' / ' + (modelConfig.model || '?'))
+    pushExtractLog('请求后端提取接口（项目ID: ' + pid + '），最长等待 300 秒')
+    const res = await extractAssetsFromStory(pid, story, modelConfig, { signal: extractController.value.signal })
     clearInterval(elapsedTimer)
     extractDialog.meta = res.meta || {}
     const model = (res.meta || {}).model || 'unknown'
@@ -263,16 +473,41 @@ const runExtract = async () => {
     })
     selectedCandidates.value = next
     editedCandidates.value = {}
+    // 模型输出成功后立即写草稿（防误关/误取消丢失）
+    const draftSaved = saveDraft(draftKey.extract(pid), {
+      candidates: extractDialog.candidates,
+      meta: extractDialog.meta,
+    })
+    if (draftSaved) pushExtractLog('🗂 提取草稿已自动保存（下次开弹窗可恢复）', 'info')
+    extractDraft.value = null // 已落到 step=review，
+    // 记录到左侧历史生成面板
+    const h = pushHistory(genKey.extract(pid), {
+      kind: 'text',
+      title: '资产提取 · ' + ((res.meta || {}).model || '模型'),
+      preview: '角色 ' + (extractDialog.candidates.roles?.length || 0) +
+        ' · 场景 ' + (extractDialog.candidates.scenes?.length || 0) +
+        ' · 道具 ' + (extractDialog.candidates.props?.length || 0),
+      payload: { candidates: extractDialog.candidates, meta: extractDialog.meta },
+    })
+    if (h && extractHist.value) extractHist.value.refresh()
     extractDialog.step = 'review'
+    pushGeneration('text', '资产提取', 'done')
     if ((res.meta || {}).error) {
       pushExtractLog('模型提示：' + res.meta.error, 'warn')
       toast('提取完成（模型异常：' + res.meta.error + '）')
     }
   } catch (e) {
     clearInterval(elapsedTimer)
-    pushExtractLog('提取失败：' + e.message, 'error')
-    toast('提取失败：' + e.message)
+    if (e && e.name === 'AbortError') {
+      pushExtractLog('⏹ 已手动停止提取（在途请求已中断）', 'warn')
+      pushGeneration('text', '资产提取', 'failed', '已手动停止')
+    } else {
+      pushExtractLog('提取失败：' + e.message, 'error')
+      toast('提取失败：' + e.message)
+      pushGeneration('text', '资产提取', 'failed', e.message)
+    }
   } finally {
+    _clearGpuTimer() // 模块级单例：清理此轮推理的 timer 引用
     clearInterval(elapsedTimer)
     extractDialog.loading = false
   }
@@ -437,6 +672,8 @@ const del = async (i) => {
   if (!confirm('确定删除本集资产「' + item.name + '」？\n关联的分镜 @引用 将失效。')) return
   try {
     await deleteAsset(item.id)
+    // F1：级联清理所有片段中指向该资产的悬空 @引用（DB + keep-alive 编辑器内存态）
+    await pruneRefs(pid, { assetId: item.id })
     const idx = project.assets[tab.value].findIndex((a) => a.id === item.id)
     if (idx > -1) project.assets[tab.value].splice(idx, 1)
     if (selectedRole.value && selectedRole.value.id === item.id) selectedRole.value = null
@@ -652,8 +889,9 @@ const submitStage = async () => {
   busy.value = true
   try {
     const up = await uploadImage(stageForm.file)
+    // F4：角色阶段统一为层级命名（roleName-suffix），与 RoleEditorModal / AssetStageManager 一致
     await addStage(stageForm.assetId, {
-      stage_name: stageForm.stage_name,
+      stage_name: stageNameFor(selectedRole.value?.name, 'role', stageForm.stage_name),
       age: Number(stageForm.age) || 25,
       reference_image_url: up.url || '',
     })
@@ -670,6 +908,8 @@ const removeStage = async (st) => {
   if (!confirm('删除该阶段及其姿势？')) return
   try {
     await delStage(selectedRole.value.id, st.stage_id)
+    // F1：级联清理该角色阶段在所有片段中的悬空 @引用
+    await pruneRefs(pid, { assetId: selectedRole.value.id, stageId: st.stage_id })
     await loadStages(selectedRole.value)
   } catch (e) {
     toast('删除失败: ' + e.message)
@@ -722,14 +962,15 @@ onMounted(load)
   <div class="page">
     <ProjectFlowNav :pid="pid" :step="1" />
     <div class="page-head">
+      <button class="back" @click="router.push('/projects')">← 返回项目中心</button>
       <div>
         <h1>🖼 资产初始化 <span class="cold">（冷启动）</span></h1>
         <p class="muted">{{ project.title }} · 上传角色定妆照 / 场景参考 / 道具图，系统预处理；全集可一键复用至本集</p>
       </div>
       <div class="head-actions">
         <div class="tabs">
-          <div class="tab" :class="{ on: scope === 'project' }" @click="scope = 'project'">{{ SCOPE.project }}</div>
-          <div class="tab" :class="{ on: scope === 'global' }" @click="scope = 'global'">{{ SCOPE.global }}</div>
+          <div class="tab" :class="{ on: scope === 'project' }" @click="scope = 'project'">本集</div>
+          <div class="tab" :class="{ on: scope === 'global' }" @click="scope = 'global'">全集</div>
         </div>
         <div class="tabs">
           <div v-for="t in ASSET_TAB_OPTIONS" :key="t.key" class="tab" :class="{ on: tab === t.key }" @click="tab = t.key">{{ t.label }}</div>
@@ -809,11 +1050,11 @@ onMounted(load)
     <!-- 资产网格 -->
     <div v-else class="asset-grid">
       <div class="asset-card" v-for="(a, i) in filteredList" :key="a.id">
-        <div class="thumb-wrap" :class="{ draggable: a.type === 'role', 'role-hovered': hoveredId === a.id }" draggable="true" @mouseenter="hoveredId = a.id" @mouseleave="hoveredId = null" @dragstart="a.type === 'role' ? $event.dataTransfer.setData('text/asset', JSON.stringify({ id: a.id, name: a.name, type: a.type })) : null">
+        <div class="thumb-wrap" :class="{ draggable: a.type !== 'role', 'role-hovered': hoveredId === a.id }" :draggable="a.type !== 'role'" @mouseenter="hoveredId = a.id" @mouseleave="hoveredId = null" @dragstart="a.type !== 'role' ? $event.dataTransfer.setData('application/x-manju-asset', JSON.stringify({ asset_id: a.id, asset_type: a.type, name: a.name })) : null">
           <img :src="a.url" loading="lazy" @click="preview = a.url" />
           <!-- 角色卡片 hover 三按钮：拖动 / 编辑 / 预览 -->
           <div v-if="a.type === 'role'" class="thumb-overlay role-overlay">
-            <button class="role-btn" title="拖动角色卡" @mousedown.stop>
+            <button class="role-btn" title="角色卡不可直接拖入提示词（按 R1，请拖拽阶段卡引用）" @mousedown.stop>
               <el-icon><Grid /></el-icon>
             </button>
             <button class="role-btn" title="编辑角色" @click.stop="openRoleEditor(a)">
@@ -950,10 +1191,27 @@ onMounted(load)
     <!-- 从剧本提取资产弹窗 -->
     <div class="modal-mask" v-if="extractDialog.open" @click="closeExtractDialog">
       <div class="modal-box wide extract-box" @click.stop>
+        <!-- 左侧：历史生成记录（嵌入弹窗左侧，默认折叠，点击展开可选择覆盖使用） -->
+        <HistoryPanel
+          ref="extractHist"
+          :storage-key="genKey.extract(route.params.id)"
+          title="提取历史"
+          kind-filter="text"
+          :embedded="true"
+          @use="onUseExtractHist"
+        />
+
+        <div class="extract-main">
         <h3>📝 从剧本一键提取资产</h3>
 
         <!-- 步骤 1：选择剧本来源 -->
         <div v-if="extractDialog.step === 'source'">
+          <!-- 模型输出草稿恢复提示（P1） -->
+          <div v-if="extractDraft" class="extract-draft-banner">
+            <span>🗂 检测到 {{ draftAge(extractDraft.ts) }} 的提取草稿（角色 {{ (extractDraft.data.candidates.roles||[]).length }} / 场景 {{ (extractDraft.data.candidates.scenes||[]).length }} / 道具 {{ (extractDraft.data.candidates.props||[]).length }}）</span>
+            <button class="btn sm" style="margin-left:8px" @click="restoreExtractDraft">恢复</button>
+            <button class="btn sm ghost" @click="discardExtractDraft">丢弃</button>
+          </div>
           <p class="muted" style="margin-bottom:12px">AI 将从剧本/故事中识别角色、场景、道具，供你确认后批量创建为本集资产。</p>
           <div class="extract-source">
             <label class="extract-option" :class="{ on: extractDialog.storySource === 'project' }">
@@ -1000,6 +1258,92 @@ onMounted(load)
             </div>
           </div>
 
+          <!-- ====== 选择识别模型（v1.1.0 新增） ====== -->
+          <div class="extract-model">
+            <div class="em-head">
+              <span>🤖 选择识别模型</span>
+              <span class="muted" style="font-size:11px">本地 Ollama 直连，或调用已配置的在线 OpenAI 兼容服务</span>
+            </div>
+            <el-radio-group v-model="extractDialog.modelKind" class="em-kind">
+              <el-radio value="local">
+                本地 Ollama
+                <span class="muted">（{{ extractDialog.localModels.length || '加载中…' }} 个模型）</span>
+              </el-radio>
+              <el-radio value="online" :disabled="!extractDialog.providers.some(p => p.enabled)">
+                在线服务
+                <span class="muted">（{{ extractDialog.providers.filter(p => p.enabled).length || 0 }} 个已启用）</span>
+              </el-radio>
+            </el-radio-group>
+            <div class="em-pick">
+              <el-select
+                v-if="extractDialog.modelKind === 'local'"
+                v-model="extractDialog.selectedModel"
+                placeholder="选择本地模型"
+                size="small"
+                style="width:100%"
+              >
+                <el-option v-for="m in extractDialog.localModels" :key="m" :value="m" :label="m" />
+              </el-select>
+              <template v-else>
+                <el-select
+                  v-model="extractDialog.selectedOnlineId"
+                  placeholder="选择已配置的在线服务"
+                  size="small"
+                  style="width:100%"
+                  @change="extractDialog.selectedModel = ''"
+                >
+                  <el-option
+                    v-for="p in extractDialog.providers.filter(x => x.enabled)"
+                    :key="p.id"
+                    :value="p.id"
+                    :label="`${p.name}（${p.model}）`"
+                  />
+                </el-select>
+                <div v-if="currentOnlineProvider" class="em-hint muted">
+                  base_url: <code>{{ currentOnlineProvider.baseUrl }}</code> · 模型: <code>{{ currentOnlineProvider.model }}</code>
+                </div>
+                <div v-else-if="!extractDialog.providers.length" class="em-hint muted">
+                  尚未配置在线服务，请展开下方「管理在线服务」新增。
+                </div>
+              </template>
+            </div>
+
+            <!-- 在线服务管理（折叠面板） -->
+            <details class="em-providers">
+              <summary>🛠 管理在线服务（{{ extractDialog.providers.length }}）</summary>
+              <div class="em-providers-body">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                  <span class="muted" style="font-size:12px">支持任何 OpenAI 兼容接口（通义千问 / 豆包 / OpenAI / DeepSeek / 自建网关…）</span>
+                  <button class="btn sm" @click="openProviderEditor(null)">＋ 新增在线服务</button>
+                </div>
+                <div v-if="!extractDialog.providers.length" class="muted" style="padding:12px;text-align:center;background:var(--bg-2);border-radius:8px">
+                  还没有配置任何在线服务，点击右上角「＋ 新增在线服务」开始。
+                </div>
+                <div v-else class="em-provider-list">
+                  <div v-for="p in extractDialog.providers" :key="p.id" class="em-provider-row">
+                    <div class="em-provider-info">
+                      <div class="em-provider-name">
+                        {{ p.name }}
+                        <span class="muted" style="font-weight:400">（{{ p.model }}）</span>
+                        <span v-if="!p.enabled" class="em-disabled-tag">已停用</span>
+                      </div>
+                      <div class="muted em-provider-url">{{ p.baseUrl }}</div>
+                    </div>
+                    <div class="em-provider-acts">
+                      <el-switch v-model="p.enabled" @change="saveProviders" />
+                      <button class="btn sm ghost" @click="testProvider(p)" :disabled="extractDialog.testing">
+                        {{ extractDialog.testing ? '测试中…' : '测试' }}
+                      </button>
+                      <button class="btn sm ghost" @click="openProviderEditor(p)">编辑</button>
+                      <button class="btn sm ghost" @click="deleteProvider(p.id)">删除</button>
+                    </div>
+                  </div>
+                </div>
+                <div v-if="extractDialog.testResult" class="extract-error" style="margin-top:10px">{{ extractDialog.testResult }}</div>
+              </div>
+            </details>
+          </div>
+
           <!-- 实时日志 / 状态 -->
           <div v-if="extractDialog.logs.length" class="extract-log-panel">
             <div class="extract-log-head">
@@ -1016,7 +1360,12 @@ onMounted(load)
 
           <div class="modal-acts">
             <button class="btn sm ghost" @click="closeExtractDialog">取消</button>
-            <button class="btn sm" :disabled="extractDialog.loading || (extractDialog.storySource === 'paste' && !extractDialog.pastedStory.trim())" @click="runExtract">
+            <button v-if="extractDialog.loading" class="btn sm" style="border-color:#f56c6c;color:#f56c6c" @click="stopExtract">⏹ 停止</button>
+            <button
+              class="btn sm"
+              :disabled="extractDialog.loading || (extractDialog.storySource === 'paste' && !extractDialog.pastedStory.trim()) || !buildModelConfig()"
+              @click="runExtract"
+            >
               {{ extractDialog.loading ? '提取中…' : '开始提取' }}
             </button>
           </div>
@@ -1116,6 +1465,34 @@ onMounted(load)
             <button class="btn sm" @click="closeExtractDialog">完成</button>
           </div>
         </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 在线服务编辑弹窗（v1.1.0 新增） -->
+    <div v-if="extractDialog.providerEditorOpen" class="modal-mask" @click="extractDialog.providerEditorOpen = false">
+      <div class="modal-box" @click.stop>
+        <h3>{{ extractDialog.editingProvider ? '编辑在线服务' : '新增在线服务' }}</h3>
+        <p class="muted" style="font-size:12px;margin:-8px 0 8px">支持任何 OpenAI 兼容接口（通义千问 / 豆包 / OpenAI / DeepSeek / 自建网关…）</p>
+        <label class="lbl">服务名（仅本地标识）</label>
+        <input class="input" v-model="extractDialog.providerForm.name" placeholder="如：通义千问 / 豆包 / OpenAI" />
+        <label class="lbl">Base URL</label>
+        <input class="input" v-model="extractDialog.providerForm.baseUrl" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+        <label class="lbl">API Key</label>
+        <input class="input" type="password" v-model="extractDialog.providerForm.apiKey" placeholder="sk-..." />
+        <label class="lbl">模型名</label>
+        <input class="input" v-model="extractDialog.providerForm.model" placeholder="如 qwen-plus / doubao-pro / gpt-4o-mini" />
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12px;color:var(--sub);cursor:pointer">
+          <input type="checkbox" v-model="extractDialog.providerForm.enabled" /> 启用（在「选择模型」中可见）
+        </label>
+        <div v-if="extractDialog.testResult" class="extract-error" style="margin-top:10px">{{ extractDialog.testResult }}</div>
+        <div class="modal-acts">
+          <button class="btn sm ghost" @click="extractDialog.providerEditorOpen = false">取消</button>
+          <button class="btn sm ghost" @click="testProvider(extractDialog.providerForm)" :disabled="extractDialog.testing || !extractDialog.providerForm.baseUrl || !extractDialog.providerForm.model">
+            {{ extractDialog.testing ? '测试中…' : '测试连接' }}
+          </button>
+          <button class="btn sm" @click="saveProvider">保存</button>
+        </div>
       </div>
     </div>
 
@@ -1158,7 +1535,7 @@ onMounted(load)
     <div class="modal-mask" v-if="preview" @click="preview = ''"><div class="modal"><img :src="preview" @click.stop /></div></div>
 
     <!-- 角色编辑弹窗 -->
-    <RoleEditorModal v-model="editorVisible" :role="editingRole" @saved="onRoleSaved" @preview="preview = $event" />
+    <RoleEditorModal v-model="editorVisible" :role="editingRole" :project-id="pid" @saved="onRoleSaved" @preview="preview = $event" />
   </div>
 </template>
 
@@ -1198,7 +1575,7 @@ onMounted(load)
 .drop-hint { color: var(--sub); font-size: 12px; margin-top: 14px; }
 .drop-hint-bar { border: 1px dashed var(--line); border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; color: var(--sub); font-size: 13px; transition: .2s; }
 .drop-hint-bar.drag { border-color: var(--pur); background: rgba(138,92,255,.06); }
-.link-upload { color: var(--blue); cursor: pointer; }
+ .link-upload { color: var(--blue); cursor: pointer; }
 
 .skeleton-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
 .skeleton-card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; padding: 10px; }
@@ -1255,7 +1632,7 @@ onMounted(load)
 .stage-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .stage-name { font-weight: 700; font-size: 13px; }
 .stage-img { aspect-ratio: 16/9; background: var(--bg); border-radius: 8px; overflow: hidden; }
-.stage-img img { width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; }
+.stage-img img { width: 100%; height: 100%; object-fit: contain; cursor: zoom-in; }
 .pose-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
 .pose-chip { position: relative; width: 64px; }
 .pose-chip img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; cursor: zoom-in; border: 1px solid var(--line); }
@@ -1292,7 +1669,8 @@ onMounted(load)
 .import-name { font-size: 12px; font-weight: 700; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* 从剧本提取 */
-.extract-box { width: 760px; max-height: 82vh; }
+.extract-box { width: 760px; max-height: 82vh; display: flex; overflow: hidden; padding: 0; gap: 0; }
+.extract-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; padding: 20px; overflow-y: auto; }
 .extract-source { display: flex; flex-direction: column; gap: 10px; }
 .extract-option { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border-radius: 10px; border: 1px solid var(--line); cursor: pointer; transition: .15s; }
 .extract-option.on { border-color: var(--pur); background: rgba(138,92,255,.08); }
@@ -1334,4 +1712,23 @@ onMounted(load)
 .extract-done { text-align: center; padding: 30px 0; }
 .done-icon { font-size: 48px; margin-bottom: 10px; }
 .done-title { font-size: 16px; font-weight: 700; }
+
+/* 选择识别模型（v1.1.0 新增） */
+.extract-model { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-2); }
+.em-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; font-weight: 700; font-size: 14px; }
+.em-kind { display: flex; gap: 18px; margin-bottom: 10px; flex-wrap: wrap; }
+.em-pick { margin-bottom: 8px; }
+.em-hint { font-size: 11px; margin-top: 6px; line-height: 1.6; word-break: break-all; }
+.em-hint code { background: var(--card); padding: 1px 6px; border-radius: 4px; font-size: 11px; color: var(--txt); }
+.em-providers { margin-top: 10px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+.em-providers > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--txt); user-select: none; padding: 4px 0; }
+.em-providers-body { margin-top: 10px; }
+.em-provider-list { display: flex; flex-direction: column; gap: 8px; }
+.em-provider-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; transition: .15s; }
+.em-provider-row:hover { border-color: var(--pur); }
+.em-provider-info { flex: 1; min-width: 0; }
+.em-provider-name { font-size: 13px; font-weight: 700; }
+.em-disabled-tag { display: inline-block; margin-left: 6px; font-size: 10px; color: var(--sub); background: var(--bg); padding: 1px 6px; border-radius: 4px; font-weight: 400; }
+.em-provider-url { font-size: 11px; word-break: break-all; margin-top: 2px; }
+.em-provider-acts { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 </style>

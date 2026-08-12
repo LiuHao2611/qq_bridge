@@ -13,3 +13,16 @@ export function joinVoice(desc = '', voice = '') {
   const clean = String(desc).replace(VOICE_MARK, '')
   return voice ? clean + VOICE_MARK + voice : clean
 }
+
+// F4：阶段命名统一（INV-2）。三处 submitStage 必须一致：
+//   - role 类型：层级名 `<角色名>-<后缀>`（如「周岩-青年」），便于跨角色去歧义与引用解析；
+//   - scene / prop 类型：裸名（阶段即该场景/道具自身的状态，无需前缀）。
+// assetName 为父资产名（role 时必填），suffix 为用户输入的阶段名后缀（scene/prop 时为完整名）。
+export function stageNameFor(assetName, type, suffix) {
+  const s = String(suffix || '').trim()
+  if (type === 'role') {
+    const base = String(assetName || '').trim()
+    return base ? base + '-' + (s || 'default') : (s || 'default')
+  }
+  return s
+}

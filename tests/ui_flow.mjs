@@ -3,9 +3,20 @@
 // 不重复跑 ComfyUI 长任务（由 pipeline_e2e.mjs 覆盖后端生成逻辑）
 import { chromium } from 'playwright'
 import fs from 'fs'
+import path from 'path'
 
 const WEB = 'http://127.0.0.1:8099'
 const API = 'http://127.0.0.1:7788/api/v1'
+
+// 强制 D 盘 tmp — 禁止 chromium 把 userDataDir 写 C:\Users\...\AppData\Local\Temp（这会撑爆用户回收站）
+const TMP_BASE = 'D:/AI/manju_agent/.tmp'
+fs.mkdirSync(path.join(TMP_BASE, 'playwright'), { recursive: true })
+const userDataDir = path.join(TMP_BASE, 'playwright', `ui_flow_${Date.now()}_${process.pid}`)
+fs.mkdirSync(userDataDir, { recursive: true })
+process.env.PLAYWRIGHT_BROWSERS_PATH = path.join(TMP_BASE, 'playwright-browsers')
+process.env.TMPDIR = TMP_BASE
+process.env.TEMP = TMP_BASE
+process.env.TMP = TMP_BASE
 const results = []
 let PASS = 0, FAIL = 0
 function ok(name){ PASS++; results.push('PASS  '+name) }
@@ -29,7 +40,7 @@ async function main(){
   } catch(e){ bad('创建测试项目', e); return finish() }
   if (!pid){ bad('创建测试项目', new Error('无 pid')); return finish() }
 
-  const browser = await chromium.launch()
+  const browser = await chromium.launch({ env: process.env })
   const ctx = await browser.newContext()
   const page = await ctx.newPage()
   const errors = []

@@ -1,0 +1,26 @@
+{
+  "_doc": "带 IP-Adapter 的文生图模板（手册 §3.2 B + 铁律1.1 资产强约束）。保留已验证拓扑：IPAdapterModelLoader(11) + IPAdapterUnifiedLoader(10) 先把 ipadapter 注入 pipeline，再经简单 IPAdapter 节点(15 身份路 / 20 风格路)注入参考图。{{占位符}} 由意图翻译引擎填充；无身份/风格参考图时由引擎裁剪对应节点并重连 KSampler.model。",
+  "prompt": {
+    "3": {"class_type": "KSampler", "inputs": {
+      "seed": "{{seed}}", "steps": "{{steps}}", "cfg": "{{cfg}}",
+      "sampler_name": "euler", "scheduler": "normal", "denoise": 1.0,
+      "model": ["10", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]}},
+    "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "{{checkpoint}}"}},
+    "5": {"class_type": "EmptyLatentImage", "inputs": {"width": "{{width}}", "height": "{{height}}", "batch_size": 1}},
+    "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{positive_prompt}}", "clip": ["4", 1]}},
+    "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "{{negative_prompt}}", "clip": ["4", 1]}},
+    "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+    "9": {"class_type": "SaveImage", "inputs": {"images": ["8", 0], "filename_prefix": "manju_tpl_ip"}},
+    "11": {"class_type": "IPAdapterModelLoader", "inputs": {"ipadapter_file": "{{ip_adapter_name}}"}},
+    "10": {"class_type": "IPAdapterUnifiedLoader", "inputs": {
+      "model": ["4", 0], "preset": "{{ip_adapter_preset}}", "ipadapter": ["11", 0]}},
+    "13": {"class_type": "LoadImage", "inputs": {"image": "{{identity_image}}"}},
+    "15": {"class_type": "IPAdapter", "inputs": {
+      "model": ["10", 0], "ipadapter": ["11", 0], "image": ["13", 0],
+      "weight": "{{identity_weight}}", "start_at": 0.0, "end_at": 1.0, "weight_type": "standard"}},
+    "23": {"class_type": "LoadImage", "inputs": {"image": "{{style_image}}"}},
+    "20": {"class_type": "IPAdapter", "inputs": {
+      "model": ["15", 0], "ipadapter": ["11", 0], "image": ["23", 0],
+      "weight": "{{style_weight}}", "start_at": 0.0, "end_at": 1.0, "weight_type": "style transfer"}}
+  }
+}

@@ -165,9 +165,13 @@ class TestComicDegrade(unittest.TestCase):
             ai_local._comfy_text2img_via_template = orig_tpl
 
 
+# 端到端集成测试：默认仅在 ComfyUI+Ollama 双在线时自动执行；
+# 目标机部署后可用环境变量 MANJU_INTEGRATION_TEST=1 强制跑（需服务确实在线）。
+_FORCE_INTEGRATION = os.environ.get("MANJU_INTEGRATION_TEST", "") in ("1", "force", "true")
+
 @unittest.skipUnless(
-    ai_local.comfy_available() and ai_local.ollama_available(),
-    "ComfyUI/Ollama 不在线，无法跑完整导演流程"
+    _FORCE_INTEGRATION or (ai_local.comfy_available() and ai_local.ollama_available()),
+    "ComfyUI/Ollama 不在线，且未设置 MANJU_INTEGRATION_TEST=1，跳过完整导演流程"
 )
 class TestDirectorAgent(unittest.TestCase):
     """手册 §5.2：端到端导演流程，最终产出 .mp4 成片。"""
