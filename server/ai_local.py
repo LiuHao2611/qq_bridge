@@ -1376,7 +1376,7 @@ def _comfy_text2img_via_template(intent, timeout=240):
     """模板驱动出图（铁律 1.2：禁止手搓 ComfyUI 节点 JSON）。
 
     流程：意图翻译引擎（intent_engine 包）translate_intent_to_workflow() 依据
-    resource_catalog.json + intent_engine/templates_runtime/ 产出工作流 JSON →
+    resource_catalog.json + intent_engine/templates/ 产出工作流 JSON →
     Layer0 ComfyUIService 提交并取回输出图。
 
     若意图含本地首帧锚定图（init_image 为本地面路径），先经 Layer0 upload_image 上传
@@ -1479,7 +1479,7 @@ def generate_character_card(asset_id, attrs=None, style_tags=None,
     """P1 角色卡 AI 生成（导演agent优化草稿 #1）：经意图翻译引擎产出首张定妆照，落资产封面。
 
     铁律 1.1：首卡由结构化角色属性驱动（非自由 prompt），确定性 seed 保证稳定不随机；
-    经 _comfy_text2img_via_template 走 intent_engine/templates_runtime/character_card_gen.json，
+    经 _comfy_text2img_via_template 走 intent_engine/templates/character_card_gen.json，
     绝不手搓节点（铁律 1.2）。ComfyUI 不可用抛 RuntimeError，由调用方诚实报错。
 
     :param asset_id: 角色资产 ID（确定性 seed 锚点 + 落库目标）。
@@ -1693,7 +1693,7 @@ def generate_character_card_v2(asset_id, setting_text=None, era=None,
 
 
 def _comfy_via_typed_template(task_type, values, timeout=240, output_dir=None):
-    """通用模板驱动提交（铁律 1.2）：按 task_type 填充 intent_engine/templates_runtime/ 模板并提交 Layer0。
+    """通用模板驱动提交（铁律 1.2）：按 task_type 填充 intent_engine/templates/ 模板并提交 Layer0。
 
     values 中若出现本地图片路径（存在且为图片后缀），自动经 Layer0 上传并回填为
     ComfyUI 内部文件名（上传归 Layer0，节点拼装归模板）。调用方与本项目不再手搓任何节点拓扑。
@@ -2100,7 +2100,7 @@ def _comfy_has_node(node_class):
 def face_restore(image_path, method="GFPGAN", out_path=None):
     """人脸修复（手册 §3.4.4 全局后处理）：经 ComfyUI 的 GFPGAN / CodeFormer 节点修复单图人脸。
 
-    铁律 1.2：优先走 intent_engine/templates_runtime 模板驱动（face_restore_gfpgan /
+    铁律 1.2：优先走 intent_engine/templates 模板驱动（face_restore_gfpgan /
     face_restore_codeformer）；模板不可用时诚实回退内联手搓（防御性，正常运行不触发）。
     环境要求（缺则诚实报错，绝不静默跳过人脸修复 / 绝不假装已修复）：
       - ComfyUI 已启动（comfy_available）
@@ -2166,7 +2166,7 @@ def _comfy_text2img_with_controlnet(prompt, ref_comfy_name, control_type="depth"
                                     seed=-1, timeout=240):
     """带 ControlNet 的文生图：用场景参考图约束构图（深度/姿态/线稿）。
 
-    铁律 1.2：优先走 intent_engine/templates_runtime/shot_image_controlnet.json 模板驱动；
+    铁律 1.2：优先走 intent_engine/templates/shot_image_controlnet.json 模板驱动；
     模板不可用时诚实回退内联手搓（防御性，正常运行不触发）。
     仅在 detect_comfy_controlnet() 为 True 时由调用方启用；任何节点不匹配/执行失败都抛
     RuntimeError，由调用方捕获后回退基础文生图（构图约束降级为提示词强调）。
@@ -4202,7 +4202,7 @@ def _comic_panel_generate(final_prompt, W, H, steps, cfg, s, neg,
                           enforce_asset=False):
     """单格出图：严格模板驱动（铁律 1.2，禁止手搓 ComfyUI 节点 JSON）。
 
-    统一经 intent_engine（翻译 facade） + templates_runtime 产出工作流并提交 ComfyUI：
+    统一经 intent_engine（唯一运行时翻译器 IntentTranslator） + templates 产出工作流并提交 ComfyUI：
     - 首帧锚定（idx>0 且 first_local 存在）：走 shot_image_img2img 模板（纯像素承接，不叠 IP）。
     - 有身份图/风格图且 IP 可用：走 shot_image_gen_ip 模板（身份路/风格路）。
     - 否则：走 shot_image_gen 基础文生图模板。
@@ -4339,7 +4339,7 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
         except Exception:
             pass
 
-    # 逐格出图严格走模板驱动（铁律 1.2：catalog + intent_engine/templates_runtime 齐备即经
+    # 逐格出图严格走模板驱动（铁律 1.2：catalog + intent_engine/templates 齐备即经
     # intent_engine 翻译 facade 产出工作流；模板不可用由 translate 诚实抛出，无手搓兜底）。
 
     # 3) 逐格出图

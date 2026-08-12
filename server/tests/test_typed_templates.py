@@ -15,7 +15,7 @@ import intent_engine
 
 
 class TestTypedTemplateFill(unittest.TestCase):
-    """验证 intent_engine/templates_runtime 占位符填充：数值占位符须为真实数字（非字符串）。"""
+    """验证 intent_engine/templates 占位符填充：数值占位符须为真实数字（非字符串）。"""
 
     def test_controlnet_numeric_types(self):
         wf = intent_engine.translate_typed_workflow("shot_image_controlnet", {

@@ -20,8 +20,10 @@ from .template_engine import TemplateEngine
 from .parameter_injector import ParameterInjector, derive_seed
 from .translator import IntentTranslator
 from .errors import FeatureUnavailable, TemplateError, InjectError, TranslateError
-# M1 §6 融合：运行时翻译 facade（原顶层 intent_translator.py 收敛进本包，消除双管线）
-from .translator_facade import (
+# M1 §6 融合收口：唯一运行时翻译器 IntentTranslator（translator.py）同时承载手册七步
+# 契约入口（translate / ProductionIntent）与生产同步入口（translate_intent /
+# translate_typed），并已吸收原 translator_facade 的生产逻辑；模板统一于 templates/。
+from .translator import (
     translate_intent_to_workflow, translate_typed_workflow,
     build_shot_image_intent, build_character_card_intent,
     load_catalog, find_best_match, find_compatible_tool, load_template,

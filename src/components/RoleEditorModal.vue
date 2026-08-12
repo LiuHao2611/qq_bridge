@@ -266,7 +266,7 @@ const stopVoicePreview = () => {
 
 // 角色卡 AI 生成（导演agent优化草稿 #1）：经意图翻译引擎产出首张定妆照。
 // 铁律 1.1：由结构化角色属性驱动（非自由 Prompt）；确定性 seed 保证跨次一致（修复「每次随机」）。
-// 经后端 /assets/{id}/generate-card → intent_engine/templates_runtime/character_card_gen.json，绝不手搓节点。
+// 经后端 /assets/{id}/generate-card → intent_engine/templates/character_card_gen.json，绝不手搓节点。
 const onAIGenerate = async () => {
   if (!form.id) { toast('请先保存角色后再生成定妆照'); return }
   busyCard.value = true

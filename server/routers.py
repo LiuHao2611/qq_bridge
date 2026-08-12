@@ -1197,7 +1197,7 @@ async def generate_character_card_endpoint(asset_id: str, req: Request):
        "style_tags": ["写实","电影感"],
        "generation_params": {"width":512,"height":768,"steps":28,"cfg":8.5},
        "negative_prompt": "..."}
-    铁律 1.1/1.2：走 intent_engine/templates_runtime/character_card_gen.json，确定性 seed，绝不手搓节点。
+    铁律 1.1/1.2：走 intent_engine/templates/character_card_gen.json，确定性 seed，绝不手搓节点。
     ComfyUI 不可用 → 诚实抛 COMFY_UNAVAILABLE（调用方清晰告知用户）。
     """
     try:
