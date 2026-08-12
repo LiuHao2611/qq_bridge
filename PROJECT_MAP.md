@@ -499,7 +499,7 @@ cp build/dist/Setup.exe D:/AI/ManjuAgent_Setup.exe
 手动自查两类缺口「非已完成、非联网」已全部立项收口：
 
 ### 10.1 铁律 1.2（绝对禁止手搓 JSON）覆盖补全
-- **视频两条路径**（Wan / AnimateDiff）：已改为 `intent_engine/templates_runtime/*.json` 模板驱动，模板缺失时**诚实回退**内联手搓（防御性，正常运行不触发）。
+- **视频两条路径**（Wan / AnimateDiff）：已改为 `intent_engine/templates/*.json` 模板驱动（2026-08-13 收敛后统一目录），模板缺失时**诚实回退**内联手搓（防御性，正常运行不触发）。
 - **人脸修复 `face_restore`（GFPGAN / CodeFormer）**：新增 `face_restore_gfpgan.json` / `face_restore_codeformer.json`；`face_restore` 重写为**模板优先 + 内联手搓兜底**，保留节点可用性探测与上传逻辑，`out_path` 落盘目录经 `_comfy_via_typed_template(output_dir=)` 透传（非破坏性）。
 - **ControlNet 文生图 `_comfy_text2img_with_controlnet`**：新增 `shot_image_controlnet.json`（修复原模板 `"denoise": 1.0"` 非法 JSON 笔误）；函数重写为**模板优先 + 内联手搓兜底**。数值占位符（seed/steps/cfg/width/height/control_weight）填充后保持真实数字类型（非字符串），满足 ComfyUI API 要求。
 - **三栏编辑器 `ProjectFragmentEditor.vue`**：确认 `.frag-body { grid-template-columns: 280px 1fr 360px }`（左资产库/中分镜编辑/右视频预览+参数+日志），铁律 1.2 之外的 UI 缺口已实质满足。
@@ -525,7 +525,7 @@ cp build/dist/Setup.exe D:/AI/ManjuAgent_Setup.exe
 | 项 | 标记 | 说明 |
 |---|---|---|
 | M1 子模块（ProductionIntent/ResourceCatalog/NodeFamilyMapper/TemplateEngine/ParameterInjector/IntentTranslator） | ✅ 代码+单测 | 6 个子模块全部实现并通过 78 项单测 |
-| M1 §2.6 运行时翻译入口 | ⚠️ 设计偏离 | 手册指定 `IntentTranslator.translate()` 七步为唯一运行时，但**生产实际走 `translator_facade` 函数**；`IntentTranslator` 仅测试引用（见 11.2） |
+| M1 §2.6 运行时翻译入口 | ✅ 已收敛（2026-08-13 #2ae40bc） | `IntentTranslator` 已成为唯一运行时翻译器：`translator_facade` 生产逻辑（含 `_wire_ip_chain` 节点链手术）已**吸收进 `IntentTranslator`**（新增同步方法 `translate_intent`/`translate_typed`），10 个生产模板并入手册指定的 `templates/`，`translator_facade.py` 已删除；ai_local 4 个导入名零改动（见 11.2） |
 | M2 管家统筹（snapshot/preflight/DecisionPoint/决策API） | ✅ | `get_project_snapshot`/`preflight_check`/`_publish_decision_request`(一次性批量)/`list_decisions`/`resolve_decision` 齐备 |
 | M2 §3.3 角色卡六步管线 | ✅ | `generate_character_card_v2`+`build_character_card_intent`+`build_generation_prompt`（LLM五要素/能力匹配/SHA256 seed/负向/品控回检）+ `publish_translator_selection` |
 | M3 悬浮球前端化 | ✅ | `realtime` 三类 director 事件 + `translator:{pid}`；`useDirectorOrb.js` 订阅 director/translator 双频道并分发 decision_request/notice/insight/selection；DirectorOrb.vue 三卡（进度/决策/对话气泡 + 选型 node/ip_adapter_weight） |
@@ -535,16 +535,16 @@ cp build/dist/Setup.exe D:/AI/ManjuAgent_Setup.exe
 | §8 DONE 七项 | ✅（环境项已实测） | 见 11.3 |
 | §9 红线 | ✅（1 处字面偏差） | Asset ID 全 uuid4、角色卡 seed 走 SHA256；普通分镜/视频 seed 用 `random.randint`（非 P3 验收项，详见 11.4） |
 
-### 11.2 ⚠️ 核心设计偏离：intent_engine 内部双翻译器（前序 fusion 未真正消除）
-- **事实**：`intent_engine/translator.py` 的 `IntentTranslator.translate()`（手册 §2.6 七步引擎：refresh→选模板→选模型→选节点族→填占位符→注入→校验）**存在且被 `test_intent_engine.TestTranslateIntegration` 4 项测试覆盖**。但 `server/ai_local.py` 的 4 个调用点（1389/1492/1705/4213）**全部走 `translator_facade.py` 函数**（`translate_intent_to_workflow`/`translate_typed_workflow`/`build_shot_image_intent`/`build_character_card_intent`），**零生产调用 `IntentTranslator`**。
-- **偏差点**：
-  1. 运行时翻译入口与手册指定的 `IntentTranslator` 不一致（手册要求「intent_engine 为唯一运行时翻译器」）；
-  2. 运行时走 `load_catalog()`（静态 `resource_catalog.json`），**未走手册 §2.2.2 的 `ResourceCatalog.refresh()` 实时 `/object_info` 探测**；
-  3. 运行时模板集在 `templates_runtime/`（10 个），**非手册 §2.7/§1.3 指定的 `templates/` 6 个**（后者仅被 `IntentTranslator`/测试使用）；
-  4. 运行时入口接收普通 dict，**未用手册 §2.1 的 `ProductionIntent` 强类型契约**。
-- `translator_facade.py:4` docstring 自陈「与手册 §2.6 的 IntentTranslator 类并存」——即双管线被迁入同一包但未合并。
-- **功能影响**：翻译功能本身可用（e2e 8/8、facade 有独立测试），但架构与手册契约不符；`IntentTranslator` 沦为「测试/参考实现」，存在维护双份逻辑的风险。
-- **修复建议（待用户拍板）**：二选一——(A) 让 `ai_local` 经 `IntentTranslator` 运行（dict→ProductionIntent 适配，走真实 `/object_info` 探测 + `templates/`），删除 facade；或 (B) 正式指定 facade 为运行时，将 `IntentTranslator` 标记为 deprecated/参考并明确删除或保留为离线单测样板。**未擅自改动**（避免触碰已绿 e2e）。
+### 11.2 ✅ 已闭合：intent_engine 内部双翻译器（2026-08-13 提交 #2ae40bc）
+- **背景**：前序 §6 fusion 把运行时构建器从顶层 `intent_translator.py` 迁入 `intent_engine/translator_facade.py`，虽消除顶层双文件，但包内仍并存「手册 §2.6 七步 `IntentTranslator`」与「生产 `translator_facade` 函数」两条实现——生产 4 个调用点全走 facade，`IntentTranslator` 仅被测试引用，属**内部双翻译器**设计偏离（详见前序自查 11.2）。
+- **收敛方式（非纯切换，保证零回归）**：经读源码确认两套实现**不可互换**——生产的 IP/视频模板与 `_wire_ip_chain` 拓扑手术在 `IntentTranslator` 里**原本没有**，纯切换会打断生产角色卡/IP/视频生成。故采用「吸收 + 合并」：
+  1. 把 `translator_facade` 经生产验证的逻辑**逐字节吸收**进 `IntentTranslator`，新增同步方法 `translate_intent(intent, catalog=None)`（含 `_wire_ip_chain` 节点链手术）与 `translate_typed(task_type, values)`（模板填充）；
+  2. 模块级薄封装 `translate_intent_to_workflow`/`translate_typed_workflow` = `IntentTranslator().translate_intent/translate_typed`，**ai_local 4 个导入名零改动**；
+  3. 10 个生产模板（`templates_runtime/*.json`）原样 `git mv` 进手册指定的 `templates/`（内容不变），消灭 `templates_runtime/` 偏离；`TemplateEngine.discover_templates()` 仅扫 `templates/`+`templates/user_custom/`，故生产模板一并被统一发现；
+  4. 删除 `translator_facade.py`，`__init__.py` 改为统一导出 `IntentTranslator` 路径符号。
+- **现状**：`IntentTranslator` 成为**唯一运行时翻译器**，手册七步 `translate()`/`ProductionIntent` 路径保留（离线单测样板），生产路径 `translate_intent`/`translate_typed` 同一类承载，无双份逻辑。ai_local 调用点无需改动，生产行为零回归。
+- **验证**：`compileall -q server` exit=0；8 安全模块 + `TestComicDegrade` 共 **81 项单测全绿**（排除重型 e2e `test_full_production_flow`）；离线冒烟确认角色卡（7 节点，SHA256 seed=1285349662）、IP 链（11 节点 `KSampler.model→['15',0]`）、纯文生图（7 节点无 IP 节点）、GFPGAN 节点（`class_type=="GFPGAN"`）均无残留占位符、节点链正确。
+- **残留引用核查**：`translator_facade`/`templates_runtime` 仅存于历史自查注释（非 import），可接受。
 
 ### 11.3 §8 DONE 七项自检
 1. 需求覆盖：P1–P4 均有落点（角色卡管线/管家统筹/意图翻译/悬浮球三卡）✅
