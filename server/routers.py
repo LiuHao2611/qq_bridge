@@ -1188,7 +1188,7 @@ async def extract_stage_face_vector(asset_id: str, stage_id: str):
     return ok({"stage_id": stage_id, "has_vector": True, "dim": FACE_VECTOR_DIM})
 
 
-@app.post("/assets/{asset_id}/generate-card")
+@api.post("/assets/{asset_id}/generate-card")
 async def generate_character_card_endpoint(asset_id: str, req: Request):
     """P1 角色卡 AI 生成（导演agent优化草稿 #1）：经意图翻译引擎产出首张定妆照。
 
@@ -1224,7 +1224,7 @@ async def generate_character_card_endpoint(asset_id: str, req: Request):
 # 手册 §4.2「从剧本生成角色」入口后端落地；项目作用域，project_id 用于 WS 频道范围。
 # ----------------------------------------------------------------------
 
-@app.post("/projects/{project_id}/assets/{asset_id}/generate-card-v2")
+@api.post("/projects/{project_id}/assets/{asset_id}/generate-card-v2")
 async def generate_character_card_v2_endpoint(project_id: str, asset_id: str, req: Request):
     """六步确定性角色卡生成（设计 §8）：LLM 五要素 → 能力匹配 → 结构化 prompt
     → 确定性 seed → 多角度参考图 + 512 向量入库 → 品控回检。
