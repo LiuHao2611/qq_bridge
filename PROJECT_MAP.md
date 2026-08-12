@@ -1,5 +1,5 @@
 # PROJECT_MAP.md · 项目知识地图（唯一索引）
-**最后更新**：2026-08-12
+**最后更新**：2026-08-13
 
 > 🔴 **强制约定（MUST）**
 > 1. **找文件先查本索引**：以后任何"找源码 / 找文档 / 找实现"都必须**先查本文件**，按「路径」定位后再读取，**禁止凭记忆或全局搜索直接翻文件**。
@@ -289,7 +289,7 @@ D:\AI\manju_agent\
 > - **导演Agent能力增强·M3 悬浮球前端化（2026-08-12 ✅）**：承接 M2 验收，按手册 §4.1（导演事件）+ §6（前端融合）+ 设计 §7.3（translator 频道关键作用）落地 **M3 悬浮球前端化**，把 DirectorOrb 由被动状态指示升级为「导演化身」——三卡信息流（进度卡保留 / 决策卡新增 / 对话气泡新增）。严格无创性——**不触碰** M1 `intent_engine`、M2 `decision_engine`、SPEC-DIR-001 时代代码；仅 **扩展** `realtime`/`ai_local`/`routers`/`api.js`/`useDirectorOrb.js`/`DirectorOrb.vue`/`Assets.vue`：
 >   - `server/realtime.py`（M3 三事件 + translator 频道，薄包装复用 `publish()`，非破坏性）：`publish_director_notice(pid,data)`→`publish("director:<pid>","notice",data)`；`publish_director_insight(pid,data)`→`publish("director:<pid>","insight",data)`；`publish_translator_selection(pid,trace_id,task_type,selected)`→`publish("translator:<pid>","selection",{trace_id,task_type,selected,timestamp})`。WS 不可用时 `publish` 自动 no-op，绝不阻断生成。
 >   - `server/ai_local.py`（`generate_character_card_v2` 增 `project_id=None` 参数 + 六步管线推送注入）：`trace_id=uuid.uuid4().hex`（全链路可追溯，**禁用 hash/random**）；循环前 `if project_id:` 懒导 `publish_director_notice`（开始告知）；循环内 `if project_id and cap is not None:` 懒导 `publish_translator_selection(project_id, trace_id, "character_genesis", {checkpoint, node:"IPAdapterFaceID", loras:[...], seed})`（②③④步后选型可视化）；循环后 `if project_id:` 懒导 `publish_director_insight`（品控结论 passed/total）。全部 try/except 包裹 `logger.warning` 忽略——**推送失败不影响角色卡生成**。
->   - `server/routers.py`（项目作用域附加端点，非破坏性）：`@app.post("/projects/{project_id}/assets/{asset_id}/generate-card-v2")`（`generate_character_card_v2_endpoint`，透传 `setting_text/era/style_tags/poses` + `project_id`），紧邻既有 `generate-character_card`(:1191) 之后插入；`assets` 表无 `project_id` 列（资产全局），故端点用前端已知 `pid` 仅限定 WS 频道范围，不破坏既有资产模型。既有 M2 决策端点（`/decisions`、`/decisions/{id}/resolve`）在场(:1116-1137)。
+>   - `server/routers.py`（项目作用域附加端点，非破坏性）：`@api.post("/projects/{project_id}/assets/{asset_id}/generate-card-v2")`（`generate_character_card_v2_endpoint`，透传 `setting_text/era/style_tags/poses` + `project_id`），紧邻既有 `generate-character_card`(:1191) 之后插入；`assets` 表无 `project_id` 列（资产全局），故端点用前端已知 `pid` 仅限定 WS 频道范围，不破坏既有资产模型。既有 M2 决策端点（`/decisions`、`/decisions/{id}/resolve`）在场(:1116-1137)。**⚠️ 装饰器必须用 `@api.post`（`api` 为 `routers_compiled` 注入的 FastAPI 实例，`app` 从未定义）；误用 `@app.post` 会导致 `import routers` 抛 NameError、后端无法启动（2026-08-13 回归 `2cb9a44`→`1df679a` 修复，详见 §4 关键约定）。**
 >   - `src/api.js`（追加三接口）：`listDecisions(pid,status)`→`GET /projects/{pid}/decisions`；`resolveDecision(pid,decisionId,answer)`→`POST /projects/{pid}/decisions/{id}/resolve`；`generateCharacterCardV2(pid,assetId,body)`→`POST /projects/{pid}/assets/{assetId}/generate-card-v2`。
 >   - `src/composables/useDirectorOrb.js`（三卡状态 + 订阅 translator 频道）：state 新增 `translator`/`translatorHistory`(≤5)/`decisions`/`conversation`；`_resetOrb()` 重置四字段；`_subscribe(pid)` 额外 `subscribe("translator:"+pid)`；`_onEvent` 按 `msg.channel` 路由：`translator:`→`_onTranslator`（取 selected.checkpoint/node/loras/seed 入 translator + history）；`decision_request`→规范化入 `state.decisions`（`_normalizeDecision` 兼容 options JSON 字符串）；`notice`/`insight`→`_pushConversation` 气泡；新增导出 `refreshDecisions()`（拉取 pending 决策兜底合并）+ `resolveDecision(decisionId,answer)`（回传 API + 本地标记 resolved）；`directorOrbInit` 末尾调 `refreshDecisions()`。
 >   - `src/components/DirectorOrb.vue`（三卡 UI）：`.orb-persona` 顶部注入 `.m3-decision`（待确认决策清单，`pendingDecisions` computed=`status≠resolved/skipped`，点选 opt 调 `resolveDecision`）/ `.m3-translator`（选型卡：底模/节点/LoRA/Seed）/ `.m3-conv`（notice/insight 对话气泡）；scoped style 沿用现有暗色 token（`var(--txt/#e8e8ef)` 等）。
@@ -300,6 +300,7 @@ D:\AI\manju_agent\
 - **纪律优先级**：MUST > SHOULD；**资金类 CLOSE-04（失败退款）最高优先级**。
 - **导航不许清空 pid**：项目内流程步骤必须 `/projects/:id/*`；全局页（如 `/global-assets`、`/tasks`）才允许顶层。
 - **WebSocket 用轮询兜底**：生产阶段 WS 不可用时前端回退轮询（REDUN-01）。
+- **🔴 routers.py 端点装饰器必须用 `@api.post`/`@api.get`（红线级）**：`routers.py` 经 `importlib` 从 `routers_compiled` `.pyc` 载入并 `from routers_compiled import *` 注入 `api`（FastAPI 实例），`app` 在该模块中**从未定义**；`main.py` 经 `app.include_router(routers.api)` 挂载。任何明文追加端点误用 `@app.post`/`@app.get` 都会在模块加载时抛 `NameError: name 'app' is not defined`，导致 `import routers` 失败、**后端 7788 无法启动**。2026-08-13 曾因 `2cb9a44` 把 `/assets/{asset_id}/generate-card` 误改为 `@app.post` 引发该崩溃，已 `1df679a` 修复；新增/平移端点务必核对装饰器前缀为 `@api`。
 - **枚举单一来源**：`src/mock.js`，禁止散落硬编码。
 - **统一信封**：`{code,data,message,request_id,timestamp}`；无静默吞错（CLOSE-02）。
 - **取用阈值（禁自编）**：视频生成超时 600s、HTTP 超时 30s、重试 3 次（1s/2s/4s+抖动）、看门狗 >30min。
