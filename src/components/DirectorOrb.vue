@@ -474,7 +474,8 @@ onBeforeUnmount(() => {
           <div v-if="state.translator" class="m3-translator">
             <div class="mt-title">🎬 导演选型</div>
             <div class="mt-row"><span class="mt-k">底模</span><span class="mt-v">{{ state.translator.checkpoint || '—' }}</span></div>
-            <div class="mt-row"><span class="mt-k">节点</span><span class="mt-v">{{ state.translator.node || '—' }}</span></div>
+            <div class="mt-row"><span class="mt-k">IP节点</span><span class="mt-v">{{ state.translator.node || '未使用 IP 适配器' }}</span></div>
+            <div class="mt-row" v-if="state.translator.ip_adapter_weight != null"><span class="mt-k">IP权重</span><span class="mt-v">{{ state.translator.ip_adapter_weight }}</span></div>
             <div class="mt-row" v-if="state.translator.loras && state.translator.loras.length">
               <span class="mt-k">LoRA</span><span class="mt-v">{{ state.translator.loras.join('、') }}</span>
             </div>

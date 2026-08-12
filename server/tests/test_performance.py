@@ -14,7 +14,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import intent_translator
+import intent_engine
 import ai_local
 
 
@@ -27,11 +27,11 @@ class TestPerfIntentTranslation(unittest.TestCase):
     """意图翻译 + 模板填充应在毫秒级完成。"""
 
     def _once(self):
-        intent = intent_translator.build_shot_image_intent(
+        intent = intent_engine.build_shot_image_intent(
             "test prompt", style_tags=["日漫"],
             identity_image="char.png", style_image="style.png",
             generation_params={"seed": 7, "width": 768, "height": 1024})
-        return intent_translator.translate_intent_to_workflow(intent)
+        return intent_engine.translate_intent_to_workflow(intent)
 
     def test_translate_p95(self):
         samples = []
@@ -46,10 +46,10 @@ class TestPerfIntentTranslation(unittest.TestCase):
 
     def test_img2img_translate(self):
         t0 = time.perf_counter()
-        intent = intent_translator.build_shot_image_intent(
+        intent = intent_engine.build_shot_image_intent(
             "anchor", init_image="frame.png", denoise=0.55,
             generation_params={"seed": 1})
-        wf = intent_translator.translate_intent_to_workflow(intent)
+        wf = intent_engine.translate_intent_to_workflow(intent)
         dt = time.perf_counter() - t0
         self.assertIn("10", wf)  # LoadImage 节点
         self.assertLess(dt, 0.02)

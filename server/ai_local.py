@@ -1375,8 +1375,9 @@ def _comfy_text2img_with_ipadapter(prompt, ref_comfy_name=None, weight=0.85,
 def _comfy_text2img_via_template(intent, timeout=240):
     """模板驱动出图（铁律 1.2：禁止手搓 ComfyUI 节点 JSON）。
 
-    流程：意图翻译引擎 translate_intent_to_workflow() 依据 resource_catalog.json +
-    workflow_templates/ 产出工作流 JSON → Layer0 ComfyUIService 提交并取回输出图。
+    流程：意图翻译引擎（intent_engine 包）translate_intent_to_workflow() 依据
+    resource_catalog.json + intent_engine/templates_runtime/ 产出工作流 JSON →
+    Layer0 ComfyUIService 提交并取回输出图。
 
     若意图含本地首帧锚定图（init_image 为本地面路径），先经 Layer0 upload_image 上传
     并回填为 ComfyUI 内部文件名，再交给模板（上传归 Layer0，节点拼装归模板）。
@@ -1385,7 +1386,7 @@ def _comfy_text2img_via_template(intent, timeout=240):
     （缺 catalog/模板/IP 权重等），由调用方捕获后诚实报错或跳过（不再回退手搓构建）。
     """
     try:
-        import intent_translator
+        from intent_engine import translate_intent_to_workflow
         from layer0 import comfyui_service
     except Exception as e:
         raise RuntimeError("意图翻译引擎/服务不可用: %s" % e)
@@ -1399,7 +1400,7 @@ def _comfy_text2img_via_template(intent, timeout=240):
             intent["init_image"] = comfy_name
         except Exception as e:
             raise RuntimeError("首帧锚定图上传失败: %s" % e)
-    wf = intent_translator.translate_intent_to_workflow(intent)
+    wf = translate_intent_to_workflow(intent)
     svc = comfyui_service.get_service()
     out_dir = comfy_env.get_comfy_output_dir()
     return svc.generate(wf, out_dir, timeout=timeout)
@@ -1478,7 +1479,7 @@ def generate_character_card(asset_id, attrs=None, style_tags=None,
     """P1 角色卡 AI 生成（导演agent优化草稿 #1）：经意图翻译引擎产出首张定妆照，落资产封面。
 
     铁律 1.1：首卡由结构化角色属性驱动（非自由 prompt），确定性 seed 保证稳定不随机；
-    经 _comfy_text2img_via_template 走 workflow_templates/character_card_gen.json，
+    经 _comfy_text2img_via_template 走 intent_engine/templates_runtime/character_card_gen.json，
     绝不手搓节点（铁律 1.2）。ComfyUI 不可用抛 RuntimeError，由调用方诚实报错。
 
     :param asset_id: 角色资产 ID（确定性 seed 锚点 + 落库目标）。
@@ -1488,10 +1489,10 @@ def generate_character_card(asset_id, attrs=None, style_tags=None,
     :param negative_prompt: 可选覆盖角色卡专用负向词。
     :return: 生成的角色卡本地图绝对路径（同时已写入 assets.cover_url + 主阶段 reference_image_url）。
     """
-    import intent_translator
+    from intent_engine import build_character_card_intent
     if attrs is None:
         attrs = _load_asset_attrs_for_card(asset_id)
-    intent = intent_translator.build_character_card_intent(
+    intent = build_character_card_intent(
         attrs, character_id=asset_id, style_tags=style_tags,
         generation_params=generation_params, negative_prompt=negative_prompt,
     )
@@ -1624,9 +1625,22 @@ def generate_character_card_v2(asset_id, setting_text=None, era=None,
         if project_id and cap is not None:
             try:
                 from realtime import publish_translator_selection
+                # 对齐手册 §4.1：node / ip_adapter_weight 动态解析（禁硬编码占位值）
+                ckpt_name = (cap.get("checkpoint") or {}).get("name")
+                ip_node = None
+                ip_weight = None
+                if catalog is not None and hasattr(catalog, "find_best_ip_adapter"):
+                    try:
+                        _ip = catalog.find_best_ip_adapter(ckpt_name)
+                        if _ip:
+                            ip_node = _ip.get("name")
+                            ip_weight = _ip.get("weight", 0.85)
+                    except Exception:
+                        pass
                 publish_translator_selection(project_id, trace_id, "character_genesis", {
-                    "checkpoint": (cap.get("checkpoint") or {}).get("name"),
-                    "node": "IPAdapterFaceID",
+                    "checkpoint": ckpt_name,
+                    "node": ip_node,
+                    "ip_adapter_weight": ip_weight,
                     "loras": [l.get("name") for l in (cap.get("loras") or []) if l],
                     "seed": seed,
                 })
@@ -1679,7 +1693,7 @@ def generate_character_card_v2(asset_id, setting_text=None, era=None,
 
 
 def _comfy_via_typed_template(task_type, values, timeout=240, output_dir=None):
-    """通用模板驱动提交（铁律 1.2）：按 task_type 填充 workflow_templates 并提交 Layer0。
+    """通用模板驱动提交（铁律 1.2）：按 task_type 填充 intent_engine/templates_runtime/ 模板并提交 Layer0。
 
     values 中若出现本地图片路径（存在且为图片后缀），自动经 Layer0 上传并回填为
     ComfyUI 内部文件名（上传归 Layer0，节点拼装归模板）。调用方与本项目不再手搓任何节点拓扑。
@@ -1688,7 +1702,7 @@ def _comfy_via_typed_template(task_type, values, timeout=240, output_dir=None):
     为 None 时回退 comfy_env.get_comfy_output_dir()（与既有手搓路径行为一致）。
     """
     try:
-        import intent_translator
+        from intent_engine import translate_typed_workflow
         from layer0 import comfyui_service
     except Exception as e:
         raise RuntimeError("意图翻译引擎/服务不可用: %s" % e)
@@ -1700,7 +1714,7 @@ def _comfy_via_typed_template(task_type, values, timeout=240, output_dir=None):
                 values[k] = svc.upload_image(v)
             except Exception as e:
                 raise RuntimeError("模板参考图上传失败(%s): %s" % (k, e))
-    wf = intent_translator.translate_typed_workflow(task_type, values)
+    wf = translate_typed_workflow(task_type, values)
     out_dir = output_dir or comfy_env.get_comfy_output_dir()
     return svc.generate(wf, out_dir, timeout=timeout)
 
@@ -2086,7 +2100,7 @@ def _comfy_has_node(node_class):
 def face_restore(image_path, method="GFPGAN", out_path=None):
     """人脸修复（手册 §3.4.4 全局后处理）：经 ComfyUI 的 GFPGAN / CodeFormer 节点修复单图人脸。
 
-    铁律 1.2：优先走 workflow_templates 模板驱动（face_restore_gfpgan /
+    铁律 1.2：优先走 intent_engine/templates_runtime 模板驱动（face_restore_gfpgan /
     face_restore_codeformer）；模板不可用时诚实回退内联手搓（防御性，正常运行不触发）。
     环境要求（缺则诚实报错，绝不静默跳过人脸修复 / 绝不假装已修复）：
       - ComfyUI 已启动（comfy_available）
@@ -2152,7 +2166,7 @@ def _comfy_text2img_with_controlnet(prompt, ref_comfy_name, control_type="depth"
                                     seed=-1, timeout=240):
     """带 ControlNet 的文生图：用场景参考图约束构图（深度/姿态/线稿）。
 
-    铁律 1.2：优先走 workflow_templates/shot_image_controlnet.json 模板驱动；
+    铁律 1.2：优先走 intent_engine/templates_runtime/shot_image_controlnet.json 模板驱动；
     模板不可用时诚实回退内联手搓（防御性，正常运行不触发）。
     仅在 detect_comfy_controlnet() 为 True 时由调用方启用；任何节点不匹配/执行失败都抛
     RuntimeError，由调用方捕获后回退基础文生图（构图约束降级为提示词强调）。
@@ -4188,7 +4202,7 @@ def _comic_panel_generate(final_prompt, W, H, steps, cfg, s, neg,
                           enforce_asset=False):
     """单格出图：严格模板驱动（铁律 1.2，禁止手搓 ComfyUI 节点 JSON）。
 
-    统一经 intent_translator + workflow_templates 产出工作流并提交 ComfyUI：
+    统一经 intent_engine（翻译 facade） + templates_runtime 产出工作流并提交 ComfyUI：
     - 首帧锚定（idx>0 且 first_local 存在）：走 shot_image_img2img 模板（纯像素承接，不叠 IP）。
     - 有身份图/风格图且 IP 可用：走 shot_image_gen_ip 模板（身份路/风格路）。
     - 否则：走 shot_image_gen 基础文生图模板。
@@ -4196,11 +4210,11 @@ def _comic_panel_generate(final_prompt, W, H, steps, cfg, s, neg,
     任何模板提交失败均诚实抛出（不再回退手搓构建）；仅当 enforce_asset 且身份注入失败时
     升级为 AssetInjectBlocked（铁律 1.1 禁止仅靠 Prompt 生成角色）。
     """
-    import intent_translator
+    from intent_engine import build_shot_image_intent
     identity_intended = bool(char_comfy) and bool(ip_available)
     identity = char_comfy[0] if identity_intended else None
     style_img = style_ref_comfy if (style_ref_comfy and ip_available) else None
-    intent = intent_translator.build_shot_image_intent(
+    intent = build_shot_image_intent(
         prompt_text=final_prompt,
         style_tags=[style_arg, "通用"] if style_arg else ["通用"],
         negative_prompt=neg,
@@ -4234,7 +4248,7 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
     2) 全局风格参考图（N03 复用）：以漫画风格基调出一张参考图，作为第二路 IP-Adapter
        风格条件，统一 4 格色调/质感/光影；无 ComfyUI 或 IP-Adapter 权重缺失则诚实降级
        为提示词风格强调（与 N03 下游不注入风格条件一致）。
-    3) 逐格出图：每格用「分镜提示词 + 漫画风格后缀 + 负向」经 intent_translator + 模板
+    3) 逐格出图：每格用「分镜提示词 + 漫画风格后缀 + 负向」经 intent_engine 翻译 facade + 模板
        调用 ComfyUI；若提供角色参考图则走 shot_image_gen_ip 模板（身份路 + 风格路），
        保证角色跨格一致（§5.2 复用，铁律 1.2 禁止手搓）；首帧锚定走 shot_image_img2img 模板。
     返回 dict：{images, panels, style_ref, style_ref_local, orchestrator_used, model, note,
@@ -4325,8 +4339,8 @@ def generate_comic(story, style="日漫", negative="", resolution="1024", ratio=
         except Exception:
             pass
 
-    # 逐格出图严格走模板驱动（铁律 1.2：catalog + workflow_templates 齐备即经
-    # intent_translator 产出工作流；模板不可用由 translate 诚实抛出，无手搓兜底）。
+    # 逐格出图严格走模板驱动（铁律 1.2：catalog + intent_engine/templates_runtime 齐备即经
+    # intent_engine 翻译 facade 产出工作流；模板不可用由 translate 诚实抛出，无手搓兜底）。
 
     # 3) 逐格出图
     used = None

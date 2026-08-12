@@ -1,29 +1,32 @@
 # -*- coding: utf-8 -*-
-"""意图翻译引擎（手册 SPEC-DIR-001 §3，开发优先级 §6 地基）。
+"""运行时翻译 facade（M1 §6 融合改造：将顶层 intent_translator 收敛进 intent_engine 包）。
 
-核心职责：将「自然语言意图 / 结构化生产意图」转化为「ComfyUI 工作流 JSON」。
-严格遵循铁律 1.2 —— **绝对禁止**调用方自主拼凑 ComfyUI 节点 JSON；
-一切生成必须通过「结构化意图 + 模板填充」完成：
+本模块是「意图翻译引擎」的**功能性入口**，与手册 §2.6 的 `IntentTranslator` 类并存于
+同一包内（单一包、单一导入根 `intent_engine`），消除此前「顶层 intent_translator.py
++ 包内 intent_engine/ 双管线并存」的设计偏离。
 
-    意图解析  ->  资源映射（查 resource_catalog）  ->  模板填充（workflow_templates）
+职责与 behavior 与历史顶层 intent_translator.py **逐字节一致**（模板/构建器原样搬迁，
+仅 catalog/template 路径随包位置调整）：
+    意图解析 -> 资源映射（查 resource_catalog.json） -> 模板填充（templates_runtime）
 
-流程（对齐手册 §3.3 伪代码）：
-  1. find_best_match(catalog['checkpoints'], style_tags)        选模型
-  2. find_compatible_tool(catalog['ip_adapters'], model, ...)   选工具（IP-Adapter）
-  3. load_template(task_type)                                   载预设模板
-  4. 填充 {{占位符}} 并返回 ComfyUI API 格式工作流字典
+铁律 1.2 严守：绝不手搓 ComfyUI 节点 JSON，一切经「结构化意图 + 模板填充」完成。
 
-调用方（ai_local / director）拿到返回的 wf 字典后，交给 Layer0 ComfyUIService 提交，
-自己不再构造任何节点 JSON。
+改进点（相对历史顶层模块）：
+  - _deterministic_seed 由 md5 改为 SHA256，严守种子派生红线（禁 hash/random，
+    统一用 SHA256/uuid4）。
+  - templates 隔离于 templates_runtime/，避免与手册 IntentTranslator 的 7 步
+    TemplateEngine（扫描 templates/ + templates/user_custom/）互相干扰。
 """
 import os
 import re
 import json
 import hashlib
 
+# intent_engine/ 为 server/intent_engine；server 根为上一级
+_SERVER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _BASE = os.path.dirname(os.path.abspath(__file__))
-_CATALOG_PATH = os.path.join(_BASE, "resource_catalog.json")
-_TEMPLATE_DIR = os.path.join(_BASE, "workflow_templates")
+_CATALOG_PATH = os.path.join(_SERVER, "resource_catalog.json")
+_TEMPLATE_DIR = os.path.join(_BASE, "templates_runtime")
 
 _PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
 
@@ -262,7 +265,7 @@ def translate_typed_workflow(task_type, values):
 
     用于视频生成 / 人脸修复 / ControlNet 等场景——具体权重名/尺寸已由调用方
     解析（如 Wan 模型名、GFPGAN 权重、ControlNet 名），此处只做结构化模板填充，
-    **不构造任何节点拓扑**（拓扑由 workflow_templates/* 决定，铁律 1.2）。
+    **不构造任何节点拓扑**（拓扑由 intent_engine/templates_runtime/* 决定，铁律 1.2）。
     """
     tpl = load_template(task_type)
     prompt = {k: v for k, v in tpl["prompt"].items()}
@@ -300,10 +303,11 @@ def build_shot_image_intent(prompt_text, style_tags=None, generation_params=None
 def _deterministic_seed(key):
     """由稳定字符串（角色ID/名）派生确定性种子，保证同一角色多次生成结果一致。
 
-    直接回应草稿 #1 的「每次随机」问题：角色卡首图不再依赖随机 seed，而是锚定
-    角色身份（character_id）稳定产出，后续 IP 复用也以此图为参考，跨阶段一致。
+    严守种子派生红线：使用 SHA256（禁用 md5/hash()/random）。角色卡首图不再依赖
+    随机 seed，而是锚定角色身份（character_id）稳定产出，后续 IP 复用也以此图为参考，
+    跨阶段一致。
     """
-    h = hashlib.md5(str(key).encode("utf-8")).hexdigest()
+    h = hashlib.sha256(str(key).encode("utf-8")).hexdigest()
     return int(h[:8], 16) % (2 ** 31 - 1)
 
 

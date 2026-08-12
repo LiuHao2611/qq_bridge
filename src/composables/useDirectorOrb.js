@@ -296,6 +296,7 @@ function _onTranslator(event, d) {
     trace_id: d.trace_id || '',
     checkpoint: (d.selected && d.selected.checkpoint) || '',
     node: (d.selected && d.selected.node) || '',
+    ip_adapter_weight: (d.selected && d.selected.ip_adapter_weight) != null ? d.selected.ip_adapter_weight : null,
     loras: (d.selected && d.selected.loras) || [],
     seed: (d.selected && d.selected.seed) != null ? d.selected.seed : '',
     ts: d.timestamp || _now(),

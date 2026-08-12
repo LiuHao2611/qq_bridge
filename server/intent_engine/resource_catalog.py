@@ -10,7 +10,9 @@
 为便于离线单元测试，构造函数支持注入预置 catalog / object_info / available_vram_mb，
 此时 refresh() 短路（不触网）。
 """
+import os
 import re
+import glob
 import logging
 
 from .errors import FeatureUnavailable
@@ -100,6 +102,65 @@ class ResourceCatalog:
                 "resource_catalog", reason="ComfyUI /object_info 探测失败：%s" % e)
         self._object_info = oi
         self._build_catalog(oi, ss)
+        # 手册 §6 融合：整合磁盘权重探测（comfy_env 扫描语义）与 live object_info 去重合并
+        self._enrich_from_disk()
+
+    def _enrich_from_disk(self):
+        """手册 §6 融合：整合磁盘权重探测，与 live object_info 去重合并。
+
+        复用 comfy_env 的磁盘扫描语义（models/<subdir> 下按通配符归集），核验各权重
+        物理存在并标记 available；补录 object_info 未枚举、但磁盘实际存在的权重
+        （按 basename 去重），避免「节点可加载清单」与「磁盘实际文件」两张皮。
+
+        离线/磁盘不可达/导入失败均静默跳过（不阻断 live 目录构建）。仅在在线
+        refresh() 中调用（离线注入模式 refresh 已短路，不会触盘）。
+        """
+        try:
+            from comfy_env import get_comfy_root
+        except Exception:
+            return
+        try:
+            root = get_comfy_root()
+            _SCAN = [
+                ("checkpoints", ["*.safetensors", "*.ckpt"], "checkpoints"),
+                ("loras", ["*.safetensors", "*.ckpt"], "loras"),
+                ("ipadapter", ["*.safetensors", "*.bin", "*.pt"], "ip_adapters"),
+                ("controlnet", ["*.safetensors", "*.pth"], "controlnets"),
+            ]
+            for subdir, pats, bucket in _SCAN:
+                scan_dir = os.path.join(root, "models", subdir)
+                disk = set()
+                if os.path.isdir(scan_dir):
+                    for pat in pats:
+                        for fp in glob.glob(os.path.join(scan_dir, pat)):
+                            if os.path.isfile(fp):
+                                disk.add(os.path.basename(fp))
+                existing = {c.get("name") for c in self._catalog[bucket]}
+                for name in disk:
+                    if name in existing:
+                        # 已在 live 探测中：标记磁盘已确认存在
+                        for c in self._catalog[bucket]:
+                            if c.get("name") == name:
+                                c["available"] = True
+                    else:
+                        # 磁盘独有：补录（available=True），推断语义标签/架构
+                        entry = {"name": name, "available": True,
+                                 "auto_tags": _infer_auto_tags(name), "user_tags": []}
+                        if bucket == "checkpoints":
+                            entry["type"] = _infer_arch(name)
+                            entry["vram_required_mb"] = _infer_vram_mb(name)
+                        elif bucket == "ip_adapters":
+                            entry["type"] = "ipadapter"
+                            entry["compatible_checkpoints"] = [_infer_arch(name)]
+                        elif bucket == "controlnets":
+                            entry["type"] = "controlnet"
+                            entry["preprocessor"] = ""
+                        elif bucket == "loras":
+                            entry["type"] = "lora"
+                        self._catalog[bucket].append(entry)
+                        existing.add(name)
+        except Exception as e:
+            LOG.warning("磁盘权重探测（§6 整合）失败（已忽略，不阻断 live 目录）：%s", e)
 
     def _build_catalog(self, oi: dict, ss: dict):
         cat = {

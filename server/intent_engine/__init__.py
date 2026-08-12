@@ -20,6 +20,13 @@ from .template_engine import TemplateEngine
 from .parameter_injector import ParameterInjector, derive_seed
 from .translator import IntentTranslator
 from .errors import FeatureUnavailable, TemplateError, InjectError, TranslateError
+# M1 §6 融合：运行时翻译 facade（原顶层 intent_translator.py 收敛进本包，消除双管线）
+from .translator_facade import (
+    translate_intent_to_workflow, translate_typed_workflow,
+    build_shot_image_intent, build_character_card_intent,
+    load_catalog, find_best_match, find_compatible_tool, load_template,
+    CatalogError, _build_character_positive,
+)
 
 __all__ = [
     "BoundAsset", "GenerationParams", "StyleConstraints", "ProductionIntent",
@@ -27,4 +34,8 @@ __all__ = [
     "ResourceCatalog", "NodeFamilyMapper", "NODE_FAMILY_REGISTRY", "TemplateEngine",
     "ParameterInjector", "derive_seed", "IntentTranslator",
     "FeatureUnavailable", "TemplateError", "InjectError", "TranslateError",
+    "translate_intent_to_workflow", "translate_typed_workflow",
+    "build_shot_image_intent", "build_character_card_intent",
+    "load_catalog", "find_best_match", "find_compatible_tool", "load_template",
+    "CatalogError",
 ]

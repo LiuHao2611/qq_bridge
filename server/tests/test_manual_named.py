@@ -16,7 +16,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import ai_local
-import intent_translator
+import intent_engine
 
 
 class TestScriptParserAgent(unittest.TestCase):
@@ -38,29 +38,29 @@ class TestIntentTranslator(unittest.TestCase):
     """手册 §3：意图翻译引擎（catalog + template + translate 三步）。"""
 
     def test_load_catalog(self):
-        cat = intent_translator.load_catalog()
+        cat = intent_engine.load_catalog()
         self.assertIn("checkpoints", cat)
         self.assertIn("ip_adapters", cat)
         self.assertTrue(any(t.get("type") == "face" for t in cat["ip_adapters"]))
 
     def test_find_best_match_prefers_available_and_tags(self):
-        cat = intent_translator.load_catalog()
-        cp = intent_translator.find_best_match(cat["checkpoints"], ["日漫"])
+        cat = intent_engine.load_catalog()
+        cp = intent_engine.find_best_match(cat["checkpoints"], ["日漫"])
         # 当存在 available 模型时应优先选 available 者（动漫底模未就位时回退到 v1-5）
         self.assertTrue(cp.get("available", True))  # 必须优先选择可用的底模
 
     def test_find_compatible_tool_matches_face(self):
-        cat = intent_translator.load_catalog()
+        cat = intent_engine.load_catalog()
         model = {"name": "v1-5-pruned-emaonly.safetensors"}
-        tool = intent_translator.find_compatible_tool(
+        tool = intent_engine.find_compatible_tool(
             cat["ip_adapters"], model,
             [{"asset_id": "face1", "inject_type": "face"}])
         self.assertIsNotNone(tool)
         self.assertEqual(tool["type"], "face")
 
     def test_translate_workflow_fills_placeholders(self):
-        wf = intent_translator.translate_intent_to_workflow(
-            intent_translator.build_shot_image_intent(
+        wf = intent_engine.translate_intent_to_workflow(
+            intent_engine.build_shot_image_intent(
                 "test", style_tags=["通用"], generation_params={"seed": 42}))
         self.assertIn("3", wf)  # KSampler
         self.assertEqual(wf["3"]["inputs"]["seed"], 42)
@@ -68,8 +68,8 @@ class TestIntentTranslator(unittest.TestCase):
         self.assertNotIn("{{", wf["4"]["inputs"]["ckpt_name"])  # checkpoint 已被 catalog 默认值填充
 
     def test_translate_workflow_identity_and_style_ip_chain(self):
-        wf = intent_translator.translate_intent_to_workflow(
-            intent_translator.build_shot_image_intent(
+        wf = intent_engine.translate_intent_to_workflow(
+            intent_engine.build_shot_image_intent(
                 "test", style_tags=["日漫"],
                 identity_image="char.png", style_image="style.png",
                 generation_params={"seed": 1}))
@@ -83,8 +83,8 @@ class TestIntentTranslator(unittest.TestCase):
 
     def test_translate_workflow_img2img_anchoring(self):
         """手册 §3.3.4：首帧锚定走 img2img 模板（LoadImage + VAEEncode + denoise<1）。"""
-        wf = intent_translator.translate_intent_to_workflow(
-            intent_translator.build_shot_image_intent(
+        wf = intent_engine.translate_intent_to_workflow(
+            intent_engine.build_shot_image_intent(
                 "test", style_tags=["通用"],
                 init_image="anchor.png", denoise=0.5,
                 generation_params={"seed": 7}))

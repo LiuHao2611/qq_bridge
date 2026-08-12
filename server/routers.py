@@ -1197,7 +1197,7 @@ async def generate_character_card_endpoint(asset_id: str, req: Request):
        "style_tags": ["写实","电影感"],
        "generation_params": {"width":512,"height":768,"steps":28,"cfg":8.5},
        "negative_prompt": "..."}
-    铁律 1.1/1.2：走 workflow_templates/character_card_gen.json，确定性 seed，绝不手搓节点。
+    铁律 1.1/1.2：走 intent_engine/templates_runtime/character_card_gen.json，确定性 seed，绝不手搓节点。
     ComfyUI 不可用 → 诚实抛 COMFY_UNAVAILABLE（调用方清晰告知用户）。
     """
     try:
@@ -1243,9 +1243,22 @@ async def generate_character_card_v2_endpoint(project_id: str, asset_id: str, re
     setting_text = body.get("setting_text")
     try:
         import ai_local
+        # M3 §4.1：防御式构建资源目录（离线注入静态 resource_catalog.json，不触网），
+        # 传给六步管线以触发真实的「导演选型」可视化推送（catalog 构建失败则跳过，不影响出图）。
+        catalog = None
+        try:
+            import json as _json
+            from intent_engine.resource_catalog import ResourceCatalog
+            _cat_path = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resource_catalog.json")
+            with open(_cat_path, "r", encoding="utf-8") as _f:
+                _cat = _json.load(_f)
+            catalog = ResourceCatalog(catalog=_cat)  # 离线注入：不触网，仅静态目录
+        except Exception as _ce:
+            logger.warning("[card-v2] 资源目录构建失败（选型可视化将跳过）: %s", _ce)
         res = ai_local.generate_character_card_v2(
             asset_id, setting_text=setting_text, era=era,
-            style_tags=style_tags, poses=poses, project_id=project_id)
+            style_tags=style_tags, poses=poses, catalog=catalog, project_id=project_id)
     except Exception as e:
         code = getattr(e, "code", "CHARACTER_CARD_V2_FAILED")
         raise ApiError(code, str(e))

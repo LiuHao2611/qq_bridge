@@ -15,7 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import intent_translator as it
+import intent_engine as it
 
 
 class TestCharacterCardIntent(unittest.TestCase):

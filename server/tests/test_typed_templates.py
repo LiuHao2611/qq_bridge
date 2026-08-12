@@ -11,14 +11,14 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import ai_local
-import intent_translator
+import intent_engine
 
 
 class TestTypedTemplateFill(unittest.TestCase):
-    """验证 workflow_templates 占位符填充：数值占位符须为真实数字（非字符串）。"""
+    """验证 intent_engine/templates_runtime 占位符填充：数值占位符须为真实数字（非字符串）。"""
 
     def test_controlnet_numeric_types(self):
-        wf = intent_translator.translate_typed_workflow("shot_image_controlnet", {
+        wf = intent_engine.translate_typed_workflow("shot_image_controlnet", {
             "checkpoint": "v1-5.safetensors",
             "positive_prompt": "a rainy night",
             "negative_prompt": "low quality",
@@ -40,7 +40,7 @@ class TestTypedTemplateFill(unittest.TestCase):
         self.assertEqual(wf["12"]["inputs"]["control_net_name"], "control_v11p_sd15_depth.pth")
 
     def test_face_restore_gfpgan_fill(self):
-        wf = intent_translator.translate_typed_workflow("face_restore_gfpgan", {
+        wf = intent_engine.translate_typed_workflow("face_restore_gfpgan", {
             "input_image": "up.png", "ckpt_name": "GFPGANv1.4.pth", "restore_model": "GFPGANv1.4",
         })
         self.assertEqual(wf["1"]["inputs"]["image"], "up.png")
@@ -49,7 +49,7 @@ class TestTypedTemplateFill(unittest.TestCase):
         self.assertEqual(wf["2"]["inputs"]["restore_model"], "GFPGANv1.4")
 
     def test_face_restore_codeformer_fill(self):
-        wf = intent_translator.translate_typed_workflow("face_restore_codeformer", {
+        wf = intent_engine.translate_typed_workflow("face_restore_codeformer", {
             "input_image": "up.png", "upscale": 2, "codeformer_weight": 0.5,
             "fidelity": 0.5, "seed": 0, "blur_amount": 0, "blur_kernel": 5,
         })
