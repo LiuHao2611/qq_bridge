@@ -95,6 +95,35 @@ ERROR_CODES = {
     "AI_CONTENT_BLOCKED":   (50002, 422, "内容被审核拒绝"),
     "AI_QUOTA_EXHAUSTED":   (50003, 429, "AI 上游配额耗尽"),
     "RUNNINGHUB_INVALID_PARAMS": (50004, 400, "工作流参数被拒绝"),
+
+    # ---- 以下为原缺失而静默回落 INTERNAL_ERROR(500) 的错误码：补全以返回正确 HTTP 状态码 ----
+    # 说明：ApiError.__init__ 对未登记 name 回退到 (40001, 500)，此前导致大量本应 4xx 的业务错误冒泡成 500。
+    "ORB_DISABLED":            (40910, 409, "功能未开启（灰度中）"),
+    "NO_STORY":                (20010, 422, "项目中暂无场次/分镜，请提供 story 文本"),
+    "BATCH_CREATE_FAILED":     (40011, 500, "批量创建资产失败"),
+    "GEN_FAILED":              (40012, 500, "生成失败"),
+    "FACE_NO_IMAGE":           (20013, 400, "缺少人脸参考图"),
+    "FACE_STORE_FAILED":       (40014, 500, "人脸向量提取成功但落库失败"),
+    "ASSET_NOT_FOUND":         (40405, 404, "资产不存在"),
+    "REFERENCE_SET_EMPTY":     (40406, 404, "该角色尚未生成参考图集"),
+    "BAD_REF_KIND":            (10003, 400, "非法的参考图类型"),
+    "READINESS_PROBE_FAILED":  (40015, 500, "就绪度探测失败"),
+    "NOT_ROLE_ASSET":          (20016, 422, "仅支持角色卡导入"),
+    "ROLE_IMPORT_FAILED":      (40016, 500, "角色卡导入失败"),
+    "INVALID_TASK_TYPE":       (10004, 400, "非法的 task_type"),
+    "TEMPLATE_TEST_FAILED":    (20017, 422, "模板不可用"),
+    "SKILL_NOT_FOUND":         (40407, 404, "技能不存在"),
+    "MODEL_SCAN_FAILED":       (40017, 500, "模型扫描失败"),
+    "MODEL_REGISTER_FAILED":   (40018, 500, "模型注册失败"),
+    "TASK_NOT_FOUND":          (40408, 404, "任务不存在"),
+    "CLEAR_COMFY_FAILED":      (40019, 500, "清理 ComfyUI 缓存失败"),
+    "FILE_TOO_LARGE":          (10005, 413, "文件过大"),
+    "MAX_CHAPTERS":            (20018, 422, "章节数已达上限"),
+    "AI_UNAVAILABLE":          (50005, 503, "AI 提供商不可用"),
+    "ERR_INSUFFICIENT_PHOTOS": (20019, 400, "请至少上传 1 张人物参考照"),
+    "BR_STORYBOARD_MISSING":   (20020, 422, "请先生成指导板"),
+    "EMPTY_PATCH":             (20021, 422, "未提供任何身份卡字段"),
+    "INVALID_ACTION":          (10006, 400, "非法的操作类型"),
 }
 
 

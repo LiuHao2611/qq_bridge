@@ -13,6 +13,7 @@ import os
 import threading
 import time
 import json
+import random
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
@@ -22,12 +23,13 @@ from points_engine import settle, refund
 from ai_local import generate_segment_video, txt2img_generate, synthesize_project_video
 from realtime import publish as ws_publish
 import metrics  # 手册 §7.2 Prometheus 监控指标
+from lora import task_runner as lora_runner  # LoRA 训练任务执行器（手册 §5.2）
 
 logger = logging.getLogger("manju.worker")
 
 POLL_INTERVAL = 3.0
 STALE_RUNNING_SECS = 30 * 60  # 运行超过 30 分钟无进展 → 判定卡死（OPS-04 看门狗兜底）
-MAX_AUTO_RETRY = 2            # CLOSE-03 失败自动重试上限（指数退避，超过则最终失败退冻结金）
+MAX_AUTO_RETRY = 3            # M3 §4.1 失败自动重试硬上限（指数退避，超过则最终失败退冻结金）
 AUTO_RETRY_BASE_DELAY = 30    # 第 n 次重试等待 30 * 2^n 秒
 # CLOSE-05：单片段/合成生成的硬超时（KB 视频 600s）。与 30min 看门狗互为兜底：
 # 看门狗防永久卡死，此处给单次调用明确上限，超时即按失败退避/退款。
@@ -124,6 +126,152 @@ def _mark_failed(conn, task, note):
     push_message(conn, "task", "片段生成失败", "原因：%s" % str(note)[:120], action_url="/tasks")
 
 
+# ---------------------------------------------------------------------------
+# P2 M3 运动检测回调（供 features.motion_qc.qc_and_retry 使用）
+# 原 motion_qc 仅「断言」worker 提供这两个回调，但 worker 从未实现 →
+# 品控的换 seed 重试 / 标记失败链路实际是断的。现补齐，使 P2 M3
+# 「静态 PPT 禁静默通过」真正端到端生效（手册 M3 §4）。
+# ---------------------------------------------------------------------------
+def mark_video_task_failed(task, reason: str = "运动检测未通过"):
+    """P2 M3：运动检测仍判定静态时，标记片段失败（退款 + 段状态 + 双通道通知）。
+    供 features.motion_qc.qc_and_retry 的 mark_failed_fn 回调。
+    """
+    conn = get_conn()
+    try:
+        _mark_failed(conn, task, reason)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def regenerate_video_task(task) -> str:
+    """P2 M3：运动检测未通过时，换 seed 重新生成该片段视频，返回新视频文件路径。
+    供 features.motion_qc.qc_and_retry 的 regenerate_fn 回调。
+    qc_and_retry 已在调用前将 task['seed'] 扰动为本次重试 seed。
+    """
+    conn = get_conn()
+    try:
+        seg = fetch_one(conn, "SELECT * FROM segments WHERE segment_id=?", (task["segment_id"],))
+        shots = fetch_all(conn, 'SELECT * FROM shots WHERE segment_id=? ORDER BY "index" ASC', (task["segment_id"],))
+        asset_refs = fetch_all(conn, "SELECT * FROM segment_asset_refs WHERE segment_id=?", (task["segment_id"],))
+    finally:
+        conn.close()
+    if not seg:
+        raise RuntimeError("regenerate_video_task: 找不到片段 %s" % task.get("segment_id"))
+    out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, "task_%s.mp4" % task["local_task_id"])
+    gen_params = {
+        "model_id": task.get("model_id") or "seedance-2.0-mini",
+        "resolution": (seg or {}).get("resolution") or "720p",
+        "seed": int(task.get("seed") if task.get("seed") is not None else -1),
+    }
+    level, note, tail_frame = _run_with_timeout(
+        generate_segment_video,
+        row_to_dict(seg), [row_to_dict(s) for s in shots], [row_to_dict(a) for a in asset_refs],
+        out_path, gen_params)
+    if level == "fail":
+        raise RuntimeError(note)
+    return out_path
+
+
+# ======================================================================
+# P4 M3 健壮性收尾（手册 §2 M3 / §4）
+# 红线（§5）：重试硬上限真实生效 + retrying 持久化；失败推双通道（不静默）；
+#   显存释放优雅 free memory（不杀进程）；不破坏 P0-P3 派发路径。
+# ======================================================================
+
+def handle_retry(conn, task, error, is_image=False):
+    """M3 §4.1 重试状态机（输入→处理→输出）。
+
+    输入：失败任务 + 异常
+    处理：
+      1) 递增 retry_count 并持久化 status='retrying'（修复原 bug：写回 'queued'）；
+      2) 判断硬上限 MAX_AUTO_RETRY=3：超过 → 最终 failed + 退款；
+      3) 未超限 → 退避 30*2^n 秒 + seed 扰动后写回 next_attempt_at 等待派发。
+    输出：'retrying' 或 'failed'。
+    """
+    rc = task.get("retry_count") or 0
+    table = "image_tasks" if is_image else "generation_tasks"
+    if rc < MAX_AUTO_RETRY:
+        backoff = AUTO_RETRY_BASE_DELAY * (2 ** rc)
+        # seed 扰动（避免批量任务同时重试造成惊群）
+        jitter = random.randint(0, 15)
+        delay = backoff + jitter
+        next_at = int(time.time()) + delay
+        conn.execute(
+            "UPDATE %s SET status='retrying', retry_count=?, next_attempt_at=? WHERE task_id=?" % table,
+            (rc + 1, next_at, task["task_id"]))
+        if is_image:
+            conn.execute("UPDATE image_tasks SET error_message=? WHERE task_id=?",
+                         (str(error)[:200], task["task_id"]))
+        _task_log(conn, task, "warning",
+                  "%s失败，%ds 后自动重试（第 %d/%d 次）：%s" % (
+                      "文生图" if is_image else "生成", delay, rc + 1, MAX_AUTO_RETRY, str(error)[:120]))
+        ws_publish("task:%s" % task["task_id"], "status_update", {"status": "retrying", "progress": 0})
+        _emit(task, "warning", "task_retry", backoff=delay, attempt=rc + 1,
+              error=str(error)[:120], kind="image" if is_image else "video")
+        conn.commit()
+        return "retrying"
+    # 超过硬上限：最终失败 + 退款（CLOSE-04）+ 双通道通知
+    if is_image:
+        _mark_image_failed(conn, task, error)
+    else:
+        _mark_failed(conn, task, error)
+        notify_failure(task)
+    conn.commit()
+    return "failed"
+
+
+def notify_failure(task):
+    """M3 §4.2 失败提示双通道（输入→处理→输出）。
+
+    输入：failed 任务（需含 task_id / local_task_id / error_message）
+    处理：
+      1) video:{local_task_id} 频道推 failed 事件（原 bug：声明但无 publish）；
+      2) task:{task_id} 频道也推（双通道，前端订阅任一即可见）。
+    输出：前端可见的失败提示（含原因）。
+    """
+    reason = (task.get("error_message") or "生成失败")[:200]
+    gen_id = task.get("local_task_id") or task.get("task_id")
+    if gen_id:
+        ws_publish("video:%s" % gen_id, "failed",
+                   {"event": "failed", "task_id": task.get("task_id"), "reason": reason})
+    ws_publish("task:%s" % task["task_id"], "failed",
+               {"event": "failed", "reason": reason})
+
+
+def release_vram_if_idle():
+    """M3 §4.3 空闲优雅释放显存（输入→处理→输出）。
+
+    输入：worker 空闲状态（无运行任务）
+    处理：
+      1) 查运行中任务数（生成/文生图/LoRA 任一在跑 → busy，不释放避免打断）；
+      2) 空闲 → 调 ComfyUI free memory（POST /free，优雅卸载，不杀进程）；
+         Ollama 本地推理若占显存，best-effort 释放（无可靠 stop API 则诚实跳过，不假装）。
+    输出：'busy'（有运行任务）或 'released'（已释放）。
+    """
+    conn = get_conn()
+    try:
+        running = fetch_one(conn,
+            "SELECT (SELECT COUNT(*) FROM generation_tasks WHERE status='running')"
+            " + (SELECT COUNT(*) FROM image_tasks WHERE status='running')"
+            " + (SELECT COUNT(*) FROM lora_train_tasks WHERE status='running') AS c")
+        if (running or {}).get("c", 0):
+            return "busy"
+    finally:
+        conn.close()
+    # 优雅释放 ComfyUI 显存（不杀进程）
+    try:
+        from layer0.comfyui_service import get_service
+        svc = get_service()
+        if svc.ping():
+            svc.free_memory()   # POST /free {"unload_models": true}
+    except Exception as e:
+        _emit(None, "warning", "vram_release_comfy_skip", error=str(e)[:120])
+    return "released"
+
+
 def select_submission_strategy(task):
     """提交策略选择（纯函数，可单测）：workflow_json 非空 → 本地 ComfyUI 提交；否则既有 RunningHub。"""
     if task.get("workflow_json"):
@@ -157,6 +305,29 @@ def _serve_local_workflow(task):
         svc = comfyui_service.get_service()
         out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "outputs")
         local = svc.generate(wf, out_dir, timeout=VIDEO_TIMEOUT_SECS)
+
+        # ---- P2 M3 运动检测品控（本地 ComfyUI 分支，手册 M3 §4） ----
+        try:
+            from features.motion_qc import qc_and_retry as _qc_and_retry
+            _qc_task = dict(task)
+            _qc_task["video_path"] = local
+            _qc_task["seed"] = task.get("seed")
+            _qc_res = _qc_and_retry(
+                {"segment_id": task["segment_id"]},
+                _qc_task,
+                regenerate_fn=regenerate_video_task,
+                mark_failed_fn=mark_video_task_failed,
+                max_retry=2,
+            )
+            if _qc_res.get("is_static"):
+                if _qc_res.get("note") in ("frame_extract_failed", "too_few_frames"):
+                    logger.warning("motion_qc(local_comfy) 取证失败(%s)，放行不标记失败", _qc_res.get("note"))
+                else:
+                    logger.warning("local_comfy segment %s 运动检测未通过（静态），已标记失败", task["task_id"])
+                    return
+        except Exception as _qc_err:
+            logger.error("motion_qc(local_comfy) 异常（降级放行）：%s", _qc_err)
+        # ---- P2 M3 结束 ----
 
         # 成功：实扣积分（翻转冻结）+ 写结果
         cost = task.get("cost_credits") or 0
@@ -241,6 +412,33 @@ def _serve_one(task):
         if level == "fail":
             raise RuntimeError(note)
 
+        # ---- P2 M3 运动检测品控（静态 PPT 禁静默通过，手册 M3 §4） ----
+        try:
+            from features.motion_qc import qc_and_retry as _qc_and_retry
+            _qc_task = dict(task)
+            _qc_task["video_path"] = out_path
+            _qc_task["seed"] = gen_params.get("seed", _qc_task.get("seed"))
+            _qc_res = _qc_and_retry(
+                segment if segment is not None else {"segment_id": task["segment_id"]},
+                _qc_task,
+                regenerate_fn=regenerate_video_task,
+                mark_failed_fn=mark_video_task_failed,
+                max_retry=2,
+            )
+            if _qc_res.get("is_static"):
+                # 取证失败（ffmpeg 缺/帧不足）属基础设施问题：不放行失败、亦不静默吞，记录后放行
+                if _qc_res.get("note") in ("frame_extract_failed", "too_few_frames"):
+                    logger.warning("motion_qc 取证失败(%s)，放行不标记失败", _qc_res.get("note"))
+                else:
+                    # 真·静态：qc_and_retry 已内部换 seed 重试 ≤2 仍静态 → mark_video_task_failed
+                    # 已退款 + 标记段/任务失败；此处提前返回，避免下方误标 succeeded
+                    logger.warning("segment %s 运动检测未通过（静态），已标记失败", task["task_id"])
+                    return
+        except Exception as _qc_err:
+            # 品控异常不得阻塞主生成链路（降级放行，但记录不静默吞）
+            logger.error("motion_qc 异常（降级放行）：%s", _qc_err)
+        # ---- P2 M3 结束 ----
+
         # 成功：实扣积分（翻转冻结状态）+ 写结果
         cost = task.get("cost_credits") or 0
         try:
@@ -270,28 +468,8 @@ def _serve_one(task):
         _emit(task, "info", "task_succeeded", cost_credits=cost, note=note)
         conn.commit()
     except Exception as e:
-        # 失败：按 CLOSE-03 退避重试；超过上限才最终失败并退还冻结金
-        rc = task.get("retry_count") or 0
-        if rc < MAX_AUTO_RETRY:
-            backoff = AUTO_RETRY_BASE_DELAY * (2 ** rc)
-            next_at = int(time.time()) + backoff
-            try:
-                conn.execute(
-                    "UPDATE generation_tasks SET status='queued', retry_count=?, next_attempt_at=? WHERE task_id=?",
-                    (rc + 1, next_at, task["task_id"]))
-                _task_log(conn, task, "warning",
-                          "生成失败，%ds 后自动重试（第 %d/%d 次）：%s" % (backoff, rc + 1, MAX_AUTO_RETRY, str(e)[:120]))
-                ws_publish("task:%s" % task["task_id"], "status_update", {"status": "retrying", "progress": 0})
-                _emit(task, "warning", "task_retry", backoff=backoff, attempt=rc + 1, error=str(e)[:120])
-                # 冻结金保留供重试使用，不在此退还
-            except Exception:
-                pass
-        else:
-            try:
-                _mark_failed(conn, task, e)
-            except Exception:
-                pass
-        conn.commit()
+        # 失败：按 M3 §4.1 重试状态机处理（持久化 retrying + 硬上限 + 双通道通知）
+        handle_retry(conn, task, e)
     finally:
         conn.close()
 
@@ -353,26 +531,8 @@ def _serve_synthesize(task):
         _emit(task, "info", "synthesize_succeeded", cost_credits=cost, note=note)
         conn.commit()
     except Exception as e:
-        rc = task.get("retry_count") or 0
-        if rc < MAX_AUTO_RETRY:
-            backoff = AUTO_RETRY_BASE_DELAY * (2 ** rc)
-            next_at = int(time.time()) + backoff
-            try:
-                conn.execute(
-                    "UPDATE generation_tasks SET status='queued', retry_count=?, next_attempt_at=? WHERE task_id=?",
-                    (rc + 1, next_at, task["task_id"]))
-                _task_log(conn, task, "warning",
-                          "合成失败，%ds 后自动重试（第 %d/%d 次）：%s" % (backoff, rc + 1, MAX_AUTO_RETRY, str(e)[:120]))
-                ws_publish("task:%s" % task["task_id"], "status_update", {"status": "retrying", "progress": 0})
-                _emit(task, "warning", "synthesize_retry", backoff=backoff, attempt=rc + 1, error=str(e)[:120])
-            except Exception:
-                pass
-        else:
-            try:
-                _mark_failed(conn, task, e)
-            except Exception:
-                pass
-        conn.commit()
+        # 失败：按 M3 §4.1 重试状态机处理（持久化 retrying + 硬上限 + 双通道通知）
+        handle_retry(conn, task, e)
     finally:
         conn.close()
 
@@ -525,22 +685,8 @@ def _serve_image_one(task):
         if chk2 and (chk2.get("status") or "") == "cancelled":
             logger.info("t2i task was cancelled, skip retry: %s", task["task_id"])
             return
-        rc = task.get("retry_count") or 0
-        if rc < MAX_AUTO_RETRY:
-            backoff = AUTO_RETRY_BASE_DELAY * (2 ** rc)
-            next_at = int(time.time()) + backoff
-            try:
-                conn.execute(
-                    "UPDATE image_tasks SET status='queued', retry_count=?, next_attempt_at=?, error_message=? WHERE task_id=?",
-                    (rc + 1, next_at, str(e)[:200], task["task_id"]))
-            except Exception:
-                pass
-        else:
-            try:
-                _mark_image_failed(conn, task, e)
-            except Exception:
-                pass
-        conn.commit()
+        # 失败：按 M3 §4.1 重试状态机处理（持久化 retrying + 硬上限 + 退款）
+        handle_retry(conn, task, e, is_image=True)
     finally:
         conn.close()
 
@@ -556,11 +702,16 @@ def _loop():
                     _watchdog_counter = 0
                     _watchdog(conn)
                     _watchdog_images(conn)
-                task = fetch_one(conn,
-                    "SELECT * FROM generation_tasks WHERE status IN ('queued','retrying') "
-                    "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
-                    "ORDER BY priority DESC, created_at ASC LIMIT 1",
-                    (int(time.time()),))
+                # LoRA 训练显存互斥：训练 running 时，暂停并发生成/文生图派发（手册 §5.2 / §11.2）
+                lora_running = fetch_one(conn,
+                    "SELECT 1 FROM lora_train_tasks WHERE status='running' LIMIT 1")
+                task = None
+                if not lora_running:
+                    task = fetch_one(conn,
+                        "SELECT * FROM generation_tasks WHERE status IN ('queued','retrying') "
+                        "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
+                        "ORDER BY priority DESC, created_at ASC LIMIT 1",
+                        (int(time.time()),))
             finally:
                 conn.close()
             if task:
@@ -577,14 +728,16 @@ def _loop():
                     except Exception:
                         pass
                 continue
-            # 文生图任务队列
+            # 文生图任务队列（同样受 LoRA 训练互斥约束）
             iconn = get_conn()
             try:
-                itask = fetch_one(iconn,
-                    "SELECT * FROM image_tasks WHERE status IN ('queued','retrying') "
-                    "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
-                    "ORDER BY priority DESC, created_at ASC LIMIT 1",
-                    (int(time.time()),))
+                itask = None
+                if not lora_running:
+                    itask = fetch_one(iconn,
+                        "SELECT * FROM image_tasks WHERE status IN ('queued','retrying') "
+                        "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
+                        "ORDER BY priority DESC, created_at ASC LIMIT 1",
+                        (int(time.time()),))
             finally:
                 iconn.close()
             if itask:
@@ -601,6 +754,34 @@ def _loop():
                             c3.close()
                     except Exception:
                         pass
+                continue
+            # ---- LoRA 训练任务队列（不受生成互斥约束，独立消费）----
+            lconn = get_conn()
+            try:
+                ltask = fetch_one(lconn,
+                    "SELECT * FROM lora_train_tasks WHERE status IN ('queued','retrying') "
+                    "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
+                    "ORDER BY created_at ASC LIMIT 1",
+                    (int(time.time()),))
+            finally:
+                lconn.close()
+            if ltask:
+                try:
+                    lora_runner.serve_lora_training(row_to_dict(ltask))
+                except Exception as e:
+                    try:
+                        c4 = get_conn()
+                        try:
+                            c4.execute(
+                                "UPDATE lora_train_tasks SET status='failed', error_message=? "
+                                "WHERE id=? AND status='running'",
+                                ("Worker 异常：" + str(e)[:160], ltask["task_id"]))
+                            c4.commit()
+                        finally:
+                            c4.close()
+                    except Exception:
+                        pass
+                continue
         except Exception:
             # 队列读取异常：短暂退避后继续，不退出线程
             pass
@@ -630,10 +811,13 @@ def recover():
             "UPDATE generation_tasks SET status='queued' WHERE status='running'").rowcount
         n2 = conn.execute(
             "UPDATE image_tasks SET status='queued' WHERE status='running'").rowcount
+        n3 = conn.execute(
+            "UPDATE lora_train_tasks SET status='queued' WHERE status='running'").rowcount
         conn.commit()
-        if n or n2:
+        if n or n2 or n3:
             log_operation(conn, "worker_recover", "system", None,
-                          "复位 %d 个崩溃遗留 running 任务为 queued（含文生图 %d）" % (n, n2))
+                          "复位 %d 个崩溃遗留 running 任务为 queued（含文生图 %d / LoRA训练 %d）"
+                          % (n, n2, n3))
             conn.commit()
     finally:
         conn.close()

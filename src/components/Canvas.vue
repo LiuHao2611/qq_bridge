@@ -4,8 +4,10 @@ import { ref, reactive, onMounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { LiteGraph, LGraph, LGraphCanvas } from 'litegraph.js'
 import 'litegraph.js/css/litegraph.css'
-import { getProject, aiPolish } from '../api'
+import { getProject, aiPolish, estimatePoints, preAuthPoints, synthesizeProject, listSkills, getSkill, runSkill } from '../api'
 import { toast } from '../store'
+import ProjectBookShell from './ProjectBookShell.vue'
+import SkillPanel from './SkillPanel.vue'
 
 const route = useRoute()
 const pid = route.params.id
@@ -15,6 +17,9 @@ const running = ref(false)
 const ran = ref(false)
 const saving = ref(false)
 const saved = ref(true)
+// 诚实声明：画布是「可视化规划工具」，不执行真实出图/动画/合成（真实生成在「片段编辑器」提交）。
+// 仅提供：本地 AI 润色主题（真调 Ollama）、导出 ComfyUI 工作流 JSON、技能库（真调 P0 translator）。
+const canvasMode = ref('planning')
 const prog = reactive({ stage: '', current: 0, total: 0, message: '' })
 const project = reactive({ title: '' })
 let graph = null
@@ -251,12 +256,13 @@ const collectParams = () => {
   })
   return p
 }
-const runWorkflow = async () => {
+// 规划模式下的「运行」= 真实但有限的动作：本地 Ollama 润色主题 + 存档。
+// 不假装执行节点图出图/动画/合成（那属于「片段编辑器」的真实生成链路，避免假功能）。
+const runCanvasPolish = async () => {
   if (!graph) return
   running.value = true
   ran.value = true
   saved.value = false
-  const params = collectParams()
   const scriptNode = findFirstNode('manju/script')
   const theme = nodeParam(scriptNode, 'theme', project.title || '')
   try {
@@ -270,8 +276,9 @@ const runWorkflow = async () => {
       toast('本地 AI 润色不可用（' + e.message + '），使用原始主题')
     }
     await saveCanvas()
-    prog.stage = ''; prog.message = '已连接本地 AI'
-    toast('工作流已执行：主题已用本地 AI 润色。完整节点出图/合成请在「片段编辑器」提交生成任务')
+    prog.stage = ''; prog.message = '本地 AI 润色完成'
+    // 诚实提示：本页只润色+存档，真实出图/动画/合成在「片段编辑器」提交。
+    toast('已用本地 AI 润色主题并保存画布（规划模式）。真实出图/动画/合成请在「片段编辑器」提交生成任务')
   } catch (e) {
     toast('执行失败: ' + e.message)
     prog.stage = ''
@@ -318,12 +325,19 @@ onMounted(async () => {
   } catch (e) {}
   lastInitial = init
 
+  // 防御：onMounted 异步路径上方有 await getProject(pid)；若路由在此期间切走、组件已卸载，
+  // cv.value/wrap.value 会被置空，继续初始化会抛 "Cannot read properties of null (reading 'focus')"。
+  // 正常挂载时 ref 已就绪，此守卫对既有逻辑零影响。
+  if (!cv.value || !wrap.value) return
+
   graph = new LGraph()
   canvas = new LGraphCanvas(cv.value, graph)
   canvas.allow_dragcanvas = true
   canvas.allow_interaction = true
   canvas.allow_searchbox = true
   cv.value.focus()
+
+  loadSkillMap()
 
   if (loadedState) {
     try {
@@ -340,40 +354,171 @@ onMounted(async () => {
   graph.onAfterChange = () => (saved.value = false)
   nextTick(fitView)
 })
+
+// 阶段翻页「合成全集」最终动作（阶段 5 为最后一阶段，fold-next 触发）
+async function onSynthesize() {
+  try {
+    const est = await estimatePoints({ operation: 'estimate', duration: 0, resolution: '720p', audio: true })
+    const idem = 'idem_syn_' + Date.now() + '_' + Math.random().toString(36).slice(2)
+    const pre = await preAuthPoints(est.estimated_credits, 'synthesize', idem)
+    await synthesizeProject(pid, pre.pre_auth_id, {})
+    toast('已提交「合成全集」任务')
+  } catch (e) {
+    toast('合成失败: ' + (e.message || e))
+  }
+}
+
+// ---- P3 M1 Skills 技能库：拖拽执行（真调 P0 translator）----
+const skillMap = reactive({})       // skill_id -> skill 对象（供 drop 时反查名称）
+const runDialog = reactive({ open: false, loading: false, skill: null, userInput: '', subjAsset: '', lighting: '' })
+const runResult = ref(null)          // translator.translate 返回的 workflow
+
+async function loadSkillMap() {
+  try {
+    const list = await listSkills()
+    list.forEach((s) => { skillMap[s.skill_id] = s })
+  } catch (e) { /* 技能库加载失败不阻塞画布 */ }
+}
+
+// 来自 SkillPanel 的「运行」按钮 / 双击
+function onRunSkill(skill) {
+  runDialog.skill = skill
+  runDialog.open = true
+  runResult.value = null
+}
+
+// 来自画布拖拽放置
+function onCanvasDrop(e) {
+  const sid = e.dataTransfer ? e.dataTransfer.getData('skillId') : ''
+  if (!sid) return
+  const skill = skillMap[sid]
+  if (!skill) {
+    // 兜底：从后端按 id 拉取
+    getSkill(sid).then((s) => { if (s) onRunSkill(s); else toast('未找到技能：' + sid) }).catch(() => toast('未找到技能：' + sid))
+    return
+  }
+  onRunSkill(skill)
+}
+
+async function doRunSkill() {
+  if (!runDialog.skill) return
+  runDialog.loading = true
+  runResult.value = null
+  try {
+    const context = {
+      subject_asset_id: runDialog.subjAsset || '{{subject_asset_id}}',
+      style_lighting: runDialog.lighting || '{{style_lighting}}',
+    }
+    const wf = await runSkill(runDialog.skill.skill_id, {
+      user_input: runDialog.userInput || '',
+      context,
+    })
+    runResult.value = wf
+    toast('已调用 P0 translator.translate（技能：' + runDialog.skill.name + '）')
+  } catch (e) {
+    toast('技能执行失败: ' + (e.message || e))
+  } finally {
+    runDialog.loading = false
+  }
+}
 </script>
 
 <template>
-  <div class="canvas-shell">
-    <div class="ws-toolbar">
-      <div class="title"><div style="font-weight:800">工作流画布</div><div class="sub">ComfyUI 同款节点编辑器 · 与项目联动</div></div>
-      <div class="sep"></div>
-      <div class="group" style="margin-left:auto">
-        <button class="btn" @click="saveCanvas" :disabled="saving">💾 保存画布</button>
-        <button class="btn" @click="fitView">适配视图</button>
-        <button class="btn" @click="resetGraph">重置</button>
-        <button class="btn" @click="exportComfy">导出 ComfyUI</button>
-        <button class="btn primary" :disabled="running" @click="runWorkflow">▶ 运行工作流</button>
-      </div>
-    </div>
-    <div class="canvas-body">
-      <div class="canvas-library">
-        <h4>节点库</h4>
-        <div class="lib-item" v-for="n in NODE_CATALOG" :key="n.type" @click="addNode(n.type)">
-          <span class="dot" :style="{ background: n.color }"></span>
-          <div>
-            <div class="lib-title">{{ n.title }}</div>
-            <div class="lib-desc">{{ n.desc }}</div>
+  <ProjectBookShell class="page canvas-page" :step="5" @synthesize="onSynthesize">
+      <div class="canvas-shell">
+        <!-- 诚实声明：画布是可视化规划工具，不执行真实出图/动画/合成 -->
+        <div class="canvas-banner">
+          <span class="cb-tag">🧭 规划模式</span>
+          <span class="cb-text">本画布为<strong>可视化构思工具</strong>，节点用于编排思路并<strong>导出 ComfyUI 工作流 JSON</strong>；技能库卡片可真调 P0 意图翻译引擎。
+          <strong>真实出图 / 动画 / 合成</strong>请在「片段编辑器」提交生成任务，本页不代执行生成管线。</span>
+        </div>
+        <div class="ws-toolbar">
+          <div class="title"><div style="font-weight:800">工作流画布</div><div class="sub">ComfyUI 同款节点编辑器 · 与项目联动（规划模式）</div></div>
+          <div class="sep"></div>
+          <div class="group" style="margin-left:auto">
+            <button class="btn" @click="saveCanvas" :disabled="saving">💾 保存画布</button>
+            <button class="btn" @click="fitView">适配视图</button>
+            <button class="btn" @click="resetGraph">重置</button>
+            <button class="btn" @click="exportComfy">导出 ComfyUI</button>
+            <button class="btn primary" :disabled="running" @click="runCanvasPolish">✨ AI 润色主题</button>
           </div>
         </div>
-        <div class="lib-hint">点击节点添加到画布中央。拖拽节点移动、拖拽圆点连线、点击 widget 改参数。运行后自动回写项目。</div>
+      <div class="canvas-body">
+        <div class="canvas-library">
+          <h4>节点库</h4>
+          <div class="lib-item" v-for="n in NODE_CATALOG" :key="n.type" @click="addNode(n.type)">
+            <span class="dot" :style="{ background: n.color }"></span>
+            <div>
+              <div class="lib-title">{{ n.title }}</div>
+              <div class="lib-desc">{{ n.desc }}</div>
+            </div>
+          </div>
+          <div class="lib-hint">点击节点添加到画布中央。拖拽节点移动、拖拽圆点连线、点击 widget 改参数。画布状态存本地（未落库后端），真实生成请在「片段编辑器」提交。</div>
+        </div>
+        <SkillPanel @run="onRunSkill" />
+        <div class="canvas-wrap" ref="wrap" @dragover.prevent @drop="onCanvasDrop">
+          <canvas ref="cv" tabindex="0"></canvas>
+          <div class="canvas-hint" v-if="!ran">拖拽「技能库」卡片到此（真调 P0 意图翻译引擎生成 workflow）；或拖拽节点 / 连线 / 编辑参数构思分镜。真实生成请在「片段编辑器」提交。</div>
+        </div>
       </div>
-      <div class="canvas-wrap" ref="wrap">
-        <canvas ref="cv" tabindex="0"></canvas>
-        <div class="canvas-hint" v-if="!ran">拖拽节点 / 连线 / 编辑参数，或点「▶ 运行工作流」一键生成</div>
+
+      <!-- P3 M1 技能运行弹窗（真调 P0 translator）-->
+      <div class="modal-mask" v-if="runDialog.open" @click="runDialog.open = false">
+        <div class="modal-box" @click.stop>
+          <h3>🧩 运行技能：{{ runDialog.skill?.name }}</h3>
+          <p class="muted" style="margin:0 0 12px">
+            task_type：<code>{{ runDialog.skill?.intent_template?.task_type }}</code> ·
+            填入下方参数后将真实调用 P0 <code>translator.translate</code> 生成 ComfyUI workflow。
+          </p>
+          <div class="field"><label>用户输入 / 运镜描述</label>
+            <textarea v-model="runDialog.userInput" rows="3" placeholder="例如：镜头从脚推到脸，逆光剪影" class="sp-create-textarea" />
+          </div>
+          <div class="field"><label>角色资产 ID</label>
+            <input v-model="runDialog.subjAsset" placeholder="留空则使用模板占位符 {{subject_asset_id}}" class="sp-create-input" />
+          </div>
+          <div class="field"><label>打光风格</label>
+            <input v-model="runDialog.lighting" placeholder="留空则使用模板占位符 {{style_lighting}}" class="sp-create-input" />
+          </div>
+
+          <div v-if="runResult" class="run-result">
+            <div class="rr-head">✓ translator.translate 已返回 workflow（{{ Object.keys(runResult).length }} 个顶层键）</div>
+            <pre class="rr-json">{{ JSON.stringify(runResult, null, 2) }}</pre>
+          </div>
+
+          <div class="dialog-footer">
+            <el-button @click="runDialog.open = false">关闭</el-button>
+            <el-button type="primary" :loading="runDialog.loading" @click="doRunSkill">执行技能</el-button>
+          </div>
+        </div>
+      </div>
+
+      <div class="canvas-status" v-if="prog.stage">
+        <span>状态: <b>{{ prog.stage }}</b> · {{ prog.current }}/{{ prog.total }} · {{ prog.message }}</span>
       </div>
     </div>
-    <div class="canvas-status" v-if="prog.stage">
-      <span>状态: <b>{{ prog.stage }}</b> · {{ prog.current }}/{{ prog.total }} · {{ prog.message }}</span>
-    </div>
-  </div>
+  </ProjectBookShell>
 </template>
+
+<style scoped>
+/* 覆盖全局 .canvas-shell{height:100vh}：被 ProjectBookShell 包裹后需填满书页内容区 */
+.canvas-shell { height: 100%; }
+
+/* 规划模式诚实声明横幅 */
+.canvas-banner { display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px; margin: 10px 12px 0; background: rgba(250,204,21,.10); border: 1px solid rgba(250,204,21,.45); border-radius: 10px; color: var(--txt); }
+.cb-tag { flex: 0 0 auto; font-weight: 800; font-size: 12.5px; color: #facc15; background: rgba(250,204,21,.16); border: 1px solid rgba(250,204,21,.5); border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
+.cb-text { font-size: 12.5px; line-height: 1.6; color: var(--sub); }
+.cb-text strong { color: var(--txt); font-weight: 700; }
+
+/* P3 M1 技能运行弹窗 */
+.modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; z-index: 2000; }
+.modal-box { width: 560px; max-width: 92vw; max-height: 86vh; overflow: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; color: var(--txt); }
+.modal-box h3 { margin: 0 0 4px; font-size: 16px; }
+.modal-box .field { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
+.modal-box .field label { font-size: 12px; color: var(--sub); }
+.sp-create-input, .sp-create-textarea { background: var(--bg-2); color: var(--txt); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; font-family: monospace; font-size: 12px; outline: none; width: 100%; box-sizing: border-box; }
+.sp-create-textarea { resize: vertical; }
+.run-result { margin-top: 12px; border: 1px solid rgba(74,222,128,.4); background: rgba(74,222,128,.07); border-radius: 10px; padding: 10px 12px; }
+.rr-head { font-size: 12.5px; color: #4ade80; font-weight: 700; margin-bottom: 8px; }
+.rr-json { max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-all; background: var(--bg-2); border-radius: 8px; padding: 10px; font-size: 11px; line-height: 1.5; color: var(--sub); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.dialog-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+</style>
