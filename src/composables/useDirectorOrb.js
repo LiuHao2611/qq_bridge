@@ -11,7 +11,7 @@
 // 用户「忽略」存前端 localStorage（不持久化到后端，与导演 Agent 状态始终一致）。
 // 纯内存状态，不写文件、不进 C 盘；模块级 reactive 即单例。
 // ============================================================
-import { reactive, computed } from 'vue'
+import { reactive, computed, ref } from 'vue'
 import { subscribe, wsConnected } from '../ws'
 import { directorRuns, directorRunStatus, listProjectAssets, listSegments, getProduction, orbApi, resolveDecision as resolveDecisionApi, listDecisions as listDecisionsApi } from '../api'
 
@@ -110,9 +110,14 @@ const state = reactive({
   // ---- M3 悬浮球前端化（手册 §4）：三卡信息流 ----
   translator: null,     // 最新选型可视化：{ task_type, checkpoint, node, loras, seed, ts }
   translatorHistory: [],// 最近若干次选型（最多 5）
+  // M3 Lock-Then-Animate：已锁定角色（四杠杆可视化气泡）
+  lockedCharacter: null,// { name, lockMode, firstFrame, referenceImages, levers, faceVectorDim, consistencyPrompt }
   decisions: [],        // 待确认 / 已确认决策点（decision_request 推送 + 拉取合并）
   conversation: [],     // 对话气泡：{ id, kind:'notice'|'insight', text, ts }
 })
+
+// [P1 验收] 调试/验收钩子：暴露单例 state 供 Playwright 截图注入锁定角色气泡（非破坏性，仅挂全局引用）
+if (typeof window !== 'undefined') { window.__orbState = state }
 
 let _unsub = null
 let _unsubTr = null
@@ -161,6 +166,7 @@ function _resetOrb() {
   // M3 三卡状态重置
   state.translator = null
   state.translatorHistory = []
+  state.lockedCharacter = null
   state.decisions = []
   state.conversation = []
 }
@@ -248,6 +254,7 @@ function _onEvent(event, data, msg) {
     state.runStatus = d.ok ? 'done' : 'failed'
     state.progress = 100
     state.finalOutput = d.final_output || ''
+    onTaskComplete() // 多形态化身：任务完成 → celebrate 爆发（仅加 class 钩子，不改既有逻辑）
     if (d.node_status) {
       for (const [n, s] of Object.entries(d.node_status)) {
         if (state.nodes[n]) state.nodes[n].status = s
@@ -299,6 +306,7 @@ function _pushConversation(kind, text) {
 }
 
 // M3：translator 选型可视化事件
+// 契约：事件名 "selection" 须与后端 realtime.EVENT_TRANSLATOR_SELECTION 保持一致
 function _onTranslator(event, d) {
   if (event !== 'selection') return
   const sel = {
@@ -313,6 +321,24 @@ function _onTranslator(event, d) {
   }
   state.translator = sel
   state.translatorHistory = [sel, ...(state.translatorHistory || [])].slice(0, 5)
+
+  // M3 Lock-Then-Animate（手册 §4 验收）：从 selection 抽取 consistency_plan，
+  // 生成时悬浮球显示「已锁定角色 X」。四杠杆状态由后端 build_lock_plan 真实推导。
+  const cp = (d.selected && d.selected.consistency_plan) || null
+  if (cp && cp.character_name) {
+    state.lockedCharacter = {
+      name: cp.character_name || '',
+      lockMode: cp.lock_mode || '',
+      firstFrame: cp.first_frame || '',
+      referenceImages: Array.isArray(cp.reference_images) ? cp.reference_images : [],
+      levers: cp.levers || {},
+      faceVectorDim: cp.face_vector_dim || 0,
+      consistencyPrompt: cp.consistency_prompt || '',
+    }
+  } else {
+    // 无角色绑定（style_only 或纯风格）：不展示锁定卡
+    state.lockedCharacter = null
+  }
 }
 
 function _subscribe(pid) {
@@ -491,8 +517,91 @@ async function refreshOrb() {
 }
 
 // ---- 对外 API -------------------------------------------------------------
+/* ===================== DirectorOrb 多形态化身（皮肤） =====================
+ * 按《DirectorOrb悬浮球多形态化身增强规格》v2.0 实现。
+ * RED 纪律：不改动既有拖动 / WS / 面板逻辑，仅新增响应式状态 + 钩子。
+ * 注意：平台当前仅有 P5 主题（useTheme 的 VALID_PRESETS 无 cyberpunk），
+ *       故仅实现 P5 四形态；非 P5 主题下悬浮球保持原样（RED-04 默认主题不动）。
+ */
+const MORPH_REGISTRY = {
+  p5: [
+    { key: 'sword', label: '绅士细剑' },
+    { key: 'mask', label: '怪盗面具' },
+    { key: 'tower', label: '命运塔罗' },
+    { key: 'shackle', label: '心锁锁链' },
+  ],
+  // 夜城赛博四件套（手册 §8.1）。注：四形态视觉换肤为增强项（手册允许随后补充），
+  // 当前夜城主题下悬浮球统一呈现 HUD 扫描框皮肤（§8.3），本表用于设置页主题感知选择 + 持久化。
+  cyberpunk: [
+    { key: 'sword', label: '霓虹武士刀' },
+    { key: 'chip', label: 'Relic 芯片' },
+    { key: 'nanowire', label: '纳米线' },
+    { key: 'scanframe', label: 'HUD 扫描框' },
+  ],
+}
+// 供设置页枚举的皮肤列表（仅 P5 主题可用；'random' 由 setOrbSkin 处理）
+export const ORB_SKINS = [{ key: 'random', label: '随机' }, ...MORPH_REGISTRY.p5]
+// 夜城主题对应的赛博四件套（§9.3 主题感知设置）
+export const ORB_SKINS_CYBER = [{ key: 'random', label: '随机' }, ...MORPH_REGISTRY.cyberpunk]
+
+const morphIndex = ref(0)
+export const isSwitching = ref(false)
+export const isCelebrating = ref(false)
+// 用户偏好皮肤（设置页写入；'random' 表示每次进入随机一种）
+export const orbSkin = ref('sword')
+
+export const currentMorph = computed(() => {
+  const list = MORPH_REGISTRY.p5
+  return list[((morphIndex.value % list.length) + list.length) % list.length]
+})
+
+let _switchTimer = null
+export function cycleMorph() {
+  const list = MORPH_REGISTRY.p5
+  morphIndex.value = (morphIndex.value + 1) % list.length
+  isSwitching.value = true
+  if (_switchTimer) clearTimeout(_switchTimer)
+  _switchTimer = setTimeout(() => { isSwitching.value = false }, 600)
+}
+
+let _celebrateTimer = null
+export function onTaskComplete() {
+  isCelebrating.value = true
+  if (_celebrateTimer) clearTimeout(_celebrateTimer)
+  _celebrateTimer = setTimeout(() => { isCelebrating.value = false }, 800)
+}
+
+// 设置页写入默认皮肤：把 key 映射为 morphIndex；'random' 取随机
+export function setOrbSkin(key) {
+  orbSkin.value = key || 'sword'
+  const list = MORPH_REGISTRY.p5
+  if (key === 'random') {
+    morphIndex.value = Math.floor(Math.random() * list.length)
+  } else {
+    const i = list.findIndex((x) => x.key === key)
+    morphIndex.value = i >= 0 ? i : 0
+  }
+}
+
+// 初始化：从 localStorage(wn_settings.orbSkin) 读取用户偏好
+export function initOrbSkinFromStorage() {
+  try {
+    const raw = localStorage.getItem('wn_settings')
+    if (raw) {
+      const s = JSON.parse(raw)
+      if (s && s.orbSkin) setOrbSkin(s.orbSkin)
+    }
+  } catch (e) { /* 忽略损坏数据 */ }
+}
+
 export function useDirectorOrb() {
-  return { state, NODE_TXT, NODE_KIND, NODE_ORDER, PHASE_SKILLS }
+  return {
+    state, NODE_TXT, NODE_KIND, NODE_ORDER, PHASE_SKILLS,
+    // 多形态化身
+    MORPH_REGISTRY, ORB_SKINS, currentMorph, morphIndex,
+    isSwitching, isCelebrating, orbSkin,
+    cycleMorph, onTaskComplete, setOrbSkin, initOrbSkinFromStorage,
+  }
 }
 
 export function directorOrbInit(pid, phase) {

@@ -1,30 +1,41 @@
 <script setup>
-import { reactive, ref, watch, onBeforeUnmount, onMounted } from 'vue'
+import { reactive, ref, computed, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useTheme } from '../composables/useTheme'
-import { getSettings, updateSettings, getLocalModels, testModelConnection } from '../api'
+import { setOrbSkin, ORB_SKINS, ORB_SKINS_CYBER } from '../composables/useDirectorOrb'
+import { getSettings, updateSettings, getLocalModels, testModelConnection, post, getResourceCatalog, getConsistencyReadiness } from '../api'
+import TemplateEditor from './TemplateEditor.vue'
+import ModelManager from './ModelManager.vue'
 
 const router = useRouter()
 const LS_KEY = 'wn_settings'
 const APP_PREFIX = 'wn_'
 const APP_VERSION = 'v1.3.0'
 
-// 主题色圆点映射到 style.css 的配色预设（与 useTheme 的 VALID_PRESETS 对齐）
+// 配色主题（强调色）映射到 style.css 的 t-* 预设（与 useTheme 的 VALID_PRESETS 严格对齐）
+// 每个预设 ⇄ 一个强调色，双向唯一，保证往返一致；'default' = 原始默认主题（不覆盖变量）。
 const ACCENT_TO_PRESET = {
-  purple: '',
+  default: 'default',
   pink: 'splice',
   blue: 'blue',
   green: 'green',
   orange: 'gradient',
+  gray: 'gray',
+  p5: 'p5',
+  cyberpunk: 'cyberpunk',
+  custom: 'custom',
 }
 const PRESET_TO_ACCENT = {
-  '': 'purple',
+  default: 'default',
   splice: 'pink',
   blue: 'blue',
   green: 'green',
   gradient: 'orange',
-  gray: 'purple',
+  gray: 'gray',
+  p5: 'p5',
+  cyberpunk: 'cyberpunk',
+  custom: 'custom',
 }
 
 const DEFAULT_OLLAMA_URL = 'http://127.0.0.1:11434'
@@ -88,8 +99,9 @@ const defaults = () => ({
   theme: 'dark',
   fontSize: 14,
   language: 'zh-CN',
-  accent: 'purple',
+  accent: 'p5',
   density: 'standard',
+  orbSkin: 'sword', // 悬浮球化身皮肤（仅 P5 怪盗主题生效；random/sword/mask/tower/shackle）
   // AI 模型：本地/在线可切换 + 自定义路径（向后兼容旧字段）
   createModel: 'qwen3.5:9b',
   videoModel: 'ComfyUI 本地视频工作流',
@@ -133,7 +145,10 @@ const load = () => {
 }
 
 const settings = reactive(load())
-const { set: setTheme, setPreset } = useTheme()
+const { set: setTheme, setPreset, applyFontSize, applyDensity, hasCustomTheme } = useTheme()
+// 是否已保存自定义主题（控制设置页「自定义」色块是否可选；手册 T-2/T-3）
+const customThemeSaved = ref(false)
+onMounted(() => { customThemeSaved.value = hasCustomTheme() })
 
 // 把旧版平面字段（createModel/planningModel/videoModel/imgModel）迁移到新版 modelSettings
 const migrateLegacyModelSettings = () => {
@@ -220,11 +235,30 @@ const runModelTest = async (key) => {
 const persist = () => {
   try { localStorage.setItem(LS_KEY, JSON.stringify({ ...settings })) } catch (e) {}
 }
-watch(settings, persist, { deep: true })
+// 注：不再用 watch(settings, persist, {deep:true}) 全局自动保存 —— 否则「保存设置」按钮形同虚设。
+// 主题/强调色由下方 apply watch 实时生效并持久化（符合用户预期）；
+// 其余设置仅在点击「保存设置」时经 saveAll() 落盘（localStorage + 后端），使按钮成为真实闸门。
 watch(() => settings.theme, setTheme)
 watch(() => settings.accent, (v) => {
-  const preset = ACCENT_TO_PRESET[v] ?? ''
+  const preset = ACCENT_TO_PRESET[v] ?? 'default'
   setPreset(preset)
+})
+// 字号 / 密度 / 语言：实时预览（直接作用于 DOM），持久化仍由「保存设置」统一落盘
+watch(() => settings.fontSize, (v) => applyFontSize(v), { immediate: true })
+watch(() => settings.density, (v) => applyDensity(v), { immediate: true })
+watch(() => settings.language, (v) => { document.documentElement.lang = v || 'zh-CN' }, { immediate: true })
+
+// 悬浮球皮肤：即时生效 + 即时持久（与配色主题一致，避免进入项目后被 initOrbSkinFromStorage 读回旧值）
+const applyOrbSkin = (key) => {
+  settings.orbSkin = key
+  setOrbSkin(key)
+  try { localStorage.setItem(LS_KEY, JSON.stringify({ ...settings })) } catch (e) {}
+}
+// 悬浮球皮肤列表主题感知（手册 §9.3）：夜城→赛博四件套；P5→怪盗四件套；其他主题→空（隐藏）
+const orbSkins = computed(() => {
+  if (settings.accent === 'cyberpunk') return ORB_SKINS_CYBER
+  if (settings.accent === 'p5') return ORB_SKINS
+  return []
 })
 
 const saveAll = async () => {
@@ -293,6 +327,40 @@ const backupNow = () => {
   ElMessage.success('已创建本地备份文件')
 }
 
+// 一键重构前端：调用后端 /system/rebuild-frontend 执行 build_frontend.sh
+const rebuildIng = ref(false)
+const rebuildResult = ref(null)   // { success, exit_code, busy, output } | null
+const reloadPage = () => location.reload()
+const rebuildFrontend = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '将重新构建整个前端（执行 vite build，约 15–30 秒）。构建期间页面可能短暂不可用，完成后请刷新页面。是否继续？',
+      '一键重构前端',
+      { confirmButtonText: '开始重构', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  rebuildIng.value = true
+  rebuildResult.value = null
+  try {
+    const r = await post('/system/rebuild-frontend', {}, { timeout: 180000 })
+    rebuildResult.value = r
+    if (r && r.success) {
+      ElMessage.success('前端重构完成，请刷新页面以加载新版本')
+    } else if (r && r.busy) {
+      ElMessage.warning(r.output || '已有构建任务在执行')
+    } else {
+      ElMessage.error('前端重构失败（详见下方输出）')
+    }
+  } catch (e) {
+    rebuildResult.value = { success: false, exit_code: -1, output: (e && e.message) || String(e) }
+    ElMessage.error('前端重构请求失败：' + ((e && e.message) || e))
+  } finally {
+    rebuildIng.value = false
+  }
+}
+
 // 真实网络测速：ping 本地后端 /health
 const speedProgress = ref(0)
 const speedIng = ref(false)
@@ -353,7 +421,14 @@ onMounted(async () => {
       settings.theme = preserved.theme
       const validAccents = accents.map(a => a.key)
       settings.accent = validAccents.includes(backend.accent) ? backend.accent : preserved.accent
-      setPreset(ACCENT_TO_PRESET[settings.accent] ?? '')
+      // 全局预设（manju_theme）为全站统一基线：以启动期已由 useTheme 应用的 html.t-* 为准，
+      // 并将 accent 选择器对齐到它。无 t-* 类 = 显式「默认」预设（original）。
+      const _presetClass = [...document.documentElement.classList].find((c) => c.startsWith('t-'))
+      const _globalPreset = _presetClass ? _presetClass.slice(2) : 'default'
+      settings.accent = PRESET_TO_ACCENT[_globalPreset] || settings.accent
+      // 自定义主题未保存时，不允许落入 custom（色块应置灰）
+      if (settings.accent === 'custom' && !customThemeSaved.value) settings.accent = 'p5'
+      setPreset(_globalPreset === 'custom' && !customThemeSaved.value ? 'p5' : _globalPreset)
     }
   } catch (e) {
     console.warn('settings backend failed, use local', e.message)
@@ -365,7 +440,90 @@ onMounted(async () => {
 
   // 为本地 Ollama 模型选择器填充列表
   refreshLocalLLMLists()
+
+  // M1/M2：加载能力维度 + 资源注册表（能力维度声明 + 首尾帧分级）
+  loadCapabilityCatalog()
+  // P1 M3/M5：权重前置诚实探测（四杠杆所需权重就绪状态）
+  loadWeightReadiness()
 })
+
+// ---- M1/M2 能力维度 + 资源注册表（模型无关）----
+const capabilityDimensions = ref([])   // 6 个能力维度（key/name/implementer/declare）
+const resourceCatalog = ref(null)      // 资源清单（models/loras/ip_adapters/controlnets）
+const catalogLoading = ref(false)
+const catalogOnline = ref(false)
+
+async function loadCapabilityCatalog() {
+  catalogLoading.value = true
+  try {
+    const r = await getResourceCatalog()
+    capabilityDimensions.value = (r && r.capability_dimensions) || []
+    resourceCatalog.value = r || null
+    catalogOnline.value = !!(r && r.online)
+  } catch (e) {
+    console.warn('resource/catalog failed', e.message)
+    capabilityDimensions.value = []
+    resourceCatalog.value = null
+    catalogOnline.value = false
+  } finally {
+    catalogLoading.value = false
+  }
+}
+
+// P1 M3/M5 权重前置诚实探测：四杠杆所需权重就绪状态
+// 缺失时红色"缺失" + 缺失文件名/错误明细，避免静默降级成"无锁脸"。
+const weightReadiness = ref(null)   // { weights:{ipadapter,clip_vision,controlnet,insightface}, all_ready, missing:[{name,error}] }
+const weightLoading = ref(false)
+const WEIGHT_LABELS = {
+  ipadapter: 'IP-Adapter 权重',
+  clip_vision: 'CLIP Vision 权重',
+  controlnet: 'ControlNet 权重',
+  insightface: 'InsightFace（人脸引擎）',
+}
+function weightStatus(name) {
+  const w = weightReadiness.value
+  if (!w || !w.weights) return 'unknown'
+  return w.weights[name] ? 'ready' : 'missing'
+}
+function weightError(name) {
+  const w = weightReadiness.value
+  if (!w) return ''
+  const m = (w.missing || []).find((x) => x.name === name)
+  return m ? m.error : ''
+}
+async function loadWeightReadiness() {
+  weightLoading.value = true
+  try {
+    weightReadiness.value = await getConsistencyReadiness()
+  } catch (e) {
+    console.warn('consistency/readiness failed', e && e.message)
+    weightReadiness.value = { weights: {}, all_ready: false, missing: [] }
+  } finally {
+    weightLoading.value = false
+  }
+}
+
+// 资源清单分区（与 /resource/catalog 返回键严格对齐）
+const capBuckets = [
+  { key: 'models', label: '模型 / 视频底模' },
+  { key: 'ip_adapters', label: 'IP-Adapter' },
+  { key: 'controlnets', label: 'ControlNet' },
+  { key: 'loras', label: 'LoRA' },
+]
+
+// 声明参数值 / 首尾帧分级 格式化
+function fmtVal(v) {
+  if (v === null || v === undefined) return '—'
+  if (typeof v === 'object') {
+    try { return JSON.stringify(v) } catch (e) { return String(v) }
+  }
+  return String(v)
+}
+
+function faInterp(item) {
+  const fa = item.frame_anchor_grading || (item.capabilities && item.capabilities.frame_anchor)
+  return !!(fa && fa.interpolation)
+}
 
 const checkUpdate = () => ElMessage(`当前版本 ${APP_VERSION} · 个人本地版通过 Git/版本管理器更新`)
 const goHelp = () => router.push('/help')
@@ -383,8 +541,15 @@ const resolutions = ['480p', '720p', '1080p', '2K', '4K']
 const ratios = ['16:9', '9:16', '1:1', '4:3', '21:9']
 const durations = [5, 8, 10, 12, 15]
 const accents = [
-  { key: 'purple', color: '#8a5cff' }, { key: 'pink', color: '#ff4d8d' },
-  { key: 'blue', color: '#4d9fff' }, { key: 'green', color: '#3ddc84' }, { key: 'orange', color: '#ff7a45' },
+  { key: 'default', label: '默认(原始紫)', color: '#8a5cff' },
+  { key: 'pink', label: '粉紫拼接', color: '#ff4d8d' },
+  { key: 'blue', label: '商务蓝', color: '#4d9fff' },
+  { key: 'green', label: '清新绿', color: '#3ddc84' },
+  { key: 'orange', label: '暖橙渐变', color: '#ff7a45' },
+  { key: 'gray', label: '灰阶', color: '#9aa3b2' },
+  { key: 'p5', label: 'P5 怪盗', color: '#E4002B' },
+  { key: 'cyberpunk', label: '夜城 HUD', color: 'linear-gradient(135deg,#FEE100 0 50%,#00F0FF 50% 100%)' },
+  { key: 'custom', label: '自定义', color: 'conic-gradient(#E4002B,#FEE100,#00F0FF)', custom: true },
 ]
 const hotkeys = [
   { k: 'Ctrl + S', d: '保存当前编辑' }, { k: 'Ctrl + Z', d: '撤销' },
@@ -396,7 +561,7 @@ const hotkeys = [
   <div class="page">
     <div class="page-head">
       <div>
-        <h1>设置</h1>
+        <h1 class="p5-title">设置</h1>
         <span class="muted">偏好会保存在本机浏览器与后端，刷新后仍生效（个人版·本地）</span>
       </div>
       <el-button type="primary" @click="saveAll">保存设置</el-button>
@@ -405,33 +570,57 @@ const hotkeys = [
     <el-tabs type="border-card" class="set-tabs">
       <!-- 外观 -->
       <el-tab-pane label="外观">
-        <div class="field"><label>主题</label>
+        <div class="field"><label>明暗模式</label>
           <el-radio-group v-model="settings.theme">
             <el-radio value="light">浅色</el-radio>
             <el-radio value="dark">深色</el-radio>
             <el-radio value="auto">跟随系统</el-radio>
           </el-radio-group>
+          <span class="muted">（与下方「配色主题」相互独立：明暗控制深/浅底，配色控制主色系）</span>
         </div>
         <div class="field"><label>字体大小</label>
           <el-slider v-model="settings.fontSize" :min="12" :max="20" show-input style="max-width:320px" />
+          <span class="muted">{{ settings.fontSize }}px（全站生效，保存后持久）</span>
         </div>
         <div class="field"><label>语言</label>
           <el-select v-model="settings.language" style="max-width:220px">
             <el-option label="简体中文" value="zh-CN" />
+            <el-option label="English" value="en" />
           </el-select>
         </div>
-        <div class="field"><label>主题色</label>
+        <div class="field" style="align-items:flex-start"><label>配色主题</label>
           <div class="accents">
-            <span v-for="a in accents" :key="a.key" class="ac" :class="{ on: settings.accent === a.key }"
-                  :style="{ background: a.color }" @click="settings.accent = a.key" />
+            <template v-for="a in accents" :key="a.key">
+              <el-tooltip v-if="a.custom && !customThemeSaved" content="请先在「页面自定义」中保存主题" placement="top">
+                <button type="button" class="ac-item locked" disabled @click.prevent>
+                  <span class="ac" :style="{ background: a.color }"><span class="lock">🔒</span></span>
+                  <span class="ac-label">{{ a.label }}</span>
+                </button>
+              </el-tooltip>
+              <button v-else type="button" class="ac-item" :class="{ on: settings.accent === a.key }" @click="settings.accent = a.key">
+                <span class="ac" :style="{ background: a.color }"></span>
+                <span class="ac-label">{{ a.label }}</span>
+              </button>
+            </template>
           </div>
         </div>
+        <div class="field" style="align-items:flex-start" v-if="orbSkins.length"><label>悬浮球皮肤</label>
+          <div class="accents">
+            <button v-for="s in orbSkins" :key="s.key" type="button" class="ac-item" :class="{ on: settings.orbSkin === s.key }" @click="applyOrbSkin(s.key)">
+              <span class="ac" :style="{ background: s.key === 'random' ? (settings.accent === 'cyberpunk' ? 'conic-gradient(#00F0FF,#FEE100,#00F0FF)' : 'conic-gradient(#E4002B,#0B0B0B,#E4002B)') : (settings.accent === 'cyberpunk' ? '#00F0FF' : '#E4002B') }"></span>
+              <span class="ac-label">{{ s.label }}</span>
+            </button>
+          </div>
+          <span class="muted">（{{ settings.accent === 'cyberpunk' ? '夜城赛博四件套；悬浮球统一呈现 HUD 扫描框皮肤，四形态视觉换肤为增强项' : '仅 P5 怪盗主题生效；双击悬浮球可临时切换形态，设置项决定默认形态' }}）</span>
+        </div>
+        <div class="field" v-else><label>悬浮球皮肤</label><span class="muted">当前主题不支持悬浮球皮肤（仅 P5 / 夜城主题可用）</span></div>
         <div class="field"><label>界面密度</label>
           <el-radio-group v-model="settings.density">
             <el-radio value="compact">紧凑</el-radio>
             <el-radio value="standard">标准</el-radio>
             <el-radio value="loose">宽松</el-radio>
           </el-radio-group>
+          <span class="muted">（影响表单间距，保存后持久）</span>
         </div>
       </el-tab-pane>
 
@@ -519,8 +708,9 @@ const hotkeys = [
 
       <!-- 存储 -->
       <el-tab-pane label="存储">
-        <div class="field"><label>存储路径</label>
+        <div class="field"><label>存储位置</label>
           <el-input :model-value="settings.storagePath" disabled style="max-width:360px" />
+          <span class="muted">（自动管理，跟随系统 APPDATA，无需手动修改）</span>
         </div>
         <div class="field"><label>缓存清理</label>
           <el-popconfirm title="确认清空本应用本地缓存？" confirm-button-text="清空" cancel-button-text="取消" @confirm="clearCache">
@@ -597,6 +787,31 @@ const hotkeys = [
         <div class="field"><label>导出数据</label><el-button type="primary" plain @click="exportData">导出我的数据</el-button></div>
       </el-tab-pane>
 
+      <!-- 维护 -->
+      <el-tab-pane label="维护">
+        <div class="field" style="align-items:flex-start">
+          <label>一键重构</label>
+          <div style="flex:1">
+            <el-button type="warning" :loading="rebuildIng" @click="rebuildFrontend">
+              {{ rebuildIng ? '重构中…' : '一键重构前端' }}
+            </el-button>
+            <span class="muted" style="margin-left:10px">重新构建整个前端（vite build），构建完成后请刷新页面</span>
+            <div v-if="rebuildResult" style="margin-top:14px">
+              <el-alert
+                :type="rebuildResult.success ? 'success' : (rebuildResult.busy ? 'warning' : 'error')"
+                :title="rebuildResult.success ? '重构成功' : (rebuildResult.busy ? '构建进行中' : '重构失败')"
+                :closable="false" show-icon
+              />
+              <div v-if="rebuildResult.success" style="margin-top:10px">
+                <el-button size="small" type="primary" @click="reloadPage">刷新页面</el-button>
+              </div>
+              <pre v-if="rebuildResult.output" class="rebuild-log">{{ rebuildResult.output }}</pre>
+            </div>
+          </div>
+        </div>
+        <div class="field"><label>版本</label><span class="muted">前端 {{ APP_VERSION }} · 后端 v1.4-agent</span></div>
+      </el-tab-pane>
+
       <!-- 关于 -->
       <el-tab-pane label="关于">
         <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
@@ -613,16 +828,132 @@ const hotkeys = [
           <el-button type="primary" plain @click="goHelp">反馈入口</el-button>
         </div>
       </el-tab-pane>
+
+      <!-- 能力维度（M1/M2 · 模型无关能力声明）-->
+      <el-tab-pane label="能力维度">
+        <div v-loading="catalogLoading">
+          <div class="cap-banner">
+            <el-tag :type="catalogOnline ? 'success' : 'info'" size="small">
+              {{ catalogOnline ? 'ComfyUI 在线探测' : '离线 / ComfyUI 不可达' }}
+            </el-tag>
+            <span class="muted">共 {{ capabilityDimensions.length }} 个能力维度；视频生成 = 能力维度组合，模型只是能力的可替换实现。</span>
+          </div>
+
+          <!-- P1 M3/M5 权重前置诚实探测：四杠杆所需权重就绪状态 -->
+          <h4 class="cap-h">权重就绪状态（Lock-Then-Animate 四杠杆所需）</h4>
+          <div class="weight-readiness" v-loading="weightLoading">
+            <div v-if="weightReadiness" class="wr-summary" :class="weightReadiness.all_ready ? 'ok' : 'bad'">
+              {{ weightReadiness.all_ready ? '✓ 全部权重就绪，锁脸能力可用' : '⚠ 部分权重缺失，生成时将诚实报错（不会静默降级为无锁脸）' }}
+            </div>
+            <div class="wr-grid">
+              <div v-for="(label, key) in WEIGHT_LABELS" :key="key" class="wr-item" :class="weightStatus(key)">
+                <span class="wr-name">{{ label }}</span>
+                <span class="wr-state" v-if="weightStatus(key) === 'ready'">✓ 就绪</span>
+                <span class="wr-state missing" v-else-if="weightStatus(key) === 'missing'">✕ 缺失</span>
+                <span class="wr-state unknown" v-else>探测中…</span>
+                <span v-if="weightStatus(key) === 'missing' && weightError(key)" class="wr-err">{{ weightError(key) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 6 个能力维度卡片 -->
+          <h4 class="cap-h">能力维度清单（系统已实现）</h4>
+          <div class="cap-grid">
+            <div v-for="dim in capabilityDimensions" :key="dim.key" class="cap-card">
+              <div class="cap-card-h">
+                <span class="cap-name">{{ dim.name }}</span>
+                <el-tag size="small" effect="plain">{{ dim.key }}</el-tag>
+              </div>
+              <div class="cap-imp">实现：{{ dim.implementer }}</div>
+              <div class="cap-desc">{{ dim.description }}</div>
+              <div class="cap-declare" v-if="dim.declare">
+                <div class="cap-declare-t">声明参数</div>
+                <div v-for="(v, k) in dim.declare" :key="k" class="cap-kv">
+                  <span class="cap-k">{{ k }}</span><span class="cap-v">{{ fmtVal(v) }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 资源清单：模型/节点/LoRA 各自声明能力维度 + 首尾帧分级 -->
+          <template v-if="resourceCatalog">
+            <h4 class="cap-h">资源清单（模型 / 节点 / LoRA 的能力维度声明 + 首尾帧分级）</h4>
+
+            <div v-for="bucket in capBuckets" :key="bucket.key">
+              <div class="cap-bucket-h" v-if="(resourceCatalog[bucket.key] || []).length">
+                {{ bucket.label }}（{{ (resourceCatalog[bucket.key] || []).length }}）
+              </div>
+              <div v-for="item in (resourceCatalog[bucket.key] || [])" :key="bucket.key + '-' + item.name" class="res-card">
+                <div class="res-h">
+                  <span class="res-name">{{ item.name }}</span>
+                  <span v-if="faInterp(item)" class="fa-badge fa-good">首尾帧插值</span>
+                  <span v-else-if="item.frame_anchor_grading || (item.capabilities && item.capabilities.frame_anchor)" class="fa-badge">首帧外推</span>
+                  <span v-if="item.available !== undefined" class="muted" style="font-size:12px">
+                    {{ item.available ? '· 磁盘已确认' : '· 未确认' }}
+                  </span>
+                </div>
+                <div class="res-caps">
+                  <span v-for="(detail, ckey) in (item.capabilities || {})" :key="ckey"
+                        class="cap-chip" :title="fmtVal(detail)">{{ ckey }}</span>
+                  <span v-if="!item.capabilities || !Object.keys(item.capabilities).length" class="muted">
+                    未声明能力维度
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 节点族已声明实现 -->
+            <div class="cap-bucket-h" v-if="(resourceCatalog.declared_implementations || []).length">
+              节点族已声明实现（{{ resourceCatalog.declared_implementations.length }}）
+            </div>
+            <div v-for="item in (resourceCatalog.declared_implementations || [])" :key="'di-' + item.name" class="res-card">
+              <div class="res-h">
+                <span class="res-name">{{ item.name }}</span>
+                <el-tag size="small" effect="plain">{{ item.type }}</el-tag>
+                <span v-if="faInterp(item)" class="fa-badge fa-good">首尾帧插值</span>
+                <span v-else-if="item.capabilities && item.capabilities.frame_anchor" class="fa-badge">首帧外推</span>
+              </div>
+              <div class="res-caps">
+                <span v-for="(detail, ckey) in (item.capabilities || {})" :key="ckey" class="cap-chip">{{ ckey }}</span>
+              </div>
+            </div>
+          </template>
+
+          <el-empty v-else description="暂无资源注册表数据（已离线降级）" />
+        </div>
+      </el-tab-pane>
+
+      <!-- P3 M2 用户自定义模板（ComfyUI workflow → 语义模板 → 注册进 P0 映射）-->
+      <el-tab-pane label="模板">
+        <p class="muted" style="margin:0 0 14px">
+          把 ComfyUI 工作流导入为「语义模板」并注册进 P0 的 task_type→模板映射（同名覆盖系统模板，导演链路自动选用）。
+          支持自动识别 checkpoint / 提示词 / seed / steps / 尺寸等占位符。
+        </p>
+        <TemplateEditor />
+      </el-tab-pane>
+
+      <!-- P4 M1 新模型零代码接入 -->
+      <el-tab-pane label="模型">
+        <ModelManager />
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
 
 <style scoped>
 .field label { width: 90px; color: var(--sub); font-size: 13px; flex: 0 0 90px; }
-.field { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
-.accents { display: flex; gap: 8px; }
-.ac { width: 22px; height: 22px; border-radius: 6px; cursor: pointer; border: 2px solid transparent; }
-.ac.on { border-color: #fff; box-shadow: 0 0 0 2px var(--pur); }
+.field { display: flex; align-items: center; gap: var(--density-gap, 12px); margin-bottom: var(--density-item-mb, 16px); flex-wrap: wrap; }
+.accents { display: flex; flex-wrap: wrap; gap: 10px; }
+.ac-item { display: flex; flex-direction: column; align-items: center; gap: 6px; background: transparent; border: 0; cursor: pointer; padding: 4px 6px; border-radius: 8px; }
+.ac-item .ac { width: 26px; height: 26px; border-radius: 6px; border: 2px solid transparent; transition: transform .12s; }
+.ac-item:hover .ac { transform: scale(1.08); }
+.ac-item.on { background: rgba(138,92,255,.10); }
+.ac-item.on .ac { border-color: #fff; box-shadow: 0 0 0 2px var(--pur); }
+.ac-item.locked { opacity: .45; cursor: not-allowed; }
+.ac-item.locked .ac { position: relative; }
+.ac-item.locked .lock { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 13px; }
+.ac-label { font-size: 11px; color: var(--sub); }
+.ac-item.on .ac-label { color: var(--txt); font-weight: 600; }
 .hk-list { display: flex; flex-direction: column; gap: 8px; }
 .hk { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--txt); }
 .hk kbd { background: var(--card-2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; font-family: monospace; }
@@ -634,4 +965,47 @@ const hotkeys = [
 .mc-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .mc-title { font-weight: 700; font-size: 14px; color: var(--txt); }
 .test-result { font-size: 13px; max-width: 420px; line-height: 1.4; }
+.rebuild-log {
+  margin-top: 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+  background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+  font-size: 12px; line-height: 1.5; color: var(--sub); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* M1/M2 能力维度 + 资源注册表 */
+.cap-banner { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.cap-h { font-size: 14px; font-weight: 700; color: var(--txt); margin: 18px 0 12px; }
+/* P1 M3/M5 权重就绪状态卡 */
+.weight-readiness { margin: 4px 0 4px; }
+.wr-summary { font-size: 12.5px; padding: 8px 12px; border-radius: 10px; margin-bottom: 10px; font-weight: 600; }
+.wr-summary.ok { background: rgba(74,222,128,.12); color: #4ade80; }
+.wr-summary.bad { background: rgba(255,94,125,.12); color: #ff8da0; }
+.wr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.wr-item { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 10px; background: var(--bg-2, #20202c); border: 1px solid var(--line, #2a2a38); }
+.wr-item.ready { border-color: rgba(74,222,128,.4); }
+.wr-item.missing { border-color: rgba(255,94,125,.45); background: rgba(255,94,125,.07); }
+.wr-name { font-size: 12.5px; color: var(--txt); font-weight: 600; }
+.wr-state { font-size: 11px; padding: 2px 9px; border-radius: 8px; font-weight: 700; }
+.wr-state.ready { background: rgba(74,222,128,.16); color: #4ade80; }
+.wr-state.missing { background: rgba(255,94,125,.16); color: #ff8da0; }
+.wr-state.unknown { background: rgba(150,150,170,.14); color: var(--sub, #7a8094); }
+.wr-err { flex-basis: 100%; font-size: 10.5px; color: #ff8da0; line-height: 1.4; word-break: break-all; margin-top: 2px; }
+.cap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.cap-card { background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+.cap-card-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.cap-name { font-weight: 700; font-size: 14px; color: var(--txt); }
+.cap-imp { font-size: 12px; color: var(--pur); margin-bottom: 6px; }
+.cap-desc { font-size: 12px; color: var(--sub); line-height: 1.6; margin-bottom: 10px; }
+.cap-declare { border-top: 1px dashed var(--line); padding-top: 8px; }
+.cap-declare-t { font-size: 11px; color: var(--sub); margin-bottom: 6px; }
+.cap-kv { display: flex; gap: 8px; font-size: 12px; line-height: 1.5; margin-bottom: 3px; }
+.cap-k { color: var(--sub); flex: 0 0 84px; }
+.cap-v { color: var(--txt); word-break: break-all; }
+.cap-bucket-h { font-size: 13px; font-weight: 700; color: var(--txt); margin: 16px 0 8px; }
+.res-card { background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+.res-h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.res-name { font-weight: 700; font-size: 13px; color: var(--txt); }
+.res-caps { display: flex; flex-wrap: wrap; gap: 6px; }
+.cap-chip { font-size: 11px; padding: 2px 8px; border-radius: 6px; background: var(--pur); color: #fff; opacity: .9; }
+.fa-badge { font-size: 11px; padding: 2px 8px; border-radius: 6px; background: var(--sub); color: #fff; }
+.fa-badge.fa-good { background: #2ecc71; }
 </style>

@@ -13,6 +13,12 @@
   --green: #3ddc84;
   --warn: #ffb020;
   --grad: linear-gradient(90deg, var(--pink), var(--pur));
+  /* 外观设置：字体大小（由 Settings 实时写入 --app-font-size / --el-font-size-base） */
+  --app-font-size: 14px;
+  /* 外观设置：界面密度间距令牌（由 html.density-* 覆盖） */
+  --density-gap: 12px;
+  --density-item-mb: 16px;
+  --density-pad: 14px;
 }
 html.light {
   --bg: #f2f3f6;
@@ -30,12 +36,16 @@ html.light {
   --warn: #ff8800;
   --grad: linear-gradient(90deg, var(--pink), var(--pur));
 }
+/* 界面密度：紧凑 / 标准(默认) / 宽松，覆盖 :root 间距令牌 */
+html.density-compact { --density-gap: 8px; --density-item-mb: 10px; --density-pad: 8px; --el-font-size-base: 13px; }
+html.density-loose   { --density-gap: 16px; --density-item-mb: 22px; --density-pad: 20px; --el-font-size-base: 15px; }
 * { box-sizing: border-box; }
 html, body, #app { height: 100%; margin: 0; }
 body {
   background: var(--bg);
   color: var(--txt);
   font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  font-size: var(--app-font-size, 14px);
   overflow: hidden;
 }
 a { color: var(--blue); text-decoration: none; }
@@ -498,8 +508,10 @@ html.theme-anim *::after {
 }
 
 
-/* ---------- 配色预设（与明暗正交，挂在 html.t-* 上；默认=粉紫，即 :root 无需加类）
+/* ---------- 配色预设（与明暗正交，挂在 html.t-* 上）
    与后台 manju_admin 的 src/style.css 保持单一来源一致，变量同名直接生效。 ---------- */
+/* 默认（原始粉紫主题）：不覆盖任何变量，等价于 :root 基础值；对应 Settings「默认(原始紫)」 */
+html.t-default { /* 无覆盖，保留 :root 基础配色 */ }
 /* 灰 */
 html.t-gray{
   --pink:#9aa3b2; --pur:#6b7280; --grad:linear-gradient(90deg,#9aa3b2,#6b7280);
@@ -535,3 +547,1921 @@ html.t-splice{
   --el-color-primary-light-7:#ffc0db; --el-color-primary-light-8:#ffd3e6; --el-color-primary-light-9:#ffe6f1;
   --el-color-primary-dark-2:#cc3e71;
 }
+
+/* ============================================================================
+   P5（女神异闻录5）风格主题 · 怪盗风
+   依据：D:\AI\md\万能短剧AI创作平台_P5风格UI重构开发手册.md v1.0
+   接入方式：useTheme 预设类 `t-p5`（html 上加 class）。原主题（t-gray/green/blue/
+   gradient/splice 及默认紫粉）全部保留，可随时切回。
+   设计铁律：三色（绯红#E4002B / 墨黑#0B0B0B / 纸白#F5F1E8）+ 警示黄(<5%)；
+   零圆角；硬位移印刷影（无 blur）；斜切构图（块斜字回正）；小号文字禁绯红前景。
+   实现策略：重映射现有 app 变量 + 全局覆盖现有组件类（.btn/.nav-item/.proj-card
+   等），使 33 组件零模板改动即 P5 化；并提供 .p5-* 工具类供后续精修。
+   ============================================================================ */
+
+html.t-p5 {
+  /* ---------- 3.1 色彩令牌（P5 三色铁律） ---------- */
+  --p5-red:#E4002B; --p5-red-ink:#B00020; --p5-red-deep:#8A0018;
+  --p5-ink:#0B0B0B; --p5-ink-soft:#191919;
+  --p5-paper:#F5F1E8; --p5-paper-dim:#E8E2D4;
+  --p5-white:#FFFFFF; --p5-alert:#FFE100;
+  --p5-ink-2:#141414;
+
+  /* ---------- 补充令牌（原 app 未定义，P5 块内自持；避免引用未声明变量） ---------- */
+  --line-dark:#2A2A2A;          /* 墨黑底上的深色描边/分隔线 */
+  --fg:var(--p5-white);         /* 前景文字（卡片标题/表格正文） */
+  --surface:#141414;            /* .p5-card 表面 */
+  --fg-invert:var(--p5-ink);    /* 浅底（纸白）上的反色文字 */
+  --fg-dim:#B8B4AC; --fg-faint:#6E6A63;   /* 8.1 灰阶（补全以便 .p5-menu-item 等原样引用） */
+  --link:var(--p5-red-ink); --alert:var(--p5-alert);   /* 8.1 链接/警示令牌 */
+
+  /* ---------- 重映射现有 app 变量（组件直接引用 var(--bg) 等即自动 P5 化） ---------- */
+  --bg:var(--p5-ink);
+  --bg-2:var(--p5-ink-2);
+  --panel:var(--p5-ink-soft);
+  --card:var(--p5-ink-soft);
+  --card-2:#232323;
+  --line:var(--line-dark);
+  --txt:var(--p5-white);
+  --sub:#B8B4AC;                 /* fg-dim 灰阶，非彩色 */
+  --pink:var(--p5-red);          /* 主强调 → 绯红 */
+  --pur:var(--p5-red);           /* 紫 → 红（不引入第四主色，保持单色系） */
+  --grad:var(--p5-red);          /* 渐变 → 纯绯红（P5 少用渐变） */
+  --green:#7ED957;               /* 功能性成功色，低饱和 */
+  --warn:var(--p5-alert);
+  --blue:var(--p5-white);       /* 蓝 → 白（中性，去第四色，P5 单色系） */
+  --el-color-primary:var(--p5-red);   /* Element Plus 主色蓝 → 绯红 */
+  --el-color-primary-light-3:var(--p5-red-ink);
+  --el-color-primary-light-5:var(--p5-red-deep);
+  --el-color-primary-light-7:#3a0a12;
+  --el-color-primary-light-8:#2a0810;
+  --el-color-primary-light-9:#1c060b;
+  --el-color-primary-dark-2:#ff2a4d;
+  --ok:#7ED957; --err:var(--p5-red);
+
+  /* ---------- 3.2 字体令牌（RED-04：不加载任何字体文件，纯系统栈） ---------- */
+  --font-display:'Arial Black','Helvetica Neue','Impact','PingFang SC','Microsoft YaHei','Noto Sans SC',sans-serif;
+  --font-cond:'Arial Narrow','Helvetica Neue Condensed','PingFang SC','Microsoft YaHei','Noto Sans SC',sans-serif;
+  --font-body:'PingFang SC','Microsoft YaHei','Hiragino Sans GB','Noto Sans SC','Helvetica Neue',sans-serif;
+  --font-num:'DIN Alternate','Roboto Mono','Consolas','Courier New',monospace;
+
+  /* ---------- 3.3 排版级距 ---------- */
+  --text-display:clamp(32px,5vw,56px); --lh-display:.95; --ls-display:-.02em;
+  --text-h1:clamp(24px,3vw,36px); --lh-h1:1.05;
+  --text-h2:clamp(18px,2vw,24px); --lh-h2:1.15;
+  --text-body:15px; --lh-body:1.7;
+  --text-caption:12px; --lh-caption:1.3; --ls-caption:.18em;
+  --text-num:clamp(20px,3vw,40px); --lh-num:1;
+
+  /* ---------- 3.4 阴影 / 边框 / 圆角（一律 0） ---------- */
+  --shadow-hard-sm:2px 2px 0 0 rgba(0,0,0,.9);
+  --shadow-hard:4px 4px 0 0 rgba(0,0,0,.9);
+  --shadow-hard-lg:6px 6px 0 0 rgba(0,0,0,.9);
+  --shadow-red:4px 4px 0 0 var(--p5-red-deep);
+  --shadow-paper:4px 4px 0 0 var(--p5-paper);
+  --radius:0; --radius-sm:0;
+  --border-1:1px solid var(--line-dark);
+  --border-2:2px solid var(--p5-white);
+  --border-red:2px solid var(--p5-red);
+
+  /* ---------- 3.5 动效令牌 ---------- */
+  --dur-fast:120ms; --dur-base:240ms; --dur-slow:420ms; --dur-epic:700ms;
+  --ease-out:cubic-bezier(.22,.61,.36,1);
+  --ease-pop:cubic-bezier(.34,1.56,.64,1);
+  --ease-steps:steps(4,end);
+  --skew:-6deg; --skew-title:-8deg; --skew-sm:-4deg; --skew-hard:-12deg;
+
+  /* ---------- 3.6 间距与网格 ---------- */
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
+  --space-5:24px; --space-6:32px; --space-7:48px; --space-8:64px;
+  --sidebar-w:232px; --topbar-h:54px; --panel-gap:16px;
+
+  /* ---------- 3.7 clip-path 形状 ---------- */
+  --clip-slant:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%);
+  --clip-para:polygon(10px 0,100% 0,calc(100% - 10px) 100%,0 100%);
+  --clip-zig:polygon(0 0,6px 0,12px 6px,18px 0,24px 6px,30px 0,36px 6px,42px 0,48px 6px,54px 0,60px 6px,100% 6px,100% 100%,0 100%);
+  --clip-tear:polygon(0 0,12% 4%,28% 0,46% 6%,64% 0,82% 4%,100% 0,100% 86%,92% 100%,70% 94%,48% 100%,26% 95%,6% 100%,0 92%);
+  --clip-star:polygon(50% 0,58% 24%,84% 12%,74% 38%,100% 50%,74% 62%,84% 88%,58% 76%,50% 100%,42% 76%,16% 88%,26% 62%,0 50%,26% 38%,16% 12%,42% 24%);
+
+  /* ---------- 4.1 Element Plus 变量覆盖（全部指向 P5 令牌，无新色值） ---------- */
+  --el-color-primary:var(--p5-red);
+  --el-color-primary-light-3:#E63A5C;
+  --el-color-primary-light-5:#EE6B84;
+  --el-color-primary-light-7:#F5A5B4;
+  --el-color-primary-light-8:#F9C9D2;
+  --el-color-primary-light-9:#FCE6EA;
+  --el-color-primary-dark-2:var(--p5-red-deep);
+  --el-color-success:var(--ok);
+  --el-color-warning:var(--p5-alert);
+  --el-color-danger:var(--p5-red);
+  --el-color-error:var(--p5-red);
+  --el-color-info:#8A8781;
+  --el-text-color-primary:var(--p5-white);
+  --el-text-color-regular:#E4E0D8;
+  --el-text-color-secondary:#B8B4AC;
+  --el-text-color-placeholder:#6E6A63;
+  --el-text-color-disabled:#55524C;
+  --el-bg-color:var(--p5-ink);
+  --el-bg-color-page:var(--p5-ink);
+  --el-bg-color-overlay:#141414;
+  --el-fill-color:var(--p5-ink-soft);
+  --el-fill-color-light:#232323;
+  --el-fill-color-lighter:#1E1E1E;
+  --el-fill-color-blank:transparent;
+  --el-border-color:var(--line-dark);
+  --el-border-color-light:#2E2E2E;
+  --el-border-color-lighter:#262626;
+  --el-border-color-extra-light:#202020;
+  --el-border-color-hover:var(--p5-red);
+  --el-border-radius-base:0;
+  --el-border-radius-small:0;
+  --el-border-radius-round:0;
+  --el-box-shadow:var(--shadow-hard-sm);
+  --el-box-shadow-light:var(--shadow-hard-sm);
+  --el-box-shadow-lighter:var(--shadow-hard-sm);
+  --el-box-shadow-dark:var(--shadow-hard);
+}
+
+/* ---------- 4.3 全局基底（背景 / 滚动条 / 选区 / 装饰网点） ---------- */
+html.t-p5 body { background:var(--bg); color:var(--txt); font-family:var(--font-body); font-size:var(--text-body); line-height:var(--lh-body); overflow:hidden; }
+html.t-p5 ::-webkit-scrollbar { width:10px; height:10px; }
+html.t-p5 ::-webkit-scrollbar-track { background:var(--p5-ink); }
+html.t-p5 ::-webkit-scrollbar-thumb { background:var(--p5-ink-soft); border:2px solid var(--p5-ink); border-radius:0; }
+html.t-p5 ::-webkit-scrollbar-thumb:hover { background:var(--p5-red); }
+html.t-p5 ::selection { background:var(--p5-red); color:var(--p5-white); }
+/* 半色调网点装饰层（永在内容之下，pointer-events:none） */
+html.t-p5 #app-shell::before {
+  content:''; position:absolute; inset:0; z-index:0; pointer-events:none; opacity:.1;
+  background-image:radial-gradient(rgba(255,255,255,.5) 1px, transparent 1.5px);
+  background-size:14px 14px;
+}
+html.t-p5 .sidebar, html.t-p5 .topbar, html.t-p5 .main { position:relative; z-index:1; }
+
+/* ---------- 5.1 布局骨架 / 页头红条 ---------- */
+html.t-p5 .page-head { position:relative; padding-bottom:var(--space-5); }
+html.t-p5 .page-head::after {
+  content:''; position:absolute; left:0; bottom:0; width:100%; height:4px;
+  background:linear-gradient(90deg, var(--p5-red) 0 30%, transparent 30% 100%);
+}
+
+/* ---------- 侧边栏（6.1） ---------- */
+html.t-p5 .sidebar { background:var(--panel); border-right:1px solid var(--line-dark); }
+html.t-p5 .sidebar .logo {
+  background:transparent; -webkit-text-fill-color:var(--p5-white); color:var(--p5-white);
+  font-family:var(--font-display); font-weight:900; text-transform:uppercase; letter-spacing:.02em;
+  transform:skewX(var(--skew)); -webkit-background-clip:border-box; background-clip:border-box;
+}
+html.t-p5 .sidebar .nav-group { color:#6E6A63; font-family:var(--font-cond); letter-spacing:.2em; text-transform:uppercase; font-weight:800; }
+html.t-p5 .sidebar .nav-item {
+  border-radius:0; border-left:3px solid transparent; color:var(--sub);
+  font-family:var(--font-cond); letter-spacing:.06em; position:relative; overflow:hidden;
+}
+html.t-p5 .sidebar .nav-item::before {
+  content:''; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--p5-red);
+  transform:translateX(-102%); transition:transform var(--dur-base) var(--ease-out);
+}
+html.t-p5 .sidebar .nav-item:hover { color:var(--p5-white); background:rgba(228,0,43,.10); }
+html.t-p5 .sidebar .nav-item:hover::before { transform:translateX(0); }
+html.t-p5 .sidebar .nav-item.active { color:#fff; background:var(--p5-red); border-left-color:var(--p5-red-deep); transform:skewX(var(--skew-sm)); box-shadow:var(--shadow-hard-sm); }
+html.t-p5 .sidebar .nav-item.active > * { transform:skewX(calc(-1 * var(--skew-sm))); display:inline-block; }
+html.t-p5 .sidebar-foot { color:var(--sub); font-family:var(--font-cond); letter-spacing:.1em; text-transform:uppercase; font-size:11px; }
+html.t-p5 .sidebar-foot .dot.on { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+
+/* ---------- 顶栏（6.1） ---------- */
+html.t-p5 .topbar { background:var(--panel); border-bottom:3px solid var(--p5-red); }
+html.t-p5 .topbar .logo { background:transparent; -webkit-text-fill-color:var(--p5-white); color:#fff; font-family:var(--font-display); -webkit-background-clip:border-box; background-clip:border-box; }
+html.t-p5 .topbar .project-name { color:var(--sub); border-left-color:var(--line-dark); }
+html.t-p5 .save-dot.saved { background:var(--ok); }
+
+/* ---------- 页面大标题（A5 / 6.x）：display 字体 + 900 + 斜切 + 涂鸦厚描边 ---------- */
+html.t-p5 .page-head h1,
+html.t-p5 .dash-title h1,
+html.t-p5 .ftitle .ti:not(input) {
+  font-family:var(--font-display); font-weight:900; font-size:var(--text-h1); line-height:var(--lh-h1);
+  text-transform:uppercase; transform:skewX(var(--skew-title)); display:inline-block; color:var(--p5-white);
+  -webkit-text-stroke:1px var(--p5-ink); text-shadow:3px 3px 0 var(--p5-red), 6px 6px 0 var(--p5-ink);
+  letter-spacing:var(--ls-display);
+}
+html.t-p5 .muted { color:#6E6A63; font-family:var(--font-cond); letter-spacing:.08em; text-transform:uppercase; font-size:11px; }
+
+/* ---------- 原生按钮 .btn（A8：零圆角 + 绯红 + 硬影） ---------- */
+html.t-p5 .btn {
+  border-radius:0; background:var(--p5-red); color:#fff; box-shadow:var(--shadow-hard);
+  font-family:var(--font-display); font-weight:800; letter-spacing:.04em;
+  transition:transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), background .2s;
+}
+html.t-p5 .btn:hover { background:#E63A5C; transform:translate(-2px,-2px); box-shadow:var(--shadow-hard-lg); }
+html.t-p5 .btn:active { transform:translate(2px,2px); box-shadow:var(--shadow-hard-sm); }
+html.t-p5 .btn:disabled { opacity:.45; cursor:not-allowed; transform:none; box-shadow:none; }
+html.t-p5 .btn.ghost { background:var(--p5-ink-soft); border:1px solid var(--line-dark); color:#fff; box-shadow:none; }
+html.t-p5 .btn.ghost:hover { border-color:var(--p5-red); background:#232323; transform:translate(-2px,-2px); box-shadow:var(--shadow-hard); }
+html.t-p5 .btn.sm { border-radius:0; }
+html.t-p5 .btn.blue { background:var(--p5-ink-soft); color:#fff; border:1px solid var(--line-dark); box-shadow:var(--shadow-hard); }   /* 去蓝·中性功能性 */
+html.t-p5 .btn.green { background:var(--ok); color:#06210f; box-shadow:var(--shadow-hard); }
+html.t-p5 .btn.pink { background:var(--p5-red); }
+html.t-p5 .btn.del { background:var(--p5-ink-soft); border:1px solid var(--line-dark); color:var(--p5-red); box-shadow:none; }
+html.t-p5 .btn.del:hover { border-color:var(--p5-red); background:rgba(228,0,43,.12); }
+
+/* 散落原生按钮（返回/会员/图标/新增/删除/上传）——统一 P5 化（零圆角 + 硬边） */
+html.t-p5 .back, html.t-p5 .ch-add, html.t-p5 .add-line, html.t-p5 .icon-btn,
+html.t-p5 .pl-fav, html.t-p5 .pl-del, html.t-p5 .vip-btn, html.t-p5 .upload-inline {
+  border-radius:0; background:var(--p5-ink-soft); border:1px solid var(--line-dark);
+  color:var(--sub); box-shadow:none; transition:transform var(--dur-fast) var(--ease-out), border-color .2s, background .2s, color .2s;
+}
+html.t-p5 .back:hover, html.t-p5 .ch-add:hover, html.t-p5 .add-line:hover, html.t-p5 .icon-btn:hover,
+html.t-p5 .pl-fav:hover, html.t-p5 .pl-del:hover { color:#fff; border-color:var(--p5-red); background:#232323; transform:translate(-2px,-2px); }
+html.t-p5 .vip-btn { background:var(--p5-alert); color:var(--p5-ink); border:0; }
+html.t-p5 .upload-inline { background:var(--p5-red); color:#fff; box-shadow:var(--shadow-hard); }
+html.t-p5 .pl-fav.on { color:var(--p5-alert); }
+
+/* ---------- 项目卡片（6.2）/ 资产卡片（6.3） ---------- */
+html.t-p5 .proj-card { background:var(--card); border:1px solid var(--line-dark); border-radius:0; box-shadow:var(--shadow-hard); overflow:hidden; cursor:pointer; transition:transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), border-color .2s; }
+html.t-p5 .proj-card:hover { border-color:var(--p5-red); transform:translate(-2px,-2px) rotate(-1deg); box-shadow:var(--shadow-hard-lg); }
+html.t-p5 .proj-title { font-family:var(--font-display); font-weight:800; color:var(--fg); }
+html.t-p5 .proj-meta { color:var(--sub); font-family:var(--font-num); }
+html.t-p5 .proj-cover .badge { border-radius:0; background:rgba(0,0,0,.6); font-family:var(--font-cond); letter-spacing:.06em; }
+/* 项目封面去紫蓝绿：coverStyle() 输出 hsl() 全色相渐变，在 P5 下统一改为墨黑/绯红渐变
+   （!important 覆盖 Vue :style 内联背景，保证非功能性彩色不残留） */
+html.t-p5 .pl-cover,
+html.t-p5 .pl-thumb,
+html.t-p5 .ml-cover,
+html.t-p5 .list-thumb,
+html.t-p5 .proj-cover {
+  background: linear-gradient(135deg, #1a0608 0%, var(--p5-red-deep) 55%, var(--p5-ink) 100%) !important;
+  color: #fff;
+  border-radius: 0;
+}
+html.t-p5 .asset-card { background:var(--card); border:1px solid var(--line-dark); border-radius:0; box-shadow:var(--shadow-hard); cursor:pointer; transition:transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), border-color .2s; }
+html.t-p5 .asset-card:hover { border-color:var(--p5-red); transform:translate(-2px,-2px); box-shadow:var(--shadow-hard-lg); }
+html.t-p5 .asset-card .name { font-family:var(--font-display); font-weight:700; color:var(--fg); }
+
+/* ============================================================================
+   Round-2 整改（2026-08-14）：通用卡片硬影 + 首页星爆 + 空状态半色调 + 进度漫画跳动
+   ============================================================================ */
+html.t-p5 .stat-card, html.t-p5 .chart-card, html.t-p5 .list-card, html.t-p5 .el-card, html.t-p5 .card {
+  position:relative; background:var(--card); border:1px solid var(--line-dark); border-radius:0;
+  box-shadow:var(--shadow-hard);
+  transition:transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), border-color .2s;
+}
+html.t-p5 .stat-card:hover, html.t-p5 .chart-card:hover, html.t-p5 .list-card:hover {
+  transform:translate(-2px,-2px); box-shadow:var(--shadow-hard-lg); border-color:var(--p5-red);
+}
+/* 首页统计亮点星爆（8.2.7 · 8.2.9 同源星形） */
+html.t-p5 .home-star { position:absolute; top:8px; right:8px; width:32px; height:32px; animation:p5-star-in var(--dur-epic) var(--ease-pop) both; }
+/* 空状态半色调网点（5.3 · 永在内容之下，pointer-events:none） */
+html.t-p5 .el-empty { position:relative; }
+html.t-p5 .el-empty::before { content:''; position:absolute; inset:0; pointer-events:none; z-index:0; opacity:.12; background-image:radial-gradient(rgba(255,255,255,.5) 1px, transparent 1.5px); background-size:14px 14px; }
+html.t-p5 .el-empty > * { position:relative; z-index:1; }
+/* 进度条漫画式分格跳动（7.5） */
+html.t-p5 .progress .bar i { background:linear-gradient(115deg, var(--p5-red) 0 90%, transparent 90% 100%); transition:width .4s steps(4,end); position:relative; }
+html.t-p5 .progress .bar i::after { content:''; position:absolute; right:-6px; top:0; bottom:0; width:12px; background:var(--p5-ink-soft); clip-path:var(--clip-slant); }
+
+
+/* ---------- 标签组 / 筛选 / 章节标签（A7 予告状斜切） ---------- */
+html.t-p5 .asset-tabs { background:var(--card); padding:4px; border-radius:0; border:1px solid var(--line-dark); }
+html.t-p5 .asset-tabs .t { border-radius:0; color:var(--sub); font-family:var(--font-cond); letter-spacing:.08em; }
+html.t-p5 .asset-tabs .t.on { background:var(--p5-red); color:#fff; font-weight:800; transform:skewX(var(--skew-sm)); }
+html.t-p5 .asset-tabs .t.on > * { transform:skewX(calc(-1 * var(--skew-sm))); display:inline-block; }
+/* 全部筛选标签统一予告状斜切（不仅选中态），保证视觉语言一致 */
+html.t-p5 .asset-tabs .t { transform:skewX(var(--skew-sm)); }
+html.t-p5 .asset-tabs .t > * { transform:skewX(calc(-1 * var(--skew-sm))); display:inline-block; }
+html.t-p5 .tabs .tab { transform:skewX(var(--skew-sm)); }
+html.t-p5 .tabs .tab > * { transform:skewX(calc(-1 * var(--skew-sm))); display:inline-block; }
+html.t-p5 .tabs { background:var(--card); padding:4px; border-radius:0; border:1px solid var(--line-dark); }
+html.t-p5 .tabs .tab { border-radius:0; color:var(--sub); font-family:var(--font-cond); letter-spacing:.06em; }
+html.t-p5 .tabs .tab.active { background:var(--p5-red); color:#fff; font-weight:800; }
+html.t-p5 .chapter-tabs .ch { border-radius:0; background:var(--card); border:1px solid var(--line-dark); color:var(--sub); font-family:var(--font-cond); }
+html.t-p5 .chapter-tabs .ch.on { background:var(--p5-red); color:#fff; font-weight:800; border-color:transparent; }
+html.t-p5 .chapter-tabs .add { border-radius:0; background:var(--card); border:1px solid var(--line-dark); color:var(--sub); }
+
+/* ---------- 资产胶囊（保留蓝/紫/灰语义为功能性区分，仅去圆角锐化） ---------- */
+html.t-p5 .asset-tag { border-radius:0; font-family:var(--font-cond); letter-spacing:.04em; }
+
+/* ---------- 导演工作台（6.5/6.6） ---------- */
+html.t-p5 .ws-toolbar { background:var(--bg-2); border-bottom:1px solid var(--line-dark); }
+html.t-p5 .ws-col { border-right:1px solid var(--line-dark); }
+html.t-p5 .ws-col:nth-child(2) { background:var(--bg-2); }
+html.t-p5 .ws-col h3 { color:var(--sub); font-family:var(--font-cond); letter-spacing:.14em; text-transform:uppercase; }
+html.t-p5 .ws-col h3 .sub { background:var(--card-2); border-radius:0; }
+html.t-p5 .char-card { background:var(--card); border:1px solid var(--line-dark); border-radius:0; }
+html.t-p5 .char-card:hover, html.t-p5 .char-card.active { border-color:var(--p5-red); background:#232323; }
+html.t-p5 .age-pills .pill { border-radius:0; background:var(--card-2); color:var(--sub); border:1px solid var(--line-dark); }
+html.t-p5 .age-pills .pill.active { background:var(--p5-red); color:#fff; border-color:var(--p5-red); }
+
+/* ---------- 分镜表（6.5）：序号方块 → 绯红斜切；输入去圆角 ---------- */
+html.t-p5 .shot-table th { color:var(--sub); font-family:var(--font-cond); letter-spacing:.1em; text-transform:uppercase; border-bottom:1px solid var(--line-dark); }
+html.t-p5 .shot-table td { border-bottom:1px solid var(--line-dark); }
+html.t-p5 .shot-table .idx { background:var(--p5-red); color:#fff; border-radius:0; transform:skewX(-6deg); font-family:var(--font-num); font-weight:700; }
+html.t-p5 .shot-table .idx > * { transform:skewX(6deg); display:inline-block; }
+html.t-p5 .shot-table select, html.t-p5 .shot-table input, html.t-p5 .shot-table textarea { border-radius:0; border:1px solid var(--line-dark); background:var(--p5-ink-soft); color:#fff; }
+html.t-p5 .shot-table select:focus, html.t-p5 .shot-table input:focus, html.t-p5 .shot-table textarea:focus { border-color:var(--p5-red); }
+html.t-p5 .shot-table .thumb, html.t-p5 .shot-table .thumb-empty { border-radius:0; background:var(--card); }
+
+/* ---------- 卡片/面板/参数组（A9） ---------- */
+html.t-p5 .director-card, html.t-p5 .param-group { background:var(--card); border:1px solid var(--line-dark); border-radius:0; }
+html.t-p5 .param-group .g-title { font-family:var(--font-cond); letter-spacing:.1em; text-transform:uppercase; color:var(--fg); }
+html.t-p5 .param-row .lab { color:var(--sub); }
+html.t-p5 .preview-box { background:var(--bg); border-radius:0; border:2px solid var(--p5-red); box-shadow:var(--shadow-hard); overflow:hidden; }
+html.t-p5 .check-item .ck { border-radius:0; border:1px solid var(--line-dark); }
+html.t-p5 .check-item.ok .ck { background:var(--ok); border-color:var(--ok); color:#06210f; }
+html.t-p5 .toggle { border-radius:0; background:var(--card-2); border:1px solid var(--line-dark); }
+html.t-p5 .toggle .sw { background:var(--sub); border-radius:0; }
+html.t-p5 .toggle.on { background:var(--p5-red); }
+html.t-p5 .toggle.on .sw { left:22px; background:#fff; }
+html.t-p5 .color-swatch { border-radius:0; border:1px solid var(--line-dark); }
+
+/* ---------- 进度条（A10 / B4）：绯红 + 斜切段 ---------- */
+html.t-p5 .progress { background:var(--card); border:1px solid var(--line-dark); border-radius:0; }
+html.t-p5 .progress .bar { background:var(--p5-ink-soft); border-radius:0; }
+html.t-p5 .progress .bar i { background:linear-gradient(115deg, var(--p5-red) 0 90%, transparent 90% 100%); }
+html.t-p5 .progress .lab { color:var(--sub); font-family:var(--font-num); }
+
+/* ---------- 项目阶段翻页折角按钮（蓝玻璃水波 → P5 绯红墨黑怪盗风） ---------- */
+/* 去蓝/去柔光圈/去圆角（圆角由全局 *{border-radius:0!important} 统一清零），保留折角内凹与硬影 */
+html.t-p5 .wave-fold::before {
+  background:
+    radial-gradient(circle at 22% 18%, rgba(255,255,255,.28) 0%, transparent 30%),
+    linear-gradient(145deg, rgba(228,0,43,.30), rgba(120,0,24,.16));
+  border:1px solid rgba(228,0,43,.55);
+  box-shadow:
+    inset -5px -5px 16px rgba(0,0,0,.5),
+    inset 4px 4px 14px rgba(255,255,255,.18),
+    4px 4px 0 rgba(0,0,0,.85),
+    0 6px 14px rgba(0,0,0,.4);
+}
+html.t-p5 .wave-fold:hover::before {
+  transform: scale(1.06) translateY(4px);
+  background:
+    radial-gradient(circle at 22% 18%, rgba(255,255,255,.5) 0%, transparent 32%),
+    linear-gradient(145deg, rgba(228,0,43,.42), rgba(150,0,30,.22));
+  border-color:rgba(255,255,255,.5);
+  box-shadow:
+    inset -5px -5px 16px rgba(0,0,0,.4),
+    inset 4px 4px 16px rgba(255,255,255,.3),
+    6px 6px 0 rgba(0,0,0,.9),
+    0 10px 22px rgba(0,0,0,.45);
+}
+html.t-p5 .fold-ripple { border:1.5px solid rgba(228,0,43,.22); }
+html.t-p5 .wave-fold:hover .fold-ripple { border-color:rgba(255,77,141,.45); }
+html.t-p5 .fold-arrow {
+  color:var(--p5-red);
+  background:rgba(11,11,11,.55);
+  backdrop-filter:blur(2px);
+}
+html.t-p5 .wave-fold:hover .fold-arrow {
+  color:#fff;
+  background:var(--p5-red);
+  transform:scale(1.1);
+}
+
+/* ---------- 模态 / Toast（6.5/6.6） ---------- */
+html.t-p5 .modal-mask { background:rgba(0,0,0,.6); }
+html.t-p5 .modal { background:var(--card); border:1px solid var(--line-dark); border-radius:0; box-shadow:var(--shadow-hard); }
+html.t-p5 .toast-wrap { top:64px; }
+html.t-p5 .toast { background:#141414; border:1px solid var(--line-dark); border-left:4px solid var(--p5-red); border-radius:0; box-shadow:var(--shadow-hard); color:var(--fg); }
+html.t-p5 .toast.ok { border-color:rgba(126,217,87,.6); }
+html.t-p5 .toast.warn { border-color:rgba(255,225,0,.6); }
+
+/* ---------- 列表行 / 占位 ---------- */
+html.t-p5 .list-row { background:var(--card); border:1px solid var(--line-dark); border-radius:0; }
+html.t-p5 .list-row .t { color:var(--sub); font-family:var(--font-num); }
+html.t-p5 .placeholder-page .big { opacity:.25; }
+
+/* ---------- 字段 / 文本域 ---------- */
+html.t-p5 .field .input, html.t-p5 .field .select { border-radius:0; border:1px solid var(--line-dark); background:var(--p5-ink-soft); color:#fff; }
+html.t-p5 .textarea { border-radius:0; border:1px solid var(--line-dark); background:var(--p5-ink-soft); color:#fff; }
+html.t-p5 .textarea:focus { border-color:var(--p5-red); }
+
+/* ============================================================================
+   4.2 Element Plus 组件级覆盖（P5 化）
+   ============================================================================ */
+html.t-p5 .el-button { border-radius:0; font-family:var(--font-display); font-weight:800; letter-spacing:.03em; box-shadow:var(--shadow-hard-sm); transform:skewX(var(--skew-sm)); transition:transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), background .2s, border-color .2s; }
+/* 按钮内文字反向斜切，保持直立（8.2.4） */
+html.t-p5 .el-button > * { transform:skewX(calc(-1 * var(--skew-sm))); display:inline-block; }
+html.t-p5 .el-button--primary { background:var(--p5-red); border:0; color:#fff; box-shadow:var(--shadow-hard); }
+html.t-p5 .el-button--primary:hover { background:#E63A5C; transform:skewX(var(--skew-sm)) translate(-2px,-2px); box-shadow:var(--shadow-hard-lg); }
+html.t-p5 .el-button--primary:active { transform:skewX(var(--skew-sm)) translate(2px,2px); box-shadow:var(--shadow-hard-sm); }
+html.t-p5 .el-button--primary.is-disabled, html.t-p5 .el-button--primary.is-disabled:hover { opacity:.45; transform:none; box-shadow:none; }
+html.t-p5 .el-button:not(.el-button--primary) { background:var(--p5-ink-soft); border:1px solid var(--line-dark); color:var(--p5-white); border-radius:0; }
+html.t-p5 .el-button:not(.el-button--primary):hover { background:#232323; border-color:var(--p5-red); color:var(--p5-white); transform:skewX(var(--skew-sm)) translate(-2px,-2px); box-shadow:var(--shadow-hard); }
+html.t-p5 .el-button--small { border-radius:0; }
+
+/* Assets 导入按钮去蓝/去紫：原 hover 用 var(--pur)，统一为红/白/灰 */
+html.t-p5 .import-btn { background:var(--p5-ink-soft); border:1px solid var(--line-dark); color:var(--p5-white); box-shadow:var(--shadow-hard-sm); }
+html.t-p5 .import-btn:hover { border-color:var(--p5-red); color:var(--p5-red); background:#232323; transform:translate(-2px,-2px); box-shadow:var(--shadow-hard); }
+html.t-p5 .btn.accent { background:var(--p5-red); color:#fff; border-color:var(--p5-red); box-shadow:var(--shadow-hard); }
+html.t-p5 .btn.accent:hover { background:#E63A5C; transform:translate(-2px,-2px); box-shadow:var(--shadow-hard-lg); }
+html.t-p5 .btn.accent:disabled { background:var(--p5-ink-soft); color:var(--sub); border-color:var(--line-dark); box-shadow:none; transform:none; }
+
+html.t-p5 .el-menu { background:transparent; border-right:0; }
+html.t-p5 .el-menu-item { color:var(--sub); font-family:var(--font-cond); letter-spacing:.06em; border-left:3px solid transparent; }
+html.t-p5 .el-menu-item.is-active { background:var(--p5-red); color:#fff; }
+html.t-p5 .el-menu-item:hover { color:#fff; background:rgba(228,0,43,.12); }
+
+html.t-p5 .el-card { background:var(--p5-ink-soft); border:1px solid var(--line-dark); border-radius:0; box-shadow:var(--shadow-hard); color:var(--fg); }
+html.t-p5 .el-card:hover { transform:translate(-2px,-2px); box-shadow:var(--shadow-hard-lg); }
+html.t-p5 .el-card__header { border-bottom:1px solid var(--line-dark); }
+
+html.t-p5 .el-dialog { background:#141414; border:1px solid var(--line-dark); border-radius:0; box-shadow:var(--shadow-hard); }
+html.t-p5 .el-dialog__title { font-family:var(--font-display); font-weight:900; color:var(--p5-white); letter-spacing:.04em; }
+html.t-p5 .el-overlay { background:rgba(0,0,0,.6); }
+html.t-p5 .el-drawer { background:#141414; border:1px solid var(--line-dark); }
+html.t-p5 .el-drawer__header { color:var(--p5-white); font-family:var(--font-display); }
+
+html.t-p5 .el-table { background:var(--p5-ink); color:var(--fg); }
+html.t-p5 .el-table th.el-table__cell { background:var(--p5-ink-soft); color:var(--sub); font-family:var(--font-cond); text-transform:uppercase; letter-spacing:.1em; border-bottom:1px solid var(--line-dark); }
+html.t-p5 .el-table tr { background:var(--p5-ink); }
+html.t-p5 .el-table td.el-table__cell { border-bottom:1px solid var(--line-dark); color:var(--fg); }
+html.t-p5 .el-table--striped .el-table__row--striped td.el-table__cell { background:rgba(232,226,212,.05); }
+html.t-p5 .el-table__row:hover > td.el-table__cell { background:rgba(228,0,43,.10) !important; }
+
+html.t-p5 .el-tag { border-radius:0; border:0; font-family:var(--font-cond); font-weight:800; letter-spacing:.08em; text-transform:uppercase; clip-path:var(--clip-para); transform:rotate(var(--skew-sm)); box-shadow:var(--shadow-hard-sm); }
+html.t-p5 .el-input__wrapper, html.t-p5 .el-textarea__inner { background:var(--p5-ink-soft); border-radius:0; box-shadow:0 0 0 1px var(--line-dark) inset; }
+html.t-p5 .el-input__wrapper.is-focus, html.t-p5 .el-textarea__inner:focus { box-shadow:0 0 0 1px var(--p5-red) inset; }
+html.t-p5 .el-input__inner, html.t-p5 .el-textarea__inner { color:var(--p5-white); }
+html.t-p5 .el-input-number__decrease, html.t-p5 .el-input-number__increase { background:var(--p5-ink-soft); border-color:var(--line-dark); color:var(--fg); }
+
+html.t-p5 .el-select-dropdown { background:#141414; border:1px solid var(--line-dark); border-radius:0; box-shadow:var(--shadow-hard); }
+html.t-p5 .el-select-dropdown__item { color:var(--sub); }
+html.t-p5 .el-select-dropdown__item:hover, html.t-p5 .el-select-dropdown__item.is-hovering, html.t-p5 .el-select-dropdown__item.selected { background:var(--p5-red); color:#fff; }
+
+html.t-p5 .el-progress-bar__outer { background:var(--p5-ink-soft); border-radius:0; }
+html.t-p5 .el-progress-bar__inner { background:var(--p5-red); border-radius:0; }
+html.t-p5 .el-progress__text { color:var(--fg); font-family:var(--font-num); }
+
+html.t-p5 .el-tabs__item { color:var(--sub); font-family:var(--font-cond); letter-spacing:.06em; }
+html.t-p5 .el-tabs__item.is-active { color:var(--p5-white); }
+html.t-p5 .el-tabs__active-bar { background:var(--p5-red); }
+html.t-p5 .el-tabs--border-card { background:var(--p5-ink-soft); border:1px solid var(--line-dark); }
+html.t-p5 .el-tabs--border-card > .el-tabs__header { background:var(--p5-ink); border-bottom:1px solid var(--line-dark); }
+html.t-p5 .el-tabs--border-card > .el-tabs__header .el-tabs__item.is-active { background:var(--p5-red); color:#fff; border-color:transparent; }
+
+html.t-p5 .el-switch.is-checked .el-switch__core { background:var(--p5-red); border-color:var(--p5-red); }
+html.t-p5 .el-radio__input.is-checked .el-radio__inner { background:var(--p5-red); border-color:var(--p5-red); }
+html.t-p5 .el-radio__input.is-checked + .el-radio__label { color:var(--p5-white); }
+html.t-p5 .el-checkbox__input.is-checked .el-checkbox__inner { background:var(--p5-red); border-color:var(--p5-red); }
+html.t-p5 .el-slider__bar { background:var(--p5-red); }
+html.t-p5 .el-slider__button { border-color:var(--p5-red); }
+
+html.t-p5 .el-step__head.is-finish, html.t-p5 .el-step__head.is-process { color:var(--p5-red); border-color:var(--p5-red); }
+html.t-p5 .el-step__title.is-finish, html.t-p5 .el-step__title.is-process { color:var(--p5-white); }
+html.t-p5 .el-step__title.is-wait { color:var(--sub); }
+
+html.t-p5 .el-pagination button, html.t-p5 .el-pager li { background:var(--p5-ink-soft); border-radius:0; color:var(--fg); }
+html.t-p5 .el-pager li.is-active { background:var(--p5-red); color:#fff; }
+
+html.t-p5 .el-message, html.t-p5 .el-notification { background:#141414; border:1px solid var(--line-dark); border-left:4px solid var(--p5-red); border-radius:0; box-shadow:var(--shadow-hard); }
+html.t-p5 .el-message .el-message__content, html.t-p5 .el-notification__content { color:var(--fg); }
+/* 全弹窗统一入场动画（与会员中心 .p5-notice 完全一致：MUST=user 要求不只外观一致，动画也要完全一样） */
+html.t-p5 .el-message, html.t-p5 .el-notification, html.t-p5 .toast {
+  animation:p5-notice-in var(--dur-epic) var(--ease-pop) both;
+}
+/* 类型化左边条颜色 + 类型化图标色，与 P5Celebrate 覆盖层同款色阶 */
+html.t-p5 .el-message--success, html.t-p5 .el-notification--success { border-left-color:var(--p5-red); }
+html.t-p5 .el-message--info, html.t-p5 .el-notification--info { border-left-color:var(--p5-red); background-image:none; }
+html.t-p5 .el-message--warning, html.t-p5 .el-notification--warning { border-left-color:#ffb020; background:#1c1409; }
+html.t-p5 .el-message--error, html.t-p5 .el-notification--error { border-left-color:var(--p5-red-deep); background:#1c060b; }
+html.t-p5 .el-message__icon, html.t-p5 .el-notification__icon { color:var(--p5-red); }
+html.t-p5 .el-message--warning .el-message__icon { color:#ffb020; }
+html.t-p5 .el-message--error .el-message__icon { color:var(--p5-red-deep); }
+/* 自研 toast 同步入场动画（已存在的 toastIn keyframe 让位给统一 p5-notice-in） */
+html.t-p5 .toast { animation:p5-notice-in var(--dur-epic) var(--ease-pop) both; }
+html.t-p5 .toast.warn { border-left-color:#ffb020; background:#1c1409; }
+html.t-p5 .toast.err, html.t-p5 .toast.error { border-left-color:var(--p5-red-deep); background:#1c060b; }
+html.t-p5 .toast.ok, html.t-p5 .toast.success { border-left-color:var(--p5-red); }
+/* Confirm 弹窗（ElMessageBox）—— P5 化 + 与 el-dialog 同款入场动画 */
+html.t-p5 .el-message-box, html.t-p5 .el-message-box__container { background:transparent !important; }
+html.t-p5 .el-message-box__btns { padding:8px 16px 14px; }
+html.t-p5 .el-message-box__content { padding:18px 18px 8px; }
+html.t-p5 .el-message-box__title { font-family:var(--font-display); font-weight:900; letter-spacing:.04em; color:var(--p5-white); text-transform:uppercase; }
+html.t-p5 .el-message-box__message { font-family:var(--font-body); color:var(--fg); }
+html.t-p5 .el-message-box__container {
+  animation:p5-dialog-in var(--dur-base) var(--ease-pop) both;
+  background:var(--p5-ink-soft) !important; border:1px solid var(--line-dark) !important;
+  border-left:4px solid var(--p5-red) !important; border-radius:0 !important; box-shadow:var(--shadow-hard) !important;
+}
+html.t-p5 .el-message-box__status { color:var(--p5-red); }
+html.t-p5 .el-message-box__status--warning { color:#ffb020; }
+html.t-p5 .el-message-box__status--error { color:var(--p5-red-deep); }
+html.t-p5 .el-tooltip__popper, html.t-p5 .el-popper, html.t-p5 .el-popover { background:#141414; border:1px solid var(--line-dark); border-radius:0; box-shadow:var(--shadow-hard); color:var(--fg); }
+html.t-p5 .el-loading-mask { background:rgba(11,11,11,.7); }
+
+/* ============================================================================
+   P5 整改补强（第 10 章 MUST 项补漏 · 2026-08-14）
+   A2 零圆角全局兜底 / A7 予告状标签 / A8 主按钮斜切 / A10 数字等宽 / A12 首页红条 / B2 弹窗斜切入场
+   ============================================================================ */
+
+/* A2 零圆角：硬律兜底（覆盖任何残留 6-12px 圆角，含 scoped 组件与 Element Plus 组件） */
+html.t-p5 *, html.t-p5 *::before, html.t-p5 *::after { border-radius:0 !important; }
+/* 圆形功能性控件豁免：主题色点 / 勾选 / 开关圆点 / 滑块手柄 / 滑块轨道 保持圆形（A2 例外） */
+html.t-p5 .dot, html.t-p5 .save-dot, html.t-p5 .lib-item .dot, html.t-p5 .ck, html.t-p5 .toggle .sw, html.t-p5 .el-slider__button, html.t-p5 input[type=range] { border-radius:50% !important; }
+
+/* A12 首页 .dash-header 斜切红条（首页标题不在 .page-head 内，单独补红条装饰） */
+html.t-p5 .dash-header { position:relative; padding-bottom:var(--space-4); }
+html.t-p5 .dash-header::after {
+  content:''; position:absolute; left:0; bottom:0; width:100%; height:4px;
+  background:linear-gradient(90deg, var(--p5-red) 0 30%, transparent 30% 100%);
+}
+
+/* A7 予告状标签：筛选/状态/类型标签统一斜切撕裂 + 硬影（保留 type 语义色） */
+html.t-p5 .el-tag {
+  border:0; font-family:var(--font-cond); font-weight:800; letter-spacing:.06em; text-transform:uppercase;
+  clip-path:var(--clip-para); transform:skewX(var(--skew-sm)); box-shadow:var(--shadow-hard-sm);
+  padding:2px 12px 2px 16px; line-height:18px; background:var(--p5-red); color:#fff;
+}
+html.t-p5 .el-tag > * { transform:skewX(calc(-1 * var(--skew-sm))); display:inline-block; }
+html.t-p5 .el-tag.el-tag--success { background:var(--ok); color:#06210f; }
+html.t-p5 .el-tag.el-tag--warning { background:var(--p5-alert); color:var(--p5-ink); }
+html.t-p5 .el-tag.el-tag--danger  { background:var(--p5-red); color:#fff; }
+html.t-p5 .el-tag.el-tag--info    { background:var(--p5-ink); color:#fff; border:1px solid var(--line-dark); }
+html.t-p5 .el-tag.el-tag--primary { background:var(--p5-red); color:#fff; }
+/* 会员中心：scoped 硬编码绿/紫残留覆写（P5 合规，避免仅依赖全局 !important 规则） */
+html.t-p5 .upgrade-bar { background:rgba(228,0,43,.12) !important; border:1px solid rgba(228,0,43,.4) !important; color:var(--p5-white) !important; }
+html.t-p5 .plan-card.cur { border-color:var(--p5-red) !important; box-shadow:var(--shadow-hard) !important; }
+html.t-p5 .el-tag.el-tag--success { background:var(--p5-ink-soft); color:var(--p5-white); border:1px solid var(--line-dark); }
+/* 资产胶囊类标签同样予告状化（保留既有类型色，仅加斜切/撕裂/硬影） */
+html.t-p5 .asset-tag { clip-path:var(--clip-para); transform:skewX(var(--skew-sm)); box-shadow:var(--shadow-hard-sm); }
+html.t-p5 .asset-tag > * { transform:skewX(calc(-1 * var(--skew-sm))); display:inline-block; }
+
+/* A8 主按钮斜切平行四边形（保留硬影 + hover 位移 / 按压下陷） */
+html.t-p5 .btn { transform:skewX(var(--skew-sm)); }
+html.t-p5 .btn > * { transform:skewX(calc(-1 * var(--skew-sm))); display:inline-block; }
+html.t-p5 .btn:hover { transform:skewX(var(--skew-sm)) translate(-2px,-2px); }
+html.t-p5 .btn:active { transform:skewX(var(--skew-sm)) translate(2px,2px); }
+html.t-p5 .el-button--primary { transform:skewX(var(--skew-sm)); }
+html.t-p5 .el-button--primary > span, html.t-p5 .el-button--primary > i { transform:skewX(calc(-1 * var(--skew-sm))); display:inline-block; }
+html.t-p5 .el-button--primary:hover { transform:skewX(var(--skew-sm)) translate(-2px,-2px); }
+html.t-p5 .el-button--primary:active { transform:skewX(var(--skew-sm)) translate(2px,2px); }
+
+/* A10 数字令牌化：积分/统计/时长/进度/序号等宽数字 */
+html.t-p5 .stat-value, html.t-p5 .points, html.t-p5 .points b, html.t-p5 .credits b,
+html.t-p5 .el-progress__text, html.t-p5 .progress .lab, html.t-p5 .duration, html.t-p5 .num,
+html.t-p5 .shot-table .idx {
+  font-family:var(--font-num); font-variant-numeric:tabular-nums; font-weight:700;
+}
+
+/* B2 弹窗/抽屉斜切撕裂入场（替代默认缩放） */
+html.t-p5 .el-dialog, html.t-p5 .modal, html.t-p5 .el-drawer {
+  animation:p5-dialog-in var(--dur-base) var(--ease-pop) both;
+}
+@keyframes p5-dialog-in {
+  from { opacity:0; transform:translateY(-18px) skewX(var(--skew-sm)) rotate(-1deg); }
+  to   { opacity:1; transform:none; }
+}
+
+/* ============================================================================
+   5.2 / 8.2 工具类（.p5-*，供组件精修使用；不影响未使用处）
+   ============================================================================ */
+.p5-title {
+  font-family:var(--font-display); font-weight:900; font-size:var(--text-display); line-height:var(--lh-display);
+  letter-spacing:var(--ls-display); text-transform:uppercase; transform:skewX(var(--skew-title));
+  display:inline-block; color:var(--p5-white); -webkit-text-stroke:1px var(--p5-ink);
+  text-shadow:3px 3px 0 var(--p5-red), 6px 6px 0 var(--p5-ink);
+}
+.p5-tag {
+  display:inline-block; padding:3px 14px 3px 18px; background:var(--p5-red); color:var(--p5-white);
+  font-family:var(--font-cond); font-size:var(--text-caption); font-weight:800; letter-spacing:var(--ls-caption);
+  text-transform:uppercase; clip-path:var(--clip-para); transform:rotate(var(--skew-sm)); box-shadow:var(--shadow-hard-sm); line-height:var(--lh-caption);
+}
+.p5-tag.on-paper { background:var(--p5-paper); color:var(--p5-red-ink); }
+.p5-tag.ink { background:var(--p5-ink); color:var(--p5-white); border:1px solid var(--line-dark); }
+.p5-tag.alert { background:var(--p5-alert); color:var(--p5-ink); }
+.p5-tag.ok { background:var(--ok); color:var(--p5-ink); }
+
+.p5-card {
+  background:var(--surface); border:1px solid var(--line-dark); border-radius:0; box-shadow:var(--shadow-hard);
+  transition:transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.p5-card:hover { transform:translate(-2px,-2px); box-shadow:var(--shadow-hard-lg); }
+
+.p5-btn {
+  position:relative; display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:8px 20px;
+  border:0; border-radius:0; font-family:var(--font-display); font-weight:800; font-size:14px; letter-spacing:.04em;
+  cursor:pointer; transform:skewX(var(--skew-sm)); box-shadow:var(--shadow-hard);
+  transition:transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.p5-btn > span, .p5-btn > i { transform:skewX(calc(-1 * var(--skew-sm))); display:inline-block; }
+.p5-btn:hover { transform:skewX(var(--skew-sm)) translate(-2px,-2px); box-shadow:var(--shadow-hard-lg); }
+.p5-btn:active { transform:skewX(var(--skew-sm)) translate(2px,2px); box-shadow:var(--shadow-hard-sm); }
+.p5-btn--primary { background:var(--p5-red); color:var(--p5-white); }
+.p5-btn--dark { background:var(--p5-ink-soft); color:var(--p5-white); border:1px solid var(--line-dark); }
+.p5-btn--paper { background:var(--p5-paper); color:var(--p5-red-ink); box-shadow:var(--shadow-red); }
+.p5-btn--ghost { background:transparent; color:var(--p5-white); border:2px solid var(--p5-white); box-shadow:none; }
+.p5-btn[disabled] { opacity:.45; cursor:not-allowed; transform:none; box-shadow:none; }
+
+.p5-progress { height:18px; background:var(--p5-ink); border:1px solid var(--line-dark); position:relative; overflow:hidden; }
+.p5-progress > .bar { height:100%; background:linear-gradient(115deg, var(--p5-red) 0 90%, transparent 90% 100%); transition:width var(--dur-base) var(--ease-out); position:relative; }
+.p5-progress > .bar::after { content:''; position:absolute; right:-8px; top:0; bottom:0; width:16px; background:var(--p5-ink); clip-path:var(--clip-slant); }
+
+.p5-notice {
+  position:relative; background:var(--p5-ink-soft); border-left:4px solid var(--p5-red); box-shadow:var(--shadow-hard);
+  padding:var(--space-4); font-family:var(--font-body); transform:skewX(var(--skew-sm));
+  animation:p5-notice-in var(--dur-epic) var(--ease-pop) both;
+}
+.p5-notice > * { transform:skewX(calc(-1 * var(--skew-sm))); }
+.p5-notice h4 { font-family:var(--font-display); font-weight:900; margin:0 0 4px; letter-spacing:.04em; }
+@keyframes p5-notice-in { from { transform:skewX(var(--skew-sm)) translateX(120%) rotate(3deg); } to { transform:skewX(var(--skew-sm)) translateX(0) rotate(0); } }
+
+.p5-badge-star {
+  display:inline-grid; place-items:center; width:48px; height:48px; background:var(--p5-red); color:var(--p5-white);
+  clip-path:var(--clip-star); transform:rotate(8deg); animation:p5-star-in var(--dur-epic) var(--ease-pop) both; pointer-events:none;
+}
+.p5-badge-star > span { transform:rotate(-8deg); font-family:var(--font-display); font-weight:900; font-size:18px; }
+@keyframes p5-star-in { from { transform:rotate(0deg) scale(0); } to { transform:rotate(8deg) scale(1); } }
+
+.p5-duotone { position:relative; overflow:hidden; border-radius:0; }
+.p5-duotone img { filter:grayscale(1) contrast(1.15); width:100%; height:100%; object-fit:cover; display:block; }
+.p5-duotone::after { content:''; position:absolute; inset:0; background:var(--p5-red); mix-blend-mode:multiply; opacity:.55; pointer-events:none; }
+
+.p5-halftone { position:relative; }
+.p5-halftone::before { content:''; position:absolute; inset:0; z-index:0; pointer-events:none; opacity:.14; background-image:radial-gradient(rgba(255,255,255,.5) 1px, transparent 1.5px); background-size:14px 14px; }
+.p5-diag-split { background:linear-gradient(115deg, var(--p5-ink) 0 44%, var(--p5-red) 44% 52%, var(--p5-ink) 52% 100%); }
+.p5-starburst { position:relative; display:inline-grid; place-items:center; width:56px; height:56px; background:var(--p5-red); clip-path:var(--clip-star); transform:rotate(8deg); color:var(--p5-white); font-family:var(--font-display); font-weight:900; }
+.p5-starburst > * { transform:rotate(-8deg); }
+.p5-zigzag { clip-path:var(--clip-zig); }
+.p5-tear { position:relative; background:var(--p5-ink-soft); clip-path:var(--clip-tear); box-shadow:var(--shadow-hard); padding:var(--space-5) var(--space-6); }
+.p5-tear::before { content:''; position:absolute; inset:0; z-index:-1; background:var(--p5-red-deep); transform:translate(6px,6px); clip-path:var(--clip-tear); }
+.p5-tear.paper { background:var(--p5-paper); color:var(--fg-invert); }
+
+.p5-divider { height:1px; background:var(--line-dark); }
+.p5-divider-red { height:3px; background:var(--p5-red); }
+.p5-guide-line { position:absolute; top:0; bottom:0; left:var(--guide-x,24px); width:1px; background:rgba(255,255,255,.18); pointer-events:none; }
+.p5-num { font-family:var(--font-num); font-variant-numeric:tabular-nums; font-weight:700; }
+.p5-label { font-family:var(--font-cond); font-size:var(--text-caption); font-weight:800; letter-spacing:var(--ls-caption); text-transform:uppercase; }
+
+/* ============================================================================
+   7.1 路由切换 wipe
+   ----------------------------------------------------------------------------
+   注意：页面切换动画已改为 App.vue 内的 JS 钩子驱动（<transition :css="false">），
+   不再依赖以下 CSS 类。保留此说明以避免误改——若未来恢复 CSS 模式，务必注意
+   原 `p5-page-enter-from` 的 `clip-path:inset(0 0 0 100%)` 在 keep-alive + out-in
+   组合下会导致进场组件永久不可见（黑屏），是 2026-08-14 黑屏 bug 的根因之一。
+   ============================================================================ */
+
+/* ============================================================================
+   P5 激进异形试点 · LoRA 训练页（手册 v1.0 · 2026-08-14）
+   仅新增公共类与形状令牌；仅 LoRA 页模板引用，不影响其他页面（RED-01）。
+   令牌沿用原手册第 3 章；新增多边形切割令牌与异形工具类。
+   ============================================================================ */
+/* 形状令牌（仅 P5 主题下注册，避免影响其他主题） */
+html.t-p5 {
+  /* 新增多边形切割令牌 */
+  --clip-hex: polygon(25% 0, 75% 0, 100% 25%, 100% 75%, 75% 100%, 25% 100%, 0 75%, 0 25%);
+  --clip-big-slant: polygon(4% 0, 100% 0, 96% 100%, 0 100%);
+  --clip-big-slant-rev: polygon(0 0, 96% 0, 100% 100%, 4% 100%);
+  --clip-tear-hard: polygon(
+    0 0, 8% 3%, 19% 0, 33% 5%, 47% 0, 62% 4%, 76% 0, 89% 3%, 100% 0,
+    100% 82%, 93% 88%, 100% 94%, 91% 100%, 78% 94%, 62% 100%, 47% 95%,
+    33% 100%, 19% 93%, 8% 100%, 0 94%, 6% 87%, 0 80%);
+  --clip-corner: polygon(0 0, 100% 0, 100% calc(100% - 18px), calc(100% - 18px) 100%, 0 100%);
+  --shadow-red: 4px 4px 0 0 var(--p5-red);
+}
+
+/* 3.1 强化版斜切面板（整面板倾斜 + 内层回正） */
+html.t-p5 .p5-panel {
+  transform: skewX(-3deg);
+  background: var(--p5-ink-soft);
+  border: 1px solid var(--line-dark);
+  box-shadow: var(--shadow-hard);
+  position: relative;
+  transition: transform var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out);
+}
+html.t-p5 .p5-panel__in { transform: skewX(3deg); }
+/* 交错倾斜变体 */
+html.t-p5 .p5-panel--tilt-right { transform: skewX(2deg); }
+html.t-p5 .p5-panel--tilt-right .p5-panel__in { transform: skewX(-2deg); }
+/* hover 错位抬起 */
+html.t-p5 .p5-panel--lift:hover {
+  transform: skewX(-3deg) translate(-3px,-3px);
+  box-shadow: var(--shadow-hard-lg);
+}
+
+/* 斜切面板透出：内层内容正立可读（RED-05）。注意：该规则必须放在全局（非 scoped），
+   因为 scoped 下 `:global(html.t-p5) .p5-panel .panel` 会被编译器丢弃后代选择器。
+   `.p5-panel` 仅 LoRA 试点页使用，故此全局规则不影响其它页面。 */
+html.t-p5 .p5-panel .panel {
+  background: transparent; border: 0; box-shadow: none; border-radius: 0; padding: 0;
+}
+
+/* 3.2 多边形切割变体（仅 P5 主题） */
+html.t-p5 .p5-card--hex { clip-path: var(--clip-hex); }
+html.t-p5 .p5-card--corner { clip-path: var(--clip-corner); }
+html.t-p5 .p5-card--big-slant { clip-path: var(--clip-big-slant); }
+html.t-p5 .p5-card--big-slant-rev { clip-path: var(--clip-big-slant-rev); }
+
+/* 3.3 超大斜排编号（出血，仅 P5 主题）。默认隐藏（装饰性序号），
+   仅 P5 主题下显现，避免在非 P5 主题泄漏为小号文本。 */
+.p5-big-num { display: none; }
+html.t-p5 .p5-big-num {
+  display: block;
+  font-family: var(--font-num);
+  font-weight: 900;
+  font-size: clamp(72px, 12vw, 160px);
+  line-height: 1;
+  color: var(--p5-red);
+  -webkit-text-stroke: 1px var(--p5-ink);
+  transform: rotate(-6deg);
+  position: absolute;
+  pointer-events: none;
+  user-select: none;
+  z-index: 0;
+}
+html.t-p5 .p5-big-num.paper { color: var(--p5-paper); }
+html.t-p5 .p5-big-num--bleed { right: -12px; bottom: -18px; }
+
+/* 3.4 胶带条（Tape，仅 P5 主题）。默认隐藏，避免在非 P5 主题泄漏。 */
+.p5-tape { display: none; }
+html.t-p5 .p5-tape {
+  display: block;
+  position: absolute;
+  width: 96px; height: 26px;
+  background: var(--p5-alert);
+  opacity: .72;
+  box-shadow: var(--shadow-hard-sm);
+  transform: rotate(-8deg);
+  z-index: 2;
+  pointer-events: none;
+  clip-path: polygon(4px 0, calc(100% - 4px) 0, 100% 100%, 0 100%);
+}
+html.t-p5 .p5-tape.red { background: var(--p5-red); }
+html.t-p5 .p5-tape.paper { background: var(--p5-paper); }
+html.t-p5 .p5-tape.tl { top: -10px; left: 14px; transform: rotate(-8deg); }
+html.t-p5 .p5-tape.tr { top: -10px; right: 14px; transform: rotate(8deg); }
+
+/* 3.5 强化半色调网点（明显可辨，双层错位，仅 P5 主题） */
+html.t-p5 .p5-halftone-strong { position: relative; }
+html.t-p5 .p5-halftone-strong::before {
+  content: '';
+  position: absolute; inset: 0;
+  z-index: 0; pointer-events: none;
+  opacity: .13;
+  background-image:
+    radial-gradient(rgba(255,255,255,.55) 1.2px, transparent 1.8px),
+    radial-gradient(rgba(255,255,255,.35) 1px, transparent 1.5px);
+  background-size: 22px 22px, 22px 22px;
+  background-position: 0 0, 11px 11px;
+}
+
+/* 红黑双色调封面（无真实图时用渐变占位，仅 P5 主题） */
+html.t-p5 .p5-duotone {
+  position: relative; overflow: hidden;
+  background: linear-gradient(135deg, var(--p5-red-deep), var(--p5-ink) 70%);
+}
+html.t-p5 .p5-duotone img { width:100%; height:100%; object-fit:cover; display:block; filter:grayscale(.4) contrast(1.05); mix-blend-mode:luminosity; opacity:.9; }
+html.t-p5 .p5-duotone::after { content:''; position:absolute; inset:0; background:linear-gradient(135deg, rgba(228,0,43,.55), transparent 60%); mix-blend-mode:multiply; pointer-events:none; }
+
+/* 3.6 斜切输入框（视觉切角，点击区完整，仅 P5 主题） */
+html.t-p5 .p5-field { position: relative; }
+html.t-p5 .p5-field .p5-field__skin {
+  position: absolute; inset: 0;
+  background: var(--p5-ink-soft);
+  border: 1px solid var(--line-dark);
+  clip-path: var(--clip-slant);
+  pointer-events: none;
+  z-index: 0;
+}
+html.t-p5 .p5-field input, html.t-p5 .p5-field textarea, html.t-p5 .p5-field .el-select {
+  position: relative; z-index: 1;
+  background: transparent; border: none;
+  color: var(--fg);
+  padding: 8px 14px;
+  width: 100%;
+}
+html.t-p5 .p5-field:focus-within .p5-field__skin {
+  border-color: var(--p5-red);
+  box-shadow: var(--shadow-hard-sm);
+}
+
+/* 3.7 强化版主按钮（右下切角，不裁点击区，仅 P5 主题） */
+html.t-p5 .p5-btn--corner { position: relative; overflow: visible; clip-path: none; }
+html.t-p5 .p5-btn--corner::after {
+  content: '';
+  position: absolute; right: 0; bottom: 0;
+  width: 14px; height: 14px;
+  background: var(--p5-ink);
+  clip-path: polygon(100% 0, 0 100%, 100% 100%);
+  pointer-events: none;
+}
+
+/* 3.8 撕裂状态横幅（强化版，供状态横幅区块，仅 P5 主题） */
+html.t-p5 .p5-tear-hard {
+  clip-path: var(--clip-tear-hard);
+  position: relative;
+  background: var(--p5-ink-soft);
+  border: 1px solid var(--line-dark);
+  box-shadow: var(--shadow-hard);
+  padding: 20px 28px;
+}
+
+/* 异形装饰条（非交互，承载单边斜切/切角多边形，不裁点击区，仅 P5 主题） */
+html.t-p5 .p5-deco-strip {
+  position: relative;
+  pointer-events: none;
+  height: 34px;
+  display: flex; align-items: center;
+  padding: 0 20px;
+  background: var(--p5-red);
+  color: var(--p5-white);
+  font-family: var(--font-display); font-weight: 800; letter-spacing: .06em;
+  text-transform: uppercase;
+  box-shadow: var(--shadow-hard-sm);
+}
+html.t-p5 .p5-deco-strip.ink { background: var(--p5-ink-soft); border: 1px solid var(--line-dark); color: var(--p5-white); }
+html.t-p5 .p5-deco-strip.slant { clip-path: var(--clip-big-slant); }
+html.t-p5 .p5-deco-strip.slant-rev { clip-path: var(--clip-big-slant-rev); }
+html.t-p5 .p5-deco-strip.corner { clip-path: var(--clip-corner); }
+
+/* 异形六边形奖牌（非交互，承载六边形切割，仅 P5 主题） */
+html.t-p5 .p5-medallion {
+  width: 64px; height: 64px;
+  pointer-events: none;
+  display: grid; place-items: center;
+  background: var(--p5-alert); color: var(--p5-ink);
+  font-family: var(--font-display); font-weight: 900; font-size: 13px;
+  clip-path: var(--clip-hex);
+  box-shadow: var(--shadow-hard-sm);
+  text-align: center; line-height: 1.05;
+}
+
+/* ============================================================================
+   组件级 P5 异形视觉（LoRA 试点页）· 通过 .lora-train 根 + html.t-p5 门控
+   说明：scoped 样式里 `:global(html.t-p5) .x` 会被编译器丢弃后代选择器，
+   因此这些规则放在全局，并挂在 .lora-train 根上，确保「仅 P5 主题显现、
+   其它主题完全不渲染异形」，且不波及其它页面（.lora-train 仅本页根）。
+   ============================================================================ */
+/* 非 P5 主题：隐藏 pilot 专属装饰（NEW 星标 / LoRA 奖牌 / 标题红斜条），避免泄漏 */
+html:not(.t-p5) .lora-train .p5-badge-star,
+html:not(.t-p5) .lora-train .p5-medallion,
+html:not(.t-p5) .lora-train .lora-titlebar { display: none; }
+/* P5 主题：标题下红斜切装饰条 */
+html.t-p5 .lora-titlebar {
+  display: block;
+  width: min(420px, 76%); height: 14px; margin: 12px 0 0;
+  background: var(--p5-red);
+  clip-path: var(--clip-big-slant);
+  box-shadow: var(--shadow-hard-sm);
+  pointer-events: none;
+}
+/* P5 主题：表单字段红左边线 / 浅红底（强调色） */
+html.t-p5 .lora-train .field {
+  border-left: 3px solid var(--p5-red);
+  background: rgba(228,0,43,.06);
+}
+
+/* ============================================================================
+   7.9 减动偏好（MUST）
+   ============================================================================ */
+@media (prefers-reduced-motion: reduce) {
+  html.t-p5 *, html.t-p5 *::before, html.t-p5 *::after {
+    animation-duration:.01ms !important; animation-iteration-count:1 !important;
+    transition-duration:.01ms !important; scroll-behavior:auto !important;
+  }
+}
+
+/* ============================================================================
+   DirectorOrb 多形态化身（皮肤）· P5 怪盗主题
+   来源：《DirectorOrb悬浮球多形态化身增强规格》v2.0 §4 / §5 / §7
+   适配说明：
+   - 平台仅 P5 主题（useTheme.VALID_PRESETS 无 cyberpunk），故只实现 P5 四形态；
+     非 P5 主题下悬浮球保持原样（RED-04）。所有规则挂在 html.t-p5 下，零泄漏。
+   - 实际 DOM：.orb-btn 承载 orb-morph--{key}，其内部 <span class="orb-morph"> 为形态层。
+     故将规格中的 .orb-body 改为 .orb-btn；形态用 inset:0;margin:auto 居中
+     （避免 transform 居中动画与形态自身 rotate 动画冲突）。
+   - 减动偏好由上方全局 @media (prefers-reduced-motion) 统一关闭（C-4）。
+   ============================================================================ */
+
+/* 4.0 形态容器：绝对居中 + 不挡点击（C-3） */
+html.t-p5 .orb-morph {
+  position: absolute; inset: 0; margin: auto;
+  display: grid; place-items: center;
+  pointer-events: none;
+}
+/* P5 主题下隐藏胶片图标，改显怪盗形态（T-1：P5 只显示怪盗四形态） */
+html.t-p5 .orb-btn .orb-core { display: none; }
+
+/* 4.1 P5-1 绅士细剑（御剑飞行） */
+html.t-p5 .orb-morph--sword .orb-morph {
+  width: 18px; height: 44px;
+  transform: rotate(0deg);
+  transition: transform .3s var(--ease-pop);
+}
+html.t-p5 .orb-morph--sword .orb-morph::before {
+  content: '';
+  width: 10px; height: 34px;
+  background: linear-gradient(180deg, var(--p5-paper) 0 8%, var(--p5-red) 8% 100%);
+  clip-path: polygon(50% 0, 100% 8%, 100% 88%, 50% 100%, 0 88%, 0 8%);
+  box-shadow: var(--shadow-hard-sm);
+}
+html.t-p5 .orb-morph--sword .orb-morph::after {
+  content: '';
+  position: absolute; bottom: 6px;
+  width: 16px; height: 6px;
+  background: var(--p5-ink);
+  clip-path: polygon(8% 0, 92% 0, 100% 100%, 0 100%);
+}
+html.t-p5 .orb-morph--sword:not(.dragging) .orb-morph { animation: p5-sword-idle 3s ease-in-out infinite; }
+@keyframes p5-sword-idle {
+  0%,100% { transform: translateY(0) rotate(-3deg); }
+  50%     { transform: translateY(-6px) rotate(3deg); }
+}
+html.t-p5 .orb-btn.dragging.orb-morph--sword .orb-morph {
+  transform: rotate(45deg) scale(1.15);
+  animation: p5-sword-fly .3s linear infinite;
+  filter: drop-shadow(0 0 4px var(--p5-red));
+}
+@keyframes p5-sword-fly {
+  0%   { transform: rotate(42deg) translate(0,0); }
+  50%  { transform: rotate(48deg) translate(2px,-2px); }
+  100% { transform: rotate(42deg) translate(0,0); }
+}
+html.t-p5 .orb-btn.dragging.orb-morph--sword .orb-morph::before {
+  box-shadow:
+    -6px 6px 0 -2px rgba(228,0,43,.5),
+    -12px 12px 0 -4px rgba(228,0,43,.3),
+    -18px 18px 0 -6px rgba(228,0,43,.15);
+}
+
+/* 4.2 P5-2 怪盗面具（残影分裂） */
+html.t-p5 .orb-morph--mask .orb-morph {
+  width: 36px; height: 20px;
+  background: var(--p5-ink);
+  clip-path: polygon(0 30%, 18% 0, 82% 0, 100% 30%, 88% 100%, 12% 100%);
+  border: 2px solid var(--p5-red);
+}
+html.t-p5 .orb-morph--mask .orb-morph::before,
+html.t-p5 .orb-morph--mask .orb-morph::after {
+  content: '';
+  position: absolute; top: 4px;
+  width: 9px; height: 6px;
+  background: var(--p5-red);
+  clip-path: polygon(20% 0, 80% 0, 100% 100%, 0 100%);
+}
+html.t-p5 .orb-morph--mask .orb-morph::before { left: 5px; }
+html.t-p5 .orb-morph--mask .orb-morph::after  { right: 5px; }
+html.t-p5 .orb-morph--mask:not(.dragging) .orb-morph { animation: p5-mask-breathe 2.4s ease-in-out infinite; }
+@keyframes p5-mask-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
+html.t-p5 .orb-btn.dragging.orb-morph--mask .orb-morph { animation: p5-mask-split .2s steps(2) infinite; }
+@keyframes p5-mask-split {
+  0%   { transform: translate(0,0) scale(1); }
+  50%  { transform: translate(-4px,2px) scale(1.05); }
+  100% { transform: translate(0,0) scale(1); }
+}
+html.t-p5 .orb-btn.dragging.orb-morph--mask .orb-morph::before {
+  content: ''; position: absolute; inset: 0;
+  background: inherit; clip-path: inherit; opacity: .45; transform: translate(-8px,4px);
+}
+html.t-p5 .orb-btn.dragging.orb-morph--mask .orb-morph::after {
+  content: ''; position: absolute; inset: 0;
+  background: inherit; clip-path: inherit; opacity: .2; transform: translate(-14px,8px);
+}
+
+/* 4.3 P5-3 命运塔罗（疾转 + 残影） */
+html.t-p5 .orb-morph--tower .orb-morph {
+  width: 24px; height: 34px;
+  background:
+    linear-gradient(45deg, transparent 42%, var(--p5-white) 42% 58%, transparent 58%) 0 0 / 100% 100% no-repeat,
+    var(--p5-red);
+  border: 1px solid var(--p5-ink);
+  box-shadow: var(--shadow-hard-sm);
+  transform-style: preserve-3d;
+}
+html.t-p5 .orb-morph--tower .orb-morph::before {
+  content: '';
+  position: absolute; inset: 6px;
+  border: 2px solid var(--p5-white);
+  clip-path: polygon(50% 0, 62% 30%, 92% 24%, 76% 52%, 100% 72%, 68% 74%, 62% 100%, 38% 74%, 6% 72%, 24% 52%, 8% 24%, 38% 30%);
+}
+html.t-p5 .orb-morph--tower:not(.dragging) .orb-morph { animation: p5-tower-idle 3.6s ease-in-out infinite; }
+@keyframes p5-tower-idle { 0%,100% { transform: rotateY(0); } 50% { transform: rotateY(18deg); } }
+html.t-p5 .orb-btn.dragging.orb-morph--tower .orb-morph { animation: p5-tower-spin .18s linear infinite; }
+@keyframes p5-tower-spin { from { transform: rotateY(0); } to { transform: rotateY(360deg); } }
+html.t-p5 .orb-btn.dragging.orb-morph--tower .orb-morph::after {
+  content: ''; position: absolute; inset: 0;
+  background: inherit; opacity: .35; transform: translateX(-10px) skewX(-12deg);
+}
+
+/* 4.4 P5-4 心锁锁链（甩动） */
+html.t-p5 .orb-morph--shackle .orb-morph {
+  width: 34px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+}
+html.t-p5 .orb-morph--shackle .orb-morph::before {
+  content: '';
+  width: 12px; height: 12px;
+  border: 3px solid var(--p5-red);
+  border-radius: 50%;
+  box-shadow: -9px 0 0 -2px var(--p5-red), 9px 0 0 -2px var(--p5-red);
+}
+html.t-p5 .orb-morph--shackle .orb-morph::after {
+  content: '';
+  position: absolute;
+  width: 10px; height: 9px;
+  background: var(--p5-ink);
+  clip-path: polygon(50% 100%, 0 38%, 12% 20%, 50% 44%, 88% 20%, 100% 38%);
+}
+html.t-p5 .orb-morph--shackle:not(.dragging) .orb-morph { animation: p5-shackle-idle 2.2s ease-in-out infinite; transform-origin: top center; }
+@keyframes p5-shackle-idle { 0%,100% { transform: rotate(-8deg); } 50% { transform: rotate(8deg); } }
+html.t-p5 .orb-btn.dragging.orb-morph--shackle .orb-morph { animation: p5-shackle-whip .16s linear infinite; transform-origin: top center; }
+@keyframes p5-shackle-whip {
+  0%   { transform: rotate(-20deg) translateX(-2px); }
+  50%  { transform: rotate(20deg) translateX(2px); }
+  100% { transform: rotate(-20deg) translateX(-2px); }
+}
+html.t-p5 .orb-btn.dragging.orb-morph--shackle .orb-morph::before { filter: drop-shadow(-4px 0 0 rgba(228,0,43,.4)); }
+
+/* 5.1 切换爆发（双击时绯红星爆扩散） */
+html.t-p5 .orb-btn.switching::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: var(--p5-red);
+  clip-path: var(--clip-star);
+  animation: p5-switch-burst .5s var(--ease-out) both;
+  pointer-events: none;
+}
+@keyframes p5-switch-burst {
+  0%   { transform: scale(.2) rotate(0); opacity: 1; }
+  100% { transform: scale(2.4) rotate(60deg); opacity: 0; }
+}
+
+/* 5.2 完成爆发（celebrate：纸白闪光 + 绯红缩放） */
+html.t-p5 .orb-btn.celebrating .orb-morph { animation: p5-celebrate .8s var(--ease-pop) both; }
+@keyframes p5-celebrate {
+  0%   { filter: brightness(1); transform: scale(1); }
+  40%  { filter: brightness(2.2); transform: scale(1.25); }
+  100% { filter: brightness(1); transform: scale(1); }
+}
+
+/* 7.x P5 三卡皮肤（决策/选型/对话气泡）· 适配真实 class：
+   .m3-decision / .m3-translator / .conv-bubble（保留暗底浅字以保证可读 RED-05，
+   仅叠加怪盗红描边 + 硬阴影 + 标题色，满足「皮肤一并覆盖」与 T-3 同主题一致） */
+html.t-p5 .m3-decision { border-color: var(--p5-red) !important; box-shadow: var(--shadow-hard-sm) !important; }
+html.t-p5 .m3-decision .pd-title { color: var(--p5-red) !important; }
+html.t-p5 .m3-translator { border-color: var(--p5-red) !important; box-shadow: var(--shadow-hard-sm) !important; }
+html.t-p5 .m3-translator .mt-title { color: var(--p5-red) !important; }
+html.t-p5 .m3-conv .conv-bubble { border-color: var(--p5-red) !important; }
+html.t-p5 .m3-conv .conv-bubble.notice { border-left: 3px solid var(--p5-red) !important; }
+html.t-p5 .m3-conv .conv-bubble.insight { border-left: 3px solid var(--ok) !important; }
+
+/* ============================================================================
+   夜城 HUD（Cyberpunk 2077）主题 · v2.0
+   依据：D:\AI\md\万能短剧AI创作平台_赛博朋克2077新主题开发手册.md
+   接入方式：useTheme 预设类 `t-cyberpunk`（html 上加 class）。默认/P5/gray 等全部保留，可随时切回。
+   设计语言：霓虹互补色（黄#FEE100/青#00F0FF/品红#FF0055/绿#00FF9C）+ HUD 四角角标
+            + 故障艺术（RGB 分离）+ 扫描线 + 终端质感（等宽字体 / > / // / SYSTEM）。
+   实现策略（与 P5 一致）：① 定义 --nc-* 令牌；② 重映射现有 app 语义变量（--card/--pink/--pur/
+   --sub/--blue/--green/--accent…）使 33 组件零模板改动即夜城化；③ 提供 .nc-* 公共类供页面
+   显式引用签名形态（角标/终端标题/切角按钮/故障/扫描）；④ 覆盖 --el-* 变量。
+   红线：RED-01~05 全守（不动业务逻辑；令牌互不引用 --p5-*；零新依赖；不抄官方素材；可读）。
+   ============================================================================ */
+
+html.t-cyberpunk {
+  /* ---------- 2.1 色彩令牌（霓虹互补色体系） ---------- */
+  --nc-yellow:  #FEE100;   /* 霓虹黄：主强调/警告/焦点 */
+  --nc-cyan:    #00F0FF;   /* 霓虹青：信息/进行中/链接 */
+  --nc-magenta: #FF0055;   /* 品红：危险/异常/完成爆发 */
+  --nc-green:   #00FF9C;   /* 终端绿：成功/日志 */
+  --nc-bg:      #0A0A0A;   /* 深黑（蓝调）背景 */
+  --nc-bg-2:    #0D0F12;   /* 次级背景 */
+  --nc-panel:   #14161A;   /* 面板底（冷调） */
+  --nc-panel-2: #1A1D22;   /* 面板浮起 */
+  --nc-fg:      #E8F0F0;   /* 冷调白 */
+  --nc-fg-dim:  #9AA5A8;   /* 次级文字 */
+  --nc-fg-faint:#5C666B;   /* 弱化/占位 */
+  --nc-line:    #23282E;   /* 分隔线 */
+  --nc-line-neon: rgba(0,240,255,.35); /* 霓虹细线 */
+
+  /* 霓虹发光 */
+  --nc-glow-yellow:  0 0 6px rgba(254,225,0,.55), 0 0 18px rgba(254,225,0,.22);
+  --nc-glow-cyan:    0 0 6px rgba(0,240,255,.55), 0 0 18px rgba(0,240,255,.22);
+  --nc-glow-magenta: 0 0 6px rgba(255,0,85,.55), 0 0 18px rgba(255,0,85,.22);
+  --nc-glow-green:   0 0 6px rgba(0,255,156,.5), 0 0 16px rgba(0,255,156,.2);
+
+  /* ---------- 2.2 字体令牌（零新依赖；系统栈降级） ---------- */
+  --font-display: 'Bahnschrift Condensed','Arial Narrow','Rajdhani','Orbitron',
+                  'PingFang SC','Microsoft YaHei',sans-serif;
+  --font-mono: 'Consolas','Courier New','Roboto Mono','Droid Sans Mono',monospace;
+  --font-body: 'PingFang SC','Microsoft YaHei','Hiragino Sans GB','Noto Sans SC',
+               'Segoe UI','Helvetica Neue',sans-serif;
+  --font-num: 'DIN Alternate','Consolas','Roboto Mono',monospace;
+
+  /* ---------- 2.3 排版 / 发光 / 动效令牌 ---------- */
+  --text-display: clamp(30px,4.5vw,52px); --lh-display: .95; --ls-display: .04em;
+  --text-h1: clamp(22px,3vw,34px); --lh-h1: 1.05;
+  --text-h2: clamp(17px,2vw,22px); --lh-h2: 1.15;
+  --text-body: 15px; --lh-body: 1.7;
+  --text-caption: 12px; --lh-caption: 1.3; --ls-caption: .22em;
+  --text-num: clamp(20px,3vw,40px); --lh-num: 1;
+
+  --shadow-hard: 3px 3px 0 0 rgba(0,0,0,.85);
+  --shadow-neon-y: 6px 0 0 var(--nc-yellow);   /* 2077 式硬位移霓虹影 */
+  --shadow-neon-c: 6px 0 0 var(--nc-cyan);
+  --radius: 0;
+
+  --dur-fast: 100ms; --dur-base: 220ms; --dur-slow: 400ms; --dur-epic: 650ms;
+  --ease-out: cubic-bezier(.22,.61,.36,1);
+  --ease-pop: cubic-bezier(.34,1.56,.64,1);
+  --ease-steps: steps(2, end);  /* 故障动画专用：数字感跳变 */
+
+  --nc-glitch-amt: 2px;         /* RGB 分离偏移 */
+  --nc-scanline-opacity: .07;   /* 扫描线透明度 */
+  --nc-grid-size: 28px;         /* 背景网格间距 */
+
+  /* ---------- 2.4 形状令牌 ---------- */
+  --clip-nc-slant: polygon(6px 0, 100% 0, calc(100% - 6px) 100%, 0 100%);
+  --clip-nc-tag: polygon(8px 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
+  --nc-slice-1: inset(80% -6px 0 0);
+  --nc-slice-2: inset(50% -6px 30% 0);
+  --nc-slice-3: inset(10% -6px 85% 0);
+  --nc-slice-4: inset(40% -6px 43% 0);
+  --nc-slice-5: inset(80% -6px 5% 0);
+  --clip-star: polygon(50% 0,58% 24%,84% 12%,74% 38%,100% 50%,74% 62%,84% 88%,58% 76%,50% 100%,42% 76%,16% 88%,26% 62%,0 50%,26% 38%,16% 12%,42% 24%);
+  --clip-nc-flag: polygon(0 0, 100% 0, 100% 100%, 0 100%, 55% 50%);  /* 撕裂旗帜延伸 */
+
+  /* 补充令牌（手册 §4.8/§4.9 引用，原仅 t-p5 作用域，这里补齐到夜城作用域） */
+  --shadow-hard-sm: 2px 2px 0 0 rgba(0,0,0,.9);
+  --font-cond: 'Arial Narrow','Helvetica Neue Condensed','PingFang SC','Microsoft YaHei','Noto Sans SC',sans-serif;
+
+  /* ========================================================================
+     重映射现有 app 语义变量（组件直接引用 var(--card)/var(--pink) 等即自动夜城化）
+     —— 与 P5 同一机制，保证默认/P5/夜城三主题共存互不污染。
+     ======================================================================== */
+  --bg: var(--nc-bg);
+  --bg-2: var(--nc-bg-2);
+  --panel: var(--nc-panel);
+  --card: var(--nc-panel);
+  --card-2: var(--nc-panel-2);
+  --line: var(--nc-line);
+  --txt: var(--nc-fg);
+  --sub: var(--nc-fg-dim);
+  --fg: var(--nc-fg);
+  --fg-dim: var(--nc-fg-dim);
+  --fg-faint: var(--nc-fg-faint);
+  --surface: var(--nc-panel);
+  --surface-raised: var(--nc-panel-2);
+  --pink: var(--nc-magenta);    /* 品牌粉 → 品红（霓虹危险色） */
+  --pur: var(--nc-cyan);        /* 紫 → 青（霓虹信息色） */
+  --grad: linear-gradient(90deg, var(--nc-yellow), var(--nc-cyan));
+  --green: var(--nc-green);
+  --warn: var(--nc-yellow);
+  --blue: var(--nc-cyan);
+  --accent: var(--nc-yellow);
+  --accent-2: var(--nc-cyan);
+  --danger: var(--nc-magenta);
+  --ok: var(--nc-green);
+  --err: var(--nc-magenta);
+  --glow: var(--nc-glow-cyan);
+  --link: var(--nc-cyan);
+
+  /* ---------- 3.1 Element Plus 变量覆盖（全部指向 --nc-*） ---------- */
+  --el-color-primary: var(--nc-yellow);
+  --el-color-primary-light-3: #FEE84D;
+  --el-color-primary-light-5: #FEEE8A;
+  --el-color-primary-light-7: #FDF5C4;
+  --el-color-primary-light-8: #FEF9DC;
+  --el-color-primary-light-9: #FEFCF0;
+  --el-color-primary-dark-2: #C9B400;
+  --el-color-success: var(--nc-green);
+  --el-color-warning: var(--nc-yellow);
+  --el-color-danger:  var(--nc-magenta);
+  --el-color-error:   var(--nc-magenta);
+  --el-color-info:    #7C878C;
+  --el-text-color-primary:    var(--nc-fg);
+  --el-text-color-regular:    #C5D0D2;
+  --el-text-color-secondary:  var(--nc-fg-dim);
+  --el-text-color-placeholder:var(--nc-fg-faint);
+  --el-text-color-disabled:   #4A5256;
+  --el-bg-color:         var(--nc-panel);
+  --el-bg-color-page:    var(--nc-bg);
+  --el-bg-color-overlay: var(--nc-panel-2);
+  --el-fill-color:       var(--nc-panel);
+  --el-fill-color-light: #1C2026;
+  --el-fill-color-lighter:#181C21;
+  --el-fill-color-blank: transparent;
+  --el-border-color:          var(--nc-line);
+  --el-border-color-light:    #2A3138;
+  --el-border-color-lighter:  #242A30;
+  --el-border-color-extra-light:#1F252B;
+  --el-border-color-hover:    var(--nc-cyan);
+  --el-border-radius-base: 0;
+  --el-border-radius-small: 0;
+  --el-border-radius-round: 0;
+  --el-box-shadow: var(--shadow-hard);
+  --el-box-shadow-light: 0 0 0 1px var(--nc-line-neon);
+  --el-box-shadow-lighter: 0 0 0 1px var(--nc-line);
+  --el-box-shadow-dark: var(--shadow-hard);
+  --el-font-family: var(--font-body);
+}
+
+/* ---------- 3.3 深色基底 ---------- */
+html.t-cyberpunk { background: var(--nc-bg); color: var(--nc-fg); font-family: var(--font-body); }
+html.t-cyberpunk ::selection { background: var(--nc-cyan); color: #000; }
+html.t-cyberpunk ::-webkit-scrollbar { width: 10px; height: 10px; }
+html.t-cyberpunk ::-webkit-scrollbar-track { background: var(--nc-bg); }
+html.t-cyberpunk ::-webkit-scrollbar-thumb { background: var(--nc-panel-2); border: 2px solid var(--nc-bg); }
+html.t-cyberpunk ::-webkit-scrollbar-thumb:hover { background: var(--nc-cyan); }
+
+/* ---------- 4.1 背景层（网格 + 扫描线 + 城市氛围） ---------- */
+html.t-cyberpunk body {
+  background-color: var(--nc-bg);
+  background-image:
+    linear-gradient(var(--nc-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--nc-line) 1px, transparent 1px);
+  background-size: var(--nc-grid-size) var(--nc-grid-size);
+}
+/* CRT 扫描线（全屏覆盖层，永不遮挡点击） */
+html.t-cyberpunk body::after {
+  content: '';
+  position: fixed; inset: 0;
+  pointer-events: none;
+  z-index: 2147483647;
+  background: repeating-linear-gradient(
+    to bottom, transparent 0 2px, rgba(0,0,0,.14) 2px 3px);
+  opacity: var(--nc-scanline-opacity);
+}
+
+/* ---------- 4.2 HUD 卡片（签名 #1：四角 L 形角标） ---------- */
+/* 用法：<div class="nc-hud-card"><span class="nc-corner tl"></span>…（四角）…</div> */
+html.t-cyberpunk .nc-hud-card {
+  position: relative;
+  background: var(--nc-panel);
+  border: 1px solid var(--nc-line);
+  box-shadow: var(--shadow-hard);
+  padding: 16px;
+  transition: border-color var(--dur-base) var(--ease-out),
+              box-shadow var(--dur-base) var(--ease-out);
+}
+html.t-cyberpunk .nc-corner {
+  position: absolute; width: 14px; height: 14px;
+  border: 2px solid var(--nc-cyan);
+  pointer-events: none;
+}
+html.t-cyberpunk .nc-corner.tl { top:-1px; left:-1px; border-width:2px 0 0 2px; }
+html.t-cyberpunk .nc-corner.tr { top:-1px; right:-1px; border-width:2px 2px 0 0; }
+html.t-cyberpunk .nc-corner.bl { bottom:-1px; left:-1px; border-width:0 0 2px 2px; }
+html.t-cyberpunk .nc-corner.br { bottom:-1px; right:-1px; border-width:0 2px 2px 0; }
+html.t-cyberpunk .nc-hud-card:hover {
+  border-color: var(--nc-cyan);
+  box-shadow: var(--shadow-hard), var(--nc-glow-cyan);
+}
+
+/* ---------- 4.3 霓虹标题（终端前缀 + HUD 刻度线） ---------- */
+/* 用法：<h1 class="nc-title">推理监控</h1> */
+html.t-cyberpunk .nc-title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: var(--text-display);
+  line-height: var(--lh-display);
+  letter-spacing: var(--ls-display);
+  color: var(--nc-fg);
+  text-transform: uppercase;
+  display: inline-block;
+  position: relative;
+}
+html.t-cyberpunk .nc-title::before {
+  content: '>';
+  color: var(--nc-yellow);
+  text-shadow: var(--nc-glow-yellow);
+  margin-right: 8px;
+}
+html.t-cyberpunk .nc-title::after {
+  content: '';
+  position: absolute; left: 0; bottom: -6px;
+  width: 100%; height: 3px;
+  background: linear-gradient(90deg,
+    var(--nc-yellow) 0 30%, var(--nc-cyan) 30% 45%, transparent 45% 100%);
+}
+html.t-cyberpunk .nc-title:hover {
+  animation: nc-glitch-run .4s var(--ease-steps) 1;
+  text-shadow: var(--nc-glow-cyan);
+}
+
+/* ---------- 4.4 终端标签 / 霓虹按钮（2077 式切角 + 故障） ---------- */
+/* 终端标签：<span class="nc-tag [--cyan|--magenta|--green|--ghost]"> */
+html.t-cyberpunk .nc-tag {
+  display: inline-block;
+  padding: 3px 12px 3px 16px;
+  background: var(--nc-yellow);
+  color: #000;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: var(--ls-caption);
+  text-transform: uppercase;
+  clip-path: var(--clip-nc-tag);
+}
+html.t-cyberpunk .nc-tag--cyan { background: var(--nc-cyan); }
+html.t-cyberpunk .nc-tag--magenta { background: var(--nc-magenta); color:#fff; }
+html.t-cyberpunk .nc-tag--green { background: var(--nc-green); }
+html.t-cyberpunk .nc-tag--ghost { background: transparent; color: var(--nc-cyan); border:1px solid var(--nc-cyan); }
+
+/* 霓虹按钮（2077 式：切角 + 霓虹描边 + hover 发光 + 故障抖动） */
+html.t-cyberpunk .nc-btn {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 9px 22px 9px 26px;
+  background: transparent;
+  border: 1px solid var(--nc-cyan);
+  color: var(--nc-cyan);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  border-radius: 0;
+  cursor: pointer;
+  clip-path: var(--clip-nc-slant);
+  transition: background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out);
+}
+html.t-cyberpunk .nc-btn:hover {
+  background: var(--nc-cyan); color: #000;
+  box-shadow: var(--nc-glow-cyan);
+  animation: nc-btn-glitch .35s var(--ease-steps) 1;
+}
+html.t-cyberpunk .nc-btn:active { transform: translate(1px,1px); }
+html.t-cyberpunk .nc-btn--primary {
+  background: var(--nc-yellow); color: #000;
+  border-color: var(--nc-yellow);
+  font-weight: 800;
+  box-shadow: var(--shadow-neon-y);
+}
+html.t-cyberpunk .nc-btn--primary:hover {
+  background: #FFED4D; box-shadow: var(--nc-glow-yellow); color: #000;
+}
+html.t-cyberpunk .nc-btn--danger { border-color: var(--nc-magenta); color: var(--nc-magenta); }
+html.t-cyberpunk .nc-btn--danger:hover { background: var(--nc-magenta); color:#fff; box-shadow: var(--nc-glow-magenta); }
+html.t-cyberpunk .nc-btn[disabled] { opacity:.4; cursor:not-allowed; }
+
+@keyframes nc-btn-glitch {
+  0%   { clip-path: var(--clip-nc-slant); transform: translate(0,0); }
+  20%  { clip-path: var(--clip-nc-slant); transform: translate(-3px,1px); filter: hue-rotate(40deg); }
+  40%  { transform: translate(3px,-1px); }
+  60%  { transform: translate(-2px,0); }
+  100% { transform: translate(0,0); }
+}
+
+/* ---------- 4.5 故障文字（签名 #2：RGB 分离色差） ---------- */
+/* 用法：<span class="nc-glitch" data-text="内容">内容</span>（hover 触发） */
+html.t-cyberpunk .nc-glitch { position: relative; display: inline-block; }
+html.t-cyberpunk .nc-glitch::before,
+html.t-cyberpunk .nc-glitch::after {
+  content: attr(data-text);
+  position: absolute; left: 0; top: 0; width: 100%;
+  pointer-events: none; opacity: 0;
+}
+html.t-cyberpunk .nc-glitch:hover::before {
+  opacity: .85; color: var(--nc-cyan);
+  transform: translate(var(--nc-glitch-amt), 0);
+}
+html.t-cyberpunk .nc-glitch:hover::after {
+  opacity: .85; color: var(--nc-magenta);
+  transform: translate(calc(-1 * var(--nc-glitch-amt)), 0);
+}
+html.t-cyberpunk .nc-glitch--always::before,
+html.t-cyberpunk .nc-glitch--always::after { animation: nc-glitch-run 2.4s infinite var(--ease-steps); }
+@keyframes nc-glitch-run {
+  0%, 90%, 100% { opacity: 0; }
+  91% { opacity: .85; transform: translate(2px,0); }
+  93% { opacity: .6; transform: translate(-2px,0); }
+  95% { opacity: .85; transform: translate(1px,1px); }
+  97% { opacity: 0; }
+}
+
+/* ---------- 4.6 HUD 进度条（扫描扫过 + 数字读数） ---------- */
+/* 用法：<div class="nc-progress running"><i style="width:64%"></i><span>64%</span></div> */
+html.t-cyberpunk .nc-progress {
+  position: relative; height: 16px;
+  background: var(--nc-bg-2);
+  border: 1px solid var(--nc-line);
+  overflow: hidden;
+}
+html.t-cyberpunk .nc-progress i {
+  display: block; height: 100%;
+  background: linear-gradient(90deg, var(--nc-cyan), var(--nc-green));
+  box-shadow: var(--nc-glow-cyan);
+  transition: width var(--dur-base) var(--ease-out);
+}
+html.t-cyberpunk .nc-progress span {
+  position: absolute; right: 6px; top: 50%;
+  transform: translateY(-50%);
+  font-family: var(--font-mono);
+  font-size: 10px; color: #000; font-weight: 700;
+}
+html.t-cyberpunk .nc-progress.running i::after {
+  content: '';
+  position: absolute; top: 0; bottom: 0; width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.5), transparent);
+  animation: nc-scan-sweep 1.2s linear infinite;
+}
+@keyframes nc-scan-sweep { from { left: -40%; } to { left: 100%; } }
+
+/* ---------- 4.7 输入框（聚焦霓虹青 + 左侧竖条） ---------- */
+html.t-cyberpunk .nc-field {
+  position: relative;
+  background: var(--nc-panel);
+  border: 1px solid var(--nc-line);
+  transition: border-color var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out);
+}
+html.t-cyberpunk .nc-field::before {
+  content: '';
+  position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--nc-cyan);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+html.t-cyberpunk .nc-field:focus-within {
+  border-color: var(--nc-cyan);
+  box-shadow: var(--nc-glow-cyan);
+}
+html.t-cyberpunk .nc-field:focus-within::before { opacity: 1; }
+html.t-cyberpunk .nc-field input,
+html.t-cyberpunk .nc-field textarea {
+  background: transparent; border: none; outline: none;
+  color: var(--nc-fg); width: 100%;
+  padding: 8px 14px;
+  font-family: var(--font-body);
+}
+
+/* ---------- 4.8 表格 / 列表（正交 + HUD 化） ---------- */
+html.t-cyberpunk .nc-table { width: 100%; border-collapse: collapse; }
+html.t-cyberpunk .nc-table th {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: var(--ls-caption);
+  text-transform: uppercase;
+  color: var(--nc-yellow);
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--nc-line-neon);
+}
+html.t-cyberpunk .nc-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--nc-line);
+  color: var(--nc-fg);
+}
+html.t-cyberpunk .nc-table tbody tr:hover { background: rgba(0,240,255,.05); }
+html.t-cyberpunk .nc-table tbody tr:hover td:first-child { box-shadow: inset 3px 0 0 var(--nc-cyan); }
+html.t-cyberpunk .nc-num { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+
+/* ---------- 4.9 图像处理 / 空状态 / 页头工具类 ---------- */
+html.t-cyberpunk .nc-duotone { position: relative; overflow: hidden; }
+html.t-cyberpunk .nc-duotone img {
+  filter: grayscale(1) contrast(1.25) brightness(.9);
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+html.t-cyberpunk .nc-duotone::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(135deg, rgba(0,240,255,.4), rgba(255,0,85,.35));
+  mix-blend-mode: screen; pointer-events: none;
+}
+html.t-cyberpunk .nc-empty {
+  text-align: center; padding: 48px 24px;
+  font-family: var(--font-mono); color: var(--nc-fg-dim);
+}
+html.t-cyberpunk .nc-empty::before {
+  content: '// NO DATA';
+  display: block;
+  font-size: 22px; font-weight: 700;
+  color: var(--nc-cyan);
+  text-shadow: var(--nc-glow-cyan);
+  margin-bottom: 8px;
+}
+html.t-cyberpunk .nc-page-head {
+  position: relative; padding: 20px 24px;
+  border-bottom: 1px solid var(--nc-line-neon);
+}
+html.t-cyberpunk .nc-page-head::after {
+  content: ''; position: absolute; left: 0; bottom: -1px;
+  width: 120px; height: 2px;
+  background: var(--nc-yellow);
+  box-shadow: var(--nc-glow-yellow);
+}
+
+/* ---------- 5.2 路由切换（扫描线 wipe，接入 App.vue 过渡名 nc-page） ---------- */
+html.t-cyberpunk .nc-page-enter-active { transition: all var(--dur-slow) var(--ease-out); }
+html.t-cyberpunk .nc-page-leave-active { transition: all calc(var(--dur-slow) * .5) var(--ease-out); }
+html.t-cyberpunk .nc-page-enter-from {
+  opacity: 0;
+  transform: translateY(12px);
+  clip-path: inset(0 0 100% 0);
+}
+html.t-cyberpunk .nc-page-leave-to {
+  opacity: 0;
+  clip-path: inset(100% 0 0 0);
+}
+
+/* ---------- 5.3 弹窗（el-dialog）—— HUD 边框展开 + 扫描扫过 ---------- */
+html.t-cyberpunk .nc-dialog {
+  background: var(--nc-panel-2);
+  border: 1px solid var(--nc-cyan);
+  box-shadow: var(--shadow-hard), var(--nc-glow-cyan);
+  border-radius: 0;
+  position: relative;
+  overflow: hidden;
+  animation: nc-dialog-in var(--dur-slow) var(--ease-out) both;
+}
+html.t-cyberpunk .nc-dialog::before {
+  content: '';
+  position: absolute; left: 0; right: 0; top: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--nc-cyan), transparent);
+  box-shadow: var(--nc-glow-cyan);
+  animation: nc-dialog-scan 1s var(--ease-out) .1s both;
+}
+@keyframes nc-dialog-in {
+  from { opacity: 0; clip-path: inset(0 50% 50% 0); }
+  to   { opacity: 1; clip-path: inset(0); }
+}
+@keyframes nc-dialog-scan { from { top: -2px; } to { top: 100%; } }
+/* Element Plus 弹窗在夜城主题下应用 nc-dialog 视觉 */
+html.t-cyberpunk .el-dialog {
+  background: var(--nc-panel-2);
+  border: 1px solid var(--nc-cyan);
+  box-shadow: var(--shadow-hard), var(--nc-glow-cyan);
+  border-radius: 0;
+}
+html.t-cyberpunk .el-dialog__title { font-family: var(--font-display); color: var(--nc-yellow); letter-spacing: .04em; }
+html.t-cyberpunk .el-overlay { background: rgba(0,0,0,.7); backdrop-filter: none; }
+
+/* ---------- 5.4 加载状态（霓虹扫描条） ---------- */
+html.t-cyberpunk .nc-loading {
+  position: relative; height: 4px;
+  background: var(--nc-bg-2); overflow: hidden;
+}
+html.t-cyberpunk .nc-loading i {
+  display: block; height: 100%; width: 40%;
+  background: linear-gradient(90deg, transparent, var(--nc-yellow), transparent);
+  box-shadow: var(--nc-glow-yellow);
+  animation: nc-scan-sweep 1s linear infinite;
+}
+/* Element Plus 加载遮罩在夜城主题下变霓虹青 */
+html.t-cyberpunk .el-loading-spinner .path { stroke: var(--nc-cyan); }
+html.t-cyberpunk .el-loading-spinner .el-loading-text { color: var(--nc-cyan); font-family: var(--font-mono); }
+
+/* ---------- 5.5 通知（el-message / el-notification）—— 终端弹窗 ---------- */
+html.t-cyberpunk .nc-notice {
+  position: relative;
+  background: var(--nc-panel-2);
+  border: 1px solid var(--nc-cyan);
+  box-shadow: var(--shadow-hard), var(--nc-glow-cyan);
+  padding: 14px 18px;
+  font-family: var(--font-mono);
+  animation: nc-notice-in var(--dur-base) var(--ease-out) both;
+}
+html.t-cyberpunk .nc-notice::before {
+  content: 'SYSTEM // ';
+  color: var(--nc-yellow);
+  font-size: 11px; letter-spacing: var(--ls-caption);
+}
+html.t-cyberpunk .nc-notice.ok { border-color: var(--nc-green); box-shadow: var(--shadow-hard), var(--nc-glow-green); }
+html.t-cyberpunk .nc-notice.ok::before { content: 'UPLINK OK // '; color: var(--nc-green); }
+html.t-cyberpunk .nc-notice.fail {
+  border-color: var(--nc-magenta);
+  box-shadow: var(--shadow-hard), var(--nc-glow-magenta);
+  animation: nc-notice-in var(--dur-base) var(--ease-out) both,
+             nc-notice-shake .3s linear 2 .2s;
+}
+html.t-cyberpunk .nc-notice.fail::before { content: 'CONNECTION LOST // '; color: var(--nc-magenta); }
+@keyframes nc-notice-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes nc-notice-shake { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+html.t-cyberpunk .nc-starburst {
+  display: inline-grid; place-items: center;
+  width: 52px; height: 52px;
+  background: var(--nc-magenta);
+  clip-path: var(--clip-star);
+  color: #fff;
+  font-family: var(--font-display); font-weight: 900;
+  box-shadow: var(--nc-glow-magenta);
+  animation: nc-star-in var(--dur-epic) var(--ease-pop) both;
+}
+@keyframes nc-star-in { from { transform: scale(0) rotate(-20deg); } to { transform: scale(1) rotate(0); } }
+/* Element Plus 消息在夜城主题下变终端风 */
+html.t-cyberpunk .el-message {
+  background: var(--nc-panel-2);
+  border: 1px solid var(--nc-cyan);
+  box-shadow: var(--shadow-hard), var(--nc-glow-cyan);
+  border-radius: 0;
+  font-family: var(--font-mono);
+}
+html.t-cyberpunk .el-message .el-message__content { color: var(--nc-fg); }
+html.t-cyberpunk .el-message::before { content: 'SYSTEM // '; color: var(--nc-yellow); }
+html.t-cyberpunk .el-message--success { border-color: var(--nc-green); box-shadow: var(--shadow-hard), var(--nc-glow-green); }
+html.t-cyberpunk .el-message--success::before { content: 'UPLINK OK // '; color: var(--nc-green); }
+html.t-cyberpunk .el-message--error,
+html.t-cyberpunk .el-message--warning { border-color: var(--nc-magenta); box-shadow: var(--shadow-hard), var(--nc-glow-magenta); }
+html.t-cyberpunk .el-message--error::before,
+html.t-cyberpunk .el-message--warning::before { content: 'CONNECTION LOST // '; color: var(--nc-magenta); }
+html.t-cyberpunk .el-notification {
+  background: var(--nc-panel-2);
+  border: 1px solid var(--nc-cyan);
+  border-radius: 0;
+  font-family: var(--font-mono);
+}
+html.t-cyberpunk .el-notification__title { color: var(--nc-yellow); font-family: var(--font-display); }
+html.t-cyberpunk .el-notification__content { color: var(--nc-fg); }
+
+/* ---------- 试点页 TaskCenter 细化（在既有 .tk-* / el-* 上叠加夜城签名，其他主题零影响） ---------- */
+html.t-cyberpunk .nc-statusbar { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+html.t-cyberpunk .tk-params span {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--nc-fg-dim);
+  background: var(--nc-panel-2);
+  border: 1px solid var(--nc-line-neon);
+  border-radius: 0;
+  padding: 1px 9px;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+}
+html.t-cyberpunk .tk-status {
+  font-family: var(--font-mono);
+  font-size: 12px; font-weight: 700;
+  padding: 2px 10px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  border: 1px solid currentColor;
+}
+html.t-cyberpunk .tk-status.generating { color: var(--nc-cyan); }
+html.t-cyberpunk .tk-status.done { color: var(--nc-green); }
+html.t-cyberpunk .tk-status.failed { color: var(--nc-magenta); }
+html.t-cyberpunk .tk-status.queued { color: var(--nc-yellow); }
+/* 按钮：霓虹描边 + 切角（保留 el-button 结构，全主题可用） */
+html.t-cyberpunk .el-button {
+  border-radius: 0;
+  border-color: var(--nc-cyan);
+  color: var(--nc-cyan);
+  background: transparent;
+  font-family: var(--font-display);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+html.t-cyberpunk .el-button:hover {
+  background: var(--nc-cyan); color: #000; box-shadow: var(--nc-glow-cyan);
+}
+html.t-cyberpunk .el-button--primary {
+  background: var(--nc-yellow); color: #000; border-color: var(--nc-yellow); font-weight: 800;
+  box-shadow: var(--shadow-neon-y);
+}
+html.t-cyberpunk .el-button--primary:hover { background: #FFED4D; box-shadow: var(--nc-glow-yellow); }
+html.t-cyberpunk .el-button--danger { border-color: var(--nc-magenta); color: var(--nc-magenta); }
+html.t-cyberpunk .el-button--danger:hover { background: var(--nc-magenta); color:#fff; box-shadow: var(--nc-glow-magenta); }
+html.t-cyberpunk .el-button.is-disabled, html.t-cyberpunk .el-button:disabled { opacity:.4; cursor:not-allowed; }
+/* 进度条：扫描扫过（保留 el-progress，仅进行中/排队时叠加扫描） */
+html.t-cyberpunk .el-progress-bar__inner { position: relative; overflow: hidden; background: var(--nc-cyan); box-shadow: var(--nc-glow-cyan); }
+html.t-cyberpunk .el-progress.is-success .el-progress-bar__inner { background: var(--nc-green); box-shadow: var(--nc-glow-green); }
+html.t-cyberpunk .el-progress.is-exception .el-progress-bar__inner { background: var(--nc-magenta); box-shadow: var(--nc-glow-magenta); }
+html.t-cyberpunk .el-progress-bar__inner:not(.is-status-success):not(.is-status-exception)::after {
+  content: ''; position: absolute; top:0; bottom:0; width: 40%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.5), transparent);
+  animation: nc-scan-sweep 1.2s linear infinite;
+}
+/* 日志面板：等宽字体 + 霓虹 HUD 框 */
+html.t-cyberpunk .nc-logwrap { position: relative; background: var(--nc-panel); border: 1px solid var(--nc-line); padding: 14px 16px 16px; margin-top: 10px; }
+html.t-cyberpunk .nc-loghead { font-family: var(--font-mono); color: var(--nc-cyan); font-size: 12px; letter-spacing: .12em; margin-bottom: 8px; text-shadow: var(--nc-glow-cyan); }
+html.t-cyberpunk .vlp-body, html.t-cyberpunk .vlp-line, html.t-cyberpunk .vlp-head { font-family: var(--font-mono); }
+
+/* ---------- A10 全站零圆角（圆形控件豁免） ---------- */
+html.t-cyberpunk *,
+html.t-cyberpunk *::before,
+html.t-cyberpunk *::after { border-radius: 0 !important; }
+html.t-cyberpunk .el-avatar,
+html.t-cyberpunk img.avatar,
+html.t-cyberpunk .avatar,
+html.t-cyberpunk .circular,
+html.t-cyberpunk .nc-circle,
+html.t-cyberpunk .orb-user-avatar { border-radius: 50% !important; }
+
+/* ---------- 5.8 减动偏好（MUST） ---------- */
+@media (prefers-reduced-motion: reduce) {
+  html.t-cyberpunk *,
+  html.t-cyberpunk *::before,
+  html.t-cyberpunk *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+/* ============================================================================
+   夜城 HUD 主题 · v3.0 补全（依据手册 v3.0）
+   内容：① §4.8 快捷键 HUD .nc-keygroup；② §4.9 异形倒计时 .nc-countdown；
+        ③ 路由擦除动画修正（App.vue 过渡名为 p5-page，原 .nc-page-* 不匹配）；
+        ④ 阶段3-4 全站容器夜城化（el-* 全局覆盖，零模板改动）；
+        ⑤ 阶段4b DirectorOrb 夜城皮肤（§8，作用于真实类，零模板改动）。
+   全部作用域 html.t-cyberpunk；orb 覆盖用 !important 以胜过组件 scoped 样式
+   （与 P5 块 .m3-* 处理一致，非盲目 !important）。
+   ============================================================================ */
+
+/* ---------- 4.8 快捷键 HUD（图标 + 文字 + 键帽框） ---------- */
+html.t-cyberpunk .nc-keygroup { display: flex; gap: 14px; flex-wrap: wrap; }
+html.t-cyberpunk .nc-keygroup__item {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 8px 10px;
+  color: var(--nc-fg);
+  font-family: var(--font-cond);
+  font-size: 13px; font-weight: 700; letter-spacing: .08em;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+html.t-cyberpunk .nc-keygroup__item:hover { background: rgba(0,240,255,.08); border-color: var(--nc-line-neon); }
+html.t-cyberpunk .nc-keygroup__item .ico,
+html.t-cyberpunk .nc-keygroup__item i { font-style: normal; font-size: 18px; filter: drop-shadow(2px 2px 0 rgba(0,0,0,.7)); }
+html.t-cyberpunk .nc-keygroup__item kbd {
+  min-width: 34px; padding: 2px 8px;
+  border: 2px solid var(--nc-cyan);
+  color: var(--nc-cyan);
+  font-family: var(--font-mono); font-size: 10px; text-align: center;
+  box-shadow: var(--shadow-hard-sm);
+}
+
+/* ---------- 4.9 异形倒计时条（斜切 + 撕裂延伸） ---------- */
+html.t-cyberpunk .nc-countdown {
+  position: relative;
+  display: inline-flex; align-items: center;
+  background: var(--nc-bg-2);
+  color: var(--nc-fg);
+  border: 2px solid var(--nc-yellow);
+  border-right: none;
+  padding: 8px 20px 8px 28px;
+  font-family: var(--font-num); font-weight: 900;
+  font-size: clamp(20px, 3vw, 34px); letter-spacing: .04em;
+  box-shadow: var(--shadow-hard), var(--nc-glow-yellow);
+  clip-path: polygon(12px 0, 100% 0, 100% 100%, 0 100%, 0 50%);
+}
+html.t-cyberpunk .nc-countdown::after {
+  content: ''; position: absolute; right: -18px; top: -2px; bottom: -2px;
+  width: 18px; background: var(--nc-bg-2);
+  clip-path: var(--clip-nc-flag);
+  border-top: 2px solid var(--nc-yellow); border-bottom: 2px solid var(--nc-yellow);
+}
+html.t-cyberpunk .nc-countdown em {
+  position: absolute; right: -13px; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 60%; background: var(--nc-yellow);
+  box-shadow: 6px 0 0 var(--nc-yellow); pointer-events: none; z-index: 1;
+}
+
+/* ---------- 5.2 路由擦除修正（App.vue 过渡名固定为 p5-page） ---------- */
+html.t-cyberpunk .p5-page-enter-active { transition: all var(--dur-slow) var(--ease-out); }
+html.t-cyberpunk .p5-page-leave-active { transition: all calc(var(--dur-slow) * .5) var(--ease-out); }
+html.t-cyberpunk .p5-page-enter-from {
+  opacity: 0; transform: translateY(12px);
+  clip-path: inset(0 0 100% 0);
+}
+html.t-cyberpunk .p5-page-leave-to {
+  opacity: 0;
+  clip-path: inset(100% 0 0 0);
+}
+
+/* ---------- 阶段3-4：P0/P1/P2 全站容器夜城化（零模板改动） ---------- */
+html.t-cyberpunk .el-card {
+  background: var(--nc-panel);
+  border: 1px solid var(--nc-line);
+  border-radius: 0;
+  box-shadow: var(--shadow-hard);
+  color: var(--nc-fg);
+}
+html.t-cyberpunk .el-card__header,
+html.t-cyberpunk .el-card__body { border-color: var(--nc-line-neon); color: var(--nc-fg); }
+html.t-cyberpunk .el-card__header { font-family: var(--font-display); letter-spacing: .04em; }
+html.t-cyberpunk .el-table,
+html.t-cyberpunk .el-table__inner-wrapper { background: transparent; }
+html.t-cyberpunk .el-table th.el-table__cell {
+  background: var(--nc-panel-2); color: var(--nc-yellow);
+  font-family: var(--font-mono); letter-spacing: .1em; text-transform: uppercase;
+  border-bottom: 1px solid var(--nc-line-neon);
+}
+html.t-cyberpunk .el-table td.el-table__cell { border-bottom: 1px solid var(--nc-line); color: var(--nc-fg); }
+html.t-cyberpunk .el-table--enable-row-hover .el-table__body tr:hover > td.el-table__cell { background: rgba(0,240,255,.06); }
+html.t-cyberpunk .el-table tr { background: transparent; }
+html.t-cyberpunk .el-menu { background: transparent; border-right: none; }
+html.t-cyberpunk .el-menu-item,
+html.t-cyberpunk .el-sub-menu__title { color: var(--nc-fg-dim); font-family: var(--font-display); letter-spacing: .04em; }
+html.t-cyberpunk .el-menu-item.is-active { color: #000; background: var(--nc-yellow); border-left: 3px solid var(--nc-cyan); }
+html.t-cyberpunk .el-menu-item:hover,
+html.t-cyberpunk .el-sub-menu__title:hover { color: var(--nc-cyan); background: rgba(0,240,255,.06); }
+html.t-cyberpunk .el-tabs__item { color: var(--nc-fg-dim); font-family: var(--font-display); letter-spacing: .06em; text-transform: uppercase; }
+html.t-cyberpunk .el-tabs__item.is-active { color: var(--nc-yellow); }
+html.t-cyberpunk .el-tabs__active-bar { background: var(--nc-yellow); box-shadow: var(--nc-glow-yellow); }
+html.t-cyberpunk .el-tag { border-radius: 0; border: 1px solid var(--nc-cyan); color: var(--nc-cyan); background: transparent; font-family: var(--font-mono); letter-spacing: .06em; }
+html.t-cyberpunk .el-tag--success,
+html.t-cyberpunk .el-tag--primary { border-color: var(--nc-green); color: var(--nc-green); }
+html.t-cyberpunk .el-tag--danger,
+html.t-cyberpunk .el-tag--warning { border-color: var(--nc-magenta); color: var(--nc-magenta); }
+html.t-cyberpunk .el-input__wrapper { background: var(--nc-panel); border: 1px solid var(--nc-line); border-radius: 0; box-shadow: none; }
+html.t-cyberpunk .el-input__wrapper.is-focus { border-color: var(--nc-cyan); box-shadow: var(--nc-glow-cyan); }
+html.t-cyberpunk .el-input__inner { color: var(--nc-fg); font-family: var(--font-body); }
+html.t-cyberpunk .el-textarea__inner { background: var(--nc-panel); border: 1px solid var(--nc-line); border-radius: 0; color: var(--nc-fg); }
+html.t-cyberpunk .el-drawer { background: var(--nc-panel); color: var(--nc-fg); }
+html.t-cyberpunk .el-drawer__header { color: var(--nc-yellow); font-family: var(--font-display); }
+html.t-cyberpunk .el-descriptions__label { color: var(--nc-cyan); font-family: var(--font-mono); }
+html.t-cyberpunk .el-descriptions__content { color: var(--nc-fg); }
+html.t-cyberpunk .el-pagination button,
+html.t-cyberpunk .el-pager li { background: var(--nc-panel); color: var(--nc-fg-dim); border-radius: 0; }
+html.t-cyberpunk .el-pager li.is-active { color: var(--nc-yellow); }
+html.t-cyberpunk .el-collapse,
+html.t-cyberpunk .el-collapse-item__header,
+html.t-cyberpunk .el-collapse-item__wrap { background: transparent; color: var(--nc-fg); border-color: var(--nc-line); }
+html.t-cyberpunk .el-radio__input.is-checked .el-radio__inner { background: var(--nc-yellow); border-color: var(--nc-yellow); }
+html.t-cyberpunk .el-radio__input.is-checked + .el-radio__label { color: var(--nc-yellow); }
+html.t-cyberpunk .el-checkbox__input.is-checked .el-checkbox__inner { background: var(--nc-cyan); border-color: var(--nc-cyan); }
+html.t-cyberpunk .el-checkbox__input.is-checked + .el-checkbox__label { color: var(--nc-cyan); }
+
+/* ---------- 阶段4b：DirectorOrb 夜城皮肤（§8，作用于真实类，零模板改动） ---------- */
+/* 本体：赛博装备 HUD 方框 + 扫描线（默认呈现「扫描框」形态，纯 CSS，无需模板编辑） */
+html.t-cyberpunk .dir-orb-root { font-family: var(--font-body); }
+html.t-cyberpunk .orb-btn {
+  background: var(--nc-bg-2) !important;
+  border: 1px solid var(--nc-cyan) !important;
+  border-radius: 0 !important;
+  box-shadow: var(--shadow-hard), var(--nc-glow-cyan) !important;
+  position: relative; overflow: hidden;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+html.t-cyberpunk .orb-btn::after {
+  content: ''; position: absolute; left: 0; right: 0; top: 50%;
+  height: 2px; transform: translateY(-50%);
+  background: linear-gradient(90deg, transparent, var(--nc-cyan), transparent);
+  box-shadow: var(--nc-glow-cyan);
+  animation: nc-orb-scanline 2s linear infinite;
+  pointer-events: none;
+}
+html.t-cyberpunk .orb-btn::before {
+  content: ''; position: absolute; inset: 6px;
+  border: 1px solid rgba(0,240,255,.4);
+  pointer-events: none;
+}
+html.t-cyberpunk .orb-btn:hover {
+  border-color: var(--nc-yellow) !important;
+  box-shadow: var(--shadow-hard), var(--nc-glow-yellow) !important;
+}
+html.t-cyberpunk .orb-btn.orb-watching,
+html.t-cyberpunk .orb-btn.orb-warning,
+html.t-cyberpunk .orb-btn.orb-error,
+html.t-cyberpunk .orb-btn.orb-success {
+  border-color: var(--nc-cyan) !important;
+  box-shadow: var(--shadow-hard), var(--nc-glow-cyan) !important;
+}
+html.t-cyberpunk .orb-btn.orb-running { animation: nc-orb-scan 2s linear infinite; }
+@keyframes nc-orb-scan {
+  0%, 100% { box-shadow: var(--shadow-hard), var(--nc-glow-cyan); }
+  50%      { box-shadow: var(--shadow-hard), var(--nc-glow-yellow); filter: hue-rotate(30deg); }
+}
+@keyframes nc-orb-scanline {
+  0%   { top: 12%; opacity: .9; }
+  50%  { top: 88%; opacity: .9; }
+  100% { top: 12%; opacity: .9; }
+}
+/* 进度环 */
+html.t-cyberpunk .orb-progress { background: var(--nc-bg-2); border: 1px solid var(--nc-line); height: 6px; border-radius: 0; overflow: hidden; }
+html.t-cyberpunk .ob-pfill { background: linear-gradient(90deg, var(--nc-cyan), var(--nc-green)); box-shadow: var(--nc-glow-cyan); }
+html.t-cyberpunk .ob-pnum { color: var(--nc-green); font-family: var(--font-mono); font-weight: 700; }
+/* 角标：霓虹黄方块 + 等宽数字 */
+html.t-cyberpunk .orb-badge,
+html.t-cyberpunk .orb-badge-err,
+html.t-cyberpunk .orb-badge-adv {
+  background: var(--nc-yellow) !important;
+  color: #000 !important;
+  border-radius: 0 !important;
+  font-family: var(--font-mono) !important;
+  font-weight: 700;
+  box-shadow: 2px 2px 0 0 rgba(0,0,0,.85) !important;
+}
+/* 面板（展开态） */
+html.t-cyberpunk .orb-panel {
+  background: var(--nc-panel) !important;
+  border: 1px solid var(--nc-cyan) !important;
+  box-shadow: var(--shadow-hard), var(--nc-glow-cyan) !important;
+  border-radius: 0 !important;
+  color: var(--nc-fg);
+}
+html.t-cyberpunk .orb-head { border-bottom: 1px solid var(--nc-line-neon) !important; }
+html.t-cyberpunk .orb-title { font-family: var(--font-display); color: var(--nc-yellow); letter-spacing: .04em; }
+html.t-cyberpunk .orb-icon { color: var(--nc-cyan); }
+html.t-cyberpunk .orb-user-chip { background: var(--nc-panel-2); border: 1px solid var(--nc-line-neon); }
+html.t-cyberpunk .orb-user-name { color: var(--nc-fg); font-family: var(--font-mono); }
+html.t-cyberpunk .orb-stage-tag { font-family: var(--font-mono); color: var(--nc-cyan); border: 1px solid var(--nc-cyan); }
+html.t-cyberpunk .orb-x { color: var(--nc-fg-dim); }
+html.t-cyberpunk .orb-x:hover { color: var(--nc-magenta); }
+html.t-cyberpunk .orb-empty { color: var(--nc-fg-faint); font-family: var(--font-mono); }
+html.t-cyberpunk .orb-log-line { font-family: var(--font-mono); color: var(--nc-green); }
+html.t-cyberpunk .orb-alert { border-color: var(--nc-magenta); color: var(--nc-magenta); }
+/* 三卡（M6）夜城皮肤 §8.2 */
+html.t-cyberpunk .m3-decision { border: 1px solid var(--nc-cyan) !important; box-shadow: var(--shadow-hard), var(--nc-glow-cyan) !important; border-radius: 0 !important; }
+html.t-cyberpunk .m3-decision .mt-title { color: var(--nc-yellow) !important; font-family: var(--font-display); }
+html.t-cyberpunk .m3-decision .mt-opt { border: 1px solid var(--nc-line); color: var(--nc-fg); }
+html.t-cyberpunk .m3-decision .mt-opt:hover { background: var(--nc-cyan); color: #000; }
+html.t-cyberpunk .m3-conv .conv-bubble { background: var(--nc-panel) !important; border: 1px solid var(--nc-line) !important; border-radius: 0 !important; font-family: var(--font-mono); color: var(--nc-fg); }
+html.t-cyberpunk .m3-conv .conv-bubble.notice { border-left: 3px solid var(--nc-cyan) !important; }
+html.t-cyberpunk .m3-conv .conv-bubble.insight { border-left: 3px solid var(--nc-green) !important; }
+/* 试点页任务卡 .tk-card 夜城 hover（手册 §6.2：霓虹青边 + glow） */
+html.t-cyberpunk .tk-card {
+  position: relative;
+  background: var(--nc-panel);
+  border: 1px solid var(--nc-line);
+  transition: border-color var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out);
+}
+html.t-cyberpunk .tk-card:hover { border-color: var(--nc-cyan); box-shadow: var(--shadow-hard), var(--nc-glow-cyan); }
