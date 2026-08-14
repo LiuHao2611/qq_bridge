@@ -1432,6 +1432,31 @@ html.t-p5 .lora-train .field {
    ============================================================================ */
 
 /* 4.0 形态容器：绝对居中 + 不挡点击（C-3） */
+/* 形态 = 悬浮球（剥离 .orb-btn 方盒背景 / 阴影 / 通用动画）
+   组件 scoped 基线 .orb-btn 带紫蓝渐变 + 阴影 + border-radius:50%，
+   P5 全局 * {border-radius:0} 把它压成方盒；形态只画在内部小装饰。
+   用 !important 压过组件 scoped [data-v-*]，让形态本身成为悬浮球可视本体。 */
+html.t-p5 .orb-btn {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  animation: none !important;
+  overflow: visible !important;
+}
+/* P5 形态尺寸适度放大，使形态直接撑起悬浮球视觉（56px 球内 ~80% 占比） */
+html.t-p5 .orb-morph--sword   .orb-morph { width: 24px; height: 50px; }
+html.t-p5 .orb-morph--mask    .orb-morph { width: 46px; height: 28px; }
+html.t-p5 .orb-morph--tower   .orb-morph { width: 32px; height: 44px; }
+html.t-p5 .orb-morph--shackle .orb-morph { width: 42px; height: 32px; }
+/* P5 形态伪元素按新尺寸同比放大（保持识别度） */
+html.t-p5 .orb-morph--sword .orb-morph::before { width: 12px; height: 38px; }
+html.t-p5 .orb-morph--sword .orb-morph::after  { width: 20px; height: 7px; }
+html.t-p5 .orb-morph--mask  .orb-morph::before,
+html.t-p5 .orb-morph--mask  .orb-morph::after  { width: 11px; height: 8px; }
+html.t-p5 .orb-morph--shackle .orb-morph::before { width: 14px; height: 14px; }
+html.t-p5 .orb-morph--shackle .orb-morph::after  { width: 12px; height: 11px; }
+
 html.t-p5 .orb-morph {
   position: absolute; inset: 0; margin: auto;
   display: grid; place-items: center;
@@ -1466,20 +1491,23 @@ html.t-p5 .orb-morph--sword:not(.dragging) .orb-morph { animation: p5-sword-idle
   50%     { transform: translateY(-6px) rotate(3deg); }
 }
 html.t-p5 .orb-btn.dragging.orb-morph--sword .orb-morph {
-  transform: rotate(45deg) scale(1.15);
-  animation: p5-sword-fly .3s linear infinite;
-  filter: drop-shadow(0 0 4px var(--p5-red));
+  transform: rotate(55deg) scale(1.2);
+  animation: p5-sword-fly .22s linear infinite;
+  filter: drop-shadow(0 0 8px rgba(228,0,43,.85));
 }
 @keyframes p5-sword-fly {
-  0%   { transform: rotate(42deg) translate(0,0); }
-  50%  { transform: rotate(48deg) translate(2px,-2px); }
-  100% { transform: rotate(42deg) translate(0,0); }
+  0%   { transform: rotate(48deg) translate(0,0); }
+  25%  { transform: rotate(58deg) translate(3px,-3px); }
+  50%  { transform: rotate(52deg) translate(-2px,-5px); }
+  75%  { transform: rotate(60deg) translate(4px,2px); }
+  100% { transform: rotate(48deg) translate(0,0); }
 }
 html.t-p5 .orb-btn.dragging.orb-morph--sword .orb-morph::before {
   box-shadow:
-    -6px 6px 0 -2px rgba(228,0,43,.5),
-    -12px 12px 0 -4px rgba(228,0,43,.3),
-    -18px 18px 0 -6px rgba(228,0,43,.15);
+    -8px 8px 0 -2px rgba(228,0,43,.75),
+    -16px 16px 0 -4px rgba(228,0,43,.5),
+    -24px 24px 0 -6px rgba(228,0,43,.3),
+    -32px 32px 0 -8px rgba(228,0,43,.15);
 }
 
 /* 4.2 P5-2 怪盗面具（残影分裂） */
@@ -1501,19 +1529,23 @@ html.t-p5 .orb-morph--mask .orb-morph::before { left: 5px; }
 html.t-p5 .orb-morph--mask .orb-morph::after  { right: 5px; }
 html.t-p5 .orb-morph--mask:not(.dragging) .orb-morph { animation: p5-mask-breathe 2.4s ease-in-out infinite; }
 @keyframes p5-mask-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
-html.t-p5 .orb-btn.dragging.orb-morph--mask .orb-morph { animation: p5-mask-split .2s steps(2) infinite; }
+html.t-p5 .orb-btn.dragging.orb-morph--mask .orb-morph {
+  animation: p5-mask-split .14s steps(3) infinite;
+  filter: drop-shadow(0 0 6px rgba(228,0,43,.7));
+}
 @keyframes p5-mask-split {
   0%   { transform: translate(0,0) scale(1); }
-  50%  { transform: translate(-4px,2px) scale(1.05); }
+  33%  { transform: translate(-6px,3px) scale(1.08); }
+  66%  { transform: translate(6px,-2px) scale(.94); }
   100% { transform: translate(0,0) scale(1); }
 }
 html.t-p5 .orb-btn.dragging.orb-morph--mask .orb-morph::before {
   content: ''; position: absolute; inset: 0;
-  background: inherit; clip-path: inherit; opacity: .45; transform: translate(-8px,4px);
+  background: inherit; clip-path: inherit; opacity: .55; transform: translate(-12px,5px) scale(.92);
 }
 html.t-p5 .orb-btn.dragging.orb-morph--mask .orb-morph::after {
   content: ''; position: absolute; inset: 0;
-  background: inherit; clip-path: inherit; opacity: .2; transform: translate(-14px,8px);
+  background: inherit; clip-path: inherit; opacity: .25; transform: translate(-22px,12px) scale(.82);
 }
 
 /* 4.3 P5-3 命运塔罗（疾转 + 残影） */
@@ -1534,11 +1566,17 @@ html.t-p5 .orb-morph--tower .orb-morph::before {
 }
 html.t-p5 .orb-morph--tower:not(.dragging) .orb-morph { animation: p5-tower-idle 3.6s ease-in-out infinite; }
 @keyframes p5-tower-idle { 0%,100% { transform: rotateY(0); } 50% { transform: rotateY(18deg); } }
-html.t-p5 .orb-btn.dragging.orb-morph--tower .orb-morph { animation: p5-tower-spin .18s linear infinite; }
-@keyframes p5-tower-spin { from { transform: rotateY(0); } to { transform: rotateY(360deg); } }
+html.t-p5 .orb-btn.dragging.orb-morph--tower .orb-morph {
+  animation: p5-tower-spin .12s linear infinite;
+  filter: drop-shadow(0 0 8px rgba(228,0,43,.7));
+}
+@keyframes p5-tower-spin { from { transform: rotateY(0); } to { transform: rotateY(540deg); } }
 html.t-p5 .orb-btn.dragging.orb-morph--tower .orb-morph::after {
   content: ''; position: absolute; inset: 0;
-  background: inherit; opacity: .35; transform: translateX(-10px) skewX(-12deg);
+  background: inherit; opacity: .5; transform: translateX(-14px) skewX(-14deg);
+}
+html.t-p5 .orb-btn.dragging.orb-morph--tower .orb-morph::before {
+  opacity: .4;
 }
 
 /* 4.4 P5-4 心锁锁链（甩动） */
@@ -1562,13 +1600,21 @@ html.t-p5 .orb-morph--shackle .orb-morph::after {
 }
 html.t-p5 .orb-morph--shackle:not(.dragging) .orb-morph { animation: p5-shackle-idle 2.2s ease-in-out infinite; transform-origin: top center; }
 @keyframes p5-shackle-idle { 0%,100% { transform: rotate(-8deg); } 50% { transform: rotate(8deg); } }
-html.t-p5 .orb-btn.dragging.orb-morph--shackle .orb-morph { animation: p5-shackle-whip .16s linear infinite; transform-origin: top center; }
-@keyframes p5-shackle-whip {
-  0%   { transform: rotate(-20deg) translateX(-2px); }
-  50%  { transform: rotate(20deg) translateX(2px); }
-  100% { transform: rotate(-20deg) translateX(-2px); }
+html.t-p5 .orb-btn.dragging.orb-morph--shackle .orb-morph {
+  animation: p5-shackle-whip .1s linear infinite;
+  transform-origin: top center;
+  filter: drop-shadow(0 0 6px rgba(228,0,43,.6));
 }
-html.t-p5 .orb-btn.dragging.orb-morph--shackle .orb-morph::before { filter: drop-shadow(-4px 0 0 rgba(228,0,43,.4)); }
+@keyframes p5-shackle-whip {
+  0%   { transform: rotate(-32deg) translateX(-3px); }
+  25%  { transform: rotate(0deg)   translateX(0); }
+  50%  { transform: rotate(32deg)  translateX(3px); }
+  75%  { transform: rotate(0deg)   translateX(0); }
+  100% { transform: rotate(-32deg) translateX(-3px); }
+}
+html.t-p5 .orb-btn.dragging.orb-morph--shackle .orb-morph::before {
+  filter: drop-shadow(-6px 0 0 rgba(228,0,43,.55)) drop-shadow(6px 0 0 rgba(228,0,43,.35));
+}
 
 /* 5.1 切换爆发（双击时绯红星爆扩散） */
 html.t-p5 .orb-btn.switching::after {
@@ -2446,49 +2492,32 @@ html.t-cyberpunk .el-checkbox__input.is-checked .el-checkbox__inner { background
 html.t-cyberpunk .el-checkbox__input.is-checked + .el-checkbox__label { color: var(--nc-cyan); }
 
 /* ---------- 阶段4b：DirectorOrb 夜城皮肤（§8，作用于真实类，零模板改动） ---------- */
-/* 本体：赛博装备 HUD 方框 + 扫描线（默认呈现「扫描框」形态，纯 CSS，无需模板编辑） */
+/* 形态 = 悬浮球（剥离 .orb-btn 方盒 / 扫描线 / 通用扫描动画）
+   原阶段4b 把 .orb-btn 装饰成 HUD 方框 + 扫描线 + 色调旋转，形态仅作内部装饰；
+   现按形态增强规格：形态本身即为悬浮球可视本体，仅保留极薄的赛博边框做"持有感"。 */
 html.t-cyberpunk .dir-orb-root { font-family: var(--font-body); }
 html.t-cyberpunk .orb-btn {
-  background: var(--nc-bg-2) !important;
-  border: 1px solid var(--nc-cyan) !important;
+  background: transparent !important;
+  border: 1px solid rgba(0,240,255,.25) !important;
   border-radius: 0 !important;
-  box-shadow: var(--shadow-hard), var(--nc-glow-cyan) !important;
+  box-shadow: 0 0 14px rgba(0,240,255,.25) !important;
   position: relative; overflow: visible;
   transition: all var(--dur-fast) var(--ease-out);
+  animation: none !important;
 }
-html.t-cyberpunk .orb-btn::after {
-  content: ''; position: absolute; left: 0; right: 0; top: 50%;
-  height: 2px; transform: translateY(-50%);
-  background: linear-gradient(90deg, transparent, var(--nc-cyan), transparent);
-  box-shadow: var(--nc-glow-cyan);
-  animation: nc-orb-scanline 2s linear infinite;
-  pointer-events: none;
-}
-html.t-cyberpunk .orb-btn::before {
-  content: ''; position: absolute; inset: 6px;
-  border: 1px solid rgba(0,240,255,.4);
-  pointer-events: none;
-}
+/* 去掉原 ::after 扫描横线 与 ::before 内框 + nc-orb-scan 色调旋转（消除"通用旋转"观感） */
+html.t-cyberpunk .orb-btn::before,
+html.t-cyberpunk .orb-btn::after { content: none !important; animation: none !important; display: none !important; }
 html.t-cyberpunk .orb-btn:hover {
   border-color: var(--nc-yellow) !important;
-  box-shadow: var(--shadow-hard), var(--nc-glow-yellow) !important;
+  box-shadow: 0 0 18px var(--nc-glow-yellow) !important;
 }
 html.t-cyberpunk .orb-btn.orb-watching,
 html.t-cyberpunk .orb-btn.orb-warning,
 html.t-cyberpunk .orb-btn.orb-error,
 html.t-cyberpunk .orb-btn.orb-success {
   border-color: var(--nc-cyan) !important;
-  box-shadow: var(--shadow-hard), var(--nc-glow-cyan) !important;
-}
-html.t-cyberpunk .orb-btn.orb-running { animation: nc-orb-scan 2s linear infinite; }
-@keyframes nc-orb-scan {
-  0%, 100% { box-shadow: var(--shadow-hard), var(--nc-glow-cyan); }
-  50%      { box-shadow: var(--shadow-hard), var(--nc-glow-yellow); filter: hue-rotate(30deg); }
-}
-@keyframes nc-orb-scanline {
-  0%   { top: 12%; opacity: .9; }
-  50%  { top: 88%; opacity: .9; }
-  100% { top: 12%; opacity: .9; }
+  box-shadow: 0 0 14px var(--nc-glow-cyan) !important;
 }
 /* 进度环 */
 html.t-cyberpunk .orb-progress { background: var(--nc-bg-2); border: 1px solid var(--nc-line); height: 6px; border-radius: 0; overflow: hidden; }
@@ -2640,12 +2669,12 @@ html.t-cyberpunk .orb-btn .orb-core { display: none; }
 
 /* 4.5 NC-1 霓虹武士刀（刀光拖尾） */
 html.t-cyberpunk .orb-morph--katana .orb-morph {
-  width: 14px; height: 40px;
+  width: 20px; height: 50px;
   transition: transform .3s var(--ease-out);
 }
 html.t-cyberpunk .orb-morph--katana .orb-morph::before {
   content: '';
-  width: 8px; height: 30px;
+  width: 10px; height: 38px;
   background: linear-gradient(180deg, #E8FFFF 0 10%, var(--nc-cyan) 10% 100%);
   clip-path: polygon(50% 0, 100% 6%, 100% 90%, 50% 100%, 0 90%, 0 6%);
   filter: drop-shadow(0 0 4px var(--nc-cyan));
@@ -2653,7 +2682,7 @@ html.t-cyberpunk .orb-morph--katana .orb-morph::before {
 html.t-cyberpunk .orb-morph--katana .orb-morph::after {
   content: '';
   position: absolute; bottom: 2px;
-  width: 12px; height: 8px;
+  width: 16px; height: 10px;
   background: var(--nc-bg);
   clip-path: polygon(10% 0, 90% 0, 100% 100%, 0 100%);
   border-top: 2px solid var(--nc-yellow);
@@ -2664,21 +2693,25 @@ html.t-cyberpunk .orb-morph--katana:not(.dragging) .orb-morph { animation: nc-ka
   50%     { transform: translateY(-5px); filter: drop-shadow(0 0 6px var(--nc-cyan)); }
 }
 html.t-cyberpunk .orb-btn.dragging.orb-morph--katana .orb-morph {
-  transform: rotate(90deg) scale(1.2);
-  animation: nc-katana-swing .3s linear infinite;
-  filter: drop-shadow(0 0 3px var(--nc-cyan))
-          drop-shadow(-6px 0 2px rgba(0,240,255,.5))
-          drop-shadow(-12px 0 1px rgba(0,240,255,.25));
+  transform: rotate(95deg) scale(1.25);
+  animation: nc-katana-swing .22s linear infinite;
+  filter:
+    drop-shadow(0 0 6px var(--nc-cyan))
+    drop-shadow(-8px 0 3px rgba(0,240,255,.65))
+    drop-shadow(-18px 0 2px rgba(0,240,255,.4))
+    drop-shadow(-28px 0 1px rgba(0,240,255,.2));
 }
 @keyframes nc-katana-swing {
-  0%   { transform: rotate(86deg) translateY(-1px); }
-  50%  { transform: rotate(94deg) translateY(1px); }
-  100% { transform: rotate(86deg) translateY(-1px); }
+  0%   { transform: rotate(86deg) translateY(-2px); }
+  25%  { transform: rotate(102deg) translateY(2px); }
+  50%  { transform: rotate(88deg) translateY(-1px); }
+  75%  { transform: rotate(98deg) translateY(3px); }
+  100% { transform: rotate(86deg) translateY(-2px); }
 }
 
 /* 4.6 NC-2 Relic 芯片（数据流拖尾） */
 html.t-cyberpunk .orb-morph--relic .orb-morph {
-  width: 30px; height: 24px;
+  width: 42px; height: 32px;
   background: var(--nc-bg-2);
   border: 1px solid var(--nc-yellow);
   box-shadow: var(--nc-glow-yellow);
@@ -2701,16 +2734,20 @@ html.t-cyberpunk .orb-morph--relic .orb-morph::after {
 }
 html.t-cyberpunk .orb-morph--relic:not(.dragging) .orb-morph { animation: nc-relic-spin 8s linear infinite; }
 @keyframes nc-relic-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
-html.t-cyberpunk .orb-btn.dragging.orb-morph--relic .orb-morph { animation: nc-relic-fast 1.2s linear infinite; }
-@keyframes nc-relic-fast { from { transform: rotate(0); } to { transform: rotate(360deg); } }
-html.t-cyberpunk .orb-btn.dragging.orb-morph--relic .orb-morph::after { animation: nc-relic-datastream .5s linear infinite; }
+html.t-cyberpunk .orb-btn.dragging.orb-morph--relic .orb-morph {
+  animation: nc-relic-fast .5s linear infinite;
+  filter: drop-shadow(0 0 8px var(--nc-yellow)) drop-shadow(-10px 0 4px rgba(254,225,0,.5));
+}
+@keyframes nc-relic-fast { from { transform: rotate(0); } to { transform: rotate(720deg); } }
+html.t-cyberpunk .orb-btn.dragging.orb-morph--relic .orb-morph::after { animation: nc-relic-datastream .3s linear infinite; }
+html.t-cyberpunk .orb-btn.dragging.orb-morph--relic .orb-morph::before { opacity: .5; }
 @keyframes nc-relic-datastream {
   0%   { transform: translate(0,0); opacity: 1; }
-  100% { transform: translate(-14px,10px); opacity: 0; }
+  100% { transform: translate(-20px,14px); opacity: 0; }
 }
 
 /* 4.7 NC-3 纳米线（鞭甩） */
-html.t-cyberpunk .orb-morph--wire .orb-morph { width: 26px; height: 26px; }
+html.t-cyberpunk .orb-morph--wire .orb-morph { width: 34px; height: 34px; }
 html.t-cyberpunk .orb-morph--wire .orb-morph::before {
   content: '';
   position: absolute; inset: 0;
@@ -2731,20 +2768,23 @@ html.t-cyberpunk .orb-morph--wire .orb-morph::after {
 }
 @keyframes nc-wire-rot { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 html.t-cyberpunk .orb-btn.dragging.orb-morph--wire .orb-morph::before {
-  animation: nc-wire-whip .4s linear infinite;
+  animation: nc-wire-whip .3s linear infinite;
   border-top-color: var(--nc-cyan);
   border-right-color: var(--nc-magenta);
   border-bottom-color: var(--nc-cyan);
+  filter: drop-shadow(0 0 8px var(--nc-cyan)) drop-shadow(-10px 6px 4px rgba(255,0,153,.5));
 }
 @keyframes nc-wire-whip {
-  0%   { transform: rotate(0) scale(1); }
-  25%  { transform: rotate(120deg) scale(1.25); }
-  50%  { transform: rotate(240deg) scale(.9); }
-  100% { transform: rotate(360deg) scale(1); }
+  0%   { transform: rotate(0)    scale(1); }
+  20%  { transform: rotate(160deg) scale(1.4); }
+  40%  { transform: rotate(280deg) scale(.85); }
+  60%  { transform: rotate(420deg) scale(1.3); }
+  80%  { transform: rotate(560deg) scale(.9); }
+  100% { transform: rotate(720deg) scale(1); }
 }
 
 /* 4.8 NC-4 HUD 扫描框（扫描加速 + 速度线） */
-html.t-cyberpunk .orb-morph--scanner .orb-morph { width: 32px; height: 32px; }
+html.t-cyberpunk .orb-morph--scanner .orb-morph { width: 46px; height: 46px; }
 html.t-cyberpunk .orb-morph--scanner .orb-morph::before {
   content: '';
   position: absolute; inset: 2px;
@@ -2764,9 +2804,12 @@ html.t-cyberpunk .orb-morph--scanner .orb-morph::after {
   animation: nc-scanner-line 1.6s ease-in-out infinite;
 }
 @keyframes nc-scanner-line { 0%,100% { top: 10%; } 50% { top: 88%; } }
-html.t-cyberpunk .orb-btn.dragging.orb-morph--scanner .orb-morph::after { animation-duration: .3s; }
+html.t-cyberpunk .orb-btn.dragging.orb-morph--scanner .orb-morph::after { animation-duration: .15s; filter: drop-shadow(0 0 6px var(--nc-green)); }
 html.t-cyberpunk .orb-btn.dragging.orb-morph--scanner .orb-morph::before {
-  filter: drop-shadow(-8px 0 0 rgba(0,240,255,.4)) drop-shadow(-14px 0 0 rgba(0,240,255,.2));
+  filter:
+    drop-shadow(-10px 0 0 rgba(0,240,255,.55))
+    drop-shadow(-18px 0 0 rgba(0,240,255,.3))
+    drop-shadow(-26px 0 0 rgba(0,240,255,.15));
 }
 
 /* 5.1 切换爆发（双击时故障闪光：RGB 分离 + 切片位移） */
