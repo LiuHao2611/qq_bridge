@@ -14,6 +14,7 @@
 import { reactive, computed, ref } from 'vue'
 import { subscribe, wsConnected } from '../ws'
 import { directorRuns, directorRunStatus, listProjectAssets, listSegments, getProduction, orbApi, resolveDecision as resolveDecisionApi, listDecisions as listDecisionsApi } from '../api'
+import { useTheme } from './useTheme'
 
 // DAG 节点中文标签（与 ProductionStage.vue NODE_TXT 对齐）
 export const NODE_TXT = {
@@ -520,8 +521,9 @@ async function refreshOrb() {
 /* ===================== DirectorOrb 多形态化身（皮肤） =====================
  * 按《DirectorOrb悬浮球多形态化身增强规格》v2.0 实现。
  * RED 纪律：不改动既有拖动 / WS / 面板逻辑，仅新增响应式状态 + 钩子。
- * 注意：平台当前仅有 P5 主题（useTheme 的 VALID_PRESETS 无 cyberpunk），
- *       故仅实现 P5 四形态；非 P5 主题下悬浮球保持原样（RED-04 默认主题不动）。
+ * 主题感知：currentMorph / cycleMorph / setOrbSkin 均按当前主题（useTheme.preset）
+ *   取对应形态库；非 P5 / 非夜城主题下悬浮球保持原样（RED-04 默认主题不动）。
+ * 形态 class 钩子：orb-morph--{key}（key 与 style.css 选择器一一对应）。
  */
 const MORPH_REGISTRY = {
   p5: [
@@ -530,14 +532,18 @@ const MORPH_REGISTRY = {
     { key: 'tower', label: '命运塔罗' },
     { key: 'shackle', label: '心锁锁链' },
   ],
-  // 夜城赛博四件套（手册 §8.1）。注：四形态视觉换肤为增强项（手册允许随后补充），
-  // 当前夜城主题下悬浮球统一呈现 HUD 扫描框皮肤（§8.3），本表用于设置页主题感知选择 + 持久化。
+  // 夜城赛博四件套（手册 §2.2 / §4.5-4.8）。key 与 style.css .orb-morph--{key} 选择器一致。
   cyberpunk: [
-    { key: 'sword', label: '霓虹武士刀' },
-    { key: 'chip', label: 'Relic 芯片' },
-    { key: 'nanowire', label: '纳米线' },
-    { key: 'scanframe', label: 'HUD 扫描框' },
+    { key: 'katana', label: '霓虹武士刀' },
+    { key: 'relic', label: 'Relic 芯片' },
+    { key: 'wire', label: '纳米线' },
+    { key: 'scanner', label: 'HUD 扫描框' },
   ],
+}
+// 当前主题对应的形态库（useTheme.preset 为模块级 ref，随主题切换响应）
+const { preset: themePreset } = useTheme()
+function activeMorphList() {
+  return MORPH_REGISTRY[themePreset.value] || MORPH_REGISTRY.p5
 }
 // 供设置页枚举的皮肤列表（仅 P5 主题可用；'random' 由 setOrbSkin 处理）
 export const ORB_SKINS = [{ key: 'random', label: '随机' }, ...MORPH_REGISTRY.p5]
@@ -551,13 +557,13 @@ export const isCelebrating = ref(false)
 export const orbSkin = ref('sword')
 
 export const currentMorph = computed(() => {
-  const list = MORPH_REGISTRY.p5
+  const list = activeMorphList()
   return list[((morphIndex.value % list.length) + list.length) % list.length]
 })
 
 let _switchTimer = null
 export function cycleMorph() {
-  const list = MORPH_REGISTRY.p5
+  const list = activeMorphList()
   morphIndex.value = (morphIndex.value + 1) % list.length
   isSwitching.value = true
   if (_switchTimer) clearTimeout(_switchTimer)
@@ -571,10 +577,10 @@ export function onTaskComplete() {
   _celebrateTimer = setTimeout(() => { isCelebrating.value = false }, 800)
 }
 
-// 设置页写入默认皮肤：把 key 映射为 morphIndex；'random' 取随机
+// 设置页写入默认皮肤：按当前主题列表把 key 映射为 morphIndex；'random' 取随机
 export function setOrbSkin(key) {
-  orbSkin.value = key || 'sword'
-  const list = MORPH_REGISTRY.p5
+  orbSkin.value = key || (themePreset.value === 'cyberpunk' ? 'katana' : 'sword')
+  const list = activeMorphList()
   if (key === 'random') {
     morphIndex.value = Math.floor(Math.random() * list.length)
   } else {

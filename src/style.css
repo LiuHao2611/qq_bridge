@@ -1593,15 +1593,90 @@ html.t-p5 .orb-btn.celebrating .orb-morph { animation: p5-celebrate .8s var(--ea
 }
 
 /* 7.x P5 三卡皮肤（决策/选型/对话气泡）· 适配真实 class：
-   .m3-decision / .m3-translator / .conv-bubble（保留暗底浅字以保证可读 RED-05，
-   仅叠加怪盗红描边 + 硬阴影 + 标题色，满足「皮肤一并覆盖」与 T-3 同主题一致） */
-html.t-p5 .m3-decision { border-color: var(--p5-red) !important; box-shadow: var(--shadow-hard-sm) !important; }
-html.t-p5 .m3-decision .pd-title { color: var(--p5-red) !important; }
-html.t-p5 .m3-translator { border-color: var(--p5-red) !important; box-shadow: var(--shadow-hard-sm) !important; }
-html.t-p5 .m3-translator .mt-title { color: var(--p5-red) !important; }
-html.t-p5 .m3-conv .conv-bubble { border-color: var(--p5-red) !important; }
-html.t-p5 .m3-conv .conv-bubble.notice { border-left: 3px solid var(--p5-red) !important; }
-html.t-p5 .m3-conv .conv-bubble.insight { border-left: 3px solid var(--ok) !important; }
+   .persona-decision(.m3-decision) / .m3-translator / .conv-bubble（.persona-decision 同时覆盖
+   决策请示卡与管家需决策卡两套）。决策卡=纸白撕裂予告卡（clip-path 撕裂边 + 硬影），
+   选型卡=墨黑底 + 绯红标签，气泡=纸白 + 深红「◆」前缀。主题作用域隔离（RED-03），
+   文字正立保证可读（RED-05）。 */
+/* —— 决策卡（予告状） —— */
+html.t-p5 .persona-decision {
+  background: var(--p5-paper);
+  color: var(--p5-ink);
+  border-radius: 0;
+  clip-path: var(--clip-tear);
+  box-shadow: var(--shadow-hard);
+  padding: 12px 16px;
+  position: relative;
+}
+html.t-p5 .persona-decision .pd-title {
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: 13px;
+  letter-spacing: .04em;
+  color: var(--p5-red-ink);
+  border-bottom: 2px solid var(--p5-red);
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+}
+html.t-p5 .m3-decision .pd-title::before { content: '予告 // '; color: var(--p5-red); }
+html.t-p5 .persona-decision .pd-name { color: var(--p5-ink); font-weight: 700; }
+html.t-p5 .persona-decision .pd-phase { color: var(--p5-red-ink); font-family: var(--font-cond); letter-spacing: .08em; }
+html.t-p5 .persona-decision .pd-detail { color: #444; font-size: 12px; }
+/* 决策选项：硬影按钮（满宽块，只有 hover 位移，文字正立） */
+html.t-p5 .persona-decision .pd-btn {
+  display: block; width: 100%; margin: 6px 0 0;
+  padding: 8px 12px;
+  background: var(--p5-ink); color: var(--p5-white);
+  border: none; border-radius: 0;
+  box-shadow: var(--shadow-hard-sm);
+  font-family: var(--font-body); font-size: 12px;
+  text-align: left; cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+html.t-p5 .persona-decision .pd-btn.primary { background: var(--p5-red); color: #fff; }
+html.t-p5 .persona-decision .pd-btn:hover { background: var(--p5-red); color: #fff; transform: translate(-2px,-2px); box-shadow: var(--shadow-hard); }
+html.t-p5 .persona-decision .pd-btn.ghost { background: #2a2a2a; color: var(--p5-white); }
+/* —— 选型卡（墨黑底 + 绯红标签） —— */
+html.t-p5 .m3-translator {
+  background: var(--p5-ink-soft);
+  border: 1px solid var(--line-dark);
+  border-radius: 0;
+  box-shadow: var(--shadow-hard);
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+html.t-p5 .m3-translator .mt-title { color: var(--p5-red); font-family: var(--font-display); font-weight: 900; }
+html.t-p5 .m3-translator .mt-row { display: flex; justify-content: space-between; margin: 4px 0; }
+html.t-p5 .m3-translator .mt-k { font-family: var(--font-cond); letter-spacing: .12em; text-transform: uppercase; color: var(--fg-dim); }
+html.t-p5 .m3-translator .mt-v { font-family: var(--font-num); color: var(--p5-white); font-weight: 700; }
+html.t-p5 .m3-translator .mt-sub { color: var(--p5-red-ink); font-family: var(--font-cond); }
+/* —— 对话气泡（纸白 + 深红 ◆ 前缀） —— */
+html.t-p5 .m3-conv .conv-bubble {
+  background: var(--p5-paper);
+  color: var(--p5-ink);
+  border-radius: 0;
+  box-shadow: var(--shadow-hard);
+  padding: 8px 14px;
+  font-size: 13px;
+  position: relative;
+  max-width: 240px;
+}
+html.t-p5 .m3-conv .conv-bubble::before {
+  content: ''; position: absolute; left: -8px; top: 50%;
+  transform: translateY(-50%);
+  border: 8px solid transparent;
+  border-right-color: var(--p5-paper);
+}
+html.t-p5 .m3-conv .conv-bubble .conv-tag {
+  font-family: var(--font-display); font-weight: 900; font-size: 11px;
+  letter-spacing: .08em; color: var(--p5-red-ink); text-transform: uppercase;
+}
+html.t-p5 .m3-conv .conv-bubble .conv-tag::before { content: '◆ '; }
+html.t-p5 .m3-conv .conv-bubble .conv-text { color: var(--p5-ink); }
+html.t-p5 .m3-conv .conv-bubble.notice { border-left: 4px solid var(--p5-red); }
+html.t-p5 .m3-conv .conv-bubble.insight { border-left: 4px solid var(--p5-red-ink); }
+html.t-p5 .m3-conv .conv-bubble.insight .conv-tag::before { content: '品控 // '; color: var(--p5-red); }
+html.t-p5 .m3-conv .conv-bubble.insight .conv-tag { color: var(--p5-red); }
 
 /* ============================================================================
    夜城 HUD（Cyberpunk 2077）主题 · v2.0
@@ -2378,7 +2453,7 @@ html.t-cyberpunk .orb-btn {
   border: 1px solid var(--nc-cyan) !important;
   border-radius: 0 !important;
   box-shadow: var(--shadow-hard), var(--nc-glow-cyan) !important;
-  position: relative; overflow: hidden;
+  position: relative; overflow: visible;
   transition: all var(--dur-fast) var(--ease-out);
 }
 html.t-cyberpunk .orb-btn::after {
@@ -2449,14 +2524,271 @@ html.t-cyberpunk .orb-x:hover { color: var(--nc-magenta); }
 html.t-cyberpunk .orb-empty { color: var(--nc-fg-faint); font-family: var(--font-mono); }
 html.t-cyberpunk .orb-log-line { font-family: var(--font-mono); color: var(--nc-green); }
 html.t-cyberpunk .orb-alert { border-color: var(--nc-magenta); color: var(--nc-magenta); }
-/* 三卡（M6）夜城皮肤 §8.2 */
-html.t-cyberpunk .m3-decision { border: 1px solid var(--nc-cyan) !important; box-shadow: var(--shadow-hard), var(--nc-glow-cyan) !important; border-radius: 0 !important; }
-html.t-cyberpunk .m3-decision .mt-title { color: var(--nc-yellow) !important; font-family: var(--font-display); }
-html.t-cyberpunk .m3-decision .mt-opt { border: 1px solid var(--nc-line); color: var(--nc-fg); }
-html.t-cyberpunk .m3-decision .mt-opt:hover { background: var(--nc-cyan); color: #000; }
-html.t-cyberpunk .m3-conv .conv-bubble { background: var(--nc-panel) !important; border: 1px solid var(--nc-line) !important; border-radius: 0 !important; font-family: var(--font-mono); color: var(--nc-fg); }
-html.t-cyberpunk .m3-conv .conv-bubble.notice { border-left: 3px solid var(--nc-cyan) !important; }
-html.t-cyberpunk .m3-conv .conv-bubble.insight { border-left: 3px solid var(--nc-green) !important; }
+/* 三卡（M6）夜城皮肤 §7.3 · 适配真实 class .persona-decision / .m3-translator / .conv-bubble
+   决策卡=HUD 四角框 + 霓虹选项；选型卡=网格底 + 青色行 + 黄权重；气泡=终端 >> [QC] 前缀（绿=品控） */
+/* —— 决策卡（HUD 四角框） —— */
+html.t-cyberpunk .persona-decision {
+  background: var(--nc-panel-2);
+  border: 1px solid var(--nc-cyan);
+  box-shadow: var(--shadow-hard), var(--nc-glow-cyan);
+  border-radius: 0;
+  padding: 14px 18px;
+  position: relative;
+  font-family: var(--font-mono);
+}
+html.t-cyberpunk .persona-decision::before,
+html.t-cyberpunk .persona-decision::after {
+  content: ''; position: absolute; width: 12px; height: 12px;
+  border: 2px solid var(--nc-yellow); pointer-events: none;
+}
+html.t-cyberpunk .persona-decision::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+html.t-cyberpunk .persona-decision::after  { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
+html.t-cyberpunk .persona-decision .pd-title {
+  font-size: 12px; letter-spacing: var(--ls-caption); text-transform: uppercase;
+  color: var(--nc-yellow); border-bottom: 1px solid var(--nc-line-neon);
+  padding-bottom: 6px; margin-bottom: 8px;
+}
+html.t-cyberpunk .m3-decision .pd-title::before { content: '[DECISION] '; }
+html.t-cyberpunk .persona-decision .pd-name { color: var(--nc-fg); font-weight: 700; }
+html.t-cyberpunk .persona-decision .pd-phase { color: var(--nc-cyan); }
+html.t-cyberpunk .persona-decision .pd-detail { color: var(--nc-fg-dim); font-size: 12px; }
+/* 决策选项：霓虹按钮 */
+html.t-cyberpunk .persona-decision .pd-btn {
+  display: block; width: 100%; margin: 6px 0 0;
+  padding: 8px 12px;
+  background: transparent; color: var(--nc-cyan);
+  border: 1px solid var(--nc-cyan); border-radius: 0;
+  font-family: var(--font-mono); font-size: 12px;
+  text-align: left; cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+html.t-cyberpunk .persona-decision .pd-btn.primary { background: var(--nc-cyan); color: #000; box-shadow: var(--nc-glow-cyan); }
+html.t-cyberpunk .persona-decision .pd-btn:hover { background: var(--nc-cyan); color: #000; box-shadow: var(--nc-glow-cyan); }
+html.t-cyberpunk .persona-decision .pd-btn.ghost { color: var(--nc-fg-dim); border-color: var(--nc-line); }
+html.t-cyberpunk .persona-decision .pd-btn.ghost:hover { background: var(--nc-line); color: var(--nc-fg); }
+/* —— 选型卡（网格底 + 青色行 + 黄权重） —— */
+html.t-cyberpunk .m3-translator {
+  background: var(--nc-panel);
+  border: 1px solid var(--nc-line);
+  border-radius: 0;
+  box-shadow: var(--shadow-hard);
+  padding: 10px 14px;
+  font-family: var(--font-mono); font-size: 12px; color: var(--nc-fg-dim);
+  background-image:
+    linear-gradient(var(--nc-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--nc-line) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+html.t-cyberpunk .m3-translator .mt-title { color: var(--nc-cyan); font-family: var(--font-display); font-weight: 900; }
+html.t-cyberpunk .m3-translator .mt-row { display: flex; justify-content: space-between; margin: 4px 0; }
+html.t-cyberpunk .m3-translator .mt-k { letter-spacing: var(--ls-caption); text-transform: uppercase; color: var(--nc-cyan); }
+html.t-cyberpunk .m3-translator .mt-v { color: var(--nc-yellow); font-weight: 700; font-family: var(--font-num); }
+html.t-cyberpunk .m3-translator .mt-sub { color: var(--nc-green); }
+/* —— 对话气泡（终端弹窗 + >> [QC] 前缀） —— */
+html.t-cyberpunk .m3-conv .conv-bubble {
+  background: var(--nc-panel-2);
+  border: 1px solid var(--nc-cyan);
+  border-radius: 0;
+  box-shadow: var(--shadow-hard), var(--nc-glow-cyan);
+  padding: 8px 14px;
+  font-family: var(--font-mono); font-size: 12px; color: var(--nc-fg);
+  position: relative; max-width: 260px;
+}
+html.t-cyberpunk .m3-conv .conv-bubble::before {
+  content: ''; position: absolute; left: -7px; top: 50%;
+  transform: translateY(-50%);
+  border: 7px solid transparent;
+  border-right-color: var(--nc-cyan);
+}
+html.t-cyberpunk .m3-conv .conv-bubble .conv-tag {
+  font-size: 11px; letter-spacing: var(--ls-caption);
+  color: var(--nc-yellow); text-transform: uppercase;
+}
+html.t-cyberpunk .m3-conv .conv-bubble .conv-tag::before { content: '>> '; }
+html.t-cyberpunk .m3-conv .conv-bubble .conv-text { color: var(--nc-fg); }
+html.t-cyberpunk .m3-conv .conv-bubble.notice { border-color: var(--nc-cyan); }
+html.t-cyberpunk .m3-conv .conv-bubble.insight { border-color: var(--nc-green); }
+html.t-cyberpunk .m3-conv .conv-bubble.insight::before { border-right-color: var(--nc-green); }
+html.t-cyberpunk .m3-conv .conv-bubble.insight .conv-tag { color: var(--nc-green); }
+html.t-cyberpunk .m3-conv .conv-bubble.insight .conv-tag::before { content: '[QC] '; }
+
+/* C-4 无障碍：减少动效时关闭悬浮球形态演出（形态静态仍肉眼可辨） */
+@media (prefers-reduced-motion: reduce) {
+  html.t-p5 .orb-morph, html.t-p5 .orb-morph::before, html.t-p5 .orb-morph::after,
+  html.t-cyberpunk .orb-morph, html.t-cyberpunk .orb-morph::before, html.t-cyberpunk .orb-morph::after,
+  html.t-p5 .orb-btn.switching, html.t-cyberpunk .orb-btn.switching,
+  html.t-p5 .orb-btn.celebrating .orb-morph, html.t-cyberpunk .orb-btn.celebrating .orb-morph {
+    animation: none !important;
+  }
+}
+
+/* ============================================================================
+   DirectorOrb 多形态化身（皮肤）· 夜城 HUD 主题
+   来源：《DirectorOrb悬浮球多形态化身增强规格》v2.0 §4 / §5
+   适配：规格 .orb-body 改为真实类 .orb-btn；形态绘制于 .orb-morph 伪元素。
+   仅挂在 html.t-cyberpunk，零泄漏（RED-03）。
+   ============================================================================ */
+
+/* 4.0 形态容器：绝对居中 + 不挡点击（C-3） */
+html.t-cyberpunk .orb-morph {
+  position: absolute; inset: 0; margin: auto;
+  display: grid; place-items: center;
+  pointer-events: none;
+}
+/* 夜城主题下隐藏胶片图标，改显赛博形态（T-1：夜城只显示赛博四形态） */
+html.t-cyberpunk .orb-btn .orb-core { display: none; }
+
+/* 4.5 NC-1 霓虹武士刀（刀光拖尾） */
+html.t-cyberpunk .orb-morph--katana .orb-morph {
+  width: 14px; height: 40px;
+  transition: transform .3s var(--ease-out);
+}
+html.t-cyberpunk .orb-morph--katana .orb-morph::before {
+  content: '';
+  width: 8px; height: 30px;
+  background: linear-gradient(180deg, #E8FFFF 0 10%, var(--nc-cyan) 10% 100%);
+  clip-path: polygon(50% 0, 100% 6%, 100% 90%, 50% 100%, 0 90%, 0 6%);
+  filter: drop-shadow(0 0 4px var(--nc-cyan));
+}
+html.t-cyberpunk .orb-morph--katana .orb-morph::after {
+  content: '';
+  position: absolute; bottom: 2px;
+  width: 12px; height: 8px;
+  background: var(--nc-bg);
+  clip-path: polygon(10% 0, 90% 0, 100% 100%, 0 100%);
+  border-top: 2px solid var(--nc-yellow);
+}
+html.t-cyberpunk .orb-morph--katana:not(.dragging) .orb-morph { animation: nc-katana-idle 2.8s ease-in-out infinite; }
+@keyframes nc-katana-idle {
+  0%,100% { transform: translateY(0); filter: drop-shadow(0 0 2px var(--nc-cyan)); }
+  50%     { transform: translateY(-5px); filter: drop-shadow(0 0 6px var(--nc-cyan)); }
+}
+html.t-cyberpunk .orb-btn.dragging.orb-morph--katana .orb-morph {
+  transform: rotate(90deg) scale(1.2);
+  animation: nc-katana-swing .3s linear infinite;
+  filter: drop-shadow(0 0 3px var(--nc-cyan))
+          drop-shadow(-6px 0 2px rgba(0,240,255,.5))
+          drop-shadow(-12px 0 1px rgba(0,240,255,.25));
+}
+@keyframes nc-katana-swing {
+  0%   { transform: rotate(86deg) translateY(-1px); }
+  50%  { transform: rotate(94deg) translateY(1px); }
+  100% { transform: rotate(86deg) translateY(-1px); }
+}
+
+/* 4.6 NC-2 Relic 芯片（数据流拖尾） */
+html.t-cyberpunk .orb-morph--relic .orb-morph {
+  width: 30px; height: 24px;
+  background: var(--nc-bg-2);
+  border: 1px solid var(--nc-yellow);
+  box-shadow: var(--nc-glow-yellow);
+  position: relative;
+}
+html.t-cyberpunk .orb-morph--relic .orb-morph::before {
+  content: '';
+  position: absolute; inset: 3px;
+  background:
+    linear-gradient(135deg, transparent 42%, var(--nc-yellow) 42% 50%, transparent 50%) 0 0 / 60% 60% no-repeat,
+    linear-gradient(-135deg, transparent 42%, var(--nc-yellow) 42% 50%, transparent 50%) 100% 100% / 60% 60% no-repeat;
+}
+html.t-cyberpunk .orb-morph--relic .orb-morph::after {
+  content: '';
+  position: absolute; inset: 0; margin: auto;
+  width: 6px; height: 6px;
+  background: var(--nc-cyan);
+  box-shadow: var(--nc-glow-cyan);
+  clip-path: var(--clip-star);
+}
+html.t-cyberpunk .orb-morph--relic:not(.dragging) .orb-morph { animation: nc-relic-spin 8s linear infinite; }
+@keyframes nc-relic-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+html.t-cyberpunk .orb-btn.dragging.orb-morph--relic .orb-morph { animation: nc-relic-fast 1.2s linear infinite; }
+@keyframes nc-relic-fast { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+html.t-cyberpunk .orb-btn.dragging.orb-morph--relic .orb-morph::after { animation: nc-relic-datastream .5s linear infinite; }
+@keyframes nc-relic-datastream {
+  0%   { transform: translate(0,0); opacity: 1; }
+  100% { transform: translate(-14px,10px); opacity: 0; }
+}
+
+/* 4.7 NC-3 纳米线（鞭甩） */
+html.t-cyberpunk .orb-morph--wire .orb-morph { width: 26px; height: 26px; }
+html.t-cyberpunk .orb-morph--wire .orb-morph::before {
+  content: '';
+  position: absolute; inset: 0;
+  border: 3px solid transparent;
+  border-top-color: var(--nc-cyan);
+  border-right-color: var(--nc-cyan);
+  border-radius: 50%;
+  filter: drop-shadow(0 0 3px var(--nc-cyan));
+  animation: nc-wire-rot 3s linear infinite;
+}
+html.t-cyberpunk .orb-morph--wire .orb-morph::after {
+  content: '';
+  position: absolute; inset: 0; margin: auto;
+  width: 8px; height: 8px;
+  background: var(--nc-magenta);
+  clip-path: var(--clip-star);
+  box-shadow: var(--nc-glow-magenta);
+}
+@keyframes nc-wire-rot { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+html.t-cyberpunk .orb-btn.dragging.orb-morph--wire .orb-morph::before {
+  animation: nc-wire-whip .4s linear infinite;
+  border-top-color: var(--nc-cyan);
+  border-right-color: var(--nc-magenta);
+  border-bottom-color: var(--nc-cyan);
+}
+@keyframes nc-wire-whip {
+  0%   { transform: rotate(0) scale(1); }
+  25%  { transform: rotate(120deg) scale(1.25); }
+  50%  { transform: rotate(240deg) scale(.9); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+
+/* 4.8 NC-4 HUD 扫描框（扫描加速 + 速度线） */
+html.t-cyberpunk .orb-morph--scanner .orb-morph { width: 32px; height: 32px; }
+html.t-cyberpunk .orb-morph--scanner .orb-morph::before {
+  content: '';
+  position: absolute; inset: 2px;
+  border: 2px solid var(--nc-cyan);
+  box-shadow: var(--nc-glow-cyan);
+  background:
+    linear-gradient(var(--nc-cyan), var(--nc-cyan)) center / 100% 1px no-repeat,
+    linear-gradient(var(--nc-cyan), var(--nc-cyan)) center / 1px 100% no-repeat;
+  clip-path: polygon(0 0, 30% 0, 30% 8%, 70% 8%, 70% 0, 100% 0, 100% 30%, 92% 30%, 92% 70%, 100% 70%, 100% 100%, 70% 100%, 70% 92%, 30% 92%, 30% 100%, 0 100%, 0 70%, 8% 70%, 8% 30%, 0 30%);
+}
+html.t-cyberpunk .orb-morph--scanner .orb-morph::after {
+  content: '';
+  position: absolute; left: 10%; right: 10%; top: 0;
+  height: 2px;
+  background: var(--nc-green);
+  box-shadow: var(--nc-glow-green);
+  animation: nc-scanner-line 1.6s ease-in-out infinite;
+}
+@keyframes nc-scanner-line { 0%,100% { top: 10%; } 50% { top: 88%; } }
+html.t-cyberpunk .orb-btn.dragging.orb-morph--scanner .orb-morph::after { animation-duration: .3s; }
+html.t-cyberpunk .orb-btn.dragging.orb-morph--scanner .orb-morph::before {
+  filter: drop-shadow(-8px 0 0 rgba(0,240,255,.4)) drop-shadow(-14px 0 0 rgba(0,240,255,.2));
+}
+
+/* 5.1 切换爆发（双击时故障闪光：RGB 分离 + 切片位移） */
+html.t-cyberpunk .orb-btn.switching { animation: nc-switch-glitch .3s var(--ease-steps) both; }
+@keyframes nc-switch-glitch {
+  0%   { filter: none; transform: translate(0); }
+  25%  { filter: hue-rotate(90deg); transform: translate(-3px,1px); }
+  50%  { filter: hue-rotate(-90deg); transform: translate(3px,-1px); }
+  75%  { filter: hue-rotate(45deg); transform: translate(-1px,0); }
+  100% { filter: none; transform: translate(0); }
+}
+
+/* 5.2 完成爆发（celebrate：终端绿脉冲） */
+html.t-cyberpunk .orb-btn.celebrating .orb-morph {
+  animation: nc-celebrate .8s var(--ease-pop) both;
+  filter: drop-shadow(0 0 8px var(--nc-green));
+}
+@keyframes nc-celebrate {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.3) rotate(8deg); }
+  100% { transform: scale(1); }
+}
 /* 试点页任务卡 .tk-card 夜城 hover（手册 §6.2：霓虹青边 + glow） */
 html.t-cyberpunk .tk-card {
   position: relative;
