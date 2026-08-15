@@ -1,10 +1,11 @@
 // tests/verify_system_manager_gitlog.mjs
 // 验收：服务与版本管理器（/system）「提交记录」页签
 //   1) 页签「提交记录」存在
-//   2) 点击后默认加载全部记录（UI 行数 == API 总数，且 >50 证明未截断到 50）
+//   2) 点击后默认加载「最近 7 天」：起始=今天-6、结束=今天；UI 行数 == API 该范围数（< 全部，证明确为筛选态）
 //   3) 首行日期格式含 时分秒.毫秒：/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$/
 //   4) 首行短哈希 / 作者 / 提交说明均非空
-//   5) 日期筛选：填起始日期 → 查询 → UI 行数 == API 筛选数；点「全部」→ 恢复全部
+//   5) 点「全部」→ UI 行数 == 后端总数（显示所有记录）
+//   6) 日期筛选：填起始日期 → 查询 → UI 行数 == API 筛选数
 //
 // 退出码：0=PASS / 1=FAIL（fail-closed）
 
@@ -50,7 +51,7 @@ try {
   await tabItem.waitFor({ timeout: 8000 })
   pass('页签「提交记录」已渲染')
 
-  // 2) 点击页签 → 触发加载（默认全部）
+  // 2) 点击页签 → 触发加载（默认最近 7 天）
   await tabItem.click()
   log('  已点击「提交记录」页签，等待提交记录表格…')
 
@@ -77,11 +78,37 @@ try {
     } else {
       pass(`提交记录表格渲染 ${n} 行`)
 
-      // 2) 全部记录：UI 行数 == 后端总数（证明未被 50 上限截断）
-      if (n === total) pass(`UI 行数 == 后端总数 ${total}（显示全部记录）`)
-      else fail(`UI 行数 ${n} != 后端总数 ${total}`)
-      if (total > 50) pass(`后端总数 ${total} > 50（旧 50 上限已移除）`)
-      else fail(`后端总数 ${total} 未 >50，无法证明上限移除`)
+      // 2) 默认最近 7 天：日期选择器默认值 + UI 行数 == API 该范围数
+      const sinceInput = page.locator('.git-filter .el-date-editor').nth(0).locator('input')
+      const untilInput = page.locator('.git-filter .el-date-editor').nth(1).locator('input')
+      const sDef = (await sinceInput.inputValue()).trim()
+      const uDef = (await untilInput.inputValue()).trim()
+      const ymd = (d) => {
+        const p = (x) => String(x).padStart(2, '0')
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+      }
+      const expUntil = ymd(new Date())
+      const t6 = new Date(); t6.setDate(t6.getDate() - 6)
+      const expSince = ymd(t6)
+      if (/^\d{4}-\d{2}-\d{2}$/.test(sDef) && /^\d{4}-\d{2}-\d{2}$/.test(uDef)) {
+        pass(`日期筛选默认值 起始=${sDef} 结束=${uDef}`)
+      } else {
+        fail(`日期筛选默认值格式异常 起始=${JSON.stringify(sDef)} 结束=${JSON.stringify(uDef)}`)
+      }
+      if (sDef === expSince) pass(`起始默认值=今天-6 (${expSince})`)
+      else fail(`起始默认值 ${sDef} != 期望 ${expSince}`)
+      if (uDef === expUntil) pass(`结束默认值=今天 (${expUntil})`)
+      else fail(`结束默认值 ${uDef} != 期望 ${expUntil}`)
+
+      const defApi = await apiGet(`since=${sDef}&until=${uDef}`)
+      const defCount = defApi.count
+      if (n === defCount) pass(`默认最近7天 UI 行数 == API 该范围 ${defCount}`)
+      else fail(`默认 UI 行数 ${n} != API 默认范围 ${defCount}`)
+      if (defCount > 0) pass(`默认范围 ${defCount} 条（全部=${total}）`)
+      else fail(`默认范围行数为 0`)
+      const metaInit = await page.locator('.git-meta').innerText().catch(() => '')
+      if (/已按日期筛选/.test(metaInit)) pass('默认即显示「已按日期筛选」标记')
+      else fail('默认未显示筛选标记: ' + JSON.stringify(metaInit))
 
       const first = ghRows.first()
       const cells = first.locator('.cell')

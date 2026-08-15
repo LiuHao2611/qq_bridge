@@ -18,8 +18,16 @@ const gitlog = ref([])
 const gitBranch = ref('')
 const gitLoading = ref(false)
 const gitError = ref('')
-const gitSince = ref('')        // 日期筛选：起始（YYYY-MM-DD）
-const gitUntil = ref('')        // 日期筛选：结束（YYYY-MM-DD）
+// 默认最近 7 天（含今天）：起始=今天-6，结束=今天
+function _fmtYmd(d) {
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+const _today = new Date()
+const _sinceDefault = new Date(_today)
+_sinceDefault.setDate(_today.getDate() - 6)
+const gitSince = ref(_fmtYmd(_sinceDefault))   // 默认起始：最近 7 天
+const gitUntil = ref(_fmtYmd(_today))          // 默认结束：今天
 const gitFilterActive = ref(false)
 
 // 弹窗状态
@@ -58,13 +66,16 @@ async function loadGitLog(opts = {}) {
   gitLoading.value = true
   gitError.value = ''
   try {
+    // 默认按日期筛选：优先取 opts，否则复用当前选择器值（默认最近 7 天）
+    const since = (opts.since !== undefined) ? opts.since : gitSince.value
+    const until = (opts.until !== undefined) ? opts.until : gitUntil.value
     const params = {}
-    if (opts.since) params.since = opts.since
-    if (opts.until) params.until = opts.until
-    const r = await getGitLog(params)   // 无 limit → 后端返回全部记录
+    if (since) params.since = since
+    if (until) params.until = until
+    const r = await getGitLog(params)   // 无 limit → 后端返回该范围内全部记录
     gitlog.value = (r && r.commits) || []
     gitBranch.value = (r && r.branch) || ''
-    gitFilterActive.value = !!(opts.since || opts.until)
+    gitFilterActive.value = !!(since || until)
     if (!gitlog.value.length) gitError.value = gitFilterActive.value ? '该时间范围内暂无提交记录' : '暂无提交记录'
   } catch (e) {
     gitError.value = '提交记录加载失败：' + (e.message || e)
