@@ -709,8 +709,12 @@ html.t-p5 .page-head::after {
 
 /* ---------- 侧边栏（6.1） ---------- */
 html.t-p5 .sidebar { background:var(--panel); border-right:1px solid var(--line-dark); }
+/* 修复（2026-08-15 第N轮 · 滚动后菜单穿透）：原 `background:transparent` 简写
+   会把 scoped 里 `.logo { background-color: var(--panel) }` 一并重置为透明，
+   导致 sticky .logo 在侧栏滚动时不挡内容、菜单项穿透可见。
+   改用 longhand `background-color:var(--panel)` 仅设置底色，保持不透明。 */
 html.t-p5 .sidebar .logo {
-  background:transparent; -webkit-text-fill-color:var(--p5-white); color:var(--p5-white);
+  background-color:var(--panel); -webkit-text-fill-color:var(--p5-white); color:var(--p5-white);
   font-family:var(--font-display); font-weight:900; text-transform:uppercase; letter-spacing:.02em;
   transform:skewX(var(--skew)); -webkit-background-clip:border-box; background-clip:border-box;
 }
