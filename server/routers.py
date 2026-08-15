@@ -1946,22 +1946,43 @@ _REBUILD_BASH = "C:/Program Files/Git/bin/bash.exe"
 # --- 系统：Git 提交记录（服务与版本管理器「提交记录」页签数据来源，只读） ---
 # 读取仓库提交历史供前端展示；git 不可用时返回结构化错误而非 500。
 @api.get("/system/git-log")
-async def system_git_log(limit: int = 50):
-    """返回仓库最近提交记录（只读）。limit 上限 200。"""
+async def system_git_log(limit: int = 0, since: str = "", until: str = ""):
+    """返回仓库提交记录（只读）。
+    - limit<=0 返回全部；>0 限制条数（上限 200）。
+    - since/until 可选日期过滤（透传 git --since/--until，支持 YYYY-MM-DD 等）。
+    - 日期格式含时分秒与毫秒：YYYY-MM-DD HH:MM:SS.mmm。
+    """
     try:
-        limit = max(1, min(int(limit or 50), 200))
+        limit = int(limit or 0)
+        if limit > 0:
+            limit = min(limit, 200)
     except (TypeError, ValueError):
-        limit = 50
+        limit = 0
+    since = (since or "").strip()
+    until = (until or "").strip()
     _sep = "\x1f"
     _fmt = "%H" + _sep + "%an" + _sep + "%ae" + _sep + "%ad" + _sep + "%s" + _sep + "%D"
     _repo_root = os.path.dirname(_SERVER_DIR)  # D:/AI/manju_agent
     try:
+        # 注意：git 提交时间戳仅为「秒级精度」，无亚秒数据；本机 git 在
+        # --date=format 中使用 %f（微秒）会崩溃（fastfail，rc=0xC0000409），
+        # 故只用 %Y-%m-%d %H:%M:%S，毫秒位固定补 .000（真实即为 0）。
+        args = ["git", "-C", _repo_root, "log", "--pretty=format:" + _fmt,
+                "--date=format:%Y-%m-%d %H:%M:%S"]
+        if since:
+            # git 对裸日期 YYYY-MM-DD 会按「当日当前时刻」解释，导致 since 漏掉当天提交；
+            # 日期选择器只给日期，故裸日期补 00:00:00 表示当天起点。
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", since):
+                since = since + " 00:00:00"
+            args += ["--since", since]
+        if until:
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", until):
+                until = until + " 23:59:59"
+            args += ["--until", until]
+        if limit > 0:
+            args += ["-n", str(limit)]
         proc = await asyncio.to_thread(
-            subprocess.run,
-            ["git", "-C", _repo_root, "log", "--pretty=format:" + _fmt,
-             "--date=short", "-n", str(limit)],
-            capture_output=True, text=True, timeout=10,
-        )
+            subprocess.run, args, capture_output=True, text=True, timeout=10)
     except Exception as e:  # git 不存在 / 超时
         raise ApiError("GIT_LOG_FAILED", "读取提交记录失败: %s" % e)
     if proc.returncode != 0:
@@ -1974,6 +1995,12 @@ async def system_git_log(limit: int = 50):
         if len(p) < 6:
             continue
         h, an, ae, ad, msg, refs = p[0], p[1], p[2], p[3], p[4], p[5]
+        # 补全毫秒位：git 无亚秒数据，固定补 .000，使格式含时分秒.毫秒
+        if "." in ad:
+            _h, _f = ad.rsplit(".", 1)
+            ad = _h + "." + (_f[:3] if len(_f) >= 3 else _f.ljust(3, "0"))
+        else:
+            ad = ad + ".000"
         commits.append({
             "hash": h, "short": h[:7], "author": an, "email": ae,
             "date": ad, "message": msg, "refs": refs,

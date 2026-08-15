@@ -18,6 +18,9 @@ const gitlog = ref([])
 const gitBranch = ref('')
 const gitLoading = ref(false)
 const gitError = ref('')
+const gitSince = ref('')        // 日期筛选：起始（YYYY-MM-DD）
+const gitUntil = ref('')        // 日期筛选：结束（YYYY-MM-DD）
+const gitFilterActive = ref(false)
 
 // 弹窗状态
 const snapDialog = ref(false)
@@ -49,20 +52,35 @@ async function loadModules() {
   }
 }
 
-async function loadGitLog() {
-  if (gitlog.value.length) return
+async function loadGitLog(opts = {}) {
+  // 首次加载全部后缓存；仅当显式 force（筛选/重置）时才重新请求
+  if (gitlog.value.length && !opts.force) return
   gitLoading.value = true
   gitError.value = ''
   try {
-    const r = await getGitLog(50)
+    const params = {}
+    if (opts.since) params.since = opts.since
+    if (opts.until) params.until = opts.until
+    const r = await getGitLog(params)   // 无 limit → 后端返回全部记录
     gitlog.value = (r && r.commits) || []
     gitBranch.value = (r && r.branch) || ''
-    if (!gitlog.value.length) gitError.value = '暂无提交记录'
+    gitFilterActive.value = !!(opts.since || opts.until)
+    if (!gitlog.value.length) gitError.value = gitFilterActive.value ? '该时间范围内暂无提交记录' : '暂无提交记录'
   } catch (e) {
     gitError.value = '提交记录加载失败：' + (e.message || e)
   } finally {
     gitLoading.value = false
   }
+}
+
+function applyGitFilter() {
+  loadGitLog({ since: gitSince.value, until: gitUntil.value, force: true })
+}
+
+function resetGitFilter() {
+  gitSince.value = ''
+  gitUntil.value = ''
+  loadGitLog({ since: '', until: '', force: true })
 }
 
 function onTabChange(name) {
@@ -254,18 +272,27 @@ onMounted(() => {
       <!-- 提交记录 -->
       <el-tab-pane label="提交记录" name="gitlog">
         <div class="sm-table-wrap">
+          <div class="git-filter">
+            <el-date-picker v-model="gitSince" type="date" value-format="YYYY-MM-DD"
+              placeholder="起始日期" size="small" :clearable="true" />
+            <span class="git-filter-sep">~</span>
+            <el-date-picker v-model="gitUntil" type="date" value-format="YYYY-MM-DD"
+              placeholder="结束日期" size="small" :clearable="true" />
+            <el-button size="small" type="primary" :loading="gitLoading" @click="applyGitFilter">查询</el-button>
+            <el-button size="small" @click="resetGitFilter">全部</el-button>
+          </div>
           <el-alert v-if="gitError" type="error" :closable="false" :title="gitError" show-icon />
           <div v-else-if="gitLoading" class="git-loading">加载提交记录中…</div>
           <template v-else>
             <div class="git-meta" v-if="gitlog.length">
-              分支 <code>{{ gitBranch }}</code> · 近 {{ gitlog.length }} 条提交
+              分支 <code>{{ gitBranch }}</code> · 共 {{ gitlog.length }} 条提交<span v-if="gitFilterActive">（已按日期筛选）</span>
             </div>
             <el-table :data="gitlog" class="sm-table" border stripe max-height="520">
               <el-table-column prop="short" label="短哈希" width="110">
                 <template #default="{ row }"><code class="mono">{{ row.short }}</code></template>
               </el-table-column>
               <el-table-column prop="author" label="作者" width="150" />
-              <el-table-column prop="date" label="日期" width="120" />
+              <el-table-column prop="date" label="提交时间" width="200" />
               <el-table-column label="提交说明" min-width="240">
                 <template #default="{ row }">
                   <span :title="row.hash">{{ row.message }}</span>
@@ -317,6 +344,8 @@ onMounted(() => {
 .fpath { font-size: 12px; color: var(--sub); font-family: monospace; }
 .ext-hint { font-size: 12px; color: var(--sub); }
 .dlg-sub { margin: 0 0 12px; color: var(--sub); font-size: 13px; }
+.git-filter { display: flex; align-items: center; gap: 8px; margin: 4px 0 10px; flex-wrap: wrap; }
+.git-filter-sep { color: var(--sub); font-size: 13px; }
 .git-meta { margin: 8px 0 10px; font-size: 13px; color: var(--sub); }
 .git-meta code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 .ml-1 { margin-left: 6px; }
