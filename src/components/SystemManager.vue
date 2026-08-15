@@ -3,7 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  getServices, controlService, listModules, snapshotModule, rollbackModule, setModuleEnabled,
+  getServices, controlService, listModules, snapshotModule, rollbackModule, setModuleEnabled, getGitLog,
 } from '../api'
 
 const route = useRoute()
@@ -12,6 +12,12 @@ const services = ref([])
 const modules = ref([])
 const loading = ref(false)
 const disabledMsg = ref('')
+
+// 提交记录（Git 历史，服务与版本管理器第三页签）
+const gitlog = ref([])
+const gitBranch = ref('')
+const gitLoading = ref(false)
+const gitError = ref('')
 
 // 弹窗状态
 const snapDialog = ref(false)
@@ -41,6 +47,26 @@ async function loadModules() {
   } catch (e) {
     ElMessage.error('模块列表失败：' + (e.message || e))
   }
+}
+
+async function loadGitLog() {
+  if (gitlog.value.length) return
+  gitLoading.value = true
+  gitError.value = ''
+  try {
+    const r = await getGitLog(50)
+    gitlog.value = (r && r.commits) || []
+    gitBranch.value = (r && r.branch) || ''
+    if (!gitlog.value.length) gitError.value = '暂无提交记录'
+  } catch (e) {
+    gitError.value = '提交记录加载失败：' + (e.message || e)
+  } finally {
+    gitLoading.value = false
+  }
+}
+
+function onTabChange(name) {
+  if (name === 'gitlog') loadGitLog()
 }
 
 function refresh() {
@@ -146,7 +172,7 @@ onMounted(() => {
     <el-alert v-if="disabledMsg" type="warning" :closable="false"
       :title="`模块「${disabledMsg}」当前已停用，访问已被拦截。请在下方「模块版本」中将其启用。`" show-icon />
 
-    <el-tabs v-model="activeTab" class="sm-tabs">
+    <el-tabs v-model="activeTab" class="sm-tabs" @tab-change="onTabChange">
       <!-- 服务 -->
       <el-tab-pane label="服务状态" name="services">
         <el-alert :title="serviceTip" :type="serviceTip === '全部在线' ? 'success' : 'error'"
@@ -226,6 +252,32 @@ onMounted(() => {
           </el-table-column>
         </el-table>
       </el-tab-pane>
+
+      <!-- 提交记录 -->
+      <el-tab-pane label="提交记录" name="gitlog">
+        <div class="sm-table-wrap">
+          <el-alert v-if="gitError" type="error" :closable="false" :title="gitError" show-icon />
+          <div v-else-if="gitLoading" class="git-loading">加载提交记录中…</div>
+          <template v-else>
+            <div class="git-meta" v-if="gitlog.length">
+              分支 <code>{{ gitBranch }}</code> · 近 {{ gitlog.length }} 条提交
+            </div>
+            <el-table :data="gitlog" class="sm-table" border stripe max-height="520">
+              <el-table-column prop="short" label="短哈希" width="110">
+                <template #default="{ row }"><code class="mono">{{ row.short }}</code></template>
+              </el-table-column>
+              <el-table-column prop="author" label="作者" width="150" />
+              <el-table-column prop="date" label="日期" width="120" />
+              <el-table-column label="提交说明" min-width="240">
+                <template #default="{ row }">
+                  <span :title="row.hash">{{ row.message }}</span>
+                  <el-tag v-if="row.refs" size="small" type="info" class="ml-1">{{ row.refs }}</el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+          </template>
+        </div>
+      </el-tab-pane>
     </el-tabs>
 
     <!-- 发布快照 -->
@@ -267,4 +319,8 @@ onMounted(() => {
 .fpath { font-size: 12px; color: var(--sub); font-family: monospace; }
 .ext-hint { font-size: 12px; color: var(--sub); }
 .dlg-sub { margin: 0 0 12px; color: var(--sub); font-size: 13px; }
+.git-meta { margin: 8px 0 10px; font-size: 13px; color: var(--sub); }
+.git-meta code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.ml-1 { margin-left: 6px; }
+.git-loading { padding: 24px; color: var(--sub); font-size: 13px; }
 </style>

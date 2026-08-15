@@ -418,6 +418,9 @@ export const snapshotModule = (key, note) => post('/modules/snapshot', { key, no
 export const rollbackModule = (key, version) => post('/modules/rollback', { key, version }).then((r) => r || {})
 export const setModuleEnabled = (key, enabled) => post('/modules/enable', { key, enabled }).then((r) => r || {})
 
+// 服务与版本管理器 ·「提交记录」页签：读取仓库 Git 提交历史（只读）
+export const getGitLog = (limit = 50) => get(`/system/git-log?limit=${limit}`).then((r) => r || {})
+
 // ---- 日志查看 / 搜索 / 封装（排查用） ----
 export const logList = () => get('/logs').then((r) => r || { logs: [] })
 export const logContent = (name, opts = {}) => {

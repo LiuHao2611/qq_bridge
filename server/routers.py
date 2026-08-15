@@ -1940,6 +1940,52 @@ _REBUILD_LOCK = threading.Lock()
 _REBUILD_BASH = "C:/Program Files/Git/bin/bash.exe"
 
 
+# --- 系统：Git 提交记录（服务与版本管理器「提交记录」页签数据来源，只读） ---
+# 读取仓库提交历史供前端展示；git 不可用时返回结构化错误而非 500。
+@api.get("/system/git-log")
+async def system_git_log(limit: int = 50):
+    """返回仓库最近提交记录（只读）。limit 上限 200。"""
+    try:
+        limit = max(1, min(int(limit or 50), 200))
+    except (TypeError, ValueError):
+        limit = 50
+    _sep = "\x1f"
+    _fmt = "%H" + _sep + "%an" + _sep + "%ae" + _sep + "%ad" + _sep + "%s" + _sep + "%D"
+    _repo_root = os.path.dirname(_SERVER_DIR)  # D:/AI/manju_agent
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            ["git", "-C", _repo_root, "log", "--pretty=format:" + _fmt,
+             "--date=short", "-n", str(limit)],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception as e:  # git 不存在 / 超时
+        raise ApiError("GIT_LOG_FAILED", "读取提交记录失败: %s" % e)
+    if proc.returncode != 0:
+        raise ApiError("GIT_LOG_FAILED", (proc.stderr or "git log 执行失败").strip())
+    commits = []
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        p = line.split(_sep)
+        if len(p) < 6:
+            continue
+        h, an, ae, ad, msg, refs = p[0], p[1], p[2], p[3], p[4], p[5]
+        commits.append({
+            "hash": h, "short": h[:7], "author": an, "email": ae,
+            "date": ad, "message": msg, "refs": refs,
+        })
+    branch = ""
+    try:
+        b = await asyncio.to_thread(
+            subprocess.run, ["git", "-C", _repo_root, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5)
+        branch = (b.stdout or "").strip()
+    except Exception:
+        branch = ""
+    return {"commits": commits, "branch": branch, "count": len(commits)}
+
+
 @api.post("/system/rebuild-frontend")
 async def system_rebuild_frontend():
     """一键重构前端：执行 scripts/build_frontend.sh，复用其 TMPDIR 环境（C 盘零写入合规）。"""
