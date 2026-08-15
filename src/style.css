@@ -1670,6 +1670,7 @@ html.t-p5 .lora-train .field {
 .orb-morph--mask    .orb-morph { width: 46px; height: 28px; }
 .orb-morph--tower   .orb-morph { width: 32px; height: 44px; }
 .orb-morph--shackle .orb-morph { width: 42px; height: 32px; }
+.orb-morph--crown   .orb-morph { width: 42px; height: 30px; }
 /* P5 形态伪元素按新尺寸同比放大（保持识别度） */
 .orb-morph--sword .orb-morph::before { width: 12px; height: 38px; }
 .orb-morph--sword .orb-morph::after  { width: 20px; height: 7px; }
@@ -1837,6 +1838,51 @@ html.t-p5 .lora-train .field {
 }
 .orb-btn.dragging.orb-morph--shackle .orb-morph::before {
   filter: drop-shadow(-6px 0 0 rgba(228,0,43,.55)) drop-shadow(6px 0 0 rgba(228,0,43,.35));
+}
+
+/* 4.5 P5-5 怪盗王冠（绯红冠冕 · 戴冠轻晃 idle + 甩冠旋转 dragging） */
+.orb-morph--crown .orb-morph {
+  width: 38px; height: 28px;
+  background: var(--p5-red);
+  border: 2px solid var(--p5-ink);
+  /* 三峰王冠：左下→左肩→左谷→中峰→右谷→右肩→右下（平底闭合） */
+  clip-path: polygon(0 100%, 0 38%, 20% 58%, 50% 6%, 80% 58%, 100% 38%, 100% 100%);
+  box-shadow: var(--shadow-hard-sm);
+}
+.orb-morph--crown .orb-morph::before {
+  content: '';
+  position: absolute; top: -7px; left: 50%; transform: translateX(-50%);
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--p5-alert);
+  border: 1px solid var(--p5-ink);
+  box-shadow: 0 0 4px rgba(255,225,0,.6);
+}
+.orb-morph--crown .orb-morph::after {
+  content: '';
+  position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%);
+  width: 11px; height: 11px; border-radius: 50%;
+  background: var(--p5-white);
+  border: 1px solid var(--p5-ink);
+}
+.orb-morph--crown:not(.dragging) .orb-morph {
+  animation: p5-crown-idle 2.6s ease-in-out infinite;
+  transform-origin: bottom center;
+}
+@keyframes p5-crown-idle {
+  0%,100% { transform: translateY(0) rotate(-4deg); }
+  50%     { transform: translateY(-4px) rotate(4deg); }
+}
+.orb-btn.dragging.orb-morph--crown .orb-morph {
+  animation: p5-crown-spin .18s linear infinite;
+  transform-origin: bottom center;
+  filter: drop-shadow(0 0 8px rgba(228,0,43,.8));
+}
+@keyframes p5-crown-spin {
+  0%   { transform: rotate(0deg) translateY(0); }
+  25%  { transform: rotate(22deg) translateY(-3px); }
+  50%  { transform: rotate(-18deg) translateY(0); }
+  75%  { transform: rotate(14deg) translateY(-2px); }
+  100% { transform: rotate(0deg) translateY(0); }
 }
 
 /* 5.1 切换爆发（双击时绯红星爆扩散） */

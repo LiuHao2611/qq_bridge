@@ -101,7 +101,7 @@ const defaults = () => ({
   language: 'zh-CN',
   accent: 'p5',
   density: 'standard',
-  orbSkin: 'sword', // 悬浮球化身皮肤（仅 P5 怪盗主题生效；random/sword/mask/tower/shackle）
+  orbSkin: 'sword', // 悬浮球化身皮肤（仅 P5 怪盗主题生效；random/sword/mask/tower/shackle/crown）
   // P5 二次强化：可单独开关的签名元素家族（默认全开；仅 accent==='p5' 时挂 html.p5ft-* 启用类）
   p5StyleTypes: ['dialog', 'banner', 'relic', 'button', 'key', 'texture', 'poster'],
   // AI 模型：本地/在线可切换 + 自定义路径（向后兼容旧字段）

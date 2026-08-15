@@ -553,6 +553,7 @@ const MORPH_REGISTRY = {
     { key: 'mask', label: '怪盗面具' },
     { key: 'tower', label: '命运塔罗' },
     { key: 'shackle', label: '心锁锁链' },
+    { key: 'crown', label: '怪盗王冠' },
   ],
   // 夜城赛博四件套（手册 §2.2 / §4.5-4.8）。key 与 style.css .orb-morph--{key} 选择器一致。
   cyberpunk: [
