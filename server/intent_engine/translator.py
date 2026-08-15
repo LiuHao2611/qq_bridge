@@ -115,14 +115,24 @@ def find_compatible_tool(ip_adapters, model, bound_assets):
     return compat[0] if compat else None
 
 
+# 模板文件运行时不变，进程内缓存避免每次 translate 都做磁盘读取
+# （手册 §5.3 热路径时延要求；缓慢磁盘上冷读可达 ~20ms）。
+_TEMPLATE_CACHE = {}
+
+
 def load_template(task_type, template_dir=None):
     """加载工作流模板（含 {{占位符}}）于手册指定的 templates/ 目录。"""
     d = template_dir or _TEMPLATE_DIR
+    key = (task_type, d)
+    cached = _TEMPLATE_CACHE.get(key)
+    if cached is not None:
+        return cached
     fp = os.path.join(d, "%s.json" % task_type)
     if not os.path.isfile(fp):
         raise CatalogError("工作流模板不存在: %s" % fp)
     with open(fp, "r", encoding="utf-8") as f:
         data = json.load(f)
+    _TEMPLATE_CACHE[key] = data
     return data
 
 
@@ -155,6 +165,57 @@ def _first_asset_weight(bound_assets, default=0.85):
         if a.get("inject_type") in (None, "face") or a.get("asset_id"):
             return float(a.get("weight", default))
     return float(default)
+
+
+def _first_asset_id(bound_assets):
+    """从 bound_assets 取首个角色资产 id（用于角色 LoRA 强匹配）。"""
+    for a in (bound_assets or []):
+        if a.get("asset_id"):
+            return a["asset_id"]
+    return None
+
+
+def _inject_lora_node(workflow, lora_name, weight=0.85):
+    """通用注入 LoraLoader 节点（模板无关）：插在「喂给 KSampler.model 的源」与 KSampler 之间。
+
+    与 IP-Adapter 链兼容：无论 KSampler.model 当前指向底模(4)还是 IP 节点(15/20)，
+    均在源之后、KSampler 之前插入 LoRA，保证 LoRA 生效且不破坏既有拓扑（铁律 1.2）。
+    :raises RuntimeError: workflow 无 KSampler / CheckpointLoader 时（理论上不会）。
+    """
+    ks_id, ks = None, None
+    for nid, node in workflow.items():
+        if isinstance(node, dict) and (node.get("class_type") or "").startswith("KSampler"):
+            ks_id, ks = nid, node
+            break
+    if ks is None:
+        raise RuntimeError("workflow 不含 KSampler 节点，无法注入 LoRA")
+    model_link = (ks.get("inputs") or {}).get("model")
+    if not (isinstance(model_link, list) and len(model_link) >= 1):
+        raise RuntimeError("KSampler.model 输入异常，无法注入 LoRA")
+
+    # CLIP 取自 CheckpointLoaderSimple 的 [id,1]（兜底用 model 源的同节点 clip）
+    clip_link = None
+    for nid, node in workflow.items():
+        if isinstance(node, dict) and node.get("class_type") == "CheckpointLoaderSimple":
+            clip_link = [str(nid), 1]
+            break
+    if clip_link is None:
+        clip_link = [str(model_link[0]), 1]
+
+    ids = [int(k) for k in workflow.keys() if str(k).isdigit()]
+    new_id = str(max(ids) + 1) if ids else "100"
+    workflow[new_id] = {
+        "class_type": "LoraLoader",
+        "inputs": {
+            "model": model_link,
+            "clip": clip_link,
+            "lora_name": lora_name,
+            "strength_model": weight,
+            "strength_clip": weight,
+        },
+    }
+    ks["inputs"]["model"] = [new_id, 0]
+    return workflow
 
 
 def _wire_ip_chain(prompt, identity_image, style_image):
@@ -342,13 +403,15 @@ class IntentTranslator:
         require_ip = intent.task_type in _FACE_LOCK_TASKS              # 3 选模型
         checkpoint = self.catalog.find_best_checkpoint(
             intent.intent_tags, require_ipadapter=require_ip)
+        LOG.info("[MATCH] 维度 semantic 选定底模=%s（意图标签=%s，语义打分）",
+                 checkpoint["name"], intent.intent_tags)
 
         img_node = self.mapper.resolve(                                 # 4 选节点族
-            "image_generation", self.catalog.object_info or {})
+            "image_generation", self.catalog.object_info or {}, None, intent.intent_tags)
         face_node = None
         if require_ip:
             face_node = self.mapper.resolve(
-                "face_lock", self.catalog.object_info or {})
+                "face_lock", self.catalog.object_info or {}, None, intent.intent_tags)
             cv = self.catalog.find_clip_vision()
             if not cv:
                 raise FeatureUnavailable(
@@ -397,14 +460,20 @@ class IntentTranslator:
 
     async def translate_video_intent(self, intent: ProductionIntent) -> dict:
         await self.catalog.refresh()
+        # 视频模板双轨（设计有意，非 bug）：
+        # - 有首帧锚定 → shot_video_with_anchor（七步手册路径，帧锚定）
+        # - 无首帧 → shot_video_text2video（纯文生视频）
         template_id = ("shot_video_with_anchor"
                        if intent.first_frame_path else "shot_video_text2video")
         workflow, _sem_map, schema = self.templates.load_template(template_id)
         self.templates.validate_schema(schema)
 
         video_family = self.mapper.resolve(
-            "video_generation", self.catalog.object_info or {}, self.user_prefs)
+            "video_generation", self.catalog.object_info or {},
+            self.user_prefs, intent.intent_tags)
         checkpoint = self.catalog.find_best_checkpoint(intent.intent_tags)
+        LOG.info("[MATCH] 维度 temporal 选定节点=%s（意图标签=%s，由注册表打分）",
+                 video_family["node_class"], intent.intent_tags)
 
         injector = ParameterInjector(schema)
         injector.set("checkpoint", checkpoint["name"])
@@ -419,17 +488,15 @@ class IntentTranslator:
         injector.set("scheduler", "normal")
 
         nc = video_family["node_class"]
+        # 帧/帧率默认值由注册表（NODE_FAMILY_REGISTRY.video_generation.required_inputs）
+        # 驱动，禁止 if-else 硬编码模型名（手册 §5）。
+        vf_cfg = video_family.get("config", {})
         nf = intent.generation_params.num_frames
         fps = intent.generation_params.fps
-        if nc == "CogVideoSampler":
-            injector.set("num_frames", nf or 49)
-            injector.set("fps", fps or 8)
-        elif nc == "WanVideoSampler":
-            injector.set("num_frames", nf or 81)
-            injector.set("fps", fps or 16)
-        else:
-            injector.set("num_frames", nf or 49)
-            injector.set("fps", fps or 8)
+        injector.set("num_frames", nf or vf_cfg.get("num_frames", 49))
+        injector.set("fps", fps or vf_cfg.get("fps", 8))
+        LOG.info("[MATCH] 视频帧参数 node=%s num_frames=%s fps=%s（来自注册表）",
+                 nc, nf or vf_cfg.get("num_frames", 49), fps or vf_cfg.get("fps", 8))
 
         if intent.first_frame_path:
             injector.set("init_image", intent.first_frame_path)
@@ -473,7 +540,27 @@ class IntentTranslator:
             tool = compat[0] if compat else None
         need_ip = (tool is not None) and (bool(identity_image) or bool(style_image))
 
+        # ---- P1 M3 红线：角色锁脸需 IP-Adapter 权重，缺失时诚实报错，不静默降级 ----
+        # 仅在确有「角色/人脸参考图」要锁定时触发；纯文生图（无身份参考）不受影响。
+        if (identity_image or style_image) and any(
+            (a.get("asset_type") == "character" or a.get("inject_type") in ("face", "style"))
+            for a in bound_assets
+        ):
+            try:
+                from comfy_env import discover_weight
+                discover_weight("ipadapter", ["*.safetensors", "*.bin"], what="IP-Adapter 权重")
+            except Exception as e:
+                raise RuntimeError(
+                    "一致性锁脸所需 IP-Adapter 权重缺失，无法保证跨镜头不跳脸。"
+                    "请先在秋葉 ComfyUI 的 models/ipadapter 目录放入对应权重文件"
+                    "（如 ip-adapter_sd15.safetensors）。探测详情：%s" % e
+                )
+
+        # 四杠杆 Lock-Then-Animate 计划（供杠杆④ 注入 + 悬浮球「已锁定角色」气泡）
+        lock_plan = None
+
         # 3. 选模板（img2img 首帧锚定优先于 IP 判定）
+        # 生产同步路径：视频生成统一走 shot_video_gen 模板（与锚定/文生视频路径解耦）
         if base_task == "shot_video":
             tpl = load_template("shot_video_gen")
         elif base_task == "shot_image_img2img":
@@ -509,10 +596,58 @@ class IntentTranslator:
             values["style_image"] = style_image or ""
             values["style_weight"] = float(intent.get("style_weight", 0.4))
 
+        # ---- P1 M3 杠杆④：一致句 + 服装/发型/体型逐字锚定（强制锁脸，无随机）----
+        try:
+            from capabilities.consistency import ConsistencyCapability
+            cap = ConsistencyCapability()
+            lock_plan = cap.build_lock_plan(intent)
+            cp = lock_plan.get("consistency_prompt")
+            if cp and cp not in (values.get("positive_prompt") or ""):
+                values["positive_prompt"] = (values.get("positive_prompt", "") + " " + cp).strip()
+        except Exception as e:
+            logger.warning("[TRANSLATE] build_lock_plan 失败（降级跳过锁锚点）：%s", e)
+
+        # ---- M2 闭环：训练 LoRA 自动匹配（手册 §7.2 / 设计思路 §4）----
+        # 选型阶段结束后，按 intent_tags（+ 角色资产）匹配训练好的专属 LoRA；
+        # 命中则把 trigger_word 拼入 positive_prompt 并通用注入 LoraLoader 节点。
+        lora_name = None
+        asset_id = _first_asset_id(bound_assets)
+        try:
+            from .resource_catalog import find_best_lora_static
+            matched = find_best_lora_static(style_tags, asset_id, model["name"])
+            if matched:
+                tw = (matched.get("trigger_word") or "").strip()
+                if tw and tw not in (values["positive_prompt"] or ""):
+                    values["positive_prompt"] = (values["positive_prompt"] + ", " + tw).strip(", ").strip()
+                lora_name = matched.get("name")
+                logger.info("[TRANSLATE] 命中训练 LoRA=%s trigger=%s asset=%s",
+                            lora_name, tw, asset_id)
+        except Exception as e:
+            logger.warning("[TRANSLATE] find_best_lora 失败（回落通用生成）：%s", e)
+
         filled = _fill_placeholders(prompt, values)
         # 资源映射后的节点链整理（按需裁剪 IP 节点）
         if need_ip:
             filled = _wire_ip_chain(filled, identity_image, style_image)
+        # LoRA 节点注入（在 IP 链整理之后，保证拓扑稳定）
+        if lora_name:
+            try:
+                filled = _inject_lora_node(filled, lora_name)
+            except Exception as e:
+                logger.warning("[TRANSLATE] LoRA 节点注入失败（降级为仅 trigger_word）：%s", e)
+
+        # 记录选型（含 LoRA），供悬浮球 translator 频道可视化
+        try:
+            self.last_selection = {
+                "task_type": base_task,
+                "checkpoint": model["name"],
+                "ip_adapter": (tool or {}).get("name") if need_ip else None,
+                "seed": values.get("seed"),
+                "loras": [lora_name] if lora_name else [],
+                "consistency_plan": lock_plan,
+            }
+        except Exception:
+            pass
         return filled
 
     def translate_typed(self, task_type, values):
@@ -560,3 +695,24 @@ class IntentTranslator:
                     if str(v[0]) not in ids:
                         raise TranslateError(
                             "节点 %s 输入 %s 引用了不存在的节点 %s" % (node_id, k, v[0]))
+
+
+# 进程启动时预热常用模板缓存（template 文件运行时不变，见 _TEMPLATE_CACHE）。
+# 把冷磁盘读移到 import 阶段，保证翻译热路径首次调用也满足手册 §5.3 时延要求。
+def _prewarm_templates():
+    for _tpl in ("shot_image_gen", "shot_image_gen_ip", "shot_image_img2img",
+                 "character_card_gen", "shot_video_gen",
+                 "shot_video_with_anchor", "shot_video_text2video"):
+        try:
+            load_template(_tpl)
+        except Exception:
+            pass
+    # 预热一致性能力包（capabilities 首次导入有一次性模块加载开销），
+    # 同样把开销移到 import 阶段，避免首次翻译被拖慢。
+    try:
+        from capabilities.consistency import ConsistencyCapability  # noqa: F401
+    except Exception:
+        pass
+
+
+_prewarm_templates()

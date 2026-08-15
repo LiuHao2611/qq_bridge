@@ -31,6 +31,7 @@ watch(
 const goProjectCenter = () => {
   router.push(lastProjectCenterPath.value)
 }
+const goHome = () => router.push('/')
 
 const groups = computed(() => {
   const base = [
@@ -39,6 +40,11 @@ const groups = computed(() => {
         { icon: '🏠', label: '首页', path: '/' },
         { icon: '🎬', label: '项目中心', path: '/projects', action: goProjectCenter },
         { icon: '📝', label: '推理监控', path: '/tasks' },
+      ],
+    },
+    {
+      name: '页面自定义', items: [
+        { icon: '🎨', label: '页面自定义', path: '/custom-page' },
       ],
     },
     {
@@ -53,6 +59,7 @@ const groups = computed(() => {
       name: '资源管理', items: [
         { icon: '🌐', label: '全局资产库', path: '/global-assets' },
         { icon: '🔍', label: '图片反推', path: '/img2prompt' },
+        { icon: '🎯', label: 'LoRA 训练', path: '/lora-train' },
         { icon: '🕒', label: '历史记录', path: '/history' },
       ],
     },
@@ -76,13 +83,14 @@ const groups = computed(() => {
       ],
     },
   ]
-  // 项目内导航已由顶部 ProjectFlowNav 承载，侧栏不再重复展开「项目内」分组
+  // 项目内导航已由 ProjectBookShell 翻页按钮承载，侧栏不再重复展开「项目内」分组
   return base
 })
 
 const isActive = (path) => {
   const p = route.path
   if (path === '/') return p === '/'
+  if (path === '/custom-page') return p === '/custom-page'
   if (path === '/projects') return p === '/projects' || p.startsWith('/projects/')
   if (path === '/memoir') return p === '/memoir' || p.startsWith('/memoir/')
   if (path === '/my-data') return p === '/my-data'
@@ -104,7 +112,7 @@ onMounted(async () => {
 
 <template>
   <aside class="sidebar">
-    <div class="logo">
+    <div class="logo" @click="goHome" title="返回首页">
       <span class="diamond">◆</span>
       <span class="logo-txt">万能短剧<br /><small>AI 创作平台</small></span>
     </div>
@@ -128,21 +136,14 @@ onMounted(async () => {
         <span class="dot" :class="{ on: online }"></span>
         <span>{{ online ? '🟢 系统正常' : '🔴 后端离线' }} · v1.3.0</span>
       </div>
-      <div class="user-card" @click="router.push('/membership')">
-        <span class="uavatar">小</span>
-        <div class="uinfo">
-          <div class="uname">小志 <span class="vip-badge">个人版</span></div>
-          <div class="usub">🪙 1,999,995,162 积分</div>
-        </div>
-        <span class="ucaret">›</span>
-      </div>
     </div>
   </aside>
 </template>
 
 <style scoped>
 .sidebar { width: 232px; flex: 0 0 232px; background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; overflow-y: auto; }
-.logo { display: flex; align-items: center; gap: 10px; padding: 18px 18px 14px; position: sticky; top: 0; background-color: var(--panel); z-index: 2; border-bottom: 1px solid var(--line); }
+.logo { display: flex; align-items: center; gap: 10px; padding: 18px 18px 14px; position: sticky; top: 0; background-color: var(--panel); z-index: 2; border-bottom: 1px solid var(--line); cursor: pointer; transition: background-color .15s; }
+.logo:hover { background-color: var(--card-2); }
 .logo .diamond { color: var(--pink); font-size: 22px; text-shadow: 0 0 12px rgba(255,77,141,.6); }
 .logo-txt { font-size: 16px; font-weight: 800; line-height: 1.15; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .logo-txt small { font-size: 10px; font-weight: 600; opacity: .8; }
@@ -155,12 +156,4 @@ onMounted(async () => {
 .sidebar-foot { display: flex; align-items: center; gap: 8px; padding: 8px 18px; font-size: 12px; color: var(--sub); }
 .sidebar-foot .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; }
 .sidebar-foot .dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
-.user-card { display: flex; align-items: center; gap: 10px; margin: 4px 12px 0; padding: 8px 10px; border-radius: 10px; cursor: pointer; transition: .15s; border: 1px solid var(--line); }
-.user-card:hover { background: #1c1f27; border-color: var(--pur); }
-.uavatar { width: 30px; height: 30px; border-radius: 50%; background: var(--grad); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px; flex: 0 0 30px; }
-.uinfo { flex: 1; line-height: 1.25; }
-.uname { font-size: 13px; font-weight: 700; color: var(--txt); }
-.vip-badge { font-size: 9px; background: #e8c87a; color: #111; padding: 0 4px; border-radius: 4px; font-weight: 800; margin-left: 4px; }
-.usub { font-size: 11px; color: var(--sub); }
-.ucaret { color: var(--sub); }
 </style>

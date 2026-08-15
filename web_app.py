@@ -805,6 +805,10 @@ class Handler(BaseHTTPRequestHandler):
                 path = os.path.join(BASE, "server", "outputs", name)
             if not os.path.isfile(path):
                 path = os.path.join(BASE, "server", ".uploads", name)
+            # 参考图集（P1 M2 / 角色卡标准肖像 / IP-Adapter 输入）落盘于 server/outputs/references/，
+            # 此前 /file 不搜索该子目录 → 参考图 404（界面「无图却显示512维」的根因之一）。补齐搜索。
+            if not os.path.isfile(path):
+                path = os.path.join(BASE, "server", "outputs", "references", name)
         if not os.path.isfile(path):
             logger.warning("[FILE] 404 name=%s run=%s tried=%s ua=%s" % (name, run, path, client))
             self._send(404, json.dumps({"error": "文件不存在"}))

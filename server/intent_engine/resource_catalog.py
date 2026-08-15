@@ -13,7 +13,9 @@
 import os
 import re
 import glob
+import json
 import logging
+import time
 
 from .errors import FeatureUnavailable
 
@@ -70,6 +72,266 @@ def _infer_vram_mb(name: str) -> int:
     return 4000  # SD1.5 舒适区
 
 
+# ---- §2.2.6 能力维度声明（手册 M2 / 维度声明结构）----
+# 每个模型 / 节点 / LoRA 声明自己实现了哪些能力维度（capabilities 键严格对齐
+# capabilities 包的 6 维度：semantic / temporal / consistency / audio_sync /
+# camera / frame_anchor），并标注首尾帧外推 / 插值分级（frame_anchor_grading）。
+
+def _is_video_model(name, model_type):
+    n = (name or "").lower()
+    if model_type in ("video",):
+        return True
+    return bool(re.search(r"video|wan|cogvideo|ltx|hunyuan|mochi", n))
+
+
+# 首尾帧分级由「节点输入字段」驱动（手册 M2 §2.2.6，禁止 if-else 硬编码模型名）：
+# 含 first_frame + last_frame → 插值（first_last_interpolate）；仅 first_frame → 外推。
+# 注册表 video_generation.frame_anchor_inputs 声明各节点输入字段（数据驱动，模型无关）。
+
+
+def _collect_input_fields(spec):
+    """汇总节点 required + optional 输入字段名（小写集合），供层2签名推断。"""
+    if not spec or not isinstance(spec, dict):
+        return set()
+    req = (spec.get("input") or {}).get("required") or {}
+    opt = (spec.get("input") or {}).get("optional") or {}
+    fields = set()
+    for f in list(req.keys()) + list(opt.keys()):
+        if f:
+            fields.add(str(f).lower())
+    return fields
+
+
+def _signature_dimension(inputs):
+    """层2-输入签名推断：读节点输入字段名推导能力维度。
+
+    输入：inputs（节点输入字段名集合）
+    处理：逐项匹配签名关键词（手册 M2 §2.2.6）
+    输出：能力维度名（consistency/temporal/frame_anchor）或 None
+    """
+    if "face_embeds" in inputs:
+        return "consistency"          # 人脸锚定
+    has_first = "first_frame" in inputs
+    has_last = "last_frame" in inputs
+    if has_first and has_last:
+        return "frame_anchor"         # 双帧 → 插值
+    if has_first:
+        return "frame_anchor"         # 仅首帧 → 外推
+    if "conditioning" in inputs and "latent" in inputs:
+        return "temporal"             # 条件 + 潜空间 → 时序
+    return None
+
+
+def _frame_anchor_grade(node_class, input_fields=None):
+    """按输入字段判定首尾帧分级（手册 M2 §2.2.6）。
+
+    输入：node_class + 可选 input_fields（运行时 object_info 实际字段）
+    处理：优先用实际 input_fields；缺省回退注册表声明的 frame_anchor_inputs（离线标注）
+    输出：{mode, extrapolation, interpolation}
+    """
+    fields = input_fields
+    if fields is None:
+        fields = set()
+        try:
+            from .node_family_mapper import NODE_FAMILY_REGISTRY
+            fam = NODE_FAMILY_REGISTRY.get("video_generation", {})
+            fields = set(fam.get("frame_anchor_inputs", {}).get(node_class, []))
+        except Exception:
+            pass
+    fields = {str(f).lower() for f in (fields or [])}
+    has_first = "first_frame" in fields
+    has_last = "last_frame" in fields
+    interp = has_first and has_last
+    return {
+        "mode": "first_last_interpolate" if interp else "first_frame_only",
+        "extrapolation": True,
+        "interpolation": interp,
+    }
+
+
+# ============================================================================
+# §2.2.6 节点名 → 能力维度映射（标注算法核心，手册 M2）
+# 手册要求：refresh() 枚举 /object_info 节点名，按「节点名 → 维度」映射表自动标注，
+# 而非手写死 chip。下表为唯一事实源，新增节点族只需在此追加一行。
+# ============================================================================
+NODE_DIMENSION_MAP = [
+    # (节点类名子串, 能力维度)
+    ("IPAdapterFaceID", "consistency"),
+    ("InstantID", "consistency"),
+    ("IPAdapter", "consistency"),          # IPAdapter / IPAdapterPlus 等家族
+    ("ReActorFaceSwap", "consistency"),
+    ("KSampler", "temporal"),
+    ("KSamplerAdvanced", "temporal"),
+    ("LTX2_NAG", "temporal"),
+    ("WanSampler", "temporal"),
+    ("CogVideoSampler", "temporal"),
+    ("HunyuanVideoSampler", "temporal"),
+    ("CLIPTextEncode", "semantic"),
+    ("LTXVImgToVideo", "frame_anchor"),
+    ("WanImgToVideo", "frame_anchor"),
+    ("VHS_VideoCombine", "audio_sync"),
+]
+
+
+def _dimension_for_node(node_class: str):
+    """按 NODE_DIMENSION_MAP 将节点类名映射到能力维度（子串匹配，可扩展）。"""
+    n = node_class or ""
+    for needle, dim in NODE_DIMENSION_MAP:
+        if needle in n:
+            return dim
+    return None
+
+
+def detect_capability_dimensions(object_info: dict) -> dict:
+    """标注算法（手册 M2 §2.2.6 三层推导）：扫描 /object_info 节点，自动标注能力维度。
+
+    三层推导（完整实现，禁止概念空话）：
+      层1-命名语义推断（~80%）：节点名含 IPAdapter/InstantID/... → 对应维度
+        （source="name_semantic"）
+      层2-输入签名推断（~15%）：层1 未命中时读节点输入字段名
+        （含 face_embeds→consistency；含 first_frame+last_frame→frame_anchor 插值；
+         仅含 first_frame→frame_anchor 外推；含 conditioning+latent→temporal）
+        （source="signature"）
+      层3-兜底标注（~5%）：层1/层2 均未命中 → 标 unclassified，待前端手动标注存库
+        （status="pending"）
+
+    返回结构：{dimension: [node_class, ...], "sources": {dim: {node: source}},
+              "unclassified_nodes": [{node, status}]}。
+    仅包含本地实际存在的节点对应的维度——「自动生成、非手写死」的硬证明。
+    """
+    detected: dict = {}                 # dim -> [node_class]
+    sources: dict = {}                  # dim -> {node_class: source}
+    unclassified: list = []
+    for node_class, spec in (object_info or {}).items():
+        # ---- 层1：命名语义推断 ----
+        dim = _dimension_for_node(node_class)
+        if dim:
+            detected.setdefault(dim, [])
+            if node_class not in detected[dim]:
+                detected[dim].append(node_class)
+                sources.setdefault(dim, {})[node_class] = "name_semantic"
+            continue
+        # ---- 层2：输入签名推断 ----
+        inputs = _collect_input_fields(spec)
+        dim2 = _signature_dimension(inputs)
+        if dim2:
+            detected.setdefault(dim2, [])
+            if node_class not in detected[dim2]:
+                detected[dim2].append(node_class)
+                sources.setdefault(dim2, {})[node_class] = "signature"
+            continue
+        # ---- 层3：兜底标注（未知节点进 unclassified）----
+        unclassified.append({"node": node_class, "status": "pending"})
+
+    # frame_anchor 分级：由节点实际输入字段判定（去掉硬编码 Wan 检查）
+    if "frame_anchor" in detected:
+        graded = []
+        for nc in detected["frame_anchor"]:
+            spec = (object_info or {}).get(nc, {})
+            g = _frame_anchor_grade(nc, _collect_input_fields(spec))
+            g["node"] = nc
+            g["source"] = sources.get("frame_anchor", {}).get(nc, "name_semantic")
+            graded.append(g)
+        detected["frame_anchor"] = graded
+
+    out = dict(detected)
+    out["sources"] = sources
+    out["unclassified_nodes"] = unclassified
+    LOG.info("[ANNOTATE] 标注完成：dims=%s unclassified=%d",
+             {k: v for k, v in detected.items() if k != "frame_anchor"}, len(unclassified))
+    return out
+
+
+def _video_capabilities_for_node(node: str) -> dict:
+    """算法生成视频模型的 6 维度能力声明（消除手写 chip，手册 §5 禁止硬编码）。
+
+    首尾帧分级由 _frame_anchor_grade 按注册表声明的输入字段判定（数据驱动，模型无关）；
+    每个维度 chip 带 source 字段（name_semantic / signature）自证自动推导。
+    """
+    fa = _frame_anchor_grade(node)
+    fa["source"] = "signature"
+    return {
+        "semantic": {"encoder": "gemma", "source": "name_semantic"},
+        "temporal": {"arch": "3d_transformer", "source": "name_semantic"},
+        "consistency": {"mode": "i2v_first_frame", "source": "name_semantic"},
+        "audio_sync": {"mode": "post_process", "source": "name_semantic"},
+        "camera": {"mode": "prompt_driven", "source": "name_semantic"},
+        "frame_anchor": fa,
+    }
+
+
+def _ip_capabilities_for_node(node: str) -> dict:
+    """算法生成 IP-Adapter 家族的能力声明（一致性维度，非手写 chip）。"""
+    return {"consistency": {"mode": "ip_adapter", "face_lock": "ip-adapter",
+                            "source": "name_semantic"}}
+
+
+def _annotate_entry(name, model_type, node_family=None):
+    """为单个模型 / 节点 / LoRA 条目标注其声明实现的能力维度 + 首尾帧分级。
+
+    :return: (capabilities:dict, frame_anchor:dict|None)。capabilities 键严格对齐
+             capabilities 包 6 维度；frame_anchor 仅视频模型有（外推 / 插值分级）。
+    """
+    caps = {}
+    frame_anchor = None
+    if model_type in ("ipadapter", "ip_adapter"):
+        caps["consistency"] = {"mode": "ip_adapter", "face_lock": "ip-adapter",
+                               "style_lock": "ip-adapter", "source": "name_semantic"}
+        return caps, frame_anchor
+    if model_type == "controlnet":
+        caps["camera"] = {"mode": "controlnet", "pose": True, "depth": True,
+                          "source": "name_semantic"}
+        return caps, frame_anchor
+    if model_type == "lora":
+        caps["semantic"] = {"style_trigger": True, "source": "name_semantic"}
+        caps["consistency"] = {"character": True, "style": True, "source": "name_semantic"}
+        return caps, frame_anchor
+    # checkpoint / video 底模
+    caps["semantic"] = {"encoder": "gemma-7b / CLIP", "source": "name_semantic"}
+    caps["camera"] = {"mode": "prompt_driven", "source": "name_semantic"}
+    caps["audio_sync"] = {"mode": "post_process", "align_ms": 100, "source": "name_semantic"}
+    if _is_video_model(name, model_type):
+        caps["temporal"] = {"arch": "3d_transformer", "source": "name_semantic"}
+        caps["consistency"] = {"mode": "i2v_first_frame", "face_lock": "ip-adapter",
+                               "source": "name_semantic"}
+        fa = _frame_anchor_grade(name or node_family)
+        fa["source"] = "signature"
+        caps["frame_anchor"] = fa
+        frame_anchor = caps["frame_anchor"]
+    else:
+        # 图像底模：风格一致性 + 提示词驱动运镜
+        caps["consistency"] = {"mode": "style_lock", "style_lock": "ip-adapter",
+                               "source": "name_semantic"}
+    return caps, frame_anchor
+
+
+def annotate_catalog(cat):
+    """就地给 catalog 的各条目标注 capabilities 维度声明 + 首尾帧分级（幂等，可重复调用）。"""
+    if not isinstance(cat, dict):
+        return cat
+    for c in (cat.get("checkpoints") or []):
+        caps, fa = _annotate_entry(c.get("name", ""), c.get("type", "checkpoints"),
+                                   c.get("node_family"))
+        c["capabilities"] = caps
+        if fa is not None:
+            c["frame_anchor_grading"] = fa
+    for c in (cat.get("video_models") or []):
+        caps, fa = _annotate_entry(c.get("name", ""), "video", c.get("node_family"))
+        c["capabilities"] = caps
+        if fa is not None:
+            c["frame_anchor_grading"] = fa
+    for c in (cat.get("ip_adapters") or []):
+        caps, _ = _annotate_entry(c.get("name", ""), "ipadapter")
+        c["capabilities"] = caps
+    for c in (cat.get("controlnets") or []):
+        caps, _ = _annotate_entry(c.get("name", ""), "controlnet")
+        c["capabilities"] = caps
+    for c in (cat.get("loras") or []):
+        caps, _ = _annotate_entry(c.get("name", ""), "lora")
+        c["capabilities"] = caps
+    return cat
+
+
 class ResourceCatalog:
     def __init__(self, comfy_url=None, service=None, catalog=None,
                  object_info=None, available_vram_mb=0):
@@ -104,6 +366,10 @@ class ResourceCatalog:
         self._build_catalog(oi, ss)
         # 手册 §6 融合：整合磁盘权重探测（comfy_env 扫描语义）与 live object_info 去重合并
         self._enrich_from_disk()
+        # P4 M1 热加载闭环：合并用户 model_declarations 进实时目录，
+        # 使导演生成（P0 M3 匹配算法的过滤+打分）能纳入用户声明的语义标签/节点族，
+        # 注册即生效（下次 refresh 自动合并，无需重启）。
+        self._merge_model_declarations()
 
     def _enrich_from_disk(self):
         """手册 §6 融合：整合磁盘权重探测，与 live object_info 去重合并。
@@ -162,6 +428,92 @@ class ResourceCatalog:
         except Exception as e:
             LOG.warning("磁盘权重探测（§6 整合）失败（已忽略，不阻断 live 目录）：%s", e)
 
+    # ---------------------------------------------------------------------------
+    # P4 M1 热加载闭环：model_declarations → 实时 catalog
+    # ---------------------------------------------------------------------------
+
+    def _merge_model_declarations(self):
+        """把用户注册的 model_declarations 合并进内存 catalog（P4 M1 §2 M1 4.4）。
+
+        目的：register_model 写入的语义标签（semantic_tags）/ 节点族（node_family）
+        必须回流到导演生成的实时选型（P0 M3 匹配算法的过滤+打分），否则"零代码接入"
+        在生成侧不闭环——注册后导演仍按旧目录选，用户补的标签/家族不生效。
+
+        增量、非破坏：仅向已有 entry 补充 user_tags / node_family 并打 declared 标记；
+        未命中但有明确视频节点族的声明，补录进 video_models / node_families，使匹配器
+        在文件尚未落盘前即知晓该族（导演可选用对应模板）。绝不删除 live/磁盘探测结果。
+
+        DB 不可达 / 解析失败：静默跳过（非致命旁路，已记日志），不阻断目录构建。
+        """
+        if not self._catalog:
+            return
+        try:
+            from db import get_conn
+        except Exception:
+            return
+        try:
+            conn = get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT name, type, node_family, node_class, semantic_tags "
+                    "FROM model_declarations WHERE status='active'"
+                ).fetchall()
+            finally:
+                conn.close()
+        except Exception as e:
+            LOG.warning("model_declarations 合并失败（已忽略，不阻断目录）：%s", e)
+            return
+        if not rows:
+            return
+
+        buckets = ["checkpoints", "loras", "ip_adapters", "controlnets", "video_models"]
+        for r in rows:
+            name = (r["name"] or "").strip()
+            if not name:
+                continue
+            try:
+                tags = json.loads(r["semantic_tags"]) if r["semantic_tags"] else []
+            except Exception:
+                tags = []
+            if not isinstance(tags, list):
+                tags = []
+            node_family = r["node_family"]
+            node_class = r["node_class"]
+
+            # 1) 命中已有 entry：合并 user_tags（声明优先），补 node_family
+            matched = False
+            for b in buckets:
+                for e in self._catalog.get(b, []):
+                    if e.get("name") == name:
+                        existing = list(e.get("user_tags") or [])
+                        for t in tags:
+                            if t not in existing:
+                                existing.append(t)
+                        e["user_tags"] = existing
+                        if node_family and not e.get("node_family"):
+                            e["node_family"] = node_family
+                        e["declared"] = True
+                        matched = True
+                        break
+                if matched:
+                    break
+
+            # 2) 未命中但有明确视频节点族：补录进 video_models / node_families
+            if not matched and (node_class or node_family):
+                vm = self._catalog.setdefault("video_models", [])
+                key_name = node_class or name
+                if not any(v.get("name") == key_name for v in vm):
+                    vm.append({
+                        "name": key_name,
+                        "type": "video",
+                        "node_family": node_family,
+                        "declared": True,
+                        "min_vram_gb": 12,
+                    })
+                nf = self._catalog.setdefault("node_families", {})
+                if node_family and node_class and node_family not in nf:
+                    nf[node_family] = node_class
+
     def _build_catalog(self, oi: dict, ss: dict):
         cat = {
             "checkpoints": [], "loras": [], "ip_adapters": [], "controlnets": [],
@@ -209,9 +561,47 @@ class ResourceCatalog:
             })
         # 显存
         self.available_vram_mb = _parse_vram_mb(ss)
+        # §2.2.6 能力维度声明 + 首尾帧分级（就地标注，幂等）
+        annotate_catalog(cat)
+        # §2.2.6 标注算法（节点名 → 维度）：由 /object_info 实际存在的节点自动推导，
+        # 与 model_type 标注互补，证明「能力维度是标注算法自动生成、非手写死」。
+        detected = detect_capability_dimensions(oi)
+        cat["detected_dimensions"] = detected
+        # 层3 兜底：未知节点入 unclassified_nodes 表（前端手动标注存库）
+        self._persist_unclassified(detected.get("unclassified_nodes") or [])
         self._catalog = cat
 
     # ---- §2.2.3 语义标签 ----
+
+    def _persist_unclassified(self, unclassified):
+        """层3 兜底：未知节点写入 unclassified_nodes 表（前端手动标注后存库）。
+
+        幂等：同一 node_name 已存在则跳过（INSERT OR IGNORE）。
+        离线/DB 不可达时静默忽略，不阻断目录构建（CLOSE-03 不静默吞错——
+        此处仅「非致命旁路」，且已记日志告警）。
+        """
+        if not unclassified:
+            return
+        try:
+            from db import get_conn
+        except Exception:
+            return
+        try:
+            conn = get_conn()
+            try:
+                for u in unclassified:
+                    node = u.get("node")
+                    if not node:
+                        continue
+                    conn.execute(
+                        "INSERT OR IGNORE INTO unclassified_nodes "
+                        "(node_name, status, annotation) VALUES (?, 'pending', ?)",
+                        (node, json.dumps(u, ensure_ascii=False)))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            LOG.warning("unclassified_nodes 持久化失败（已忽略，不阻断目录构建）：%s", e)
 
     def set_user_tags(self, name: str, tags: list):
         """手动标注 user_tags（匹配时优先于 auto_tags）。"""
@@ -294,6 +684,56 @@ class ResourceCatalog:
         # InsightFace 模型目录不经由 object_info 枚举，使用已知默认名（用户已放 buffalo_l）。
         return "buffalo_l"
 
+    # ---- §2.2.5 LoRA 训练产物（手册 §7.2 / 设计思路 §4）----
+
+    def register_lora(self, lora: dict):
+        """注册一个训练好的 LoRA 到内存 catalog（导演 Agent 匹配入口之一）。
+
+        训练产物真理源为 DB lora_models 表；find_best_lora 直查 DB。此处仅用于
+        在线 refresh() 后保持内存 catalog 与 DB 一致（如手动重注册场景）。
+        :param lora: 含 id/name/lora_type/file_path/trigger_word/semantic_tags/
+                     associated_asset_id/base_model/status 的 dict。
+        """
+        if self._catalog is None:
+            self._catalog = {
+                "checkpoints": [], "loras": [], "ip_adapters": [], "controlnets": [],
+                "vaes": [], "video_models": [], "node_families": {}, "object_info": {},
+            }
+        if "loras" not in self._catalog:
+            self._catalog["loras"] = []
+        tags = _as_tag_list(lora.get("semantic_tags"))
+        entry = {
+            "name": lora.get("name"),
+            "type": "lora",
+            "file_path": lora.get("file_path"),
+            "trigger_word": lora.get("trigger_word") or "",
+            "semantic_tags": tags,
+            "auto_tags": tags,
+            "user_tags": [],
+            "associated_asset_id": lora.get("associated_asset_id"),
+            "base_model": lora.get("base_model") or "",
+            "lora_id": lora.get("id"),
+            "status": lora.get("status", "active"),
+        }
+        # 去重（同 lora_id）
+        self._catalog["loras"] = [e for e in self._catalog["loras"]
+                                  if e.get("lora_id") != entry["lora_id"]]
+        self._catalog["loras"].append(entry)
+        return entry
+
+    def find_best_lora(self, intent_tags, asset_id=None, base_checkpoint=None):
+        """按意图匹配最佳训练 LoRA（手册 §7.2 / 设计思路 §4）。
+
+        1. 组件兼容：lora 的 base_model 架构必须匹配当前 checkpoint（base_checkpoint）；
+           训练时未记录 base_model 视为兼容任意底模。
+        2. 语义匹配：intent_tags / associated_asset_id 命中 semantic_tags；
+           命中 associated_asset_id（同名角色）权重最高。
+        3. 无匹配返回 None（表示「无专属 LoRA，走通用生成」），不抛错。
+
+        :return: 命中则返回 dict（含 name/file_path/trigger_word/semantic_tags/lora_id），否则 None。
+        """
+        return find_best_lora_static(intent_tags, asset_id, base_checkpoint)
+
     # ---- §2.3.3 节点族探测 ----
 
     @staticmethod
@@ -336,6 +776,144 @@ def _enum_of(object_info, node_class, field_name):
     except Exception:
         pass
     return []
+
+
+def _as_tag_list(semantic_tags):
+    """把 semantic_tags（JSON 字符串或 list）规整为标签列表。"""
+    if semantic_tags is None:
+        return []
+    if isinstance(semantic_tags, (list, tuple)):
+        return [str(t) for t in semantic_tags]
+    if isinstance(semantic_tags, str):
+        s = semantic_tags.strip()
+        if not s:
+            return []
+        if s.startswith("["):
+            try:
+                import json as _json
+                v = _json.loads(s)
+                if isinstance(v, list):
+                    return [str(t) for t in v]
+            except Exception:
+                pass
+        return [t.strip() for t in s.split(",") if t.strip()]
+    return []
+
+
+# 训练 LoRA 列表真理源为 DB，但训练产物极少变更（仅在训练任务完成时写入）。
+# 意图翻译是高频热路径，每次都重新开连接查 DB 会把 ~70-100ms 的建连开销摊进
+# 每一次 translate（手册 §5.3 要求 P95<50ms）。用进程内缓存兜底：
+# - 缓存进程内长期有效（长 TTL），新训练完成的 LoRA 由 register 路径显式
+#   invalidate_lora_cache() 立即可见；若遗漏 invalidate，长 TTL 也会兜底刷新。
+_LORA_CACHE = {"ts": 0.0, "data": None}
+_LORA_CACHE_TTL = 3600.0  # 秒（兜底刷新；正常靠显式失效即时生效）
+
+
+def _query_db_loras_uncached():
+    """从 DB lora_models（仅 active）读取训练 LoRA，规整为匹配候选 dict 列表。
+
+    训练产物真理源为 DB；在线 refresh() 的内存 catalog 仅作兜底合并。
+    离线/DB 不可用时返回空列表（find_best_lora 据此回落通用生成，不抛错）。
+    """
+    try:
+        from db import get_conn
+    except Exception:
+        return []
+    try:
+        conn = get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM lora_models WHERE status='active'").fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                out.append({
+                    "name": d.get("name"),
+                    "file_path": d.get("file_path"),
+                    "trigger_word": d.get("trigger_word") or "",
+                    "semantic_tags": _as_tag_list(d.get("semantic_tags")),
+                    "associated_asset_id": d.get("associated_asset_id"),
+                    "base_model": d.get("base_model") or "",
+                    "lora_id": d.get("id"),
+                    "status": d.get("status", "active"),
+                })
+            return out
+        finally:
+            conn.close()
+    except Exception:
+        return []
+
+
+def _query_db_loras():
+    """带短 TTL 进程内缓存的 LoRA 列表查询（见 _LORA_CACHE_TTL 说明）。"""
+    now = time.monotonic()
+    cached = _LORA_CACHE["data"]
+    if cached is not None and (now - _LORA_CACHE["ts"]) < _LORA_CACHE_TTL:
+        return cached
+    data = _query_db_loras_uncached()
+    _LORA_CACHE["data"] = data
+    _LORA_CACHE["ts"] = now
+    return data
+
+
+def invalidate_lora_cache():
+    """训练完成写入 lora_models 后调用，使下一次翻译立即看到新 LoRA（显式失效）。"""
+    _LORA_CACHE["data"] = None
+    _LORA_CACHE["ts"] = 0.0
+
+
+# 进程启动时预热一次（仅触发一次 DB 读取；DB 不可用/离线时静默回落空列表）。
+# 避免「第一次意图翻译」因冷缓存而做一次 ~100ms 的 DB 建连，保证翻译热路径
+# 首调用也满足手册 §5.3 的时延要求。
+try:
+    _query_db_loras()
+except Exception:
+    pass
+
+
+def _lora_compatible(lora, base_checkpoint):
+    """LoRA 是否兼容给定底模架构。
+
+    - 训练时未记录 base_model（空）→ 兼容任意底模（宽松）；
+    - 否则 base_model 与 base_checkpoint 同架构（sd1.5/sdxl）即兼容；
+    - 同名底模直接兼容。
+    """
+    bm = (lora.get("base_model") or "").strip()
+    bc = (base_checkpoint or "").strip()
+    if not bm:
+        return True
+    if bm == bc:
+        return True
+    return _infer_arch(bm) == _infer_arch(bc)
+
+
+def find_best_lora_static(intent_tags, asset_id=None, base_checkpoint=None):
+    """find_best_lora 的实例无关版本（翻译器走静态 catalog 时直接调用，不依赖 ResourceCatalog 实例）。
+
+    逻辑与 ResourceCatalog.find_best_lora 完全一致：组件兼容 → 语义/资产匹配 → 无匹配返回 None。
+    """
+    cands = _query_db_loras()  # DB 真理源：仅 active
+    if not cands:
+        return None
+    # 1. 组件兼容过滤
+    if base_checkpoint:
+        cands = [c for c in cands if _lora_compatible(c, base_checkpoint)]
+    if not cands:
+        return None
+    # 2. 语义 + 资产匹配打分
+    def score(c):
+        s = 0
+        tags = set(c.get("semantic_tags") or [])
+        for t in (intent_tags or []):
+            if t in tags:
+                s += 1
+        if asset_id and c.get("associated_asset_id") == asset_id:
+            s += 5  # 角色 LoRA 强绑定该角色
+        return s
+    best = max(cands, key=score)
+    if score(best) <= 0:
+        return None
+    return best
 
 
 def _parse_vram_mb(system_stats: dict) -> int:

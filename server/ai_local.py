@@ -1629,6 +1629,18 @@ def generate_character_card_v2(asset_id, setting_text=None, era=None,
             logger.warning("[card-v2] notice 推送失败（忽略）")
 
     # ④ 确定性 seed + ⑤/⑥ 多角度生成与回检
+    # P1 M3：构建四杠杆锁计划，供悬浮球「已锁定角色」气泡（诚实反映各杠杆就绪状态）
+    _lock_plan = None
+    try:
+        from capabilities.consistency import ConsistencyCapability
+        _lock_plan = ConsistencyCapability().build_lock_plan({
+            "bound_assets": [{
+                "asset_id": asset_id, "asset_type": "character",
+                "inject_type": "face", "weight": 0.85,
+            }],
+        })
+    except Exception:
+        pass
     poses = poses or ["front"]
     results = []
     for pose in poses:
@@ -1655,6 +1667,7 @@ def generate_character_card_v2(asset_id, setting_text=None, era=None,
                     "ip_adapter_weight": ip_weight,
                     "loras": [l.get("name") for l in (cap.get("loras") or []) if l],
                     "seed": seed,
+                    "consistency_plan": _lock_plan,
                 })
             except Exception:
                 logger.warning("[card-v2] translator 推送失败（忽略）")

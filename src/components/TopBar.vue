@@ -1,11 +1,12 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { mockNotifications } from '../mock'
 import { toast } from '../store'
 import { useTheme } from '../composables/useTheme'
 import { listNotifications, markAllNotificationsRead, markNotificationRead, deleteNotification } from '../api'
+import { getProject } from '../api'
 
 const route = useRoute()
 const router = useRouter()
@@ -27,16 +28,43 @@ const PAGE_TITLE = {
   '/logs': '操作日志',
   '/settings': '设置',
 }
-const pageTitle = computed(() => {
+const projectName = ref('')
+async function loadProjectName(id) {
+  if (!id) { projectName.value = ''; return }
+  try {
+    const p = await getProject(id)
+    projectName.value = (p && (p.name || p.title)) || ('项目 ' + String(id).slice(0, 6))
+  } catch (e) { projectName.value = '' }
+}
+watch(() => route.params.id, (id) => {
+  if (route.path.startsWith('/projects/') && id) loadProjectName(id)
+  else projectName.value = ''
+}, { immediate: true })
+
+const crumbs = computed(() => {
   const p = route.path
-  if (p.startsWith('/projects/')) {
-    if (p.endsWith('/assets')) return '素材库'
-    if (p.endsWith('/canvas')) return '工作流画布'
-    if (p.endsWith('/production')) return '生成生产'
-    return '项目中心 · 片段编辑'
+  const out = [{ label: '万能短剧', to: '/' }]
+  if (p === '/projects') {
+    out.push({ label: '项目中心' })
+  } else if (p.startsWith('/projects/')) {
+    const id = route.params.id
+    out.push({ label: '项目中心', to: '/projects' })
+    if (id) out.push({ label: projectName.value || '加载中…', to: `/projects/${id}` })
+    let step = ''
+    if (p.endsWith('/assets')) step = '资产初始化'
+    else if (p.endsWith('/planning')) step = '项目策划'
+    else if (p.endsWith('/editor')) step = '分镜编排'
+    else if (p.endsWith('/production')) step = '生成生产'
+    else if (p.endsWith('/synthesize')) step = '合成全集'
+    if (step) out.push({ label: step })
+  } else if (p.startsWith('/memoir/')) {
+    out.push({ label: '人生回忆录', to: '/memoir' })
+    out.push({ label: '人生回忆录 · 编辑页' })
+  } else {
+    const t = PAGE_TITLE[p]
+    if (t) out.push({ label: t })
   }
-  if (p.startsWith('/memoir/')) return '人生回忆录 · 编辑页'
-  return PAGE_TITLE[p] || '万能短剧'
+  return out
 })
 
 // ---- 通知：优先真实后端（messages 表），失败回退演示数据 ----
@@ -94,19 +122,17 @@ const removeNotif = async (n) => {
 onMounted(loadNotifs)
 
 const goMembership = () => { router.push('/membership'); toast('会员中心（演示）') }
-const onUser = (c) => {
-  if (c === 'profile') toast('个人中心（演示）')
-  else if (c === 'switch') toast('切换账号（演示）')
-  else if (c === 'logout') toast('退出登录（演示）')
-}
+const goHome = () => router.push('/')
 </script>
 
 <template>
   <header class="topbar">
     <div class="topbar-left">
-      <span class="crumb-root">万能短剧</span>
-      <span class="crumb-sep">/</span>
-      <span class="crumb-cur">{{ pageTitle }}</span>
+      <template v-for="(c, i) in crumbs" :key="i">
+        <span v-if="c.to" class="crumb-link" @click="router.push(c.to)" :title="'跳转到 ' + c.label">{{ c.label }}</span>
+        <span v-else class="crumb-cur">{{ c.label }}</span>
+        <span v-if="i < crumbs.length - 1" class="crumb-sep">/</span>
+      </template>
     </div>
     <div class="topbar-right">
       <button class="vip-btn" @click="goMembership">👑 个人版</button>
@@ -135,27 +161,14 @@ const onUser = (c) => {
           <div class="notif-foot" @click="markAllRead">全部已读</div>
         </el-popover>
       </el-badge>
-      <el-dropdown trigger="click" @command="onUser">
-        <div class="user">
-          <span class="avatar">小</span>
-          <span class="uname">小志</span>
-          <span class="caret">▾</span>
-        </div>
-        <template #dropdown>
-          <el-dropdown-menu>
-            <el-dropdown-item command="profile">个人中心</el-dropdown-item>
-            <el-dropdown-item command="switch">切换账号</el-dropdown-item>
-            <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
-          </el-dropdown-menu>
-        </template>
-      </el-dropdown>
     </div>
   </header>
 </template>
 
 <style scoped>
-.topbar-left { display: flex; align-items: center; gap: 8px; font-size: 14px; }
-.crumb-root { color: var(--sub); }
+.topbar-left { display: flex; align-items: center; gap: 8px; font-size: 14px; flex-wrap: wrap; }
+.crumb-link { color: var(--sub); cursor: pointer; transition: color .15s; }
+.crumb-link:hover { color: var(--p5-red); text-decoration: underline; }
 .crumb-sep { color: var(--line); }
 .crumb-cur { color: var(--txt); font-weight: 700; }
 .topbar-right { display: flex; align-items: center; gap: 14px; }
@@ -173,12 +186,8 @@ const onUser = (c) => {
   width: 34px; height: 34px; border-radius: 8px;
 }
 .icon-btn:hover { background: var(--card-2); }
+
 .bell :deep(.el-badge__content) { border: 0; }
-.user { display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 4px 6px; border-radius: 8px; }
-.user:hover { background: var(--card-2); }
-.avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--grad); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px; }
-.uname { font-size: 13px; color: var(--txt); }
-.caret { color: var(--sub); font-size: 11px; }
 .notif-head { font-weight: 800; font-size: 14px; padding: 4px 2px 10px; border-bottom: 1px solid var(--el-border-color); }
 .notif-list { max-height: 260px; overflow: auto; }
 .notif-item { padding: 9px 4px; border-bottom: 1px solid var(--el-border-color-lighter); }

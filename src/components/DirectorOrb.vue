@@ -12,10 +12,22 @@ import {
   visibleSuggestions,
   decisionItems,
   unreadCount,
+  visibleDecisions,
+  visibleConversation,
+  visibleTranslator,
+  visibleLockedCharacter,
+  visibleFeed,
   dismissSuggestion,
   runOrbBatch,
   resolveDecision,
+  cycleMorph,
+  currentMorph,
+  currentOrbColor,
+  isSwitching,
+  isCelebrating,
+  initOrbSkinFromStorage,
 } from '../composables/useDirectorOrb'
+// 2026-08-15 整改：原此处渲染用户名+头像+内联编辑输入框已移除（用户反馈：不在悬浮球面板显示个人资料）
 
 const router = useRouter()
 
@@ -156,20 +168,32 @@ const stageMetrics = computed(() => {
   return []
 })
 
-// 实时小任务 + 折叠区
-const expanded = reactive({ live: true })
+// 实时小任务：每个 feed 独立展开状态（非持久化）
+const expanded = reactive({})
 function toggleFeed(id) { expanded[id] = !expanded[id] }
-function toggleSection(key) { expanded[key] = !expanded[key] }
-const activeFeedCount = computed(() => state.feed.filter((f) => f.status === 'running').length)
+const activeFeedCount = computed(() => visibleFeed.value.filter((f) => f.status === 'running').length)
 
-// M3：待确认决策点（排除已解决/已跳过）
-const pendingDecisions = computed(() =>
-  state.decisions.filter((d) => d.status !== 'resolved' && d.status !== 'skipped'))
+// M3：待确认决策点 —— 阶段对齐：只展示当前阶段（visibleDecisions 已按 phase 过滤且仅 pending）
+const pendingDecisions = visibleDecisions
 
-// 折叠区
-const showDag = ref(false)
-const showLogs = ref(false)
-const showAlerts = ref(false)
+// ===== 悬浮球面板布局优化（悬浮球布局优化方案.md）：辅助区默认折叠 + localStorage 记忆 =====
+// 核心三卡（决策/发言/选型/需决策）始终展开，不在此系统；仅辅助信息进入折叠。
+const COLLAPSE_LS = 'orb_collapsed_keys'
+const COLLAPSE_KEYS = ['skills', 'metrics', 'core', 'live', 'dag', 'logs', 'advice', 'alerts', 'output']
+const collapsed = reactive(Object.fromEntries(COLLAPSE_KEYS.map((k) => [k, true])))
+// 还原：localStorage 存的是「用户展开过的 key 列表」
+try {
+  const raw = localStorage.getItem(COLLAPSE_LS)
+  if (raw) {
+    const opened = JSON.parse(raw)
+    if (Array.isArray(opened)) opened.forEach((k) => { if (k in collapsed) collapsed[k] = false })
+  }
+} catch (e) { /* ignore */ }
+function toggleCollapse(key) {
+  collapsed[key] = !collapsed[key]
+  const opened = Object.keys(collapsed).filter((k) => !collapsed[k])
+  try { localStorage.setItem(COLLAPSE_LS, JSON.stringify(opened)) } catch (e) { /* ignore */ }
+}
 function kindIcon(kind) {
   const map = {
     text: '文',
@@ -235,6 +259,29 @@ const qrPass = computed(() => qrReports.value.filter((r) => r.pass).length)
 const styleRef = computed(() => (state.result && state.result.global_style_ref) || '')
 const failedShots = computed(() => (state.result && state.result.failed_shot_list) || [])
 
+// ---- P2 M2：首尾帧锚定模式气泡（读真实片段数据；缺省按模型仅首帧外推诚实展示）----
+const p2AnchorItems = computed(() => {
+  const segs = (state.stageStats && state.stageStats.segments) || []
+  return segs.map((s, i) => {
+    const mode = s.frame_anchor_mode || (s.return_tail ? 'first_last_interpolate' : 'first_frame_only')
+    const label = mode === 'first_last_interpolate' ? '首尾帧插值' : '首帧外推'
+    const honest = mode === 'first_frame_only' ? '（模型不支持插值）' : ''
+    return { no: s.no || i + 1, label, honest }
+  })
+})
+// ---- P2 M3：运动检测品控 pill（逐分镜；含 motion 字段时给运动专项文案）----
+const p2QcItems = computed(() => {
+  return qrReports.value.map((r) => {
+    const segId = r.segment_id || r.segment || '?'
+    const passed = !!r.pass
+    const isMotion = /motion|static|运动|静态/i.test((r.type || '') + ' ' + (r.reason || ''))
+    const text = passed
+      ? (isMotion ? '运动检测通过' : '品控通过')
+      : (isMotion ? '判定静态，已重试' : '品控未通过')
+    return { segId, passed, text }
+  })
+})
+
 /* ===================== 悬浮球拖动 + 磁吸边框 ===================== */
 const BTN = 56
 const MARGIN = 12
@@ -246,6 +293,7 @@ const pos = reactive(loadPos())
 const dragging = ref(false)
 const magnetEdge = ref(null)
 let startPX = 0, startPY = 0, startX = 0, startY = 0, moved = false
+let lastUpTime = 0 // 双击守卫：避免双击触发布尔面板切换（dblclick 专门切换形态）
 
 function defaultPos() {
   const W = window.innerWidth, H = window.innerHeight
@@ -301,6 +349,9 @@ function onPointerMove(e) {
 function onPointerUp() {
   window.removeEventListener('pointermove', onPointerMove)
   window.removeEventListener('pointerup', onPointerUp)
+  const now = Date.now()
+  const isDouble = !dragging.value && (now - lastUpTime) < 300
+  lastUpTime = now
   if (dragging.value) {
     const W = window.innerWidth, H = window.innerHeight
     const dL = pos.x, dR = (W - BTN) - pos.x, dT = pos.y, dB = (H - BTN) - pos.y
@@ -309,7 +360,8 @@ function onPointerUp() {
     if (dT < SNAP_DIST) pos.y = MARGIN
     else if (dB < SNAP_DIST) pos.y = H - BTN - MARGIN
     savePos()
-  } else {
+  } else if (!isDouble) {
+    // 双击由 @dblclick 处理形态切换，这里跳过单次切换避免面板闪烁
     open.value = !open.value
   }
   dragging.value = false
@@ -344,7 +396,10 @@ watch(open, (v) => {
   }
 })
 
-onMounted(() => window.addEventListener('resize', onResize))
+onMounted(() => {
+  window.addEventListener('resize', onResize)
+  initOrbSkinFromStorage() // 多形态化身：从设置页持久化偏好还原默认皮肤
+})
 onBeforeUnmount(() => {
   window.removeEventListener('pointermove', onPointerMove)
   window.removeEventListener('pointerup', onPointerUp)
@@ -374,7 +429,9 @@ onBeforeUnmount(() => {
             <span>导演 Agent</span>
           </div>
           <div class="orb-head-right">
+            <!-- 状态标签（用户名/头像不该塞在这里：已移除，见 2026-08-15 整改） -->
             <span v-if="currentStage" class="orb-stage-tag">阶段 {{ effectiveStep }}</span>
+            <span v-if="pendingDecisions.length || visibleSuggestions.length || decisionItems.length" class="orb-head-dot" title="有待处理事项"></span>
             <button class="orb-x" @click="open = false" title="收起">×</button>
           </div>
         </div>
@@ -402,7 +459,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- 当前阶段主视图 -->
+        <!-- 阶段标题（紧凑，始终可见） -->
         <div v-if="phaseInfo" class="phase-hero">
           <div class="ph-title-row">
             <span class="ph-step">{{ phaseInfo.key }}</span>
@@ -415,43 +472,31 @@ onBeforeUnmount(() => {
             <div class="ob-pbar"><div class="ob-pfill" :class="state.runStatus" :style="{ width: state.progress + '%' }"></div></div>
             <span class="ob-pnum">{{ state.progress }}%</span>
           </div>
-
-          <!-- 当前阶段技能清单 -->
-          <div class="skills-card">
-            <div class="skills-head">
-              <span class="sh-label">当前阶段能力</span>
-              <span class="sh-agent">{{ phaseInfo.agents }}</span>
-            </div>
-            <div class="skills-list">
-              <div
-                v-for="it in phaseInfo.items"
-                :key="it.id"
-                class="skill-item"
-                :class="logicStatusOf(it)"
-              >
-                <span class="si-dot"></span>
-                <div class="si-body">
-                  <div class="si-name">{{ it.name }}</div>
-                  <div class="si-desc">{{ it.desc }}</div>
-                </div>
-                <span class="si-status">{{ STATUS_LIT_TXT[logicStatusOf(it)] }}</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- 阶段指标 -->
-          <div v-if="stageMetrics.length" class="metrics-row">
-            <div v-for="(m, i) in stageMetrics" :key="i" class="metric-cell" :class="m.tone">
-              <div class="metric-value">{{ m.value }}</div>
-              <div class="metric-label">{{ m.label }}</div>
-            </div>
-          </div>
         </div>
 
         <!-- ===== DirectorOrb v2 管家视图（化身层 · 信息架构优先级最高） ===== -->
         <div v-if="state.orbEnabled" class="orb-persona">
 
           <!-- ===== M3 悬浮球前端化：三卡（决策 / 选型 / 对话） ===== -->
+
+          <!-- M3 Lock-Then-Animate：已锁定角色气泡（验收核心：生成时显示「已锁定角色 X」） -->
+          <div v-if="visibleLockedCharacter" class="m3-lock">
+            <div class="lock-head">
+              <svg class="lock-ic" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              已锁定角色「{{ state.lockedCharacter.name }}」
+              <span v-if="state.lockedCharacter.lockMode === 'i2v_first_frame'" class="lock-mode">i2v 首帧锚定</span>
+              <span v-else-if="state.lockedCharacter.lockMode === 'style_only'" class="lock-mode style">风格锁</span>
+            </div>
+            <div class="lock-chips">
+              <span class="lock-chip" :class="{ on: state.lockedCharacter.firstFrame }">标准肖像</span>
+              <span class="lock-chip" :class="{ on: state.lockedCharacter.faceVectorDim }">{{ state.lockedCharacter.faceVectorDim ? (state.lockedCharacter.faceVectorDim + '维向量') : '向量缺失' }}</span>
+              <span class="lock-chip" :class="{ on: state.lockedCharacter.consistencyPrompt }">一致句</span>
+              <span class="lock-chip" :class="{ on: state.lockedCharacter.referenceImages.length }">参考图集 {{ state.lockedCharacter.referenceImages.length }}</span>
+            </div>
+            <div v-if="state.lockedCharacter.firstFrame" class="lock-sp">
+              <img :src="state.lockedCharacter.firstFrame" alt="标准肖像" @error="(e)=>(e.target.style.display='none')" />
+            </div>
+          </div>
 
           <!-- 决策卡：A 类决策请示（director.decision_request），点选回传 resolve -->
           <div class="persona-decision m3-decision">
@@ -472,29 +517,27 @@ onBeforeUnmount(() => {
           </div>
 
           <!-- 选型卡：translator 频道（导演选了哪个底模/节点/seed，决策可视化） -->
-          <div class="m3-translator">
+          <!-- 阶段对齐：仅当前阶段有导演选型时才展示，避免切到 P1 仍显示 P4 选型 -->
+          <div class="m3-translator" v-if="visibleTranslator">
             <div class="mt-title">🎬 导演选型</div>
-            <div v-if="!state.translator" class="orb-empty">暂无导演选型（进入 P4 生成后将自动展示）</div>
-            <template v-else>
-              <div class="mt-row"><span class="mt-k">底模</span><span class="mt-v">{{ state.translator.checkpoint || '—' }}</span></div>
-              <div class="mt-row"><span class="mt-k">IP节点</span><span class="mt-v">{{ state.translator.node || '未使用 IP 适配器' }}</span></div>
-              <div class="mt-row" v-if="state.translator.ip_adapter_weight != null"><span class="mt-k">IP权重</span><span class="mt-v">{{ state.translator.ip_adapter_weight }}</span></div>
-              <div class="mt-row" v-if="state.translator.loras && state.translator.loras.length">
-                <span class="mt-k">LoRA</span><span class="mt-v">{{ state.translator.loras.join('、') }}</span>
-              </div>
-              <div class="mt-row"><span class="mt-k">Seed</span><span class="mt-v">{{ (state.translator.seed != null && state.translator.seed !== '') ? state.translator.seed : '—' }}</span></div>
-              <div class="mt-sub" v-if="state.translator.task_type">任务类型：{{ state.translator.task_type }}</div>
-            </template>
+            <div class="mt-row"><span class="mt-k">底模</span><span class="mt-v">{{ state.translator.checkpoint || '—' }}</span></div>
+            <div class="mt-row"><span class="mt-k">IP节点</span><span class="mt-v">{{ state.translator.node || '未使用 IP 适配器' }}</span></div>
+            <div class="mt-row" v-if="state.translator.ip_adapter_weight != null"><span class="mt-k">IP权重</span><span class="mt-v">{{ state.translator.ip_adapter_weight }}</span></div>
+            <div class="mt-row" v-if="state.translator.loras && state.translator.loras.length">
+              <span class="mt-k">LoRA</span><span class="mt-v">{{ state.translator.loras.join('、') }}</span>
+            </div>
+            <div class="mt-row"><span class="mt-k">Seed</span><span class="mt-v">{{ (state.translator.seed != null && state.translator.seed !== '') ? state.translator.seed : '—' }}</span></div>
+            <div class="mt-sub" v-if="state.translator.task_type">任务类型：{{ state.translator.task_type }}</div>
           </div>
 
           <!-- 对话气泡：notice / insight（导演主动发言 + 品控结论） -->
           <div class="m3-conv">
-            <div v-if="!state.conversation.length" class="conv-bubble empty">
-              <span class="conv-tag">通知</span>
-              <span class="conv-text">暂无通知或品控消息</span>
+            <div v-if="!visibleConversation.length" class="conv-bubble empty">
+              <span class="conv-tag">导演</span>
+              <span class="conv-text">导演尚未发言（进入生成流程后将显示导演台词 / 品控结论）</span>
             </div>
-            <div v-for="c in state.conversation.slice().reverse()" :key="c.id" class="conv-bubble" :class="c.kind">
-              <span class="conv-tag">{{ c.kind === 'notice' ? '通知' : '品控' }}</span>
+            <div v-for="c in visibleConversation.slice().reverse()" :key="c.id" class="conv-bubble" :class="c.kind">
+              <span class="conv-tag">{{ c.kind === 'notice' ? '导演发言' : '品控结论' }}</span>
               <span class="conv-text">{{ c.text }}</span>
               <span class="conv-t">{{ fmtTime(c.ts) }}</span>
             </div>
@@ -520,91 +563,130 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- 管家建议（suggestion/warning，可忽略，L2 状态暗示） -->
-          <div v-if="visibleSuggestions.length" class="persona-advice">
-            <div class="pa-title">
-              管家建议 <span class="pa-sub">（可忽略）</span>
-              <span class="pa-clear" @click="visibleSuggestions.forEach((s) => dismissSuggestion(s.id))">全部忽略</span>
-            </div>
-            <div v-for="s in visibleSuggestions" :key="s.id" class="advice-item">
-              <span class="ai-sev" :class="s.severity">{{ sevTxt(s.severity) }}</span>
-              <div class="ai-body">
-                <div class="ai-name">{{ s.title }}</div>
-                <div class="ai-detail">{{ s.detail }}</div>
-                <button v-if="s.action_type === 'navigate'" class="ai-btn" @click="goPath((s.action_payload || {}).path)">去处理</button>
-                <button v-else-if="s.action_type === 'regenerate'" class="ai-btn" @click="runOrbBatch('regenerate', s.action_payload.segment_ids, {})">重生成</button>
-                <button v-else-if="s.action_type === 'skip'" class="ai-btn" @click="runOrbBatch('skip', s.action_payload.segment_ids, {})">跳过</button>
-              </div>
-              <button class="ai-dismiss" @click="dismissSuggestion(s.id)" title="忽略">×</button>
-            </div>
-          </div>
+        </div>
 
-          <!-- 阶段核心视图（按 effectiveStep 动态展示导演 Agent 已有数据） -->
-          <div class="persona-core">
-            <div v-if="effectiveStep === 1 && p1Core" class="core-block">
-              <div class="core-title">资产就绪度 <span class="core-score" :class="{ low: p1Core.score < 50 }">{{ p1Core.score }} 分</span></div>
-              <div class="core-metric-row">
-                <div v-for="g in p1Core.groups" :key="g.label" class="cm-cell">
-                  <div class="cm-val">{{ g.ready }}/{{ g.total }}</div>
-                  <div class="cm-lab">{{ g.label }}</div>
+        <!-- ===== 辅助信息（默认折叠 · localStorage 记忆 · 功能不丢） ===== -->
+
+        <!-- 当前阶段能力 -->
+        <div class="collapse-sec" :class="{ open: !collapsed.skills }">
+          <button class="cs-head" @click="toggleCollapse('skills')">
+            <span class="cs-label">当前阶段能力</span>
+            <span class="cs-caret">{{ collapsed.skills ? '▸' : '▾' }}</span>
+          </button>
+          <div v-if="!collapsed.skills" class="cs-body">
+            <div class="skills-card">
+              <div class="skills-head">
+                <span class="sh-label">当前阶段能力</span>
+                <span class="sh-agent">{{ phaseInfo.agents }}</span>
+              </div>
+              <div class="skills-list">
+                <div
+                  v-for="it in phaseInfo.items"
+                  :key="it.id"
+                  class="skill-item"
+                  :class="logicStatusOf(it)"
+                >
+                  <span class="si-dot"></span>
+                  <div class="si-body">
+                    <div class="si-name">{{ it.name }}</div>
+                    <div class="si-desc">{{ it.desc }}</div>
+                  </div>
+                  <span class="si-status">{{ STATUS_LIT_TXT[logicStatusOf(it)] }}</span>
                 </div>
               </div>
-              <div v-if="p1Core.missing.length" class="core-note warn">缺角色绑定场次：{{ p1Core.missing.map((m) => m.index).join('、') }}</div>
-            </div>
-
-            <div v-else-if="effectiveStep === 2 && p2Core" class="core-block">
-              <div class="core-title">叙事结构（共 {{ p2Core.segment_count }} 场）</div>
-              <div v-if="p2Core.consecutive.length" class="core-note">连续同场景 {{ p2Core.consecutive.length }} 处：{{ p2Core.consecutive.map((c) => c.start + '-' + c.end).join('、') }}</div>
-              <div v-if="p2Core.empty.length" class="core-note warn">{{ p2Core.empty.length }} 场缺描述：{{ p2Core.empty.join('、') }}</div>
-              <div v-if="!p2Core.consecutive.length && !p2Core.empty.length" class="core-note ok">结构健康，无连续同场景 / 空描述</div>
-            </div>
-
-            <div v-else-if="effectiveStep === 3" class="core-block">
-              <div class="core-title">配方透明度</div>
-              <div class="core-note">分镜级配方（风格 / 资产权重 / 运镜）可在「分镜编排」页选中分镜后由导演 Agent 实时解析呈现。</div>
-            </div>
-
-            <div v-else-if="effectiveStep === 4 && p4Core" class="core-block">
-              <div class="core-title">品控摘要 <span class="core-score" :class="{ low: p4Core.failed > 0 }">失败 {{ p4Core.failed }}</span></div>
-              <div class="core-metric-row">
-                <div class="cm-cell"><div class="cm-val">{{ p4Core.completed }}</div><div class="cm-lab">已完成</div></div>
-                <div class="cm-cell"><div class="cm-val">{{ p4Core.running }}</div><div class="cm-lab">生成中</div></div>
-                <div class="cm-cell"><div class="cm-val">{{ p4Core.failed }}</div><div class="cm-lab">失败</div></div>
-              </div>
-              <div v-if="p4Core.face_similarity_pass_rate > 0" class="core-note" :class="{ warn: p4Core.face_similarity_pass_rate < 100 }">人脸相似度通过率 {{ p4Core.face_similarity_pass_rate }}%</div>
-              <div v-for="f in (p4Core.failed_segments || [])" :key="f.segment_id" class="core-fail">
-                <span>场次 {{ f.index }} 失败</span>
-                <button class="ai-btn" @click="runOrbBatch('regenerate', [f.segment_id], {})">重生成</button>
-              </div>
-            </div>
-
-            <div v-else-if="effectiveStep === 5 && p5Core" class="core-block">
-              <div class="core-title">成片质检（{{ p5Core.generated }} 段）</div>
-              <div class="core-metric-row">
-                <div class="cm-cell"><div class="cm-val">{{ p5Core.face_similarity_pass_rate }}%</div><div class="cm-lab">人脸通过率</div></div>
-                <div class="cm-cell"><div class="cm-val">{{ p5Core.first_frame_match_avg }}</div><div class="cm-lab">首帧匹配</div></div>
-              </div>
-              <div class="core-note" :class="{ warn: p5Core.degrade_summary && p5Core.degrade_summary !== '无降级' }">
-                降级：{{ p5Core.degrade_summary || '无' }}
-              </div>
-            </div>
-
-            <div v-else class="core-block">
-              <div class="core-note">管家视图聚合导演 Agent 数据 · 进入各阶段后展示核心指标</div>
             </div>
           </div>
         </div>
 
-        <!-- 实时小任务 -->
-        <div class="live-section">
-          <div class="live-head" @click="toggleSection('live')">
-            <span class="live-title">实时生成</span>
-            <span v-if="activeFeedCount" class="live-count">{{ activeFeedCount }} 进行中</span>
-            <span class="live-caret">{{ expanded.live ? '−' : '+' }}</span>
+        <!-- 资产统计 -->
+        <div class="collapse-sec" :class="{ open: !collapsed.metrics }">
+          <button class="cs-head" @click="toggleCollapse('metrics')">
+            <span class="cs-label">资产统计</span>
+            <span class="cs-caret">{{ collapsed.metrics ? '▸' : '▾' }}</span>
+          </button>
+          <div v-if="!collapsed.metrics" class="cs-body">
+            <div v-if="stageMetrics.length" class="metrics-row">
+              <div v-for="(m, i) in stageMetrics" :key="i" class="metric-cell" :class="m.tone">
+                <div class="metric-value">{{ m.value }}</div>
+                <div class="metric-label">{{ m.label }}</div>
+              </div>
+            </div>
           </div>
-          <div v-if="expanded.live !== false" class="live-body">
-            <div v-if="!state.feed.length" class="orb-empty">暂无进行中的生成任务</div>
-            <div v-for="f in state.feed" :key="f.id" class="feed-card" :class="f.status">
+        </div>
+
+        <!-- 阶段核心视图 -->
+        <div class="collapse-sec" :class="{ open: !collapsed.core }">
+          <button class="cs-head" @click="toggleCollapse('core')">
+            <span class="cs-label">阶段核心视图</span>
+            <span class="cs-caret">{{ collapsed.core ? '▸' : '▾' }}</span>
+          </button>
+          <div v-if="!collapsed.core" class="cs-body">
+            <div class="persona-core">
+              <div v-if="effectiveStep === 1 && p1Core" class="core-block">
+                <div class="core-title">资产就绪度 <span class="core-score" :class="{ low: p1Core.score < 50 }">{{ p1Core.score }} 分</span></div>
+                <div class="core-metric-row">
+                  <div v-for="g in p1Core.groups" :key="g.label" class="cm-cell">
+                    <div class="cm-val">{{ g.ready }}/{{ g.total }}</div>
+                    <div class="cm-lab">{{ g.label }}</div>
+                  </div>
+                </div>
+                <div v-if="p1Core.missing.length" class="core-note warn">缺角色绑定场次：{{ p1Core.missing.map((m) => m.index).join('、') }}</div>
+              </div>
+
+              <div v-else-if="effectiveStep === 2 && p2Core" class="core-block">
+                <div class="core-title">叙事结构（共 {{ p2Core.segment_count }} 场）</div>
+                <div v-if="p2Core.consecutive.length" class="core-note">连续同场景 {{ p2Core.consecutive.length }} 处：{{ p2Core.consecutive.map((c) => c.start + '-' + c.end).join('、') }}</div>
+                <div v-if="p2Core.empty.length" class="core-note warn">{{ p2Core.empty.length }} 场缺描述：{{ p2Core.empty.join('、') }}</div>
+                <div v-if="!p2Core.consecutive.length && !p2Core.empty.length" class="core-note ok">结构健康，无连续同场景 / 空描述</div>
+              </div>
+
+              <div v-else-if="effectiveStep === 3" class="core-block">
+                <div class="core-title">配方透明度</div>
+                <div class="core-note">分镜级配方（风格 / 资产权重 / 运镜）可在「分镜编排」页选中分镜后由导演 Agent 实时解析呈现。</div>
+              </div>
+
+              <div v-else-if="effectiveStep === 4 && p4Core" class="core-block">
+                <div class="core-title">品控摘要 <span class="core-score" :class="{ low: p4Core.failed > 0 }">失败 {{ p4Core.failed }}</span></div>
+                <div class="core-metric-row">
+                  <div class="cm-cell"><div class="cm-val">{{ p4Core.completed }}</div><div class="cm-lab">已完成</div></div>
+                  <div class="cm-cell"><div class="cm-val">{{ p4Core.running }}</div><div class="cm-lab">生成中</div></div>
+                  <div class="cm-cell"><div class="cm-val">{{ p4Core.failed }}</div><div class="cm-lab">失败</div></div>
+                </div>
+                <div v-if="p4Core.face_similarity_pass_rate > 0" class="core-note" :class="{ warn: p4Core.face_similarity_pass_rate < 100 }">人脸相似度通过率 {{ p4Core.face_similarity_pass_rate }}%</div>
+                <div v-for="f in (p4Core.failed_segments || [])" :key="f.segment_id" class="core-fail">
+                  <span>场次 {{ f.index }} 失败</span>
+                  <button class="ai-btn" @click="runOrbBatch('regenerate', [f.segment_id], {})">重生成</button>
+                </div>
+              </div>
+
+              <div v-else-if="effectiveStep === 5 && p5Core" class="core-block">
+                <div class="core-title">成片质检（{{ p5Core.generated }} 段）</div>
+                <div class="core-metric-row">
+                  <div class="cm-cell"><div class="cm-val">{{ p5Core.face_similarity_pass_rate }}%</div><div class="cm-lab">人脸通过率</div></div>
+                  <div class="cm-cell"><div class="cm-val">{{ p5Core.first_frame_match_avg }}</div><div class="cm-lab">首帧匹配</div></div>
+                </div>
+                <div class="core-note" :class="{ warn: p5Core.degrade_summary && p5Core.degrade_summary !== '无降级' }">
+                  降级：{{ p5Core.degrade_summary || '无' }}
+                </div>
+              </div>
+
+              <div v-else class="core-block">
+                <div class="core-note">管家视图聚合导演 Agent 数据 · 进入各阶段后展示核心指标</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 实时生成 -->
+        <div class="collapse-sec" :class="{ open: !collapsed.live }">
+          <button class="cs-head" @click="toggleCollapse('live')">
+            <span class="cs-label">实时生成</span>
+            <span v-if="activeFeedCount" class="cs-count">{{ activeFeedCount }} 进行中</span>
+            <span class="cs-caret">{{ collapsed.live ? '▸' : '▾' }}</span>
+          </button>
+          <div v-if="!collapsed.live" class="cs-body">
+            <div v-if="!visibleFeed.length" class="orb-empty">暂无进行中的生成任务</div>
+            <div v-for="f in visibleFeed" :key="f.id" class="feed-card" :class="f.status">
               <div class="fc-head" @click="toggleFeed(f.id)">
                 <span class="fc-kind">{{ kindIcon(f.kind) }}</span>
                 <span class="fc-title">{{ f.title }}</span>
@@ -624,86 +706,116 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- 链路详情折叠区 -->
-        <div class="detail-stack">
-          <div class="detail-item" :class="{ open: showDag }">
-            <button class="di-toggle" @click="showDag = !showDag">
-              <span class="di-icon">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
-                  <rect x="14" y="14" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" />
-                  <path d="M10 6h4M6 10v4M18 10v4M10 18h4" />
-                </svg>
-              </span>
-              <span class="di-label">调度链路 N01–N09</span>
-              <span class="di-caret">{{ showDag ? '−' : '+' }}</span>
-            </button>
-            <div v-if="showDag" class="di-body">
-              <div class="orb-dag">
-                <div v-for="n in NODE_ORDER" :key="n" class="orb-node" :class="(state.nodes[n] && state.nodes[n].status) || 'pending'">
-                  <span class="on-id">{{ n }}</span>
-                  <span class="on-label">{{ NODE_TXT[n] }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="detail-item" :class="{ open: showLogs }">
-            <button class="di-toggle" @click="showLogs = !showLogs">
-              <span class="di-icon">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                  <polyline points="14 2 14 8 20 8" />
-                </svg>
-              </span>
-              <span class="di-label">导演链路日志</span>
-              <span class="di-caret">{{ showLogs ? '−' : '+' }}</span>
-            </button>
-            <div v-if="showLogs" class="di-body">
-              <div v-if="!state.logs.length" class="orb-empty">尚未开始监督</div>
-              <div class="orb-log">
-                <div v-for="(l, i) in state.logs.slice().reverse()" :key="i" class="orb-log-line" :class="l.level">
-                  <span class="ol-t">{{ fmtTime(l.ts) }}</span>{{ l.msg }}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="detail-item" :class="{ open: showAlerts, hasAlert: state.alerts.length }">
-            <button class="di-toggle" @click="showAlerts = !showAlerts">
-              <span class="di-icon">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-                  <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
-                </svg>
-              </span>
-              <span class="di-label">告警 / 资金</span>
-              <span v-if="state.alerts.length" class="di-badge">{{ state.alerts.length }}</span>
-              <span class="di-caret">{{ showAlerts ? '−' : '+' }}</span>
-            </button>
-            <div v-if="showAlerts" class="di-body">
-              <div v-if="!state.alerts.length" class="orb-empty">暂无告警</div>
-              <div v-for="(a, i) in state.alerts.slice().reverse()" :key="i" class="orb-alert">
-                <span class="oa-level" :class="a.level">{{ a.level === 'warning' ? '!' : '×' }}</span>
-                <span>{{ a.reason || '' }}</span>
-                <span v-if="a.refunded_count" class="oa-ref">退冻结金 {{ a.refunded_count }}</span>
+        <!-- 调度链路 N01–N09 -->
+        <div class="collapse-sec" :class="{ open: !collapsed.dag }">
+          <button class="cs-head" @click="toggleCollapse('dag')">
+            <span class="cs-label">调度链路 N01–N09</span>
+            <span class="cs-caret">{{ collapsed.dag ? '▸' : '▾' }}</span>
+          </button>
+          <div v-if="!collapsed.dag" class="cs-body">
+            <div class="orb-dag">
+              <div v-for="n in NODE_ORDER" :key="n" class="orb-node" :class="(state.nodes[n] && state.nodes[n].status) || 'pending'">
+                <span class="on-id">{{ n }}</span>
+                <span class="on-label">{{ NODE_TXT[n] }}</span>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- 成片摘要 -->
-        <div v-if="state.runStatus === 'done' || styleRef || state.finalOutput || qrReports.length" class="output-card">
-          <div class="output-head">成片输出</div>
-          <div v-if="styleRef" class="orb-style">
-            <span class="os-label">全局风格参考图</span>
-            <img class="os-img" :src="'/file?name=' + encodeURIComponent(styleRef)" @error="(e) => (e.target.style.display = 'none')" />
+        <!-- 导演链路日志 -->
+        <div class="collapse-sec" :class="{ open: !collapsed.logs }">
+          <button class="cs-head" @click="toggleCollapse('logs')">
+            <span class="cs-label">导演链路日志</span>
+            <span class="cs-caret">{{ collapsed.logs ? '▸' : '▾' }}</span>
+          </button>
+          <div v-if="!collapsed.logs" class="cs-body">
+            <div v-if="!state.logs.length" class="orb-empty">尚未开始监督</div>
+            <div class="orb-log">
+              <div v-for="(l, i) in state.logs.slice().reverse()" :key="i" class="orb-log-line" :class="l.level">
+                <span class="ol-t">{{ fmtTime(l.ts) }}</span>{{ l.msg }}
+              </div>
+            </div>
           </div>
-          <div v-if="qrReports.length" class="orb-qr">
-            <span class="qr-pill ok">合格 {{ qrPass }}</span>
-            <span class="qr-pill bad">不合格 {{ qrReports.length - qrPass }}</span>
-            <span v-if="failedShots.length" class="qr-pill bad">失败分镜 {{ failedShots.length }}</span>
+        </div>
+
+        <!-- 管家建议 -->
+        <div class="collapse-sec" :class="{ open: !collapsed.advice }">
+          <button class="cs-head" @click="toggleCollapse('advice')">
+            <span class="cs-label">管家建议 <span class="cs-sub">（可忽略）</span></span>
+            <span v-if="visibleSuggestions.length" class="cs-badge">{{ visibleSuggestions.length }}</span>
+            <span class="cs-caret">{{ collapsed.advice ? '▸' : '▾' }}</span>
+          </button>
+          <div v-if="!collapsed.advice" class="cs-body">
+            <div v-if="visibleSuggestions.length" class="persona-advice">
+              <div class="pa-title">
+                管家建议 <span class="pa-sub">（可忽略）</span>
+                <span class="pa-clear" @click="visibleSuggestions.forEach((s) => dismissSuggestion(s.id))">全部忽略</span>
+              </div>
+              <div v-for="s in visibleSuggestions" :key="s.id" class="advice-item">
+                <span class="ai-sev" :class="s.severity">{{ sevTxt(s.severity) }}</span>
+                <div class="ai-body">
+                  <div class="ai-name">{{ s.title }}</div>
+                  <div class="ai-detail">{{ s.detail }}</div>
+                  <button v-if="s.action_type === 'navigate'" class="ai-btn" @click="goPath((s.action_payload || {}).path)">去处理</button>
+                  <button v-else-if="s.action_type === 'regenerate'" class="ai-btn" @click="runOrbBatch('regenerate', s.action_payload.segment_ids, {})">重生成</button>
+                  <button v-else-if="s.action_type === 'skip'" class="ai-btn" @click="runOrbBatch('skip', s.action_payload.segment_ids, {})">跳过</button>
+                </div>
+                <button class="ai-dismiss" @click="dismissSuggestion(s.id)" title="忽略">×</button>
+              </div>
+            </div>
           </div>
-          <a v-if="state.finalOutput" :href="state.finalOutput" target="_blank" class="orb-out">查看成片</a>
+        </div>
+
+        <!-- 告警 / 资金 -->
+        <div class="collapse-sec" :class="{ open: !collapsed.alerts, hasAlert: state.alerts.length }">
+          <button class="cs-head" @click="toggleCollapse('alerts')">
+            <span class="cs-label">告警 / 资金</span>
+            <span v-if="state.alerts.length" class="cs-badge">{{ state.alerts.length }}</span>
+            <span class="cs-caret">{{ collapsed.alerts ? '▸' : '▾' }}</span>
+          </button>
+          <div v-if="!collapsed.alerts" class="cs-body">
+            <div v-if="!state.alerts.length" class="orb-empty">暂无告警</div>
+            <div v-for="(a, i) in state.alerts.slice().reverse()" :key="i" class="orb-alert">
+              <span class="oa-level" :class="a.level">{{ a.level === 'warning' ? '!' : '×' }}</span>
+              <span>{{ a.reason || '' }}</span>
+              <span v-if="a.refunded_count" class="oa-ref">退冻结金 {{ a.refunded_count }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 成片输出 -->
+        <div class="collapse-sec" :class="{ open: !collapsed.output }" v-if="(state.runStatus === 'done' || styleRef || state.finalOutput || qrReports.length) && effectiveStep === 5">
+          <button class="cs-head" @click="toggleCollapse('output')">
+            <span class="cs-label">成片输出</span>
+            <span class="cs-caret">{{ collapsed.output ? '▸' : '▾' }}</span>
+          </button>
+          <div v-if="!collapsed.output" class="cs-body">
+            <div class="output-card">
+              <div class="output-head">成片输出</div>
+              <div v-if="styleRef" class="orb-style">
+                <span class="os-label">全局风格参考图</span>
+                <img class="os-img" :src="'/file?name=' + encodeURIComponent(styleRef)" @error="(e) => (e.target.style.display = 'none')" />
+              </div>
+              <div v-if="qrReports.length" class="orb-qr">
+                <span class="qr-pill ok">合格 {{ qrPass }}</span>
+                <span class="qr-pill bad">不合格 {{ qrReports.length - qrPass }}</span>
+                <span v-if="failedShots.length" class="qr-pill bad">失败分镜 {{ failedShots.length }}</span>
+                <!-- P2 M3：运动检测品控 pill（逐分镜） -->
+                <span v-for="q in p2QcItems" :key="'qc' + q.segId"
+                      class="qr-pill" :class="q.passed ? 'ok' : 'bad'">
+                  分镜{{ q.segId }} {{ q.text }}
+                </span>
+              </div>
+              <!-- P2 M2：首尾帧锚定模式气泡（诚实降级提示） -->
+              <div v-if="p2AnchorItems.length" class="orb-anchor">
+                <div class="oa-head">首尾帧锚定（P2·意图与控制）</div>
+                <div v-for="a in p2AnchorItems" :key="'anc' + a.no" class="oa-bubble">
+                  分镜{{ a.no }} 采用{{ a.label }}<span v-if="a.honest" class="oa-honest">{{ a.honest }}</span>
+                </div>
+              </div>
+              <a v-if="state.finalOutput" :href="state.finalOutput" target="_blank" class="orb-out">查看成片</a>
+            </div>
+          </div>
         </div>
       </div>
     </transition>
@@ -711,10 +823,18 @@ onBeforeUnmount(() => {
     <!-- 悬浮球按钮（六态机：idle/watching/suggestion/warning/error/success） -->
     <button
       class="orb-btn"
-      :class="'orb-' + state.orbState"
+      :class="[
+        'orb-' + state.orbState,
+        currentMorph ? 'orb-morph--' + currentMorph.key : '',
+        currentOrbColor ? 'orb-color--' + currentOrbColor.key : '',
+        { dragging, switching: isSwitching, celebrating: isCelebrating }
+      ]"
       @pointerdown="onPointerDown"
-      :title="orbTitle"
+      @dblclick="cycleMorph"
+      :title="orbTitle + (currentMorph ? ' · 双击切换化身形态' : (currentOrbColor ? ' · 双击切换颜色' : ''))"
     >
+      <!-- 多形态化身层（仅 P5/夜城主题；默认/灰主题 currentMorph=null 不渲染） -->
+      <span v-if="currentMorph" class="orb-morph" aria-hidden="true"></span>
       <span class="orb-core">
         <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
           <rect x="2" y="7" width="20" height="10" rx="2" />
@@ -761,6 +881,21 @@ onBeforeUnmount(() => {
 .orb-btn.orb-error { background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.18), transparent 50%), linear-gradient(135deg, #ff6b7d 0%, #e23b54 100%); box-shadow: 0 8px 26px rgba(226,59,84,.5); }
 .orb-btn.orb-success { background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.18), transparent 50%), linear-gradient(135deg, #4ade80 0%, #22b35e 100%); box-shadow: 0 8px 24px rgba(34,179,94,.42); }
 /* idle (默认蓝) 与 suggestion (蓝+琥珀角标) 沿用基础 .orb-btn 渐变 */
+
+/* 默认/灰主题 5 色盘（用户硬约束：「双击和拖动也就切换一下颜色」；仅 default/gray 主题挂载，
+   CSS 选择器同特异性 + 出现在后 → 覆盖基础 .orb-btn 与六态机配色；hover 同步替换为对应色 glow）。
+   P5/夜城形态主题不挂载 → 视觉仍由形态 + 主题色决定。 */
+.orb-btn.orb-color--blue   { background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.18), transparent 50%), linear-gradient(135deg,#4f8bf7 0%,#7c6af0 100%); box-shadow: 0 8px 24px rgba(79,139,247,.38), inset 0 1px 1px rgba(255,255,255,.2); }
+.orb-btn.orb-color--teal   { background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.18), transparent 50%), linear-gradient(135deg,#00bfa6 0%,#00838f 100%); box-shadow: 0 8px 24px rgba(0,191,166,.38), inset 0 1px 1px rgba(255,255,255,.2); }
+.orb-btn.orb-color--pink   { background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.18), transparent 50%), linear-gradient(135deg,#ff6b9d 0%,#c2185b 100%); box-shadow: 0 8px 24px rgba(255,107,157,.38), inset 0 1px 1px rgba(255,255,255,.2); }
+.orb-btn.orb-color--amber  { background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.18), transparent 50%), linear-gradient(135deg,#ffb454 0%,#e07b3a 100%); box-shadow: 0 8px 24px rgba(255,180,84,.38), inset 0 1px 1px rgba(255,255,255,.2); }
+.orb-btn.orb-color--purple { background: radial-gradient(circle at 30% 30%, rgba(255,255,255,.18), transparent 50%), linear-gradient(135deg,#9c64fb 0%,#5e3ec7 100%); box-shadow: 0 8px 24px rgba(156,100,251,.38), inset 0 1px 1px rgba(255,255,255,.2); }
+/* 默认主题 hover 同步替换为对应色 glow（每个 orb-color 各一条，hover 时阴影同色加亮） */
+.orb-btn.orb-color--blue:hover   { box-shadow: 0 10px 30px rgba(79,139,247,.48); }
+.orb-btn.orb-color--teal:hover   { box-shadow: 0 10px 30px rgba(0,191,166,.48); }
+.orb-btn.orb-color--pink:hover   { box-shadow: 0 10px 30px rgba(255,107,157,.48); }
+.orb-btn.orb-color--amber:hover  { box-shadow: 0 10px 30px rgba(255,180,84,.48); }
+.orb-btn.orb-color--purple:hover { box-shadow: 0 10px 30px rgba(156,100,251,.48); }
 
 .orb-core { display: flex; align-items: center; justify-content: center; }
 .orb-core svg { filter: drop-shadow(0 1px 2px rgba(0,0,0,.25)); }
@@ -814,13 +949,25 @@ onBeforeUnmount(() => {
 /* M3 选型卡：translator 决策可视化 */
 .m3-translator { border: 1px solid rgba(79,139,247,.42); background: rgba(79,139,247,.08); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
 .mt-title { font-size: 11.5px; font-weight: 800; color: #6f9bff; margin-bottom: 7px; }
+
+/* M3 已锁定角色（Lock-Then-Animate 验收气泡：生成时悬浮球显示「已锁定角色 X」） */
+.m3-lock { border: 1px solid rgba(124,106,240,.45); background: rgba(124,106,240,.1); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+.lock-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 800; color: #a6aaff; }
+.lock-ic { flex-shrink: 0; }
+.lock-mode { font-size: 9.5px; font-weight: 700; color: #c9c6ff; background: rgba(124,106,240,.2); padding: 1px 7px; border-radius: 6px; margin-left: 2px; }
+.lock-mode.style { color: #ffb454; background: rgba(255,180,84,.16); }
+.lock-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.lock-chip { font-size: 10.5px; padding: 3px 9px; border-radius: 8px; background: rgba(255,94,125,.12); color: #ff8da0; font-weight: 600; border: 1px solid rgba(255,94,125,.3); }
+.lock-chip.on { background: rgba(74,222,128,.14); color: #4ade80; border-color: rgba(74,222,128,.35); }
+.lock-sp { margin-top: 8px; }
+.lock-sp img { max-width: 100%; max-height: 110px; border-radius: 8px; border: 1px solid var(--line, #2f2f3d); display: block; }
 .mt-row { display: flex; align-items: baseline; gap: 8px; font-size: 11px; padding: 2px 0; }
 .mt-k { flex-shrink: 0; width: 38px; color: var(--sub, #7a8094); }
 .mt-v { color: var(--txt, #e8e8ef); font-weight: 600; word-break: break-all; }
 .mt-sub { font-size: 10px; color: var(--sub, #6d7286); margin-top: 5px; }
 
 /* M3 对话气泡：notice / insight */
-.m3-conv { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.m3-conv { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; max-height: 200px; overflow-y: auto; }
 .conv-bubble { display: flex; align-items: flex-start; gap: 7px; padding: 7px 10px; border-radius: 10px; background: color-mix(in srgb, var(--bg-2, #20202c) 60%, transparent); border: 1px solid var(--line, #2a2a38); }
 .conv-bubble.notice { border-left: 3px solid #6f9bff; }
 .conv-bubble.insight { border-left: 3px solid #4ade80; }
@@ -962,14 +1109,40 @@ onBeforeUnmount(() => {
 .metric-cell.running .metric-value { color: #8f94ff; }
 .metric-cell.muted .metric-value { color: #5c6070; }
 
-/* 实时生成区 */
-.live-section { background: color-mix(in srgb, var(--bg-2, #20202c) 55%, transparent); border: 1px solid var(--line, #2a2a38); border-radius: 14px; margin-bottom: 10px; overflow: hidden; }
-.live-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; font-size: 12px; font-weight: 700; color: var(--txt, #e8e8ef); }
-.live-head:hover { background: color-mix(in srgb, var(--bg-2, #252532) 50%, transparent); }
-.live-title { flex: 1; }
-.live-count { font-size: 10px; color: #8f94ff; background: rgba(124,106,240,.14); padding: 2px 7px; border-radius: 8px; }
-.live-caret { color: var(--sub, #7a8094); font-size: 14px; font-weight: 400; }
-.live-body { padding: 0 12px 12px; }
+/* 折叠区（悬浮球布局优化方案.md） */
+.collapse-sec {
+  background: color-mix(in srgb, var(--bg-2, #20202c) 55%, transparent);
+  border: 1px solid var(--line, #2a2a38);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.collapse-sec.hasAlert { border-color: rgba(255,180,84,.35); }
+.cs-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+  color: var(--txt, #e8e8ef);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.cs-head:hover { background: color-mix(in srgb, var(--bg-2, #252532) 50%, transparent); }
+.cs-label { flex: 1; text-align: left; }
+.cs-sub { color: var(--sub, #7a8094); font-weight: 400; font-size: 11px; }
+.cs-caret { color: var(--sub, #7a8094); font-size: 14px; font-weight: 400; }
+.cs-count { font-size: 10px; color: #8f94ff; background: rgba(124,106,240,.14); padding: 2px 7px; border-radius: 8px; }
+.cs-badge { font-size: 10px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: #ff5e7d; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; }
+.cs-body { padding: 0 12px 12px; }
+/* 面板头部「有待处理」红点 */
+.orb-head-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #ff5e7d; box-shadow: 0 0 0 3px rgba(255,94,125,.18);
+}
 
 /* feed 卡片 */
 .feed-card { border: 1px solid var(--line, #2f2f3d); border-radius: 10px; margin-bottom: 6px; overflow: hidden; background: color-mix(in srgb, var(--bg-2, #252532) 40%, transparent); }
@@ -991,18 +1164,6 @@ onBeforeUnmount(() => {
 .fc-log-line { font-size: 10.5px; color: var(--sub, #9ca2b3); line-height: 1.5; word-break: break-all; }
 .fc-log-line.error { color: #ff8da0; }
 .fl-t { color: #5c6070; margin-right: 6px; font-variant-numeric: tabular-nums; }
-
-/* 折叠详情区 */
-.detail-stack { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
-.detail-item { background: color-mix(in srgb, var(--bg-2, #20202c) 55%, transparent); border: 1px solid var(--line, #2a2a38); border-radius: 12px; overflow: hidden; }
-.detail-item.hasAlert { border-color: rgba(255,180,84,.35); }
-.di-toggle { width: 100%; display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: transparent; border: none; color: var(--txt, #e8e8ef); cursor: pointer; font-size: 12px; font-weight: 600; }
-.di-toggle:hover { background: color-mix(in srgb, var(--bg-2, #252532) 50%, transparent); }
-.di-icon { display: flex; color: #8f94ff; }
-.di-label { flex: 1; text-align: left; }
-.di-badge { font-size: 10px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: #ff5e7d; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; }
-.di-caret { color: var(--sub, #7a8094); font-size: 14px; }
-.di-body { padding: 0 12px 12px; }
 
 /* DAG */
 .orb-dag { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
@@ -1044,6 +1205,12 @@ onBeforeUnmount(() => {
 .qr-pill.bad { background: rgba(255,94,125,.12); color: #ff5e7d; }
 .orb-out { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #fff; text-decoration: none; background: linear-gradient(135deg, #7c6af0, #4f8bf7); padding: 6px 12px; border-radius: 8px; }
 .orb-out:hover { filter: brightness(1.1); }
+
+/* P2 M2：首尾帧锚定模式气泡 */
+.orb-anchor { margin-bottom: 8px; }
+.oa-head { font-size: 11px; color: var(--sub, #6d7286); margin-bottom: 4px; }
+.oa-bubble { font-size: 11.5px; padding: 4px 9px; border-radius: 8px; background: rgba(124,106,240,.12); color: #c3bcff; margin-bottom: 4px; }
+.oa-honest { margin-left: 4px; color: #ffb860; font-size: 10.5px; }
 
 .orb-empty { font-size: 11.5px; color: var(--sub, #6d7286); padding: 6px 0; }
 

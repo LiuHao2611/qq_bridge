@@ -7,6 +7,7 @@ import {
 import { mockProject, mockMemoir, normalizeShotEnums } from '../mock'
 import { toast } from '../store'
 import { splitVoice } from '../assetMeta'
+import { useVideoGate } from './useVideoGate'
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 
@@ -360,6 +361,13 @@ function _createProject(id, kind) {
     if (USE_MOCK || !project.value) {
       toast('生成任务（演示）')
       return { task_id: 'demo' }
+    }
+    // 视频生成前置闸门：本机显存不足时诚实提示，用户取消则抛出受控错误由调用方 toast
+    const { ensureVideoReady } = useVideoGate()
+    if (!(await ensureVideoReady())) {
+      const e = new Error('已取消视频分发：当前设备不满足视频生成条件')
+      e.code = 'VIDEO_GATE_CANCELLED'
+      throw e
     }
     try {
       const p = project.value

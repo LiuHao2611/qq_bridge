@@ -1,0 +1,1514 @@
+[
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "asset-stages",
+  "method": "DELETE",
+  "path": "/api/v1/asset-stages/{stage_id}/poses/{pose_id}",
+  "hint": "资产阶段：姿势增删"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "DELETE",
+  "path": "/api/v1/assets/{asset_id}",
+  "hint": "资产 CRUD + 上传/封面/阶段/姿势/引用集/定妆照/人脸向量"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "DELETE",
+  "path": "/api/v1/assets/{asset_id}/stages/{stage_id}",
+  "hint": "资产 CRUD + 上传/封面/阶段/姿势/引用集/定妆照/人脸向量"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "notifications",
+  "method": "DELETE",
+  "path": "/api/v1/notifications/{message_id}",
+  "hint": "站内通知：列表/已读/删除"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "DELETE",
+  "path": "/api/v1/projects/{project_id}",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "DELETE",
+  "path": "/api/v1/projects/{project_id}/segments/{segment_id}",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "templates",
+  "method": "DELETE",
+  "path": "/api/v1/templates/{template_id}",
+  "hint": ""
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "asset-hub",
+  "method": "GET",
+  "path": "/api/v1/asset-hub/props",
+  "hint": "资产库：角色/场景/道具导入（props/roles/scenes）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "asset-hub",
+  "method": "GET",
+  "path": "/api/v1/asset-hub/scenes",
+  "hint": "资产库：角色/场景/道具导入（props/roles/scenes）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "GET",
+  "path": "/api/v1/assets",
+  "hint": "资产 CRUD + 上传/封面/阶段/姿势/引用集/定妆照/人脸向量"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "GET",
+  "path": "/api/v1/assets/{asset_id}",
+  "hint": "资产 CRUD + 上传/封面/阶段/姿势/引用集/定妆照/人脸向量"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "GET",
+  "path": "/api/v1/assets/{asset_id}/cover",
+  "hint": "资产 CRUD + 上传/封面/阶段/姿势/引用集/定妆照/人脸向量"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "GET",
+  "path": "/api/v1/assets/{asset_id}/stages-with-poses",
+  "hint": "资产 CRUD + 上传/封面/阶段/姿势/引用集/定妆照/人脸向量"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "GET",
+  "path": "/api/v1/assets/{asset_id}/usages",
+  "hint": "资产 CRUD + 上传/封面/阶段/姿势/引用集/定妆照/人脸向量"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "auth",
+  "method": "GET",
+  "path": "/api/v1/auth/heartbeat",
+  "hint": "激活/心跳"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "feedback",
+  "method": "GET",
+  "path": "/api/v1/feedback",
+  "hint": "用户反馈：提交/列表"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "health",
+  "method": "GET",
+  "path": "/api/v1/health",
+  "hint": "健康检查"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "home",
+  "method": "GET",
+  "path": "/api/v1/home/dashboard",
+  "hint": "首页仪表盘聚合"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "inference",
+  "method": "GET",
+  "path": "/api/v1/inference/health",
+  "hint": "推理健康"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "logs",
+  "method": "GET",
+  "path": "/api/v1/logs",
+  "hint": "运行日志：列表/打包/下载"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "logs",
+  "method": "GET",
+  "path": "/api/v1/logs/pack",
+  "hint": "运行日志：列表/打包/下载"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "logs",
+  "method": "GET",
+  "path": "/api/v1/logs/{name}",
+  "hint": "运行日志：列表/打包/下载"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "modules",
+  "method": "GET",
+  "path": "/api/v1/modules",
+  "hint": "模块灰度：启用/回滚/快照（module_flags/module_versions）"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "notifications",
+  "method": "GET",
+  "path": "/api/v1/notifications",
+  "hint": "站内通知：列表/已读/删除"
+ },
+ {
+  "src": "pyc",
+  "risk": "HIGH",
+  "domain": "points",
+  "method": "GET",
+  "path": "/api/v1/points/transactions",
+  "hint": "资金：积分预估/预授权冻结/实扣/退还（points_balance 增减、幂等 key、积分不足拦截）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "GET",
+  "path": "/api/v1/projects",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "GET",
+  "path": "/api/v1/projects/{project_id}",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "GET",
+  "path": "/api/v1/projects/{project_id}/assets",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "GET",
+  "path": "/api/v1/projects/{project_id}/production",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "GET",
+  "path": "/api/v1/projects/{project_id}/segments",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "GET",
+  "path": "/api/v1/projects/{project_id}/segments/{segment_id}",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "services",
+  "method": "GET",
+  "path": "/api/v1/services/dify-config",
+  "hint": "外部服务（dify）启停/状态/配置"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "services",
+  "method": "GET",
+  "path": "/api/v1/services/status",
+  "hint": "外部服务（dify）启停/状态/配置"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "settings",
+  "method": "GET",
+  "path": "/api/v1/settings",
+  "hint": "全局设置：读写/备份/重置/恢复"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "system",
+  "method": "GET",
+  "path": "/api/v1/system/services",
+  "hint": "系统服务控制/状态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "t2i",
+  "method": "GET",
+  "path": "/api/v1/t2i/tasks",
+  "hint": "文生图任务：提交/列表/详情/取消（image_tasks 表）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "t2i",
+  "method": "GET",
+  "path": "/api/v1/t2i/tasks/{task_id}",
+  "hint": "文生图任务：提交/列表/详情/取消（image_tasks 表）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "tasks",
+  "method": "GET",
+  "path": "/api/v1/tasks",
+  "hint": "生成任务队列：取消/暂停/恢复/重试/全局暂停（generation_tasks 表）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "tasks",
+  "method": "GET",
+  "path": "/api/v1/tasks/{task_id}",
+  "hint": "生成任务队列：取消/暂停/恢复/重试/全局暂停（generation_tasks 表）"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "templates",
+  "method": "GET",
+  "path": "/api/v1/templates",
+  "hint": ""
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "templates",
+  "method": "GET",
+  "path": "/api/v1/templates/{template_id}",
+  "hint": ""
+ },
+ {
+  "src": "pyc",
+  "risk": "HIGH",
+  "domain": "user",
+  "method": "GET",
+  "path": "/api/v1/user/points",
+  "hint": "用户：积分余额/资料读取"
+ },
+ {
+  "src": "pyc",
+  "risk": "HIGH",
+  "domain": "user",
+  "method": "GET",
+  "path": "/api/v1/user/profile",
+  "hint": "用户：积分余额/资料读取"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "PATCH",
+  "path": "/api/v1/assets/{asset_id}",
+  "hint": "资产 CRUD + 上传/封面/阶段/姿势/引用集/定妆照/人脸向量"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "PATCH",
+  "path": "/api/v1/projects/{project_id}",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "PATCH",
+  "path": "/api/v1/projects/{project_id}/segments/{segment_id}",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "settings",
+  "method": "PATCH",
+  "path": "/api/v1/settings",
+  "hint": "全局设置：读写/备份/重置/恢复"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "templates",
+  "method": "PATCH",
+  "path": "/api/v1/templates/{template_id}",
+  "hint": ""
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "ai",
+  "method": "POST",
+  "path": "/api/v1/ai/polish",
+  "hint": "AI 润色/反向提示"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "ai",
+  "method": "POST",
+  "path": "/api/v1/ai/reverse",
+  "hint": "AI 润色/反向提示"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "asset-hub",
+  "method": "POST",
+  "path": "/api/v1/asset-hub/props/{asset_id}/import",
+  "hint": "资产库：角色/场景/道具导入（props/roles/scenes）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "asset-hub",
+  "method": "POST",
+  "path": "/api/v1/asset-hub/roles/{asset_id}/import",
+  "hint": "资产库：角色/场景/道具导入（props/roles/scenes）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "asset-hub",
+  "method": "POST",
+  "path": "/api/v1/asset-hub/scenes/{asset_id}/import",
+  "hint": "资产库：角色/场景/道具导入（props/roles/scenes）"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "asset-stages",
+  "method": "POST",
+  "path": "/api/v1/asset-stages/{stage_id}/poses",
+  "hint": "资产阶段：姿势增删"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "POST",
+  "path": "/api/v1/assets",
+  "hint": "资产 CRUD + 上传/封面/阶段/姿势/引用集/定妆照/人脸向量"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "POST",
+  "path": "/api/v1/assets/upload",
+  "hint": "资产 CRUD + 上传/封面/阶段/姿势/引用集/定妆照/人脸向量"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "POST",
+  "path": "/api/v1/assets/{asset_id}/stages",
+  "hint": "资产 CRUD + 上传/封面/阶段/姿势/引用集/定妆照/人脸向量"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "auth",
+  "method": "POST",
+  "path": "/api/v1/auth/activate",
+  "hint": "激活/心跳"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "callbacks",
+  "method": "POST",
+  "path": "/api/v1/callbacks/inference",
+  "hint": "推理回调（ComfyUI 异步结果回收）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "creative",
+  "method": "POST",
+  "path": "/api/v1/creative/generate",
+  "hint": "创意生成"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "feedback",
+  "method": "POST",
+  "path": "/api/v1/feedback",
+  "hint": "用户反馈：提交/列表"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "i2i",
+  "method": "POST",
+  "path": "/api/v1/i2i/generate",
+  "hint": "图生图生成"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "modules",
+  "method": "POST",
+  "path": "/api/v1/modules/enable",
+  "hint": "模块灰度：启用/回滚/快照（module_flags/module_versions）"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "modules",
+  "method": "POST",
+  "path": "/api/v1/modules/rollback",
+  "hint": "模块灰度：启用/回滚/快照（module_flags/module_versions）"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "modules",
+  "method": "POST",
+  "path": "/api/v1/modules/snapshot",
+  "hint": "模块灰度：启用/回滚/快照（module_flags/module_versions）"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "notifications",
+  "method": "POST",
+  "path": "/api/v1/notifications/read-all",
+  "hint": "站内通知：列表/已读/删除"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "notifications",
+  "method": "POST",
+  "path": "/api/v1/notifications/{message_id}/read",
+  "hint": "站内通知：列表/已读/删除"
+ },
+ {
+  "src": "pyc",
+  "risk": "HIGH",
+  "domain": "points",
+  "method": "POST",
+  "path": "/api/v1/points/pre-auth",
+  "hint": "资金：积分预估/预授权冻结/实扣/退还（points_balance 增减、幂等 key、积分不足拦截）"
+ },
+ {
+  "src": "pyc",
+  "risk": "HIGH",
+  "domain": "points",
+  "method": "POST",
+  "path": "/api/v1/points/refund",
+  "hint": "资金：积分预估/预授权冻结/实扣/退还（points_balance 增减、幂等 key、积分不足拦截）"
+ },
+ {
+  "src": "pyc",
+  "risk": "HIGH",
+  "domain": "points",
+  "method": "POST",
+  "path": "/api/v1/points/settle",
+  "hint": "资金：积分预估/预授权冻结/实扣/退还（points_balance 增减、幂等 key、积分不足拦截）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/quick-create",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/assets",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/duplicate",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/restore",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/segments",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/segments/{segment_id}/export",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/segments/{segment_id}/generate",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/segments/{segment_id}/regenerate",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/split-story",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "services",
+  "method": "POST",
+  "path": "/api/v1/services/dify/start",
+  "hint": "外部服务（dify）启停/状态/配置"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "services",
+  "method": "POST",
+  "path": "/api/v1/services/dify/stop",
+  "hint": "外部服务（dify）启停/状态/配置"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "settings",
+  "method": "POST",
+  "path": "/api/v1/settings/backup",
+  "hint": "全局设置：读写/备份/重置/恢复"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "settings",
+  "method": "POST",
+  "path": "/api/v1/settings/reset",
+  "hint": "全局设置：读写/备份/重置/恢复"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "settings",
+  "method": "POST",
+  "path": "/api/v1/settings/restore",
+  "hint": "全局设置：读写/备份/重置/恢复"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "synthesize",
+  "method": "POST",
+  "path": "/api/v1/synthesize",
+  "hint": "成片合成"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "system",
+  "method": "POST",
+  "path": "/api/v1/system/service/control",
+  "hint": "系统服务控制/状态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "t2i",
+  "method": "POST",
+  "path": "/api/v1/t2i/generate",
+  "hint": "文生图任务：提交/列表/详情/取消（image_tasks 表）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "t2i",
+  "method": "POST",
+  "path": "/api/v1/t2i/tasks/{task_id}/cancel",
+  "hint": "文生图任务：提交/列表/详情/取消（image_tasks 表）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "tasks",
+  "method": "POST",
+  "path": "/api/v1/tasks/pause-all",
+  "hint": "生成任务队列：取消/暂停/恢复/重试/全局暂停（generation_tasks 表）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "tasks",
+  "method": "POST",
+  "path": "/api/v1/tasks/{task_id}/cancel",
+  "hint": "生成任务队列：取消/暂停/恢复/重试/全局暂停（generation_tasks 表）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "tasks",
+  "method": "POST",
+  "path": "/api/v1/tasks/{task_id}/pause",
+  "hint": "生成任务队列：取消/暂停/恢复/重试/全局暂停（generation_tasks 表）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "tasks",
+  "method": "POST",
+  "path": "/api/v1/tasks/{task_id}/resume",
+  "hint": "生成任务队列：取消/暂停/恢复/重试/全局暂停（generation_tasks 表）"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "tasks",
+  "method": "POST",
+  "path": "/api/v1/tasks/{task_id}/retry",
+  "hint": "生成任务队列：取消/暂停/恢复/重试/全局暂停（generation_tasks 表）"
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "templates",
+  "method": "POST",
+  "path": "/api/v1/templates/{template_id}/apply",
+  "hint": ""
+ },
+ {
+  "src": "pyc",
+  "risk": "LOW",
+  "domain": "upload-image",
+  "method": "POST",
+  "path": "/api/v1/upload-image",
+  "hint": "图片上传"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "PUT",
+  "path": "/api/v1/projects/{project_id}/segments/{segment_id}/asset-refs",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "pyc",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "PUT",
+  "path": "/api/v1/projects/{project_id}/segments/{segment_id}/shots",
+  "hint": "项目 CRUD + 分镜拆分(split-story) + 片段生成/重生成 + 资产绑定 + 生产态"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "lora",
+  "method": "DELETE",
+  "path": "/api/v1/lora/models/{model_id}",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "DELETE",
+  "path": "/api/v1/memoirs/{memoir_id}/anchors/{anchor_id}",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "DELETE",
+  "path": "/api/v1/memoirs/{memoir_id}/timeline-events/{index}",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "skills",
+  "method": "DELETE",
+  "path": "/api/v1/skills/{skill_id}",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "GET",
+  "path": "/api/v1/assets/{asset_id}/face-vectors",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "GET",
+  "path": "/api/v1/assets/{asset_id}/identity-card",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "GET",
+  "path": "/api/v1/assets/{asset_id}/reference-set",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "GET",
+  "path": "/api/v1/assets/{asset_id}/stages/{stage_id}/face-vector",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "consistency",
+  "method": "GET",
+  "path": "/api/v1/consistency/readiness",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "lora",
+  "method": "GET",
+  "path": "/api/v1/lora/models",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "lora",
+  "method": "GET",
+  "path": "/api/v1/lora/presets",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "lora",
+  "method": "GET",
+  "path": "/api/v1/lora/train",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "lora",
+  "method": "GET",
+  "path": "/api/v1/lora/train/{task_id}",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "GET",
+  "path": "/api/v1/memoirs/{memoir_id}",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "GET",
+  "path": "/api/v1/memoirs/{memoir_id}/anchors",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "GET",
+  "path": "/api/v1/memoirs/{memoir_id}/chapters",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "GET",
+  "path": "/api/v1/memoirs/{memoir_id}/chapters/{chapter_id}",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "GET",
+  "path": "/api/v1/memoirs/{memoir_id}/chapters/{chapter_id}/task",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "GET",
+  "path": "/api/v1/memoirs/{memoir_id}/pre-check",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memory",
+  "method": "GET",
+  "path": "/api/v1/memory/recommend",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "models",
+  "method": "GET",
+  "path": "/api/v1/models",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "models",
+  "method": "GET",
+  "path": "/api/v1/models/local",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "models",
+  "method": "GET",
+  "path": "/api/v1/models/scan",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "models",
+  "method": "GET",
+  "path": "/api/v1/models/{name}/discover",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "ollama",
+  "method": "GET",
+  "path": "/api/v1/ollama/status",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "orb",
+  "method": "GET",
+  "path": "/api/v1/orb/projects/{project_id}/asset-readiness",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "orb",
+  "method": "GET",
+  "path": "/api/v1/orb/projects/{project_id}/run-summary",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "orb",
+  "method": "GET",
+  "path": "/api/v1/orb/projects/{project_id}/script-analysis",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "orb",
+  "method": "GET",
+  "path": "/api/v1/orb/projects/{project_id}/synthesize-report",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "orb",
+  "method": "GET",
+  "path": "/api/v1/orb/shots/{shot_id}/intent-preview",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "GET",
+  "path": "/api/v1/projects/{project_id}/assets/importable-roles",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "GET",
+  "path": "/api/v1/projects/{project_id}/decisions",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "GET",
+  "path": "/api/v1/projects/{project_id}/director-run",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "GET",
+  "path": "/api/v1/projects/{project_id}/director-run/{run_id}",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "GET",
+  "path": "/api/v1/projects/{project_id}/memoir",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "resource",
+  "method": "GET",
+  "path": "/api/v1/resource/catalog",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "skills",
+  "method": "GET",
+  "path": "/api/v1/skills",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "skills",
+  "method": "GET",
+  "path": "/api/v1/skills/{skill_id}",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "tasks",
+  "method": "GET",
+  "path": "/api/v1/tasks/queue",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "user-templates",
+  "method": "GET",
+  "path": "/api/v1/user-templates",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "",
+  "method": "GET",
+  "path": "/file",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "",
+  "method": "GET",
+  "path": "/metrics",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "PATCH",
+  "path": "/api/v1/assets/{asset_id}/identity-card",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "PATCH",
+  "path": "/api/v1/memoirs/{memoir_id}",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "PATCH",
+  "path": "/api/v1/memoirs/{memoir_id}/anchors/{anchor_id}",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "PATCH",
+  "path": "/api/v1/memoirs/{memoir_id}/chapters/{chapter_id}",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "POST",
+  "path": "/api/v1/assets/{asset_id}/generate-card",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "POST",
+  "path": "/api/v1/assets/{asset_id}/reference-set/generate",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "POST",
+  "path": "/api/v1/assets/{asset_id}/reference-set/{ref_kind}/regenerate",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "assets",
+  "method": "POST",
+  "path": "/api/v1/assets/{asset_id}/stages/{stage_id}/face-vector/extract",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "lora",
+  "method": "POST",
+  "path": "/api/v1/lora/caption",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "lora",
+  "method": "POST",
+  "path": "/api/v1/lora/dataset/upload",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "lora",
+  "method": "POST",
+  "path": "/api/v1/lora/models/{model_id}/disable",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "lora",
+  "method": "POST",
+  "path": "/api/v1/lora/models/{model_id}/enable",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "lora",
+  "method": "POST",
+  "path": "/api/v1/lora/models/{model_id}/register",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "lora",
+  "method": "POST",
+  "path": "/api/v1/lora/models/{model_id}/validate",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "lora",
+  "method": "POST",
+  "path": "/api/v1/lora/train",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "lora",
+  "method": "POST",
+  "path": "/api/v1/lora/train/{task_id}/cancel",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "POST",
+  "path": "/api/v1/memoirs/{memoir_id}/anchors",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "POST",
+  "path": "/api/v1/memoirs/{memoir_id}/chapters",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "POST",
+  "path": "/api/v1/memoirs/{memoir_id}/chapters/reorder",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "POST",
+  "path": "/api/v1/memoirs/{memoir_id}/chapters/{chapter_id}/narrations",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "POST",
+  "path": "/api/v1/memoirs/{memoir_id}/chapters/{chapter_id}/storyboard",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "POST",
+  "path": "/api/v1/memoirs/{memoir_id}/chapters/{chapter_id}/video",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "POST",
+  "path": "/api/v1/memoirs/{memoir_id}/export-package",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "POST",
+  "path": "/api/v1/memoirs/{memoir_id}/planning",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "POST",
+  "path": "/api/v1/memoirs/{memoir_id}/reference-photos",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "memoirs",
+  "method": "POST",
+  "path": "/api/v1/memoirs/{memoir_id}/timeline-events",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "models",
+  "method": "POST",
+  "path": "/api/v1/models/register",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "models",
+  "method": "POST",
+  "path": "/api/v1/models/test",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "orb",
+  "method": "POST",
+  "path": "/api/v1/orb/projects/{project_id}/batch-action",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/assets/batch",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/assets/import",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/assets/{asset_id}/generate-card-v2",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/decisions/{decision_id}/resolve",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/director-run",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/extract-assets",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/import-memory",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/prune-refs",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "projects",
+  "method": "POST",
+  "path": "/api/v1/projects/{project_id}/remember",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "resource",
+  "method": "POST",
+  "path": "/api/v1/resource/clear-comfy-cache",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "skills",
+  "method": "POST",
+  "path": "/api/v1/skills",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "skills",
+  "method": "POST",
+  "path": "/api/v1/skills/{skill_id}/run",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "system",
+  "method": "POST",
+  "path": "/api/v1/system/rebuild-frontend",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "t2i",
+  "method": "POST",
+  "path": "/api/v1/t2i/comic",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "t2i",
+  "method": "POST",
+  "path": "/api/v1/t2i/edit",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "t2i",
+  "method": "POST",
+  "path": "/api/v1/t2i/reverse",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "MED",
+  "domain": "tasks",
+  "method": "POST",
+  "path": "/api/v1/tasks/{id}/priority",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "templates",
+  "method": "POST",
+  "path": "/api/v1/templates/import",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "templates",
+  "method": "POST",
+  "path": "/api/v1/templates/{template_id}/test",
+  "hint": "明文 routers.py，已可读审计"
+ },
+ {
+  "src": "plaintext",
+  "risk": "LOW",
+  "domain": "skills",
+  "method": "PUT",
+  "path": "/api/v1/skills/{skill_id}",
+  "hint": "明文 routers.py，已可读审计"
+ }
+]

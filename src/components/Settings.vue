@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useTheme } from '../composables/useTheme'
 import { setOrbSkin, ORB_SKINS, ORB_SKINS_CYBER } from '../composables/useDirectorOrb'
-import { getSettings, updateSettings, getLocalModels, testModelConnection, post, getResourceCatalog, getConsistencyReadiness } from '../api'
+import { getSettings, updateSettings, getLocalModels, testModelConnection, post, getResourceCatalog, getConsistencyReadiness, deviceCapabilities } from '../api'
 import TemplateEditor from './TemplateEditor.vue'
 import ModelManager from './ModelManager.vue'
 
@@ -102,6 +102,8 @@ const defaults = () => ({
   accent: 'p5',
   density: 'standard',
   orbSkin: 'sword', // 悬浮球化身皮肤（仅 P5 怪盗主题生效；random/sword/mask/tower/shackle）
+  // P5 二次强化：可单独开关的签名元素家族（默认全开；仅 accent==='p5' 时挂 html.p5ft-* 启用类）
+  p5StyleTypes: ['dialog', 'banner', 'relic', 'button', 'key', 'texture', 'poster'],
   // AI 模型：本地/在线可切换 + 自定义路径（向后兼容旧字段）
   createModel: 'qwen3.5:9b',
   videoModel: 'ComfyUI 本地视频工作流',
@@ -247,12 +249,34 @@ watch(() => settings.accent, (v) => {
 watch(() => settings.fontSize, (v) => applyFontSize(v), { immediate: true })
 watch(() => settings.density, (v) => applyDensity(v), { immediate: true })
 watch(() => settings.language, (v) => { document.documentElement.lang = v || 'zh-CN' }, { immediate: true })
+// P5 二次强化：accent 切换 / 勾选变化 → 同步 html.p5ft-* 启用类
+watch(() => settings.accent, () => applyP5StyleTypes())
+watch(() => settings.p5StyleTypes, () => applyP5StyleTypes(), { deep: true })
 
 // 悬浮球皮肤：即时生效 + 即时持久（与配色主题一致，避免进入项目后被 initOrbSkinFromStorage 读回旧值）
 const applyOrbSkin = (key) => {
   settings.orbSkin = key
   setOrbSkin(key)
   try { localStorage.setItem(LS_KEY, JSON.stringify({ ...settings })) } catch (e) {}
+}
+// P5 二次强化：签名元素家族（仅 accent==='p5' 时挂 html.p5ft-* 启用类，对应 style.css 的 html.t-p5.p5ft-* 门控）
+const P5_FT_KEYS = ['dialog', 'banner', 'relic', 'button', 'key', 'texture', 'poster']
+const P5_STYLE_TYPES = [
+  { key: 'dialog', label: '对话框（4 变体）', desc: '云朵气泡 / 姓名+主气泡 / 斜切编号条 / 撕纸边，导演 Agent 发言与系统消息的漫画容器' },
+  { key: 'banner', label: '双层错位横幅', desc: '白底黑字(半色调) + 黑底白字(网格) 上下错位斜切，区块标题带 / 功能路牌' },
+  { key: 'relic', label: '信物徽章', desc: '多层嵌套菱形宝石（纸白/绯红/白核心）+ 辉光呼吸，任务完成 / 成就 / 秘宝' },
+  { key: 'button', label: '按钮家族', desc: '贴纸按钮 / 描边图标按钮 / 快捷键组 / 异形倒计时条' },
+  { key: 'key', label: '快捷键标签', desc: '白框黑底快捷键标签框（LSHIFT / TAB / 1 等），编辑器与导演面板提示' },
+  { key: 'texture', label: '锯齿纹理带', desc: '页脚 / 面板底缘 / 空状态底部的漫画印刷感锯齿带' },
+  { key: 'poster', label: '描边大标题', desc: '白字 + 黑描边 + 绯红硬影 + 倾斜的强化页头 / 空状态大标题' },
+]
+// 把 settings.p5StyleTypes 同步为 html 上的 p5ft-* 启用类；非 P5 主题清空（双保险，CSS 还需 html.t-p5）
+function applyP5StyleTypes() {
+  const html = document.documentElement
+  P5_FT_KEYS.forEach((k) => html.classList.remove('p5ft-' + k))
+  if (settings.accent === 'p5') {
+    ;(settings.p5StyleTypes || []).forEach((k) => html.classList.add('p5ft-' + k))
+  }
 }
 // 悬浮球皮肤列表主题感知（手册 §9.3）：夜城→赛博四件套；P5→怪盗四件套；其他主题→空（隐藏）
 const orbSkins = computed(() => {
@@ -434,6 +458,9 @@ onMounted(async () => {
     console.warn('settings backend failed, use local', e.message)
   }
 
+  // P5 二次强化：按当前 accent 同步 html.p5ft-* 启用类（默认全开）
+  applyP5StyleTypes()
+
   // 初始化 AI 模型配置：优先用后端 modelSettings，不存在则从旧字段迁移
   settings.modelSettings = buildDefaultModelSettings(settings.modelSettings || {})
   migrateLegacyModelSettings()
@@ -445,7 +472,25 @@ onMounted(async () => {
   loadCapabilityCatalog()
   // P1 M3/M5：权重前置诚实探测（四杠杆所需权重就绪状态）
   loadWeightReadiness()
+  // 多设备兼容：探测本机算力（GPU / 显存），诚实告知图像/视频生成可行性
+  loadDeviceCaps()
 })
+
+// 设备算力探测与能力分级（用户诉求：多设备兼容，不止适配 1660Ti）
+// 1660Ti 仅 6GB 显存 → 图像生成可行、视频生成不可行；前端如实展示，避免误导。
+const deviceCaps = ref(null)   // { cuda_available, gpu_name, vram_total_mb, vram_total_gb, capabilities, video_gen_reason, recommendation }
+const deviceLoading = ref(false)
+async function loadDeviceCaps() {
+  deviceLoading.value = true
+  try {
+    deviceCaps.value = await deviceCapabilities()
+  } catch (e) {
+    console.warn('device/capabilities failed', e && e.message)
+    deviceCaps.value = { cuda_available: false, capabilities: { image_generation: false, video_generation: false }, video_gen_reason: '设备探测失败', recommendation: '' }
+  } finally {
+    deviceLoading.value = false
+  }
+}
 
 // ---- M1/M2 能力维度 + 资源注册表（模型无关）----
 const capabilityDimensions = ref([])   // 6 个能力维度（key/name/implementer/declare）
@@ -614,6 +659,14 @@ const hotkeys = [
           <span class="muted">（{{ settings.accent === 'cyberpunk' ? '夜城赛博四件套；悬浮球统一呈现 HUD 扫描框皮肤，四形态视觉换肤为增强项' : '仅 P5 怪盗主题生效；双击悬浮球可临时切换形态，设置项决定默认形态' }}）</span>
         </div>
         <div class="field" v-else><label>悬浮球皮肤</label><span class="muted">当前主题不支持悬浮球皮肤（仅 P5 / 夜城主题可用）</span></div>
+        <div class="field" style="align-items:flex-start" v-if="settings.accent === 'p5'"><label>P5 风格元素</label>
+          <div>
+            <el-checkbox-group v-model="settings.p5StyleTypes" style="max-width:560px">
+              <el-checkbox v-for="t in P5_STYLE_TYPES" :key="t.key" :value="t.key" :title="t.desc">{{ t.label }}</el-checkbox>
+            </el-checkbox-group>
+            <span class="muted">（仅 P5 怪盗主题生效；勾选的签名元素家族才会在全站显示，可单独关闭某类而不影响其余——区分 P5 7 类样式类型）</span>
+          </div>
+        </div>
         <div class="field"><label>界面密度</label>
           <el-radio-group v-model="settings.density">
             <el-radio value="compact">紧凑</el-radio>
@@ -839,6 +892,32 @@ const hotkeys = [
             <span class="muted">共 {{ capabilityDimensions.length }} 个能力维度；视频生成 = 能力维度组合，模型只是能力的可替换实现。</span>
           </div>
 
+          <!-- 多设备兼容：本机算力 / 显存 / 图像·视频生成可行性分级 -->
+          <h4 class="cap-h">本机算力（多设备兼容 · 诚实分级）</h4>
+          <div class="device-panel" v-loading="deviceLoading">
+            <template v-if="deviceCaps">
+              <div class="dev-row">
+                <span class="dev-label">GPU</span>
+                <span class="dev-val">{{ deviceCaps.gpu_name || (deviceCaps.cuda_available ? '未知 CUDA 设备' : '未检测到（CUDA 不可用）') }}</span>
+              </div>
+              <div class="dev-row">
+                <span class="dev-label">显存</span>
+                <span class="dev-val">{{ deviceCaps.vram_total_gb != null ? deviceCaps.vram_total_gb + ' GB（' + deviceCaps.vram_total_mb + ' MB）' : '无法读取' }}</span>
+              </div>
+              <div class="dev-caps">
+                <span class="dev-cap" :class="deviceCaps.capabilities && deviceCaps.capabilities.image_generation ? 'ok' : 'bad'">
+                  图像生成 {{ deviceCaps.capabilities && deviceCaps.capabilities.image_generation ? '✓ 可用' : '✕ 不可用' }}
+                </span>
+                <span class="dev-cap" :class="deviceCaps.capabilities && deviceCaps.capabilities.video_generation ? 'ok' : 'bad'">
+                  视频生成 {{ deviceCaps.capabilities && deviceCaps.capabilities.video_generation ? '✓ 可用' : '✕ 不可用' }}
+                </span>
+              </div>
+              <div class="dev-note" v-if="deviceCaps.video_gen_reason">{{ deviceCaps.video_gen_reason }}</div>
+              <div class="dev-note muted" v-if="deviceCaps.recommendation">{{ deviceCaps.recommendation }}</div>
+            </template>
+            <el-empty v-else description="设备探测中…" :image-size="48" />
+          </div>
+
           <!-- P1 M3/M5 权重前置诚实探测：四杠杆所需权重就绪状态 -->
           <h4 class="cap-h">权重就绪状态（Lock-Then-Animate 四杠杆所需）</h4>
           <div class="weight-readiness" v-loading="weightLoading">
@@ -974,6 +1053,17 @@ const hotkeys = [
 /* M1/M2 能力维度 + 资源注册表 */
 .cap-banner { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .cap-h { font-size: 14px; font-weight: 700; color: var(--txt); margin: 18px 0 12px; }
+/* 多设备兼容：本机算力分级面板 */
+.device-panel { background: var(--bg-2, #20202c); border: 1px solid var(--line, #2a2a38); border-radius: 12px; padding: 14px 16px; margin-bottom: 6px; }
+.dev-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.dev-label { font-size: 12px; color: var(--sub, #7a8094); flex: 0 0 44px; font-weight: 600; }
+.dev-val { font-size: 13px; color: var(--txt); font-weight: 600; }
+.dev-caps { display: flex; gap: 10px; margin: 4px 0 10px; flex-wrap: wrap; }
+.dev-cap { font-size: 12px; padding: 4px 12px; border-radius: 8px; font-weight: 700; }
+.dev-cap.ok { background: rgba(74,222,128,.16); color: #4ade80; border: 1px solid rgba(74,222,128,.4); }
+.dev-cap.bad { background: rgba(255,94,125,.16); color: #ff8da0; border: 1px solid rgba(255,94,125,.45); }
+.dev-note { font-size: 12px; color: #ff8da0; line-height: 1.6; margin-top: 4px; }
+.dev-note.muted { color: var(--sub, #7a8094); }
 /* P1 M3/M5 权重就绪状态卡 */
 .weight-readiness { margin: 4px 0 4px; }
 .wr-summary { font-size: 12.5px; padding: 8px 12px; border-radius: 10px; margin-bottom: 10px; font-weight: 600; }

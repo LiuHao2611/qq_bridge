@@ -1226,13 +1226,21 @@ async def get_asset_face_vectors(asset_id: str):
     conn = get_conn()
     try:
         rows = fetch_all(conn,
-            "SELECT stage_id, face_vector FROM asset_stages WHERE asset_id=?", (asset_id,))
+            "SELECT stage_id, face_vector, reference_image_url FROM asset_stages WHERE asset_id=?", (asset_id,))
     finally:
         conn.close()
+    import features
     vectors = {}
     for r in rows:
-        has = bool(r.get("face_vector"))
-        vectors[r["stage_id"]] = {"has_vector": has, "dim": FACE_VECTOR_DIM if has else 0}
+        has_fv = bool(r.get("face_vector"))
+        # 基本校验：有向量但对应参考图缺失（跨机导入未带文件 / 半落库）→ 不得谎报已提取
+        img_exists = features.reference_set.resolve_ref_local_path(r.get("reference_image_url") or "") is not None
+        has_vector = has_fv and img_exists
+        vectors[r["stage_id"]] = {
+            "has_vector": has_vector,
+            "dim": FACE_VECTOR_DIM if has_vector else 0,
+            "image_missing": has_fv and not img_exists,
+        }
     return ok({"asset_id": asset_id, "vectors": vectors})
 
 
@@ -1338,8 +1346,15 @@ async def generate_character_card_v2_endpoint(project_id: str, asset_id: str, re
         try:
             import json as _json
             from intent_engine.resource_catalog import ResourceCatalog
-            _cat_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resource_catalog.json")
+            # 资源目录静态文件位置：优先取本模块同级（server/，仓库实际落点），
+            # 回退项目根目录——双候选避免「目录层级写死」导致选型可视化失效（黑洞）。
+            _cat_candidates = [
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "resource_catalog.json"),
+                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resource_catalog.json"),
+            ]
+            _cat_path = next((p for p in _cat_candidates if os.path.exists(p)), None)
+            if not _cat_path:
+                raise FileNotFoundError("resource_catalog.json 未找到，候选: %s" % _cat_candidates)
             with open(_cat_path, "r", encoding="utf-8") as _f:
                 _cat = _json.load(_f)
             catalog = ResourceCatalog(catalog=_cat)  # 离线注入：不触网，仅静态目录
@@ -1486,6 +1501,45 @@ async def consistency_readiness_endpoint():
 
 
 # ======================================================================
+# 设备算力探测与能力分级（用户诉求：多设备兼容，不止适配 1660Ti）
+# ----------------------------------------------------------------------
+# 痛点：1660Ti 仅 6GB 显存，图像生成可行，但视频模型极易 OOM。
+# 此前前端会在用户点「生视频」后傻等 30 分钟才假失败（signal timed out）。
+# 本接口诚实告知当前设备显存与视频生成可行性，供前端前置校验 / 展示。
+# 无创性：纯探测，不改动任何现有 /generate 等生成链路端点。
+# ======================================================================
+
+@api.get("/device/capabilities")
+async def device_capabilities_endpoint():
+    """探测本机算力能力（GPU 名称 / 总显存 / CUDA），返回图像与视频生成可行性分级。"""
+    from capabilities.device import detect_device
+    return ok(detect_device())
+
+
+@api.get("/video/readiness")
+async def video_readiness_endpoint():
+    """视频生成前置就绪闸门（无创性：不改动现有 /generate 端点，仅前置探测）。
+
+    前端在调用 generateSegment / regenerateSegment / synthesizeProject 之前先读此接口；
+    不可行（feasible=False）时诚实提示原因，避免用户等待 30 分钟后才 OOM 失败。
+    返回 { feasible, reason, device }。
+    """
+    from capabilities.device import detect_device
+    d = detect_device()
+    return ok({
+        "feasible": d["capabilities"]["video_generation"],
+        "reason": d["video_gen_reason"],
+        "device": {
+            "cuda_available": d["cuda_available"],
+            "gpu_name": d["gpu_name"],
+            "vram_total_mb": d["vram_total_mb"],
+            "vram_total_gb": d["vram_total_gb"],
+        },
+        "recommendation": d["recommendation"],
+    })
+
+
+# ======================================================================
 # P1 M4 复用阶段：角色卡跨项目深拷贝导入
 # ----------------------------------------------------------------------
 # 红线：禁止浅拷贝引用 —— 必须实体复制 512 维向量(asset_stages.face_vector)
@@ -1541,28 +1595,34 @@ def import_role_card(source_asset_id, target_project_id):
         conn.execute("INSERT INTO assets (%s) VALUES (%s)" % (",".join(cols), ",".join("?" * len(cols))),
                      tuple(params.values()))
 
-        # 深拷贝 asset_stages（含 512 维向量 face_vector 实体复制）
+        # 深拷贝 asset_stages（含 512 维向量 face_vector 实体复制 + 参考图实体复制）
+        import features
         stages = fetch_all(conn,
             "SELECT stage_id, stage_name, age, reference_image_url, face_vector, selected "
             "FROM asset_stages WHERE asset_id=?", (source_asset_id,))
-        for st in stages:
+        for i, st in enumerate(stages):
+            src_img = st.get("reference_image_url") or ""
+            new_img = features.reference_set.copy_ref_image_named(
+                src_img, "stage-%s-%d.png" % (new_id, i)) if src_img else ""
             conn.execute(
                 "INSERT INTO asset_stages (stage_id, asset_id, stage_name, age, "
                 "reference_image_url, face_vector, selected, created_at) "
                 "VALUES (?,?,?,?,?,?,?,?)",
                 (uid(), new_id, st.get("stage_name"), st.get("age") or 0,
-                 st.get("reference_image_url") or "", st.get("face_vector"),
+                 new_img, st.get("face_vector"),
                  st.get("selected") or 0, now))
 
-        # 深拷贝 asset_reference_set（参考图集 + 每张向量实体复制）
+        # 深拷贝 asset_reference_set（参考图集 + 每张向量实体复制；图片同步实体复制到新资产名）
         refs = fetch_all(conn,
             "SELECT ref_kind, image_url, face_vector FROM asset_reference_set WHERE asset_id=?",
             (source_asset_id,))
         for rf in refs:
+            new_url = features.reference_set.copy_ref_image_to_asset(
+                rf.get("image_url") or "", new_id, rf.get("ref_kind"))
             conn.execute(
                 "INSERT INTO asset_reference_set (ref_id, asset_id, ref_kind, image_url, face_vector, created_at) "
                 "VALUES (?,?,?,?,?,?)",
-                (uid(), new_id, rf.get("ref_kind"), rf.get("image_url") or "",
+                (uid(), new_id, rf.get("ref_kind"), new_url,
                  rf.get("face_vector"), now))
 
         # 深拷贝独立 identity_card 表（手册 M4 copy_identity_card，实体复制非共享引用）
@@ -1577,14 +1637,16 @@ def import_role_card(source_asset_id, target_project_id):
                  ic.get("hairstyle") or "", ic.get("body_type") or "",
                  ic.get("consistency_sentence") or ""))
 
-        # 深拷贝独立 standard_portrait 表
+        # 深拷贝独立 standard_portrait 表（图片同步实体复制到新资产名）
         sp = fetch_one(conn,
             "SELECT image_path, created_at FROM standard_portrait WHERE asset_id=?",
             (source_asset_id,))
         if sp:
+            new_sp = features.reference_set.copy_ref_image_to_asset(
+                sp.get("image_path") or "", new_id, "standard_portrait")
             conn.execute(
                 "INSERT INTO standard_portrait (asset_id, image_path, created_at) VALUES (?,?,?)",
-                (new_id, sp.get("image_path") or "", sp.get("created_at")))
+                (new_id, new_sp, sp.get("created_at")))
 
         conn.commit()
         log_operation(conn, "asset_import", object_type="asset", object_id=new_id,
@@ -1872,7 +1934,8 @@ async def lora_validate_model(model_id: str):
 #   - 构建属长耗时同步操作（~15s），用 asyncio.to_thread 丢到工作线程，避免阻塞事件循环。
 #   - 线程锁防并发构建互相踩踏（vite 同时跑两次会写同一 dist 且 esbuild 锁冲突）。
 #   - 跨平台进程树清理：Windows 用 taskkill /T，POSIX 用 os.killpg，避免超时残留 node 孤儿。
-#   - 完整日志落 D 盘 .srvlogs，接口仅返回尾部摘要，防止响应体过大。
+#   - 完整日志落 D 盘 .tmp/logs（非隐藏目录，避免部分 Windows 安全策略/钩子
+#     对 server/.srvlogs 的写入拦截导致 Permission denied）。
 _REBUILD_LOCK = threading.Lock()
 _REBUILD_BASH = "C:/Program Files/Git/bin/bash.exe"
 
@@ -1886,7 +1949,7 @@ async def system_rebuild_frontend():
         raise ApiError("NOT_FOUND", "构建脚本不存在: %s" % script)
 
     bash_exe = _REBUILD_BASH if os.path.isfile(_REBUILD_BASH) else "bash"
-    log_dir = os.path.join(root, "server", ".srvlogs")
+    log_dir = os.path.join(root, ".tmp", "logs")
     log_path = os.path.join(log_dir, "rebuild_frontend.log")
 
     def _kill_tree(pid):

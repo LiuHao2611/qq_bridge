@@ -190,7 +190,8 @@ function _onEvent(event, data, msg) {
   // director 频道：M3 新增 decision_request / notice / insight + 既有事件
   if (event === 'decision_request') {
     // M3 修复：按 decision_id 合并（upsert）而非整组替换，避免后阶段批次推送
-    // 覆盖前阶段仍 pending 的决策（pendingDecisions 显示全部阶段）。
+    // 覆盖前阶段仍 pending 的决策。阶段对齐（2026-08-15）：决策按 phase 过滤后，
+    // 仅当前阶段 pending 决策经 visibleDecisions 展示，不再「显示全部阶段」。
     const incoming = (Array.isArray(d.decisions) ? d.decisions : [])
       .map(_normalizeDecision).filter(Boolean)
     const byId = {}
@@ -241,7 +242,7 @@ function _onEvent(event, data, msg) {
     if (state.dismissed.includes(s.id)) return
     if (!state.suggestions.find((x) => x.id === s.id)) {
       state.suggestions.push({
-        id: s.id, project_id: s.project_id || state.pid, phase: s.phase || '',
+        id: s.id, project_id: s.project_id || state.pid, phase: s.phase || ('P' + state.phase),
         severity: s.severity || 'suggestion', category: s.category || '',
         metric_name: s.metric_name, metric_value: s.metric_value, threshold: s.threshold,
         title: s.title || '', detail: s.detail || '', action_type: s.action_type || null,
@@ -289,7 +290,7 @@ function _normalizeDecision(x) {
   }
   return {
     decision_id: x.decision_id,
-    phase: x.phase || '',
+    phase: x.phase || ('P' + state.phase),
     category: x.category || 'A',
     title: x.title || '',
     description: x.description || '',
@@ -302,7 +303,7 @@ function _normalizeDecision(x) {
 // M3：对话气泡（notice/insight）
 function _pushConversation(kind, text) {
   if (!text) return
-  state.conversation.push({ id: 'conv-' + (++_convSeq), kind, text: String(text), ts: _now() })
+  state.conversation.push({ id: 'conv-' + (++_convSeq), kind, text: String(text), ts: _now(), phase: 'P' + state.phase })
   if (state.conversation.length > 30) state.conversation.splice(0, state.conversation.length - 30)
 }
 
@@ -319,6 +320,7 @@ function _onTranslator(event, d) {
     loras: (d.selected && d.selected.loras) || [],
     seed: (d.selected && d.selected.seed) != null ? d.selected.seed : '',
     ts: d.timestamp || _now(),
+    phase: 'P' + state.phase,
   }
   state.translator = sel
   state.translatorHistory = [sel, ...(state.translatorHistory || [])].slice(0, 5)
@@ -330,6 +332,7 @@ function _onTranslator(event, d) {
     state.lockedCharacter = {
       name: cp.character_name || '',
       lockMode: cp.lock_mode || '',
+      phase: 'P' + state.phase,
       firstFrame: cp.first_frame || '',
       referenceImages: Array.isArray(cp.reference_images) ? cp.reference_images : [],
       levers: cp.levers || {},
@@ -479,6 +482,15 @@ function _deriveSuggestions() {
   return out
 }
 
+// 阶段 → orb API 映射：当前阶段只拉取对应当阶段数据，避免跨阶段污染与无效轮询
+const PHASE_API = {
+  1: 'assetReadiness',
+  2: 'scriptAnalysis',
+  3: null,
+  4: 'runSummary',
+  5: 'synthesizeReport',
+}
+
 // 合并派生建议（更新稳定 id，移除已消解项；不触碰 WS 推送的 uuid 建议）
 function _mergeDerived(derived) {
   const derivedIds = new Set(derived.map((d) => d.id))
@@ -504,13 +516,23 @@ function _mergeDerived(derived) {
 async function refreshOrb() {
   if (!state.pid || !state.orbEnabled) return
   const pid = state.pid
-  const tasks = [
-    orbApi.assetReadiness(pid).then((r) => { state.readiness = r }).catch((e) => { if (e && e.code === 'ORB_DISABLED') state.orbEnabled = false }),
-    orbApi.scriptAnalysis(pid).then((r) => { state.scriptAnalysis = r }).catch((e) => { if (e && e.code === 'ORB_DISABLED') state.orbEnabled = false }),
-    orbApi.runSummary(pid).then((r) => { state.runSummary = r }).catch((e) => { if (e && e.code === 'ORB_DISABLED') state.orbEnabled = false }),
-    orbApi.synthesizeReport(pid).then((r) => { state.synthReport = r }).catch((e) => { if (e && e.code === 'ORB_DISABLED') state.orbEnabled = false }),
-  ]
-  await Promise.all(tasks)
+  const apiKey = PHASE_API[state.phase] || null
+  // 切阶段时先清空旧阶段数据，避免跨阶段展示；派生建议会在 _mergeDerived 中移除
+  state.readiness = null
+  state.scriptAnalysis = null
+  state.runSummary = null
+  state.synthReport = null
+  let task = null
+  if (apiKey === 'assetReadiness') {
+    task = orbApi.assetReadiness(pid).then((r) => { state.readiness = r }).catch((e) => { if (e && e.code === 'ORB_DISABLED') state.orbEnabled = false })
+  } else if (apiKey === 'scriptAnalysis') {
+    task = orbApi.scriptAnalysis(pid).then((r) => { state.scriptAnalysis = r }).catch((e) => { if (e && e.code === 'ORB_DISABLED') state.orbEnabled = false })
+  } else if (apiKey === 'runSummary') {
+    task = orbApi.runSummary(pid).then((r) => { state.runSummary = r }).catch((e) => { if (e && e.code === 'ORB_DISABLED') state.orbEnabled = false })
+  } else if (apiKey === 'synthesizeReport') {
+    task = orbApi.synthesizeReport(pid).then((r) => { state.synthReport = r }).catch((e) => { if (e && e.code === 'ORB_DISABLED') state.orbEnabled = false })
+  }
+  if (task) await task
   if (state.orbEnabled) {
     _mergeDerived(_deriveSuggestions())
     _recomputeOrbState()
@@ -540,15 +562,36 @@ const MORPH_REGISTRY = {
     { key: 'scanner', label: 'HUD 扫描框' },
   ],
 }
-// 当前主题对应的形态库（useTheme.preset 为模块级 ref，随主题切换响应）
+// 当前主题对应的形态库（useTheme.preset 为模块级 ref，随主题切换响应）。
+// 非 P5 / 非夜城 → 返回 []，体现「默认主题只要导演图标」硬约束（用户 2026-08-15）：
+// 默认/灰主题下不渲染任何 .orb-morph 形态元素，仅显示导演图标 + 双击循环 5 色盘。
 const { preset: themePreset } = useTheme()
 function activeMorphList() {
-  return MORPH_REGISTRY[themePreset.value] || MORPH_REGISTRY.p5
+  const t = themePreset.value
+  return MORPH_REGISTRY[t] || []
 }
 // 供设置页枚举的皮肤列表（仅 P5 主题可用；'random' 由 setOrbSkin 处理）
 export const ORB_SKINS = [{ key: 'random', label: '随机' }, ...MORPH_REGISTRY.p5]
 // 夜城主题对应的赛博四件套（§9.3 主题感知设置）
 export const ORB_SKINS_CYBER = [{ key: 'random', label: '随机' }, ...MORPH_REGISTRY.cyberpunk]
+
+// ---- 默认主题颜色盘：双击循环切换（用户硬约束：「双击和拖动也就切换一下颜色」） ----
+// 设计意图：默认/灰主题下双击不再切换形态（P5 形态本来就不该出现在这里），
+// 而是在 5 种「主题无关的友好色」之间循环，给悬浮球一个轻量的视觉反馈。
+const DEFAULT_PALETTE = [
+  { key: 'blue',   label: '科技蓝',  bg: 'linear-gradient(135deg,#4f8bf7 0%,#7c6af0 100%)', glow: 'rgba(79,139,247,.38)' },
+  { key: 'teal',   label: '青绿',    bg: 'linear-gradient(135deg,#00bfa6 0%,#00838f 100%)', glow: 'rgba(0,191,166,.38)' },
+  { key: 'pink',   label: '樱粉',    bg: 'linear-gradient(135deg,#ff6b9d 0%,#c2185b 100%)', glow: 'rgba(255,107,157,.38)' },
+  { key: 'amber',  label: '琥珀',    bg: 'linear-gradient(135deg,#ffb454 0%,#e07b3a 100%)', glow: 'rgba(255,180,84,.38)' },
+  { key: 'purple', label: '紫罗兰',  bg: 'linear-gradient(135deg,#9c64fb 0%,#5e3ec7 100%)', glow: 'rgba(156,100,251,.38)' },
+]
+const orbColorIndex = ref(0)
+// 仅在非 P5 / 非夜城主题下有意义；P5/夜城形态主题下返回 null（视觉由形态 + 主题色决定）。
+export const currentOrbColor = computed(() => {
+  const t = themePreset.value
+  if (t === 'p5' || t === 'cyberpunk') return null
+  return DEFAULT_PALETTE[((orbColorIndex.value % DEFAULT_PALETTE.length) + DEFAULT_PALETTE.length) % DEFAULT_PALETTE.length]
+})
 
 const morphIndex = ref(0)
 export const isSwitching = ref(false)
@@ -556,18 +599,26 @@ export const isCelebrating = ref(false)
 // 用户偏好皮肤（设置页写入；'random' 表示每次进入随机一种）
 export const orbSkin = ref('sword')
 
+// 当前形态：仅当主题拥有形态库时返回；默认/灰主题返回 null（不渲染 .orb-morph 元素）。
 export const currentMorph = computed(() => {
   const list = activeMorphList()
+  if (!list.length) return null
   return list[((morphIndex.value % list.length) + list.length) % list.length]
 })
 
 let _switchTimer = null
+// 智能切换：形态主题下循环形态；非形态主题下循环颜色盘。统一入口避免模板分支。
 export function cycleMorph() {
   const list = activeMorphList()
-  morphIndex.value = (morphIndex.value + 1) % list.length
-  isSwitching.value = true
-  if (_switchTimer) clearTimeout(_switchTimer)
-  _switchTimer = setTimeout(() => { isSwitching.value = false }, 600)
+  if (list.length > 0) {
+    morphIndex.value = (morphIndex.value + 1) % list.length
+    isSwitching.value = true
+    if (_switchTimer) clearTimeout(_switchTimer)
+    _switchTimer = setTimeout(() => { isSwitching.value = false }, 600)
+  } else {
+    // 默认/灰主题：双击循环 5 色盘（用户：「双击和拖动也就切换一下颜色」）
+    orbColorIndex.value = (orbColorIndex.value + 1) % DEFAULT_PALETTE.length
+  }
 }
 
 let _celebrateTimer = null
@@ -577,10 +628,11 @@ export function onTaskComplete() {
   _celebrateTimer = setTimeout(() => { isCelebrating.value = false }, 800)
 }
 
-// 设置页写入默认皮肤：按当前主题列表把 key 映射为 morphIndex；'random' 取随机
+// 设置页写入默认皮肤：仅对形态主题生效（默认主题下 settings 页已 `v-if` 隐藏 orbSkins 列表）。
 export function setOrbSkin(key) {
   orbSkin.value = key || (themePreset.value === 'cyberpunk' ? 'katana' : 'sword')
   const list = activeMorphList()
+  if (!list.length) return // 默认/灰主题：无形态库，不变更任何形态索引
   if (key === 'random') {
     morphIndex.value = Math.floor(Math.random() * list.length)
   } else {
@@ -603,8 +655,10 @@ export function initOrbSkinFromStorage() {
 export function useDirectorOrb() {
   return {
     state, NODE_TXT, NODE_KIND, NODE_ORDER, PHASE_SKILLS,
-    // 多形态化身
+    // 多形态化身（仅 P5/夜城主题；默认/灰主题 currentMorph=null → 不渲染 .orb-morph 元素）
     MORPH_REGISTRY, ORB_SKINS, currentMorph, morphIndex,
+    // 默认主题 5 色盘（仅非形态主题有意义）
+    DEFAULT_PALETTE, currentOrbColor,
     isSwitching, isCelebrating, orbSkin,
     cycleMorph, onTaskComplete, setOrbSkin, initOrbSkinFromStorage,
   }
@@ -640,7 +694,13 @@ export function directorOrbDestroy() {
 }
 
 export function directorOrbSetPhase(phase) {
-  if (phase && phase >= 1 && phase <= 5) state.phase = phase
+  if (!phase || phase < 1 || phase > 5) return
+  if (phase === state.phase) return
+  state.phase = phase
+  // 阶段切换：visible* 计算属性立即按新阶段过滤（响应式生效，瞬间隐藏其他阶段内容），
+  // 同时马上刷新当前阶段数据（不再等 5s 轮询），实现「切到某阶段立即对应当前阶段」的实时性。
+  refreshOrb()
+  refreshDecisions()
 }
 
 // 各阶段页上报实时生成小任务（文本/图/视频）
@@ -665,6 +725,7 @@ export function pushGeneration(kind, title, status, detail) {
   const entry = {
     id, kind, title, status, progress: status === 'running' ? 12 : 100,
     steps, ts, log: [{ ts, level: 'info', msg: detail || (status === 'running' ? '开始生成…' : '生成结束') }],
+    phase: 'P' + state.phase,
   }
   state.feed.push(entry)
   if (state.feed.length > FEED_CAP) state.feed.splice(0, state.feed.length - FEED_CAP)
@@ -690,13 +751,29 @@ export async function fetchStageStats(pid) {
 }
 
 // ---- DirectorOrb v2 对外状态/操作 ----------------------------------------
+// 阶段对齐：悬浮球只展示「当前阶段」的管家建议，避免切换到某阶段仍显示其他阶段的问题。
+// 派生 der-* 带显式 phase；WS 推送项在入库时按当前阶段补全 phase —— 统一按 phase 过滤。
+const PHASE_CURRENT = () => 'P' + state.phase
 const visibleSuggestions = computed(() =>
-  state.suggestions.filter((s) => !state.dismissed.includes(s.id))
+  state.suggestions.filter((s) => !state.dismissed.includes(s.id) && s.phase === PHASE_CURRENT())
 )
 const decisionItems = computed(() =>
   visibleSuggestions.value.filter((s) => s.severity === 'error')
 )
 const unreadCount = computed(() => visibleSuggestions.value.length)
+// 阶段对齐：待确认决策点只展示当前阶段（覆盖旧版「显示全部阶段」，按用户要求对应当前阶段）
+const visibleDecisions = computed(() =>
+  state.decisions.filter((d) => d.status === 'pending' && d.phase === PHASE_CURRENT())
+)
+// 阶段对齐：对话气泡（notice/insight）只展示当前阶段；历史保留于 state.conversation，切回阶段自动恢复
+const visibleConversation = computed(() =>
+  state.conversation.filter((c) => c.phase === PHASE_CURRENT())
+)
+// 阶段对齐：导演选型卡 / 角色锁定卡 / 实时生成任务只展示当前阶段，
+// 避免切换到资产初始化(P1) 仍显示 P4 的选型 / 角色锁定 / 生成任务（用户明确要求「所有信息对应当前阶段」）。
+const visibleTranslator = computed(() => state.translator && state.translator.phase === PHASE_CURRENT())
+const visibleLockedCharacter = computed(() => state.lockedCharacter && state.lockedCharacter.phase === PHASE_CURRENT())
+const visibleFeed = computed(() => state.feed.filter((f) => f.phase === PHASE_CURRENT()))
 
 export function dismissSuggestion(id) {
   if (!state.dismissed.includes(id)) {
@@ -749,4 +826,4 @@ export async function resolveDecision(decisionId, answer) {
   }
 }
 
-export { visibleSuggestions, decisionItems, unreadCount }
+export { visibleSuggestions, decisionItems, unreadCount, visibleDecisions, visibleConversation, visibleTranslator, visibleLockedCharacter, visibleFeed }

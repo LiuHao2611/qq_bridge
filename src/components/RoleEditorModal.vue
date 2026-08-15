@@ -5,6 +5,8 @@ import {
   updateAsset, uploadImage, listStagesWithPoses, generateCharacterCard,
   addStage, delStage, addPose, delPose,
   getAssetFaceVectors, getStageFaceVector, extractStageFaceVector,
+  getIdentityCard, patchIdentityCard,
+  getReferenceSet, generateReferenceSet, regenerateReference,
 } from '../api'
 import { toast } from '../store'
 import { splitVoice, joinVoice, stageNameFor } from '../assetMeta'
@@ -51,6 +53,17 @@ const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 const FACE_VECTOR_DIM = 512
 const busyVectorStage = ref('') // 当前正在提取 512 维向量的阶段 ID
 const busyCard = ref(false) // 当前正在经意图翻译引擎生成角色卡
+
+// P1 M1 角色身份系统（身份卡）：服装/发型/体型/一致句 + 人脸缩略图 + 向量状态
+const identityCard = reactive({
+  loaded: false,
+  faceVector: false,
+  outfit: '',
+  hairstyle: '',
+  bodyType: '',
+  consistencySentence: '',
+})
+const busyIdentity = ref(false)
 
 const form = reactive({
   id: '',
@@ -120,6 +133,114 @@ const loadStages = async (role) => {
   }
 }
 
+// P1 M1 角色身份卡：读取服装/发型/体型/一致句 + 人脸缩略图(封面) + 主阶段向量状态
+const loadIdentityCard = async (assetId) => {
+  if (!assetId) return
+  try {
+    const card = await getIdentityCard(assetId)
+    identityCard.loaded = true
+    identityCard.faceVector = !!card.has_face_vector
+    identityCard.outfit = card.outfit || ''
+    identityCard.hairstyle = card.hairstyle || ''
+    identityCard.bodyType = card.body_type || ''
+    identityCard.consistencySentence = card.consistency_sentence || ''
+  } catch (e) {
+    console.warn('load identity card failed', e)
+  }
+}
+
+// P1 M1 保存身份卡（服装/发型/体型/一致句），持久化到后端
+const saveIdentityCard = async () => {
+  if (!form.id) return
+  busyIdentity.value = true
+  try {
+    await patchIdentityCard(form.id, {
+      outfit: identityCard.outfit,
+      hairstyle: identityCard.hairstyle,
+      body_type: identityCard.bodyType,
+      consistency_sentence: identityCard.consistencySentence,
+    })
+    toast('身份卡已保存')
+  } catch (e) {
+    toast('身份卡保存失败: ' + e.message)
+  } finally {
+    busyIdentity.value = false
+  }
+}
+
+// P1 M2 Lock 锁定阶段：参考图集（标准肖像 + 4 张参考图，光线一致，每张 512 维向量）
+const refSet = ref([])
+const refLoading = ref(false)
+const refBusy = ref(false)
+const refError = ref('') // 诚实错误：ComfyUI / IP-Adapter / insightface 缺失等
+const REF_KIND_LABELS = {
+  standard_portrait: '标准肖像', front: '正面', three_quarter: '四分之三侧',
+  expression: '表情', full_body: '全身',
+}
+const refKindLabel = (k) => REF_KIND_LABELS[k] || k
+// 参考图集徽标：诚实反映状态。有向量且图存在 → 512维✓；有向量但图缺失 → 图片缺失；
+// 无向量 → 无向量。杜绝「无图却显示512维」的谎言（后端已加图片存在性校验）。
+const refVecBadge = (item) => {
+  if (!item) return { text: '无向量', cls: 'off' }
+  if (item.image_missing) return { text: '图片缺失', cls: 'miss' }
+  if (item.has_vector) return { text: '512维✓', cls: 'on' }
+  return { text: '无向量', cls: 'off' }
+}
+const standardPortrait = computed(() => refSet.value.find((r) => r.ref_kind === 'standard_portrait') || null)
+const setImages = computed(() => refSet.value.filter((r) => r.ref_kind !== 'standard_portrait'))
+
+const loadReferenceSet = async (assetId) => {
+  if (!assetId) return
+  refLoading.value = true
+  refError.value = ''
+  try {
+    const r = await getReferenceSet(assetId)
+    refSet.value = Array.isArray(r.items) ? r.items : []
+  } catch (e) {
+    refSet.value = []
+    // 尚未生成（REFERENCE_SET_EMPTY）不算错误，仅空列表
+    if ((e.code || '') !== 'REFERENCE_SET_EMPTY') {
+      refError.value = '参考图集加载失败: ' + (e.message || e.code || '未知错误')
+    }
+  } finally {
+    refLoading.value = false
+  }
+}
+
+// 一键生成标准肖像 + 4 张参考图；依赖缺失时诚实抛错，不静默降级成"无锁脸"
+const generateRefSet = async () => {
+  if (!form.id) return
+  refBusy.value = true
+  refError.value = ''
+  try {
+    await generateReferenceSet(form.id)
+    toast('参考图集已生成（标准肖像 + 4 张参考图）')
+    await loadReferenceSet(form.id)
+  } catch (e) {
+    refError.value = '生成失败：' + (e.message || e.code || '未知错误') +
+      '（请确认 ComfyUI 与 IP-Adapter / insightface 权重就绪）'
+    toast(refError.value)
+  } finally {
+    refBusy.value = false
+  }
+}
+
+const regenRef = async (item) => {
+  if (!form.id) return
+  refBusy.value = true
+  refError.value = ''
+  try {
+    await regenerateReference(form.id, item.ref_kind)
+    toast('已重生成：' + refKindLabel(item.ref_kind))
+    await loadReferenceSet(form.id)
+  } catch (e) {
+    refError.value = '重生成失败：' + (e.message || e.code || '未知错误')
+    toast(refError.value)
+  } finally {
+    refBusy.value = false
+  }
+}
+
 // 阶段参考图数量：阶段主图 + 各姿势图（手册 §5.1 要求真人资产≥3张参考图）
 const stageRefImageCount = (st) => {
   if (!st) return 0
@@ -172,6 +293,8 @@ const loadRoleIntoForm = (r) => {
   form.coverUrl = r.url || r.raw?.cover_url || PLACEHOLDER
   voiceSample.value = `你好，我是${form.name || '该角色'}，这是我的音色参考。`
   loadStages(r)
+  loadIdentityCard(r.id)
+  loadReferenceSet(r.id)
 }
 
 watch(() => props.role, (r) => {
@@ -519,6 +642,78 @@ const removePose = async (st, p) => {
             </div>
           </div>
 
+          <!-- P1 M1 角色身份卡：人脸缩略图 + 向量状态 + 服装/发型/体型/一致句 -->
+          <div class="re-idcard">
+            <div class="re-idcard-head">
+              <span class="re-idcard-title">角色身份卡</span>
+              <button class="re-btn-text re-idcard-save" :disabled="busyIdentity" @click="saveIdentityCard">
+                <el-icon v-if="busyIdentity"><Loading /></el-icon>
+                <el-icon v-else><Check /></el-icon>
+                {{ busyIdentity ? '保存中…' : '保存身份卡' }}
+              </button>
+            </div>
+            <div class="re-idcard-grid">
+              <div class="re-idcard-fields">
+                <div class="re-idcard-field">
+                  <label class="re-label">服装</label>
+                  <el-input v-model="identityCard.outfit" placeholder="如：黑色校服外套，白色衬衫" clearable />
+                </div>
+                <div class="re-idcard-field">
+                  <label class="re-label">发型</label>
+                  <el-input v-model="identityCard.hairstyle" placeholder="如：齐肩短发，黑色" clearable />
+                </div>
+                <div class="re-idcard-field">
+                  <label class="re-label">体型</label>
+                  <el-input v-model="identityCard.bodyType" placeholder="如：瘦削，170cm" clearable />
+                </div>
+                <div class="re-idcard-field re-idcard-field-wide">
+                  <label class="re-label">一致句（默认生成，可改）</label>
+                  <el-input v-model="identityCard.consistencySentence" type="textarea" :rows="2" placeholder="跨镜头一致性锚定句" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- P1 M2 Lock 锁定阶段：参考图集（标准肖像 + 4 张参考图，光线一致） -->
+          <div class="re-refset">
+            <div class="re-idcard-head">
+              <span class="re-idcard-title">参考图集（Lock 锁定）</span>
+              <button class="re-btn-text re-idcard-save" :disabled="refBusy" @click="generateRefSet">
+                <el-icon v-if="refBusy"><Loading /></el-icon>
+                {{ refBusy ? '生成中…' : (refSet.length ? '重新生成参考图集' : '一键生成参考图集') }}
+              </button>
+            </div>
+
+            <div v-if="refError" class="re-refset-error" :title="refError">⚠️ {{ refError.length > 160 ? refError.slice(0, 160) + '…' : refError }}</div>
+
+            <div v-if="refLoading" class="re-refset-empty">加载参考图集中…</div>
+            <div v-else-if="!refSet.length" class="re-refset-empty">
+              尚未生成参考图集。点「一键生成参考图集」为该角色生成标准肖像 + 4 张参考图（光线一致），用于后续锁脸。
+            </div>
+            <template v-else>
+              <!-- 标准肖像大图 -->
+              <div v-if="standardPortrait" class="re-refset-portrait">
+                <div class="re-refset-img"><img :src="standardPortrait.image_url || PLACEHOLDER" @error="imgError" @click="previewUrl = standardPortrait.image_url" /></div>
+                <div class="re-refset-meta">
+                  <span class="re-refset-name">{{ refKindLabel('standard_portrait') }}</span>
+                  <span class="re-vec-badge" :class="refVecBadge(standardPortrait).cls">{{ refVecBadge(standardPortrait).text }}</span>
+                  <button class="re-btn-text" :disabled="refBusy" @click="regenRef(standardPortrait)">重生成</button>
+                </div>
+              </div>
+              <!-- 4 张参考图缩略图 -->
+              <div class="re-refset-thumbs">
+                <div class="re-refset-thumb" v-for="it in setImages" :key="it.ref_id">
+                  <div class="re-refset-img"><img :src="it.image_url || PLACEHOLDER" @error="imgError" @click="previewUrl = it.image_url" /></div>
+                  <div class="re-refset-meta">
+                    <span class="re-refset-name">{{ refKindLabel(it.ref_kind) }}</span>
+                    <span class="re-vec-badge" :class="refVecBadge(it).cls">{{ refVecBadge(it).text }}</span>
+                    <button class="re-btn-text" :disabled="refBusy" @click="regenRef(it)">重生成</button>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+
           <!-- 阶段详情（选中阶段时展开；默认折叠） -->
           <div v-if="selectedStage" class="re-stage-detail">
             <div class="re-stage-detail-head">
@@ -539,7 +734,7 @@ const removePose = async (st, p) => {
             <!-- 真人资产 512 维身份特征向量（手册 §5.1 / §5.3） -->
             <div class="re-facevec">
               <span class="re-facevec-badge" :class="selectedStage.faceVector && selectedStage.faceVector.has_vector ? 'ok' : 'missing'">
-                <el-icon><Key /></el-icon> 512维 {{ selectedStage.faceVector && selectedStage.faceVector.has_vector ? '已提取' : '缺失' }}
+                <el-icon><Key /></el-icon> 512维 {{ (selectedStage.faceVector && selectedStage.faceVector.has_vector) ? '已提取' : (selectedStage.faceVector && selectedStage.faceVector.image_missing ? '图缺失' : '缺失') }}
               </span>
               <span class="re-facevec-count" :class="{ warn: stageRefImageCount(selectedStage) < 3 }">参考图 {{ stageRefImageCount(selectedStage) }}/3</span>
               <span class="re-facevec-permission" :class="injectEligible(selectedStage).ok ? 'ok' : 'no'">
@@ -731,6 +926,16 @@ const removePose = async (st, p) => {
 .re-voice-sample-input:focus { outline: none; border-color: var(--pur); }
 .re-voice-hint { font-size: 11px; color: var(--sub); white-space: nowrap; }
 
+/* ===== P1 M1 角色身份卡 ===== */
+.re-idcard { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 12px; }
+.re-idcard-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.re-idcard-title { font-size: 14px; font-weight: 700; }
+.re-idcard-save { margin-left: auto; }
+.re-idcard-grid { display: flex; gap: 14px; align-items: flex-start; }
+.re-idcard-fields { flex: 1; min-width: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.re-idcard-field-wide { grid-column: 1 / -1; }
+@media (max-width: 640px) { .re-idcard-fields { grid-template-columns: 1fr; } }
+
 /* ===== 阶段详情（默认折叠，选中展开） ===== */
 .re-stage-detail { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 4px; border-top: 1px dashed var(--line); padding-top: 12px; }
 .re-stage-detail-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
@@ -823,6 +1028,24 @@ const removePose = async (st, p) => {
 .re-autosave { font-size: 12px; color: var(--sub); }
 .re-autosave.saved { color: var(--green); }
 .re-autosave.error { color: #ff7a7a; }
+
+/* ===== P1 M2 Lock 锁定阶段 · 参考图集 ===== */
+.re-refset { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 12px; }
+.re-refset-error { color: #ff7a7a; background: rgba(255,80,80,.1); border: 1px solid rgba(255,80,80,.3); border-radius: 8px; padding: 8px 10px; font-size: 12px; margin-bottom: 10px; line-height: 1.5; max-height: 80px; overflow-y: auto; word-break: break-word; }
+.re-refset-empty { color: var(--sub); font-size: 12px; padding: 14px 0; line-height: 1.6; }
+.re-refset-portrait { display: flex; gap: 12px; align-items: flex-start; background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.re-refset-portrait .re-refset-img { flex: 0 0 130px; }
+.re-refset-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+.re-refset-thumb { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px; }
+.re-refset-img { aspect-ratio: 3 / 4; background: var(--bg); border-radius: 8px; overflow: hidden; }
+.re-refset-img img { width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; background: var(--bg); }
+.re-refset-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.re-refset-portrait .re-refset-meta { flex-direction: column; align-items: flex-start; }
+.re-refset-name { font-size: 12px; font-weight: 700; }
+.re-vec-badge { font-size: 10px; padding: 2px 6px; border-radius: 6px; font-weight: 700; }
+.re-vec-badge.on { background: rgba(34,197,94,.18); color: #22c55e; }
+.re-vec-badge.off { background: rgba(255,176,32,.18); color: #ffb020; }
+.re-vec-badge.miss { background: rgba(239,68,68,.18); color: #ef4444; }
 </style>
 
 <style>

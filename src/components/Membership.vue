@@ -2,11 +2,13 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { fetchProfile } from '../api'
+import { useUserProfile } from '../composables/useUserProfile'
 
 // 知识库 13 章「个人纯本地版」+ §5.1 改造清单：
 // 会员 三档(VIP/至尊VIP/至尊SVIP) → 单档(个人版·永久免费)；积分本地模拟默认值 1,999,995,162
+const { nickname: userNickname, avatar: userAvatar } = useUserProfile()
 const user = ref({
-  name: '小志',
+  name: userNickname.value,
   edition: '个人版',
   activated: true,
   valid: '永久',
@@ -56,16 +58,17 @@ const viewAgreement = (t) => ElMessage({ message: `${t}（演示）`, type: 'inf
 <template>
   <div class="page">
     <div class="page-head">
-      <h1>👑 会员中心</h1>
+      <h1 class="p5-title">👑 会员中心</h1>
+      <span class="p5-badge-star mem-star"><span>★</span></span>
       <span class="muted">万能短剧 · AI 创作平台 · 个人版</span>
     </div>
 
     <!-- 当前状态卡（MB1.1 / MB1.2） -->
     <div class="mem-status">
-      <el-avatar :size="56" style="background:var(--grad);font-weight:800">小</el-avatar>
+      <el-avatar :size="56" :src="userAvatar" style="background:var(--grad);font-weight:800" />
       <div class="mem-user">
         <div class="mem-name">
-          {{ user.name }}
+          {{ userNickname }}
           <el-tag type="success" effect="dark" style="margin-left:8px;border:0">个人版</el-tag>
         </div>
         <div class="muted">
@@ -151,4 +154,6 @@ const viewAgreement = (t) => ElMessage({ message: `${t}（演示）`, type: 'inf
 .blk-title { margin: 0 0 14px; font-size: 15px; }
 .agree-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .note { margin-top: 18px; line-height: 1.7; font-size: 12px; }
+.page-head { position: relative; }
+.mem-star { position: absolute; top: -12px; right: 6px; }
 </style>

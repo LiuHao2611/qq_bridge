@@ -18,12 +18,17 @@ import { toast } from '../store'
 import { fmtTime } from '../api'
 import { pushGeneration } from '../composables/useDirectorOrb'
 import { pushHistory, genKey } from '../composables/useGenHistory'
-import ProjectFlowNav from './ProjectFlowNav.vue'
+import { useVideoGate } from '../composables/useVideoGate'
+import ProjectBookShell from './ProjectBookShell.vue'
 import VideoLogPanel from './VideoLogPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
 const pid = route.params.id
+
+// 视频生成前置闸门：本机显存不足时诚实提示，避免白等 30 分钟
+const { ensureVideoReady, peekReadiness } = useVideoGate()
+const videoReady = ref(null)  // 被动展示：{ feasible, reason, device } 或 null（探测失败）
 
 const project = ref({})
 const segments = ref([])
@@ -314,6 +319,11 @@ async function dispatchSegment(seg) {
   const hasPrior = !!tid && !['succeeded', 'failed', 'cancelled'].includes(mapDisp(seg.latest_task.status).k)
   // 既有运行中任务则忽略，避免重复分发
   if (hasPrior) { toast('该片段已有进行中的任务'); return }
+  // 视频生成前置闸门：本机显存不足时诚实提示，用户取消即停止分发（避免白等 30 分钟）
+  if (!(await ensureVideoReady())) {
+    toast('已取消视频分发：当前设备不满足视频生成条件')
+    return
+  }
   const params = buildParams(project.value)
   const op = (seg.latest_task && ['succeeded', 'failed', 'cancelled'].includes(mapDisp(seg.latest_task.status).k)) ? 'regenerate' : 'generate'
   try {
@@ -434,6 +444,7 @@ onMounted(() => {
   loadProd()
   refreshHealth()
   healthTimer = setInterval(refreshHealth, 10000)
+  peekReadiness().then((r) => { videoReady.value = r }).catch(() => { videoReady.value = null })
 })
 onUnmounted(() => {
   if (healthTimer) clearInterval(healthTimer)
@@ -445,9 +456,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page prod">
-    <ProjectFlowNav :pid="pid" :step="4" @synthesize="onSynthesize" />
-
+  <ProjectBookShell class="page prod" :step="4" @synthesize="onSynthesize">
     <!-- 左侧：历史生成记录（页面级，固定在内容区左侧，默认折叠，点击展开可选择覆盖使用） -->
     <HistoryPanel
       ref="prodHist"
@@ -458,9 +467,9 @@ onUnmounted(() => {
       @use="onUseProdHist"
     />
 
-    <div class="page-head">
+    <div class="page-head p5-tear">
       <div>
-        <h1>生成生产</h1>
+        <h1 class="p5-title">生成生产</h1>
         <p class="muted">第四阶段 · 任务分发与异步 AI 推理（生产阶段）。将分镜分发给推理引擎，实时监看生成进度与结果。</p>
       </div>
       <div class="ops">
@@ -485,6 +494,18 @@ onUnmounted(() => {
       <div class="chip">
         WS 连接 <b>{{ health.ws_connections }}</b>
         <span class="role">{{ wsConnected() ? '实时' : '轮询兜底' }}</span>
+      </div>
+      <!-- 视频生成算力前置闸门（被动展示）：本机显存不足时红色警示，分发前即知 -->
+      <div class="chip" v-if="videoReady === null">
+        视频算力 <b>探测中…</b>
+      </div>
+      <div class="chip" v-else-if="videoReady.feasible" :class="'ok'">
+        <span class="dot" /> 视频算力 · 充足
+        <span class="role" v-if="videoReady.device && videoReady.device.gpu_name">{{ videoReady.device.gpu_name }} · {{ videoReady.device.vram_total_gb }}GB</span>
+      </div>
+      <div class="chip" v-else :class="'bad'">
+        <span class="dot" /> 视频算力 · 不足
+        <span class="role" v-if="videoReady.device && videoReady.device.gpu_name">{{ videoReady.device.gpu_name }} · {{ videoReady.device.vram_total_gb }}GB</span>
       </div>
     </div>
 
@@ -667,12 +688,12 @@ onUnmounted(() => {
         <VideoLogPanel v-if="expandedId === seg.latest_task?.task_id" :task-id="seg.latest_task.task_id" />
       </div>
     </div>
-  </div>
+  </ProjectBookShell>
 </template>
 
 <style scoped>
 .prod { padding: 0 18px 24px; }
-.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin: 14px 0 10px; flex-wrap: wrap; }
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin: 4px 0 10px; flex-wrap: wrap; }
 .page-head h1 { font-size: 20px; margin: 0; }
 .muted { color: var(--sub); font-size: 12px; margin: 4px 0 0; }
 .ops { display: flex; gap: 8px; flex-wrap: wrap; }

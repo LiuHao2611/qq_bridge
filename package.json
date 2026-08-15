@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5173",
     "build": "vite build",
-    "preview": "vite preview --port 4173"
+    "preview": "vite preview --port 4173",
+    "test:e2e:nav": "node tests/verify_nav_loading.mjs",
+    "test:e2e:orb": "node tests/verify_orb_skin.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

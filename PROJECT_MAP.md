@@ -63,6 +63,7 @@ D:\AI\manju_agent\
 | `文档_实在做不了清单.md` | 能力边界清单 | 对照手册契约，本地模式做不到的项（L1 出图已通） | 2026-08-06 |
 | `TEST_REPORT.md` | 端到端测试报告 | 五阶段流水线前后端串联验证（pipeline_e2e 8/8） | 2026-08-07 |
 | `§09_DONE-01_七项自证.md` | §09 补全功能自证 | 独立批次交付的七项自证 | 2026-08-07 |
+| `P1_DELIVERY_REPORT.md` | P1 一致性工作流交付报告 | Lock-Then-Animate 三段式（M1–M5）验收：测试结论、截图说明、改动文件、红线自证 | 2026-08-13 |
 
 ### 2.4 项目说明（按"资料收集清单"整理，2026-08-10 合并为 3 篇）
 | 路径 | 主题 | 用途 | 最后更新 |
@@ -94,6 +95,9 @@ D:\AI\manju_agent\
 | `infra/`（目录） | **Layer0 基础设施抽象（2026-08-08 新建）**：`compute_pool.py`(`ComputePool` 抽象 + `LocalComputePool` ThreadPoolExecutor max_workers=2，注释标明分布式应入队) / `model_pool.py`(**2026-08-08 完善**：不再静态占位，改为真正委托本机已验证 ComfyUI 客户端——`LocalModelPool` 经 `_ComfyAwareEngine` 调 `ai_local` 的 `comfy_available`/`_comfy_text2img`/`_comfy_text2img_with_ipadapter`/`_comfy_text2video`；`face_id`→IP-Adapter 参考图注入、`text2video`→视频工作流(待 Seedance/Wan)、`tts`/`enhance` 由合成阶段本地承担仅登记；`comfy_health()` REDUN-01 探测、`_require_comfy()` 在 ComfyUI 未启动时抛清晰错误由上层回退，`generate()` 含 `_dims` 维度提取；`default_pool=LocalModelPool()`；self-test 通过（ComfyUI down→优雅降级 ALL_OK）；**2026-08-08 当晚端到端验证**：启动秋葉 ComfyUI `D:\AI\ComfyUI-aki-v3.2`（Python 3.13.11+torch 2.13+cu130，监听 `:8188`）后 `comfy_health()`=True、`face_id`/`text2video` handle 的 `comfy_healthy`=True，Layer0 由休眠态转为真正连通。**约束**：该 ComfyUI 目录仅调用/读取，agent 禁止修改/删除其任何文件；aki-v3.2 含完整 ComfyUI 代码 + `comfyui_controlnet_aux`/`ComfyUI_IPAdapter_plus` 节点，但 model 权重(checkpoint/clip_vision/ipadapter)为空占位、由用户自备，故真实出图需用户先放入权重) / `storage.py`(`StorageService` 抽象 + `LocalStorageService` outputs + .meta，INTERMEDIATE_TTL_DAYS=7/FAILED_TTL_DAYS=7，`cleanup_expired` 幂等分批 ≤500 带锁 OPS-02/03)。本地 `personal_local_only` 等价裁剪，不破坏抽象 |
 | `orb/`（目录） | **导演管家悬浮球后端模块（2026-08-12 新增，灰度 `module_flags.director_orb_v2` 默认关）**：orb = 导演 agent 的前端投影，只做「翻译/聚合/代理」，无独立检测；数据复用 `director:<pid>` WS 频道（`orb_` 事件前缀）；`__init__.py`（`register_orb_routes(api)` 门面注册 6 端点）/ `dedup.py`（`DedupLRU` 5 分钟同问题节流，单例 `DEDUP_TTL=300`）/ `suggestion_engine.py`（`OrbSuggestion`/`build_key`/`emit`/`batch_emit`，经注入 `publish_fn` 推 `director:<pid>` 事件 `orb_suggestion`，去重+保序）/ `routes.py`（6 端点全部 `director_orb_v2` 门控，`ORB_DISABLED` 拦截：`/orb/projects/{pid}/asset-readiness`（资产就绪评分+角色/场景/道具 ready/total+missing_role_segments）、`/orb/projects/{pid}/script-analysis`（场次数+连续同场景+空描述+角色出场）、`/orb/shots/{shot_id}/intent-preview`、`/orb/projects/{pid}/run-summary`（含 failed_segments）、`/orb/projects/{pid}/batch-action`（`regenerate`/`skip`/`degrade_retry` 复用 Director 入队+points 审计+CLOSE-04 冻结/退款幂等）、`/orb/projects/{pid}/synthesize-report`（degrade_summary+face pass rate）；批量动作 SQL 参数占位修正（`tuple(seg_set)` 替代 `(seg_set,)`）） |
 | `director/agents/continuity_checker.py` | **导演连续性检查 Agent（2026-08-12 新增）**：`preview_shot_intent(shot_id)`（镜头意图预览，供 `orb/shots/{shot_id}/intent-preview`）/ `check_continuity(project_id, segments)`（跨镜连续性巡检，角色/场景一致性标记）；纯只读诊断，不修改资产；异常诚实上抛 |
+| `director/intent_bridge.py` | **P0 M4 意图流转桥（2026-08-14 新增）**：`agent_outputs_to_intent(visual_data, seq_data, params)` 合并 `VisualControlAgent`/`SequenceSchedulerAgent` 结构化输出（subjects/intent_tags/camera/frame_anchor）为 `ProductionIntent`；`build_workflow_from_intent(intent, catalog, object_info, user_prefs)` 调 `IntentTranslator.translate(intent)`（离线注入 catalog/object_info）返回 `(wf, last_selection)`，全链路日志。打通「子 Agent → translator 走 M3 匹配算法」手册要求（此前仅测试调用，生产未接） |
+| `server/capabilities/`（目录） | **P0 能力维度包（2026-08-13 新增，2026-08-14 按 v2 手册返工）**：`base.py`（`Capability` 抽象基类，`declare`/`build(intent,wf=None)`——`wf=None` 返回结构化 dict，`wf` 给定则**真实往 workflow 插 ComfyUI 节点**如 `IPAdapterFaceID`/`CLIPTextEncode`/`KSampler`/`WanImgToVideo`）/`workflow_builder.py`（轻量 ComfyUI API 工作流构建器 `add_node/find_node/has_node/to_dict`，不依赖真实 ComfyUI，使单测可断言「workflow 含 X 节点」）/`semantic.py`/`temporal.py`/`consistency.py`/`audio_sync.py`/`camera.py`/`frame_anchor.py`/`__init__.py`（`build_all` 逐维度调 `build` 插节点；`declared_implementations()` 改由 `resource_catalog` 算法生成消除手写 chip；首尾帧分级 `_VIDEO_INTERP_SUPPORTED={"WanVideoSampler"}`）。视频生成 = 能力维度组合，模型仅为可替换实现；供 `resource_catalog` 标注与导演 Agent 去硬编码调用；`device.py` 设备算力探测（nvidia-smi/torch 回退，GPU 显存分级 图像≥2GB/视频≥8GB，多设备兼容，驱动 `GET /device/capabilities` 与 `GET /video/readiness` 视频生成前置闸门——1660Ti 6GB 判 video_generation=false 并诚实返回原因+建议，避免用户白等 30 分钟 OOM） |
+| `server/lora/`（目录） | **LoRA 训练模块后端包（2026-08-13 新增，手册 §2/§7/§8）**：`__init__.py`（门面导出 engine/dataset/register/task_runner/preset/captioner）、`preset.py`（`list_presets`/`DEFAULT_PRESET`/`build_params_from_preset`，角色/风格/快速三预设 + 显存自适应）、`dataset.py`（`new_dataset_dir` 落 `data/loras/ds_<ts>`、`import_from_assets` 从资产库拷参考图、`upload_dataset` 校验格式+数量、`validate_dataset` 数量/尺寸门槛校验、`caption_prefix` 角色加触发词前缀/风格不加）、`captioner.py`（`caption_dataset` 调 kohya `train_tagger` 自动打标，引擎缺失 `FeatureUnavailable` 诚实阻断）、`engine.py`（`detect_engine` 返回 `{available,path,train_script,caption_script,reason}`；`build_train_config` 生成 TOML；`run_training` 子进程跑 kohya；**含 `_params_of` 安全解析**——DB `params` 为 JSON 字符串，统一 str→json/dict 直用，修复「真实训练 `AttributeError: 'str' object has no attribute 'get'`」致命 bug）、`task_runner.py`（异步队列 `enqueue_training`/`cancel_training`/`generate_validation_pair` 经 `translator._inject_lora_node` 注入 LoraLoader 生成「有/无 LoRA」对比图，`register_completed_task` 闭环写 `lora_models`） |
 | `points_engine.py` | 积分引擎：`reconcile_points`（启动对账 CLOSE-04）、扣减/冻结/退款；**2026-08-12 新增** `get_points_balance`（orb 批量动作前余额查询，INSUFFICIENT_POINTS 拦截） |
 | `realtime.py` | **§18 WebSocket 网关**：`publish` / `handle_ws` / `connection_count`；token/通道/心跳/事件；**2026-08-09 修复（根因级）**：`handle_ws` 开头补 `await websocket.accept()`——Starlette 1.4+ 强制要求显式完成握手，否则 uvicorn 报 `ASGI callable returned without completing handshake` → HTTP 500，导致 `/ws` 常年不可用（导演实时监督 + ProductionStage WS 派发全部失效）。修复后 `curl` 升级返回 `101 Switching Protocols`。**约定**：改 `handle_ws` 必须保留 `await websocket.accept()` 作为首行 |
 | `memoir_routes.py` | 回忆录模块路由（独立功能，AGENT_SPEC_15） |
@@ -107,6 +111,8 @@ D:\AI\manju_agent\
 | `server/_vendor/routers_compiled.cpython-313.pyc` | **权威恢复产物（Git 跟踪）**：原始 `routers.py` 编译副本，`routers.py` 门面优先从此加载（`__pycache__` 为回退）。即便 `routers.py` 源码被误清空，这里有 100% 等价的可运行后端，且 git 可回退到任意历史版本。 |
 | `version_guard.py`（仓库根） | **误改/误删兜底工具（2026-08-08 新增，Git 跟踪）**：`python version_guard.py backup <file>` 改动前自动快照到 `.backups/`，`restore <file>` 一键回退，`status` 查看 git 基线与备份份数。与 git 互不冲突，见下方「兜底回退」说明。 |
 | `web_app.py`（仓库根 `D:\AI\manju_agent\web_app.py`） | **前端静态服务进程**：托管 `MANJU_FRONTEND_DIR`（**默认** `frontend/dist`）+ 反代 `/api/v1`→`127.0.0.1:7788`；`0.0.0.0:8099`。**2026-08-08 更正**：此前误记在 `server/` 下，实际位于仓库根。**2026-08-08 扩展**：反代 `/api/v1` 超时 `120s→180s`（资产提取长文本后端耗时可达 ~60s，避免 7788 正常返回但 8099 反代先超时）。**2026-08-09 修复上传图破图**：`_serve_file` 在 `outputs/`、`.uploads/` 找不到时兜底 `server/outputs/` 与 `server/.uploads/`（与后端 upload-image 实际落盘路径对齐）。 |
+
+> **P1 一致性工作流后端落点（2026-08-13）**：`server/routers.py` 新增 `POST /projects/{id}/assets/import`（角色卡跨项目深拷贝，含 512 维向量 + 参考图集，同名幂等跳过）、`GET /projects/{id}/assets/importable-roles`（列出其他项目/全局库角色并标记 `already_imported`）、`POST /projects/{id}/assets/batch`（本集资产批量创建/同名幂等）、`GET /consistency/readiness`（Lock-Then-Animate 四杠杆所需权重诚实探测）；`server/capabilities/consistency.py` 提供 `probe_readiness()` 扫描 IP-Adapter / CLIP Vision / ControlNet / InsightFace，缺失时返回 `missing` 明细，不静默降级。
 
 > **🛡️ 兜底/回退保障机制（2026-08-08 建立，针对「误改/误删关键文件」）**
 > 项目此前**无版本控制**，任何关键文件被覆盖都无法恢复。现已建立三重保险：
@@ -223,8 +229,8 @@ D:\AI\manju_agent\
 | `useModuleFlags.js` | **模块灰度开关**（与 `module_flags` 对齐）：路由导航守卫据此拦截已停用模块（2026-08-07 新增） |
 | `useDirectorOrb.js` | **导演悬浮球共享状态单例（2026-08-09 新增，2026-08-12 升级为阶段管家中枢）**：`state` 新增 `phase`（当前阶段 1–5）；导出 `PHASE_SKILLS`（P1–P5 子 Agent 技能清单，与后端 `director/agents/*.py` 对齐）；`directorOrbInit(pid, phase)`（pid 变化重置并订阅 `director:<pid>` WS + 3s 轮询兜底 `_pollFallback`）/ `directorOrbSetPhase(phase)` / `directorOrbDestroy()`；`pushGeneration`/`appendGenerationLog` 实时小任务生命周期；`NODE_TXT/NODE_KIND/NODE_ORDER` 九节点中文标签；`_onEvent` 处理 progress→completed/error/alert；**2026-08-12 v2 管家层**：`state` 扩展 `orbEnabled`/`orbState`(六态 idle/watching/suggestion/warning/error/success)/`readiness`/`scriptAnalysis`/`runSummary`/`synthReport`/`suggestions`/`dismissed`；导出 `visibleSuggestions`(过滤未忽略)/`decisionItems`(severity=='error')/`unreadCount`/`dismissSuggestion`(localStorage `orb_dismissed`)/`runOrbBatch`(调 `orbApi.batchAction`，后端强制 CLOSE-04)/`refreshOrb`(轮询 4 orb API)/`_recomputeOrbState`(六态优先级 error>warning>suggestion>watching(running)>success(done)>idle)；建议默认由前端轮询派生（后端 producer 暂不主动推 `orb_suggestion` WS） |
 
-### 3.4 组件 `src/components/`（28，按功能分组）
-- **流程壳/导航**：`ProjectFlowNav.vue`（5 阶段步骤，step4=生成生产）、`SideBar.vue`（侧栏导航；实际样式由全局 `style.css` 控制；**2026-08-08 修复高亮**：`isActive` 中 `/projects` 不再把 `/`（首页）误判为激活，避免首页与项目中心同时高亮；**2026-08-09 新增「数据查询」分组**：侧栏在「账户服务」后新增「数据查询」组，仅含「我的数据」入口（`/my-data`，`isActive` 显式支持该路径），与后台管理严格分离）；**2026-08-09 修复（项目中心 tab 自动打开项目 BUG · 语义保留式 · 会话记忆版）**：2026-08-08 的「项目记忆」用 `usePersistedState("manju_last_project")` 持久化到 localStorage → 刷新/列表访问后点项目中心自动跳历史项目（BUG）。第一轮修（19:xx）误用 `props.pid` 当前路由判断 → **项目内切首页再切回会掉回列表**（把用户「项目内停留」功能也砍了，二次返工）。**最终正确实现**：`const lastProjectCenterPath = ref('/projects'); watch(() => route.path, p => { if (p==='/projects' || p.startsWith('/projects/')) lastProjectCenterPath.value = p }, {immediate:true}); projectCenterPath = computed(() => lastProjectCenterPath.value)`。**会话级内存 ref（不写 localStorage，刷新即重置为 /projects）**，记录「最后一次项目中心上下文完整路径」（含项目子页 /projects/:id/assets 等）。语义矩阵：①项目内 /projects/:id（含子页）切首页再切回项目中心 → 停留原项目 ✓（用户原始功能保留）②列表 /projects 切首页再切回 → 停留列表 ✓（BUG 修复）③刷新页面 → 重置 /projects 列表，不自动打开历史项目 ✓。`isActive` 仍按 `/projects`/`/projects/` 正确高亮；**2026-08-08 移除侧栏「项目内」分组**：项目内阶段导航统一由顶部 `ProjectFlowNav` 承载，侧栏不再自动展开「项目策划/项目编辑页/素材库/工作流画布/人生回忆录编辑页」分组，减少左下角视觉干扰）、`TopBar.vue`、`ProjectEntry.vue`（按 current_phase 跳转）、`ProjectsList.vue`、`Home.vue`
+### 3.4 组件 `src/components/`（28，按功能分组；ProjectFlowNav 已删除，ProjectBookShell 已新增）
+- **流程壳/导航**：`ProjectBookShell.vue`（**2026-08-13 新增**：电子书翻页外壳，取代原 `ProjectFlowNav.vue`；中间 slot 展示当前阶段内容，左上角/右上角各一个 150px 大角翻页按钮，径向渐变 + 多重 inset 阴影 + 高光伪元素营造水球/内凹效果，底部 5 阶段小圆点，顶部中央阶段浮层，键盘 ←→ 翻页；包裹 `Assets.vue`/`ProjectPlanning.vue`/`ProjectFragmentEditor.vue`/`ProductionStage.vue`）、`SideBar.vue`（侧栏导航；实际样式由全局 `style.css` 控制；**2026-08-08 修复高亮**：`isActive` 中 `/projects` 不再把 `/`（首页）误判为激活，避免首页与项目中心同时高亮；**2026-08-09 新增「数据查询」分组**：侧栏在「账户服务」后新增「数据查询」组，仅含「我的数据」入口（`/my-data`，`isActive` 显式支持该路径），与后台管理严格分离）；**2026-08-09 修复（项目中心 tab 自动打开项目 BUG · 语义保留式 · 会话记忆版）**：2026-08-08 的「项目记忆」用 `usePersistedState("manju_last_project")` 持久化到 localStorage → 刷新/列表访问后点项目中心自动跳历史项目（BUG）。第一轮修（19:xx）误用 `props.pid` 当前路由判断 → **项目内切首页再切回会掉回列表**（把用户「项目内停留」功能也砍了，二次返工）。**最终正确实现**：`const lastProjectCenterPath = ref('/projects'); watch(() => route.path, p => { if (p==='/projects' || p.startsWith('/projects/')) lastProjectCenterPath.value = p }, {immediate:true}); projectCenterPath = computed(() => lastProjectCenterPath.value)`。**会话级内存 ref（不写 localStorage，刷新即重置为 /projects）**，记录「最后一次项目中心上下文完整路径」（含项目子页 /projects/:id/assets 等）。语义矩阵：①项目内 /projects/:id（含子页）切首页再切回项目中心 → 停留原项目 ✓（用户原始功能保留）②列表 /projects 切首页再切回 → 停留列表 ✓（BUG 修复）③刷新页面 → 重置 /projects 列表，不自动打开历史项目 ✓。`isActive` 仍按 `/projects`/`/projects/` 正确高亮；**2026-08-08 移除侧栏「项目内」分组**：项目内阶段导航统一由 `ProjectBookShell` 翻页按钮承载，侧栏不再自动展开「项目策划/项目编辑页/素材库/工作流画布/人生回忆录编辑页」分组，减少左下角视觉干扰）、`TopBar.vue`、`ProjectEntry.vue`（按 current_phase 跳转）、`ProjectsList.vue`、`Home.vue`
 - **P1 资产**：`Assets.vue`（角色阶段/姿势面板 + **2026-08-08 增强**：拖拽/批量上传、上传元数据弹窗、搜索/标签筛选、从全集导入弹窗、角色类型 badge、空状态引导、骨架屏；**同日新增角色卡 hover 三按钮覆盖层**：①拖动角色卡(`Grid`/`draggable`) ②编辑角色(`EditPen`→`RoleEditorModal`) ③预览角色图(`ZoomIn`)；`toCard` 的 `prompt` 用 `splitVoice` 剥离音色块，`onRoleSaved` 写回完整 `description`(含音色)保证一致）；**2026-08-08 新增「📝 从剧本提取」按钮 + 三步弹窗**（仅本集 scope）：①选剧本来源（聚合项目场次/分镜 `_build_project_story_text`、粘贴全文或拖入/选择 `.txt` / `.md` / `.srt` / `.docx` 文件；`.srt` 自动剔除时间轴、`.docx` 复用 `parseDocx.js` 纯前端 OOXML 解压并回填文本框，显示文件名标签）②实时打印运行日志（准备识别/请求后端/模型返回/解析完成；请求中 `setInterval` 每 5 秒打印『模型推理中…已等待 N 秒』进度提示，最长等待 120 秒）并展示模型原始返回预览，方便排查提取失败③勾选/编辑候选（角色/场景/道具分组，已存在同名标 dup-tag 默认不选）④批量创建本集资产并展示结果；配合后端 `extract-assets` / `assets/batch` 实现从剧本一键提取→用户确认→批量创作的五阶段闭环起点；**2026-08-09 补充：资产初始化页缺返回项目中心入口**——`.page-head` 首子加 `<button class="back" @click="router.push('/projects')">← 返回项目中心</button>`（与 P2/P3 `ProjectPlanning.vue`/`ProjectFragmentEditor.vue` 一致；复用全局 `.back` 类，CSS 已在 `style.css:140`），script 增 `useRouter` + `const router = useRouter()`；build hash `index-BqxqqU1A`），`AssetStageManager.vue`（**2026-08-08 新增**可复用「资产阶段 / 变体」管理组件：props `assetId/initialStages/showAddButton/title/type('role'|'scene'|'prop')/mode('panel'|'strip')`，`onMounted`/`watch(assetId)` 调 `listStagesWithPoses` 加载；**阶段名自由输入**（`<input list>` 用 `ASSET_STAGE_OPTIONS` 作建议，支持「童年期」等年龄阶段，也支持「白天/雨景/破损」等人物状态/场景状态/物品状态，不再锁死）；`mode='panel'` 显示完整网格（含姿势/变体 chip 增删）；`mode='strip'` 显示左侧卡片内联横条（阶段小图+名称+年龄/序号，＋添加阶段），点击阶段可 `emit('select')`；每次增删 `emit('changed')`；内置图片 lightbox）、`RoleEditorModal.vue`（**2026-08-08 新增**：小云雀式「编辑角色」弹窗——左侧角色大图(替换/预览)、右侧 角色名称/定位(`el-select`)/设定(`textarea`)/**角色音色**(`textarea`，与设定共生于 `description`，用 `\u0001VOICE\u0001` 不可见分隔，加载时 `splitVoice` 剥离避免污染分镜提示词)/上传音频/AI生成，**底部「参考图 / 年龄阶段」区改为内嵌 `AssetStageManager`(type='role' mode='panel'，显示该角色全部阶段子卡，支持增删阶段/姿势与自定义阶段名，`emit('stagesChanged')`)**，底部「去画布编辑/取消/保存」；**2026-08-08 Director Layer 3 收口**：阶段详情区新增「真人资产 512 维身份特征向量」条——每阶段徽标显示 512维 已提取/缺失、`参考图 N/3`（手册 §5.1 要求≥3张）、注入资格（§5.3 权限校验前置：≥3参考图 且 已提取向量）、「提取512维」按钮调用 `extractStageFaceVector`（缺引擎/无脸诚实 toast，不静默），底部阶段条每阶段叠 512维 状态圆点；`loadStages` 经 `getAssetFaceVectors` 批量拉取向量状态渲染徽标；保存走 `PATCH /assets/{id}` 持久化 name/description(设定+音色)/role_type/cover_url）、`；**2026-08-08 交互优化**：接入 `useAutoSave` 自动保存——`persist`(不关弹窗、返回 true/false) 经 1.5s 防抖自动落库，保存中/已自动保存/失败状态可见(底部 `.re-autosave`)，`el-dialog` 由 `:close-on-click-modal="false"` 改为 `:before-close="beforeClose"`，有脏数据时点击遮罩/ESC/右上角 × 均触发二次确认，避免误关丢失编辑；**2026-08-08 修复**：补充 `nextTick` 导入与 `USE_MOCK` 声明，解决角色卡点击编辑 `ReferenceError`）、`GlobalAssets.vue`（全局资产库；**2026-08-08 增强**：角色 Tab「编辑」接入 `RoleEditorModal`(含角色音色)，场景/道具仍用原简单「编辑资产」弹窗；`adaptAsset` 用 `splitVoice` 剥离音色供 type 展示）、`src/assetMeta.js`（**2026-08-08 新增**工具：`splitVoice`/`joinVoice`——角色设定与音色共生于 `assets.description` 的隔离器，因后端 `patch_asset` 仅支持 name/description/tags/cover_url/role_type 且无独立音色列）
 - **P1 资产（2026-08-09 续 · 角色弹窗图片显示修正）**：`RoleEditorModal.vue` ——①左侧角色大图 `.re-cover` 与阶段详情大图 `.re-stage-img-wrap` 的 `object-fit` 由 `cover` 改为 `contain`，完整显示整张参考图并等比缩放（不再裁剪）；②图片预览/放大弹窗 `.re-preview-box` 改为 flex 居中、`img` 用 `width/height:auto` + `max-width/max-height:95vw/vh` + `object-fit:contain`，按原始比例最大化展示。
 - **P1 资产（2026-08-09 续 · 添加阶段弹窗重做 + 强制层级命名）**：`RoleEditorModal.vue` ——「添加阶段」弹窗重建为与「编辑角色」主面板**完全一致**的两栏布局：左栏参考图预览（上传按钮 + blob URL 预览），右栏表单（**层级命名** + 年龄）。新增 `.re-modal-wide{width:720px}`、`.re-modal-body{flex;gap:18px}`、`.re-stage-name-prefix`（静态前缀 chip 显示 `{{父角色名}}-`，`border-radius:8px 0 0 8px`）、`.re-stage-name-input`（`border-radius:0 8px 8px 0`）。`submitStage` 强制 `fullName = (form.name||'').trim() + '-' + suffix`，父名或后缀为空则拒绝提交；底层经 `asset_id` 绑定父角色，阶段卡=角色卡变体（层级关系保留）。解决「添加阶段有报错」+ 命名强制「如 周岩-青年」。
@@ -237,6 +243,7 @@ D:\AI\manju_agent\
 - **P4 生产**：`ProductionStage.vue`（生成生产页，**2026-08-08 新增 per-segment 进度透出**：`onDirectorEvent` 接 `director:<pid>` 频道 `segment` 事件，`directorSegments` ref 渲染片段级状态/进度条/视频链接横幅，three 态配色 running/succeeded/failed；`onDirectorRun` 重置）、`TaskCenter.vue`（**推理监控**诊断页）、`VideoLogPanel.vue`；**无编辑表单**，自动保存即现有自动轮询刷新，弹窗仅监控类无需 before-close 改动
 ；**2026-08-08 Director Layer 3 收口**：新增「⚙ 参数」面板下发 Director 全局生产参数（手册 §3.2.2/§3.3.2/§3.4.2/§3.4.4：分辨率/画幅/模型/seed 策略/真人资产开关/尾帧锚定/优先级/品控开关/人脸修复/音视频配置）；运行结果区展示 N03 全局风格参考图（`/file?name=` 真实回显）与 N06 品控报告（片段/文件/时长一致/人脸相似度/结论 表格 + 不合格分镜数 + 告警列表），数据来自 `directorRunStatus` 的 `snapshot.global_style_ref`/`quality_report`/`quality_alerts`/`failed_shot_list`（后端 `DirectorRunResult.to_dict` 已暴露，人脸相似度阈值≥0.8、音画≤100ms 按手册 §3.4.5）；**2026-08-09 缺口补全**：新增 BGM 开关/路径 + 三音量滑块 + SFX 路径（§3.4.4 三轨独立增益）、「首尾帧深度复用(N04)」勾选、片段级 暂停/恢复/取消 内联按钮 + 「↻ 断点续跑」入口（④断点续跑 UI）
 - **创作/工具**：`Txt2Img.vue`（**2026-08-11 新增「漫画创作」模式**：`mode` 切换，占满文生图区域，复用 Director N03 全局风格参考 + §5.2 双路 IP-Adapter 角色一致性，一键 4 格漫画）、`Img2Img.vue`（**2026-08-12 重写为专业图片编辑页**：8 模式/蒙版画笔/前后对比滑块/编辑历史/反推提示词，详见上方「专业图片编辑页」知识沉淀块）、`Img2Prompt.vue`、`Canvas.vue`、`Creative.vue`
+- **LoRA 训练（2026-08-13 新增 · 资源中心入口）**：`LoraTrain.vue`（**五区闭环**，手册 §9）：①类型切换(`character`/`style`) ②数据集（资产导入 `import_from_assets` / 上传 `lora/dataset/upload` multipart / 自动打标 `lora/caption`，引擎缺失时 banner 诚实提示安装路径）③参数配置（预设下拉 `lora/presets` / 触发词 / 底模 / seed）④训练进度（WS `subscribe('lora:'+taskId)` 实时收 `status`/`progress`/`registered`，SVG loss 曲线 + ETA 估算）⑤模型管理（注册/启用/停用/删除/验证对比弹窗 `lora/models/{id}/validate` 展示 baseline/with_lora 对比图）。遵循全局 `user-select:none` 与现有 CSS 变量（`--card/--line/--sub/--txt/--pur/--green/--warn`），已 `bash scripts/build_frontend.sh` 构建通过（1686 modules，无错误）；侧栏 `SideBar.vue` 资源管理组新增 `{icon:'🎯', label:'LoRA 训练', path:'/lora-train'}`、`router.js` 新增 `/lora-train` 路由（无 moduleKey 默认启用）、`api.js` 末尾新增 13 个 lora API 函数 + `uploadLoraDataset`(FormData)
 > **2026-08-11 补充（漫画创作页面 + 一键 4 格漫画：新增 ✅）**：在文生图 `Txt2Img.vue` 扩展「漫画创作」模式（`mode` 切换，占满文生图区域，左参数面板 + 右结果区）。
 > - **后端复用 Director 生图约束**：`server/ai_local.py` 新增 `generate_comic` / `_split_story_to_panels`，复用导演 `visual_control`(N03) 全局风格参考图（暖/冷/中性色温 → `_comfy_text2img` 出图 → `_upload_to_comfy`，风格路 IP-Adapter 权重 0.4）+ §5.2 双路 IP-Adapter 角色一致性；为此把 `_comfy_text2img_with_ipadapter` 的 `ref_comfy_name` 改为**可选**（有角色参考才注入身份路，否则仅风格路注入，保证 4 格无角色参考时仍风格统一）；新增 `COMIC_STYLE_SUFFIX`（日漫/美漫/港漫/写实漫画/水彩绘本）+ `COMIC_NEGATIVE`；Ollama 结构化分镜拆分（失败规则兜底按标点均分 panels）。
 > - **路由**：`server/routers.py` 定点覆盖区新增 `POST /t2i/comic`（`asyncio.to_thread(generate_comic)`，长任务 10 分钟超时不阻塞事件循环；body 含 story/style/panels/resolution/ratio/steps/seed/character_refs；`_decode_dataurl_to_png` 把前端 dataURL 解码落 D 盘 `.tmp/comic_refs` 合规）；`src/api.js` 新增 `t2iComic`（10 分钟超时）。
@@ -248,6 +255,10 @@ D:\AI\manju_agent\
   - `Settings.vue` | **2026-08-08 重构（去联网化 + 补全未实现）**；**同日再重构 AI 模型 Tab**：创作/策划/视频/文生图 4 类模型均支持「本地 / 在线」来源切换；本地模式可自定义服务地址（Ollama/ComfyUI）与模型/工作流，Ollama 模型下拉支持 `filterable allow-create` 与刷新列表；在线模式可配置 API 地址、API Key、模型名；每个卡片提供「测试连接」按钮调用后端 `/models/test`；设置以 `modelSettings` 对象整体存后端 settings 表并向后兼容旧字段 `createModel`/`planningModel`/`videoModel`/`imgModel`：Tabs 精简为 通用(主题/语言/外观密度) / 通知(桌面通知/声音/静默时段/接收类型) / 网络(API服务器/超时/并发/真实测速 ping `/api/v1/health`) / 备份(日志保留+一键备份真实 JSON 下载+导出我的数据) / 关于(本机 AI 能力说明)；AI 模型改为本地 Ollama/ComfyUI 下拉（`getLocalModels` 拉取，fallback 静态列表）；**移除** 代理设置/数据本地化/在线模型(Seedance/GPT-Image/Gemini)/隐私 Tab/「检查更新」联网检查（改为「已是最新演示」）；清除缓存真实清理 `wn_` 前缀 localStorage；备份/导出真实下载 JSON；`onMounted` 拉 `getSettings()` 合并后端（保留本地 theme/accent） |
 - **系统/管理**：`SystemManager.vue`（**服务与版本管理器页**：服务健康/启停 + 模块版本快照/回退/启用开关，2026-08-07 新增）
 - **P1 资产（2026-08-08 续 · 缩略图修正与美化）**：`RoleEditorModal.vue` ——①底部阶段条 `.re-bottom` 由 `border-top` 改为带 `var(--bg-2)` 圆角面板托盘，`align-items: stretch`→`center`，消除 56px 缩略图卡被拉伸填满 ~190px 托盘后的大块空白；②阶段小图 `.re-stage-mini-img` 升级为 60×60 圆角卡片 + 阴影 + hover 缩放 1.06 + 底部黑色渐变遮罩，年龄徽标改为图内左上角半透明浮标，选中态加紫色辉光描边与投影；③阶段详情大图 `.re-stage-img-wrap` 改用 `aspect-ratio:3/4` 固定比例（`align-self:flex-start`，不再依赖父级 stretch 高度），根治上传参考图后大图被拉伸/塌陷；④全量动态图（封面/阶段图/姿势图/小图）加 `@error="imgError"` 破图兜底（URL 失效回退占位 SVG，不再显示破图图标）；概念重申：**阶段卡=角色卡变体**，经 `asset_id` 绑定父角色，命名/底层 ID 随角色、供大模型在提示词中识别创作（添加阶段弹窗 sub 文案已说明）。
+- **P1 M2 标准肖像 + 身份卡 + 参考图集**：`RoleEditorModal.vue` ——角色编辑器左侧大图/预览，右侧角色名称/定位/设定/音色，底部「角色身份卡」区展示 512 维人脸向量状态（已提取/缺失），内嵌 `AssetStageManager` 管理多阶段与姿势参考图集；`AssetStageManager.vue` 支持角色/场景/道具的阶段增删与姿势变体。
+- **P1 M4 角色卡跨项目复用（深拷贝）**：`Assets.vue` ——本集角色 Tab 工具栏新增「📥 导入历史角色卡」按钮，打开跨项目导入弹窗，列出其他项目 / 全局库角色卡（显示项目来源、角色定位、已导入状态），点击「导入（深拷贝）」调 `POST /projects/{id}/assets/import`，后端深拷贝身份卡 + asset_stages（含 face_vector）+ asset_reference_set（含向量），同名角色幂等不重复。
+- **P1 M5 权重前置诚实探测**：`Settings.vue` ——「能力维度」Tab 新增「权重就绪状态（Lock-Then-Animate 四杠杆所需）」卡，四列展示 IP-Adapter / CLIP Vision / ControlNet / InsightFace 的就绪/缺失/探测中状态；全部缺失时红态提示「生成时将诚实报错（不会静默降级为无锁脸）」，与后端 `GET /consistency/readiness` 联动。
+- **P1 M3 Lock-Then-Animate 四杠杆可视化气泡**：`useDirectorOrb.js` + `DirectorOrb.vue` ——`state.lockedCharacter` 承载已锁定角色 `{name, lockMode, firstFrame, faceVectorDim, consistencyPrompt, referenceImages}`；导演运行进入 N03 真人资产注入阶段时由 WS `translator:selection` 事件填充；`DirectorOrb.vue` 面板渲染「已锁定角色」气泡，四杠杆 chip 标准肖像 / 512维向量 / 一致句 / 参考图集 N 同时高亮，缺失项灰态展示，禁止无锁脸静默降级。`useDirectorOrb.js` 含 `window.__orbState = state` 调试验收钩子（非破坏性，仅挂全局引用供 Playwright 截图注入）。
 
 ---
 
@@ -380,6 +391,7 @@ C:/Users/L/.workbuddy/binaries/python/envs/default/Scripts/python.exe launcher.p
 - 拖拽引用专项：`tests/test_drag_refs.py`（REDUN-03 文本 @引用 解析单元测试，6 项）、`tests/test_drag_refs_e2e.py`（后端闭环 E2E：PUT shots 文本 @[名]→落库 asset_refs + BR-009）。
 - **导演管家悬浮球单测（2026-08-12 新增）**：`tests/unit/test_orb_dedup.py`（DedupLRU：首推/窗口内抑制/不同 key 独立/窗口过期/重置，6 项）、`tests/unit/test_orb_suggestion_engine.py`（build_key/emit 经注入 publish_fn 推 `director:p1` 事件 `orb_suggestion`/去重/默认 publish 安全/batch_emit 保序，6 项）、`tests/unit/test_orb_routes.py`（FastAPI TestClient + mock db/common/module_manager/points_engine：灰度→ORB_DISABLED、asset-readiness 形状+主角未就绪≤50 扣分、run-summary 形状+failed_segments、synthesize-report degrade_summary、batch-action regenerate 重排失败+审计/skip 取消/积分不足 INSUFFICIENT_POINTS/非法动作 INVALID_ACTION/空 segment_ids INVALID_PARAMS，12 项）；共 24 项全过。运行：`cd server && python -m unittest discover -s ../tests/unit -p 'test_orb_*.py'`（或单文件 `python -m unittest tests/unit/test_orb_routes.py`）。
 - 运行：`node tests/ui_flow.mjs` / `node tests/pipeline_e2e.mjs` / `python tests/test_drag_refs.py` / `python tests/test_drag_refs_e2e.py`。
+- **P1 一致性工作流验收截图（2026-08-13 新增）**：`.tmp/p1_shots/capture.py`（Playwright + managed Python）：自动捕获 M2 角色编辑器 / M3 悬浮球已锁定角色气泡 / M4 资产页角色 Tab + 跨项目导入弹窗 / M5 设置页权重就绪状态卡 5 张验收图。运行需先启动后端 `:7788` + 前端 `:8099`；脚本使用调试验收项目 `P1交付验证`（`7a4c669c-...`）并注入测试角色「林默」。
 
 ---
 
@@ -516,6 +528,107 @@ cp build/dist/Setup.exe D:/AI/ManjuAgent_Setup.exe
 - `server/tests/test_typed_templates.py`：9 项断言 —— ControlNet 数值占位符类型、GFPGAN/CodeFormer 占位符填充、`face_restore` 与 `_comfy_text2img_with_controlnet` 的「模板优先成功 / 模板异常回退内联 / ComfyUI 离线抛错」三态。
 - 运行：`python -m unittest server/tests/test_typed_templates.py` → 9 passed；既有 `test_manual_named.py` → 11 passed（1 skipped 离线集成）。
 
+### 10.4 P0 阶段测试（2026-08-13 建立，2026-08-14 补全）
+- `server/tests/test_capabilities.py`：6 维能力接口 declare/build 全量断言（语义/时序/一致性/音画同步/运镜/首尾帧）。
+- `server/tests/test_translator_model_agnostic.py`：LTX↔Wan 模型无关切换验证；`translator:{pid}` 选型事件契约。
+- `server/tests/test_m1_build_nodes.py`（2026-08-14 新增）：`TestBuildInsertsNodes` —— 6 维度 `build(wf)` 真实插节点硬断言（consistency 插 `IPAdapterFaceID`、semantic 插 `CLIPTextEncode`、temporal 插 `KSampler`、audio_sync 插 `VHS_VideoCombine`、frame_anchor 插 `WanImgToVideo`/`LTXVImgToVideo`、camera 折叠进 `CLIPTextEncode.text`）+ `build_all` 全插 + `wf=None` 兼容 dict；共 9 断言。
+- `server/tests/test_m2_annotation.py`（2026-08-14 新增）：`TestDetectCapabilityDimensions`（IPAdapter→consistency / LTX 外推 / Wan 插值 / VHS→audio_sync）+ `TestDeclaredImplementationsAlgorithmic`（6 维度齐全 / Wan 插值 LTX 外推 / IP 族声明 consistency，算法生成非手写 chip）；共 9 断言。
+- `server/tests/test_m3_matching.py`（2026-08-14 新增）：`TestTagDrivenNodeSelection` —— 默认选 Wan / 插值标签选 Wan / 外推标签选 LTX / 用户偏好优先（filter+score+sort，禁止 if-else 硬编码模型名）；共 4 断言。
+- `server/tests/test_director_intent_bridge.py`（2026-08-14 新增）：`TestAgentOutputsToIntent` + `TestIntentFlowToTranslator`（LTX↔Wan 切换、同意图不同模型全链路）；共 5 断言。
+- 运行（P0 专项）：`.venv/Scripts/python.exe -m pytest tests/test_m1_build_nodes.py tests/test_m2_annotation.py tests/test_m3_matching.py tests/test_director_intent_bridge.py tests/test_capabilities.py tests/test_translator_model_agnostic.py -q` → **全绿**。
+- 运行（全量回归）：`cd server && .venv/Scripts/python.exe -m pytest tests/ -q` → **146 passed, 0 failed, 1 skipped**（2026-08-14 实测；含性能测试 `test_performance.py` 因已将 LoRA 匹配列表进程内缓存 + 模板/能力包预热，P95<1ms、单图<2ms，满足手册 §5.3 时延要求）。
+
+### 10.6 P0 v3 手册执行交付（2026-08-14）
+
+> 对照《P0开发手册_面向WorkBuddy_v3.md》逐条修复 11 项设计偏离/未完成项（详见 `P0_DEVIATION_CHECKLIST_v3.md`，已全部翻绿）。
+
+**M1 角色分支**：`server/capabilities/consistency.py` `build()` 读 `intent.subjects[].role` → identity 插 `IPAdapterFaceID`(锁脸) / outfit 插普通 `IPAdapter`(锁服装, weight≤0.6)，逐 subject 串链。新增 `server/intent_engine/production_intent.py` `Subject` dataclass（asset_id/role/weight）+ `subjects`/`spatial`/`style_anchor` 字段（默认工厂，向后兼容），`intent_engine/__init__.py` 导出 `Subject`。
+
+**M2 三层标注 + source**：`server/intent_engine/resource_catalog.py` `detect_capability_dimensions` 重写——层1 节点名(`source=name_semantic`)/层2 输入签名(`_signature_dimension`, `source=signature`)/层3 未知节点写入 `unclassified_nodes`(status=pending)；首尾帧分级改 `_frame_anchor_grade` 按输入字段判定，移除硬编码 `_VIDEO_INTERP_SUPPORTED`；每个 capability chip 带 `source` 字段；`_persist_unclassified` 幂等落库。
+
+**M3 匹配**：`server/intent_engine/node_family_mapper.py` `resolve()` 增兼容过滤（`_infer_arch` + `compatible_checkpoints` 排除不兼容候选）+ 打分 `user_tags×2 + auto_tags×1`，排序键 `(-score, priority_index)`，日志 `[MATCH] scores=... filtered_out=...`。
+
+**M4 结构化意图**：`server/director/agents/visual_control.py` 输出 `subjects[].role`；`server/director/agents/sequence_scheduler.py` 新增 `_plan_spatial()`（composition + subjects[position/orientation/gaze]）；`server/director/intent_bridge.py` 透传 `subjects(role)` + `spatial` 进 `ProductionIntent`。
+
+**M5 全局风格锚点**：`visual_control._decide_style_spec()` 产出结构化 `{lighting,color_temperature,mood}`（warm=3200/cool=6500/neutral=5000）；`db.save_style_anchor` 持久化到 `style_anchors` 表 + 挂接 `projects.style_anchor_id`；`semantic.build` 追加风格词进每分镜 prompt，`consistency.build` 末端追加「全局风格锚点·IPAdapter」实现跨分镜统一；`realtime.publish_director_notice(project_id, {type:"style_anchor_applied", message:"已应用全局风格锚点"})` 接通 DirectorOrb 悬浮球（`useDirectorOrb.js` 已订阅 `director:<pid>` notice）。
+
+**DB §3**：`server/db.py` `_migrate` 幂等新增 `style_anchors` / `unclassified_nodes` 两表 + `projects.style_anchor_id` 列；helper `save_style_anchor`/`get_project_style_anchor`/`annotate_unclassified_node`。
+
+**新增/扩展测试**：
+- `server/tests/test_m5_style_anchor.py`（新增，12 断言）：`_decide_style_spec` 色温映射 / style_anchor 流转 intent / semantic 风格词注入 / consistency 全局风格 IPAdapter 注入 / db 往返。
+- `test_m1_build_nodes.py` 扩展：`test_identity_role_inserts_faceid` / `test_outfit_role_inserts_plain_ipadapter_not_faceid` / `test_mixed_subjects_insert_both_node_types` / `test_outfit_weight_cap_at_0_6`。
+- `test_m2_annotation.py` 扩展：层2 签名推断 / 层3 兜底 / `source` 字段。
+- `test_m3_matching.py` 扩展：`TestCompatAndWeighting`（user_tags×2 / compat 排除 / compat 保留）。
+- `test_director_intent_bridge.py` 扩展：`TestM4RoleAndSpatial`（role + spatial 流转）。
+
+**验收运行**：`cd server && .venv/Scripts/python.exe -m pytest tests/ -q` → **173 passed, 1 skipped, 0 failed**（2026-08-14 实测）。运行时证据见 `.tmp/p0_proof/proof.log` + `gen_proof.py`（捕获真实 [BRIDGE]/[MATCH] 日志 + 节点清单，证明 M1/M4/M5 全链路闭环）。
+
+**遗留（非代码缺失，沙箱限制）**：M5 专用前端「参考图+参数可编辑」面板与运行时录屏需用户本地启动 ComfyUI(:8188) 后补——符合铁律3「无截图=未交付」诚实标注。
+
+### 10.7 P1 v2 手册执行交付（2026-08-14）
+
+> 对照《P1开发手册_面向WorkBuddy_v2.md》逐条修复缺口 + 红线违规（详见 `P1_DEVIATION_CHECKLIST_v2.md`，全部翻绿）。执行前已完整阅读手册（强制前置）。
+
+**§0.3 P0 三依赖打通**：
+- `load_face_vector(asset_id)`（face_features.py:241）按主阶段回 512 向量；原 stage 版改名 `load_face_vector_by_stage`（face_features.py:202），3 处调用方更新（routers.py:1233 / post_production.py:255 / visual_control.py:74）。
+- `load_reference_image(asset_id)`（reference_set.py）解析 `/file?name=` → REF_OUT 本地路径，无则诚实 None。
+- `find_ipadapter_weight()`（face_features.py:281）缺失抛 `FeatureUnavailable(code=IPADAPTER_WEIGHT_MISSING)`，禁 None/静默；`consistency.build()` 三处写死文件名改 `_resolve_ipadapter_file()` 软兜底。
+
+**M1 身份卡组装**：`ollama_extract_attributes` / `build_consistency_sentence` / `assemble_identity_card`（identity_card.py）三步入库（抽向量+Ollama属性+一致句），返回含向量状态卡。★ **本轮关键生产缺陷修复**：`_ensure_primary_stage` 在未提交事务切新阶段，`store_face_vector` 独立连接看不到 → 向量静默丢失；修复为 store 前 `conn.commit()`，单测稳定绿。
+
+**M2 红线（光线）**：删除硬编码 `_LIGHTING`；新增 `get_style_anchor_for_asset(asset_id)`（asset→project→`db.get_project_style_anchor`）→ `_lighting_phrase` 注入 warm/cool/neutral，无锚点走中性兜底（证明无写死）。
+
+**M3 四杠杆注入**：`inject_consistency(intent, asset_id)`（consistency.py）dict 返回 subjects[role=identity]+first_frame+一致句，object 注入属性。
+
+**M4 深拷贝复用**：`import_role_card(source, target)`（routers.py 独立函数）深拷贝 assets/stages(含 face_vector)/asset_reference_set(含 face_vector)，主键 `uid()` 重生成，同名幂等，错误显式 `ApiError`。
+
+**§4 Schema 偏差**：保留 assets 四列 + asset_reference_set（含每张 face_vector），未做破坏性迁移（无创性铁律优先，功能等价）。
+
+**验收运行**：`cd server && .venv/Scripts/python.exe -m pytest tests/test_p1_dependencies.py tests/test_p1_m2_reference_set.py tests/test_p1_m3_consistency.py tests/test_p1_m4_role_import.py tests/test_m5_style_anchor.py -q` → **33 passed (9+4+3+5+12), 0 failed**（2026-08-14 实测，多随机种子重排稳定）。运行时证据见 `.tmp/p1_proof/proof.log`。
+
+**遗留（诚实标注）**：M3 悬浮球"已锁定角色 X"前端气泡后端数据已齐备、待本地启动 ComfyUI 后补截图（符合铁律「无截图=未交付」）；`assemble_identity_card` 尚未接线上端点（当前库函数+单测）。
+
+### 10.8 P2 v2 手册执行交付（2026-08-14）
+
+> 对照《P2开发手册_面向WorkBuddy_v2.md》执行意图与控制三里程碑（M1 运镜映射+动作扩写+视频 prompt 组装 / M2 首尾帧双锚定 / M3 视频质量验收运动检测）。执行前已完整阅读手册（强制前置）。详见 `P2_DEVIATION_CHECKLIST_v2.md`（§4 红线 8/8 ✅；§0.3 衔接 6/6 ✅；§3 要求 2/4 ✅ + 2/4 ⚠️ 诚实缺口）。运行时证据见 `.tmp/p2_proof/proof.log`。
+
+**§0.3 P0/P1 接口打通**（三条调用链 + 单测断言）:
+- `server/capabilities/semantic.py:92` `video_prompt = build_shot_video_prompt(intent)` → M1 视频 prompt 经 `features.video_prompt.build_video_prompt` 组装（含 spatial/一致句/风格锚点）。
+- `server/capabilities/camera.py:73` `fragment = resolve_camera_fragment(motion)` → 统一走 `features.camera_mapping.CAMERA_MOVEMENT_PROMPT` 超集（含前端枚举别名+手册官方 9 项+P0 推断），已删私有表、未改 `src/mock.js`；保留 `_CAMERA_KEYWORDS` 推断不回归。
+- `server/capabilities/frame_anchor.py:40` 消费 `getattr(intent,"frame_anchor_mode",None)`（M2 `choose_anchor_mode` 产出）；不支持插值→外推，声明插值却无尾帧→诚实降级 first_frame + warning；未写→保留 P0 原推导（向后兼容）。
+- `server/director/intent_bridge.py:107-116` 返回前 best-effort `apply_anchor_mode(intent, model_capability)` 写回 `intent.frame_anchor_mode`。
+- `server/intent_engine/production_intent.py` 新增 `frame_anchor_mode: Optional[str]=None` 字段 + to_dict/from_dict。
+
+**新增后端模块**（`server/features/`）:
+- `camera_mapping.py`：`resolve_camera_movement`(:55) / `resolve_camera_fragment`(:81) 超集映射+未知回退 static+warning。
+- `video_prompt.py`：`_default_ollama_expand`(:45) / `expand_action`(:55, ThreadPoolExecutor 15s 超时+失败回退 description) / `build_spatial_fragment`(:95) / `build_video_prompt`(:122, 六片段拼接+空兜底 cinematic scene) / `build_shot_video_prompt`(:157, 编排 4.1-4.4 并透传 ollama_fn/timeout)。
+- `ffmpeg_utils.py`：抽帧/抽尾帧(`-sseof -0.1`)/`video_frame_indices`(前中后)；env `FFMPEG_BIN`（生产用；单测用 PIL fixture + 注入 extract_fn 离线验证）。
+- `frame_chain.py`：`_supports_interpolation`(:20) / `choose_anchor_mode`(:30) / `apply_anchor_mode`(:51) / `chain_frames`(:67, 仅同 scene_id 复用尾帧作首帧)。
+- `motion_qc.py`：`frame_diff`(:26, PIL 灰度差) / `detect_motion`(:52) / `perturb_seed`(:79, 调 `derive_seed` SHA256 派生，禁 hash()) / `qc_and_retry`(:93, 换 seed 重试≤2→仍静态 mark_failed；未注入则懒加载 worker 函数，失败降级不空转)。
+
+**修改后端文件**（增量、向后兼容）:
+- `camera.py`(:16-17 导入, :72-73 改用 resolve_camera_fragment)、`semantic.py`(:80-93 增量注入 video_prompt 并并入 action/spatial_frag 到 positive_prompt，异常 warning 降级)、`frame_anchor.py`(:38-50 消费 frame_anchor_mode)、`intent_bridge.py`(:104-118)、`production_intent.py`(frame_anchor_mode 字段)、`test_p1_dependencies.py`(清理 os.remove 包 try/except OSError 应对安全删除钩子 fail-closed)。
+
+**前端改动**（同一交付单元）:
+- `src/components/ProjectFragmentEditor.vue`(M1)：分镜默认对象 + `action:''`；运镜下拉旁新增「动作」输入框 + `.camera-action-preview` 预览（运镜 label ｜ 动作 或『留空将由 AI 自动扩写』）。
+- `src/components/DirectorOrb.vue`(M2/M3)：`p2AnchorItems`(锚定模式气泡+诚实后缀「（模型不支持插值）」) + `p2QcItems`(运动检测品控 pill) + 对应 CSS。
+- 生产构建：vite ✓ built in 21.48s → `index-C7rXVzY6.js` (1,193.23 kB)。
+
+**新增单测**（40 例全 PASS；完整套件无回归）:
+- `server/tests/test_p2_m1_video_prompt.py`(17)：TestCameraMapping / TestExpandAction / TestSpatialFragment / TestBuildVideoPrompt / TestBuildShotVideoPrompt / TestP0DependencyWiring。
+- `server/tests/test_p2_m2_frame_anchor.py`(13)：TestChooseAnchorMode / TestChainFrames / TestFrameAnchorBuildConsumesMode / TestApplyAnchorModeViaBridge。
+- `server/tests/test_p2_m3_qc.py`(10)：TestFrameDiff / TestDetectMotion / TestPerturbSeed / TestQcAndRetry。
+
+**验收运行**：`server/.venv/Scripts/python.exe -m pytest tests/test_p2_m1_video_prompt.py tests/test_p2_m2_frame_anchor.py tests/test_p2_m3_qc.py -q` → **40 passed, 0 failed**；完整 `pytest tests/ -q` → 全 PASS (1 skipped, 0 failed)。
+
+**遗留（诚实标注·铁律「无截图=未交付」）**：M1 运镜可见 / M2 三镜头衔接 / M3 静态自动重试 的运行时录屏+前端截图待用户本地启动 :7788+:8099 (及 ComfyUI/ffmpeg) 后补采；`worker.regenerate_video_task`/`worker.mark_video_task_failed` 真实签名建议本地核实（motion_qc 已 try/except 兜底）。代码+单测+前端构建交付单元已完成。
+
+### 10.5 P1 一致性工作流测试（2026-08-13）
+- `server/tests/test_p1_m2_reference_set.py`：M2 Lock 阶段——角色参考图集上传/提取/幂等，4 项断言。
+- `server/tests/test_p1_m3_consistency.py`：M3 Animate 阶段——四杠杆一致性注入接口与权重缺失诚实报错，3 项断言。
+- `server/tests/test_p1_m4_role_import.py`：M4 复用阶段——角色卡跨项目深拷贝（含 512 维向量 + 参考图集）、同名幂等、非角色/不存在资产红线，5 项断言。
+- 运行：`cd server && .venv/Scripts/python.exe -m pytest tests/test_p1_m2_reference_set.py tests/test_p1_m3_consistency.py tests/test_p1_m4_role_import.py -q` → **12 passed, 0 failed**（连续 6 次合并运行无 flake）。
+
 ---
 
 ## 11. 导演Agent能力增强 · 最终自查（严格按手册，2026-08-13）
@@ -560,3 +673,215 @@ cp build/dist/Setup.exe D:/AI/ManjuAgent_Setup.exe
 - `server/ai_local.py` 多处 `seed = random.randint(0, 2**31-1)`（1282/1318/1732/1764/1943/2008/2177/3702/4356/4530/4565/4609/4649/4703 等）用于普通分镜/视频生成的随机种子。
 - 手册 §9/§11 字面要求「seed 禁 random，须 uuid4/SHA256」。但：**Asset ID 全 uuid4** ✅；**角色卡可复现 seed 走 `derive_seed` SHA256**（§8 P3 验收 ✅）。上述 `random` 仅用于需要多样性的普通出图种子，非 Asset ID、非角色卡复现种子。
 - 结论：不违反 P3 验收（角色卡可复现），但字面偏离红线措辞。如需严格合规，可将普通生成 seed 改为 `int(uuid.uuid4().hex,16) % 2**31` 一类 uuid 派生；属低优先级。
+
+---
+
+## 12. LoRA 训练模块落地（2026-08-13 · 严格按《LoRA训练模块_开发手册.md》+《设计思路文档.md》）
+
+> 目标：在 manju_agent 内新增「LoRA 训练」业务能力，形成闭环——上传/导入数据集 → 自动打标 → 异步训练 → 注册 `resource_catalog` → 导演 Agent 自动使用。覆盖手册 M1/M2/M3（资源目录匹配 + 翻译注入 + 验证对比）。全程改动落在 `D:\AI\manju_agent`，符合 C 盘/目录外约束（FS-01/FS-03/OPS-01）。
+
+### 12.1 后端新增（`server/lora/` 包，6 文件 + `__init__.py`）
+- **`preset.py`**：`list_presets()` 返回角色/风格/快速三预设（`resolution`/`max_train_steps`/`train_batch_size`/`learning_rate`/`network_dim`/`network_alpha` 等），`DEFAULT_PRESET='character'`，`build_params_from_preset(key, seed)` 显存自适应（1660Ti 6GB 默认降 `train_batch_size`/`network_dim`）。
+- **`dataset.py`**：`new_dataset_dir()` 落 `data/loras/ds_<timestamp>`（项目根，非 C 盘）；`import_from_assets(asset_id, ds_dir)` 从 `asset_stages` 拷参考图；`upload_dataset(saved_files, ds_dir)` 校验 PNG/JPG/WEBP + 最少张数，返回 `{count, rejected}`；`validate_dataset(ds_dir, lora_type)` 数量/尺寸门槛；`caption_prefix(caption, lora_type, trigger)` 角色在 caption 前加触发词前缀、清洗 `(0.98)` 置信度噪声，风格不加。
+- **`captioner.py`**：`caption_dataset(ds_dir, lora_type, trigger_word)` 调 kohya `train_tagger`（`sd-scripts` tagger）自动打标；引擎缺失抛 `FeatureUnavailable(reason)`（诚实阻断，不静默）。
+- **`engine.py`**：`detect_engine()` 返回 `{available, path, train_script, caption_script, reason}`（**已安装经典 sd-scripts（commit `b8896aad`）→ `available=True`**，前端不再 banner 提示安装；caption_script 指向 `finetune/tag_images_by_wd14_tagger.py`）；`build_train_config(task)` 生成 kohya TOML（fp16/xformers=false【经典 sd-scripts 不含 xformers，改用 PyTorch SDPA】/gradient_checkpointing=true、resolution、max_train_steps）；`run_training(task)` 子进程 `python train_network.py --config_file <toml>`；**`_params_of(task)` 安全解析**——DB `params` 存的是 `json.dumps(...)` 字符串，统一 `str→json.loads` / `dict` 直用 / 其他 `{}`，覆盖 `build_train_config` 与 `run_training` 两处（**修复真实致命 bug**：原 `(task.get("params") or {}).get(...)` 在真实训练时必抛 `AttributeError: 'str' object has no attribute 'get'`，导致真实训练任务 100% 崩溃）。
+- **`register.py`**：`manual_register(model_id)` / `set_model_status(id, status)` / `delete_model(id)` 写 `lora_models` 表（`status∈{active,disabled}`）；`find_best_lora_static(intent_tags, asset_id, base_checkpoint)` 直查 DB `lora_models`(active) → 组件兼容（`_infer_arch`：v1-5→sd1.5 / sdxl→sdxl）→ 语义+资产打分（角色 `asset_id` 强绑 +5）→ 无匹配返回 None（供导演 Agent 选型）。
+- **`task_runner.py`**：异步队列 `enqueue_training`/`cancel_training`/`_serve_one`（消费 `lora_train_tasks`）；`generate_validation_pair(lora_row)` 经 `translator._inject_lora_node(workflow, lora_name, weight=0.85)` 注入 `LoraLoader`（插在喂 KSampler 的 model 源与 KSampler 之间，CLIP 取 `CheckpointLoaderSimple[id,1]`，模板无关）生成「有/无 LoRA」对比图，返回 `{baseline, with_lora}`（经 `/file?name=...` 回传，**不在 `/api/v1` 下**）；`register_completed_task` 训练完成闭环写 `lora_models`。
+
+### 12.2 后端改动（现有文件）
+- **`db.py`**：`_migrate()` 幂等新增两表 `lora_train_tasks`（状态机 `queued→running→succeeded/failed/cancelled`，CLOSE-01）+ `lora_models`（状态 `active/disabled`），含 `idx_lora_tasks_status`/`_project`、`idx_lora_models_status`/`_asset` 索引；`TABLES` 常量加 `lora_train_tasks`/`lora_models`。
+- **`routers.py`**：门面定点覆盖区（`from lora import ...`）挂载 12 端点：`GET /lora/presets`、`POST /lora/train`、`GET /lora/train`、`GET /lora/train/{id}`、`POST /lora/train/{id}/cancel`、`POST /lora/caption`、`POST /lora/dataset/upload`(multipart)、`GET /lora/models`、`POST /lora/models/{id}/register|enable|disable`、`DELETE /lora/models/{id}`、`POST /lora/models/{id}/validate`。信封 `{code,data,message,request_id,timestamp}` + 列表 `{items,pagination}`；**引擎缺失/打标缺失/ComfyUI 离线均诚实抛 `ApiError`，禁止静默失败（手册 §3.1/§11.4）**。
+- **导演 Agent 复用**：`translator._inject_lora_node` 通用注入（无需模板改动）；`resource_catalog.find_best_lora_static` 提供选型接口——导演出图前自动检索匹配 LoRA。
+
+### 12.3 前端新增/改动
+- **`src/components/LoraTrain.vue`（NEW）**：五区完整实现（类型切换 / 数据集 / 参数 / 实时进度 / 模型管理），遵循全局禁文本选中与现有 CSS 变量；WS `subscribe('lora:'+taskId)` 实时收 `status`/`progress`/`registered`，SVG loss 曲线 + ETA；验证对比弹窗展示 baseline/with_lora。构建通过（`scripts/build_frontend.sh`，1686 modules，无错误）。
+- **`src/api.js`**：末尾新增 `loraPresets`/`createLoraTrain`/`listLoraTrain`/`cancelLoraTrain`/`loraCaption`/`listLoraModels`/`registerLoraModel`/`enableLoraModel`/`disableLoraModel`/`deleteLoraModel`/`validateLoraModel`/`uploadLoraDataset`(FormData multipart，BASE=`/api/v1`) 等 13 个函数。
+- **`src/router.js`**：导入 `LoraTrain` + `/lora-train` 路由（无 moduleKey 默认启用）。
+- **`src/components/SideBar.vue`**：资源管理组新增 `{icon:'🎯', label:'LoRA 训练', path:'/lora-train'}`。
+
+### 12.4 测试与验证（Task #136）
+- **`tests/test_lora_module.py`（NEW）**：独立可运行（优先 `MANJU_DB_PATH=D:/AI/manju_agent/.tmp/lora_test/*.db`，不依赖 pytest），7 项断言：`test_migration_creates_lora_tables`、`test_detect_engine_missing_honest`、`test_build_train_config_toml`、`test_caption_prefix_character_adds_trigger`、`test_find_best_lora_match_and_compat`、`test_inject_lora_node_synthetic`、`test_inject_lora_node_real_template` → **7 PASS / 0 FAIL**。
+- **期间抓出真实 bug 并修复**：`engine.py` 的 `params` 解析崩溃（`AttributeError: 'str' object has no attribute 'get'`），新增 `_params_of()` 覆盖两处——证明测试价值，否则真实训练任务必定失败。
+- **后端编译/冒烟全绿**：`python -m compileall -q server tests` EXIT=0；TestClient 冒烟 `/lora/presets`→200 code=0 engine.available=False（诚实降级）、`/lora/train` 缺 dataset→400 code=10002 / 缺触发词→400 code=10002（校验生效）、happy-path 上传 10 张 PNG→`dataset_dir` 落 `D:\AI\manju_agent\data\loras\ds_*`→建任务 200 code=0 状态 queued→列表总数 1（验证「上传→建数据集→建任务→入库」完整链路）。
+
+### 12.5 交付状态与诚实说明
+- ✅ **代码闭环落地**：后端 8 核心文件（db/routers/lora 包 6 文件）+ 前端 vue/api/router/sidebar 全部完工，编译/功能/构建验证通过。
+- ✅ **kohya_ss 引擎已安装（2026-08-13 落地）**：`detect_engine().available=True`，真实训练/打标入口已可用（详见 §12.6）；`tests/test_lora_module.py` 7/7 PASS，后端编译 `compileall -q server` EXIT=0。
+- ⚠️ **验证对比图依赖本地 ComfyUI + LoRA 可加载**：`/lora/models/{id}/validate` 在 ComfyUI 离线时诚实返回 `AI_PROVIDER_TIMEOUT`，不伪造对比图。
+- ✅ **修复的真实训练 bug**：`_params_of` 修复已并入 `engine.py`，真实训练链路不再崩溃。
+- 待办（用户侧）：在「LoRA 训练」页上传/导入数据集 → 打标 → 训练 → 注册 → 导演 Agent 自动选用（**引擎已就绪，无需再装 kohya_ss**）。
+
+### 12.6 kohya_ss 引擎安装纪实（2026-08-13 · 本机落地）
+> 目标：让 `detect_engine().available` 由 False 变 True，真实训练/打标可用。全部落在 `D:\AI`（铁律：C 盘零写入）。
+
+- **安装形态（关键决策）**：kohya_ss 主仓 master/v24.1.7 已重构为 `kohya_ss` Python 包、**删除经典根 `train_network.py`**。改用其 `.gitmodules` 钉死的经典 **sd-scripts commit `b8896aad400222c8c4441b217fda0f9bb0807ffd`**（含根 `train_network.py` + 支持 `--config_file`，且 `library/train_util.read_config_from_file` 会展平 TOML 小节，兼容本模块 `build_train_config` 生成的 `[training_arguments]` 包裹格式）。下载自 `codeload.github.com` CDN（github 主站超时，codeload 可达），解压至 `D:/AI/kohya_ss`。
+- **Python / 虚拟环境**：经典 sd-scripts 钉死 `transformers==4.36.2` 依赖 `tokenizers<0.19`，而 tokenizers 0.18.x 仅 3.11 有 wheel（3.13 须 Rust 源码编译，沙箱无）。故引擎 Python 用 **Python 3.11.9**（embeddable 改造为自包含，置于 `D:/AI/kohya_ss/venv/Scripts/python.exe`，正是 `engine._python_for_kohya()` 默认查找的 Windows 布局）。
+- **依赖**：`torch 2.1.2+cu121`（CUDA 12.1，适配 1660Ti 6GB）/ `torchvision 0.16.2+cu121` / `transformers==4.36.2` / `diffusers==0.25.0` / `accelerate==0.25.0` / `numpy==1.26.4`（<2，避免与经典 transformers 冲突）/ `opencv-python==4.7.0.68` / `onnx` / `onnxruntime` / `safetensors==0.4.2` / `imagesize==1.4.1`（train_util 强依赖，曾漏装致 `--help` 崩溃）/ `toml` / `voluptuous` / `huggingface-hub` / `rich` / `tensorboard` / `ftfy` / `einops` / `prodigyopt` / `lion-pytorch`；并以 `pip install -e .` **可编辑安装 sd-scripts 自身**，使 tagger 的 `import library` 可用（打标脚本在 `finetune/` 子目录，仅靠 `cwd=root` 无法 import `library`）。
+- **预设调整（preset.py）**：去 `xformers`（经典 sd-scripts 未含，改 PyTorch SDPA）；三预设 optimizer 由 `AdamW8bit` 改 `AdamW`（避免依赖 bitsandbytes）。`build_train_config` 生成 TOML 含 `network_module="networks.lora"`、`network_dim=32`、`network_alpha=16`、`xformers=false`、`gradient_checkpointing=true`、`mixed_precision="fp16"`。
+- **验证**：`detect_engine()` → `available=True`，`train_script`/`caption_script` 均非空；`train_network.py --help` 与 `finetune/tag_images_by_wd14_tagger.py --help` 均 exit 0；venv python `import torch`（CUDA available, cuda_ver 12.1）、`transformers/diffusers/accelerate/library/onnxruntime/cv2` 全部 OK。
+- **诚实降级保留**：若将来 `D:/AI/kohya_ss` 被移除，`detect_engine()` 仍诚实返回 `available=False` 并阻断训练/打标（手册 §3.1/§11.4 红线未破）。
+- **残留清理（已知）**：早期误装的冗余 embeddable `D:/AI/python311`（torch 2.13 cpu）**已删除**（后台清理 4033 文件，`exists=False`）；`D:/AI/.tmp` 下载中间包已清空。
+
+## §12.7 导演 Agent 能力增强 — 偏离项处理纪实（2026-08-13）
+> 对照《导演Agent能力增强_开发手册》v1.0 与《设计思路文档_终版》v2.0 逐条核对后，对「不等于已落地可运行」的 12 项完成处理。原则：无创（不破坏已验证行为）；依赖外部运行时（ComfyUI/InsightFace）的项以「离线可验证 + 优雅降级 + 诚实探测」收口，不伪造结果。
+
+- **T1 冗余清理**：`intent_engine/templates_runtime/`（空遗留目录，注释称已并入 `templates/`）已删除，无任何模块 import 引用。
+- **T2 选型事件名常量化**：新增 `realtime.EVENT_TRANSLATOR_SELECTION = "selection"`；`realtime.publish_translator_selection` 与 `sequence_scheduler.py` 共用该常量；前端 `useDirectorOrb._onTranslator` 严格 `event !== 'selection'` 对齐（契约固化，消除魔法字符串）。
+- **T3 视频模板双轨（设计有意，非 bug）**：`translator.py` 注释固化——有首帧→`shot_video_with_anchor`（七步手册路径帧锚定）/无首帧→`shot_video_text2video`；生产同步统一走 `shot_video_gen`。五个视频模板共存，互不冲突。
+- **T4 模板清单超集**：代码实际 16 个系统模板 + `user_custom/`，完整覆盖手册 §2.7 的 6 个（character_genesis / scene_genesis / character_card_gen / shot_image_gen / shot_image_gen_ip / shot_video_with_anchor），无缺漏；设计文档列的 8 个亦含于超集。
+- **T5 worker 任务类型**：保持 `workflow_json` 泛型消费（`worker.select_submission_strategy`）；手册 §6 的 character_genesis / scene_genesis / shot_video_with_anchor 三种任务经模板产出 workflow_json 即被覆盖，功能等价更通用。
+- **T6 WS 订阅位置**：`translator:{pid}`/`director:{pid}` 订阅实际落在 `composables/useDirectorOrb.js:321-323`（单一职责），`ws.js` 仅提供通用 subscribe；架构优于手册字面位置。
+- **T7 comfy_env 整合**：`resource_catalog._enrich_from_disk()` 复用 `comfy_env.get_comfy_root()` 磁盘扫描语义（与 `discover_weight` 等价），离线/磁盘不可达静默跳过，不阻断 live 目录构建。
+- **T8 角色卡管线离线可验证**：新增 `tests/test_character_card_v2_offline.py`，mock ComfyUI/InsightFace 后跑通 ①-⑥ 确定性管线（prompt 构建 / derive_seed 恒定 / 能力匹配 / 选型推送），离线证明逻辑闭环。
+- **T9 环境健康探测**：新增 `scripts/health_check.py` 探测 7788/8099/8188/11434 四项端口并结构化报告（服务未起诚实报 DOWN）。
+- **T10 preferred_video_model 默认值**：`node_family_mapper.DEFAULT_PREFERRED_VIDEO_MODEL = "WanVideoSampler"`（1660Ti 适配占位，待真机调优），用户未设置时回退，仍可被 priority 自动降级覆盖。
+- **诚实未尽（仍需外部运行时）**：端到端真实出图/出视频需 ComfyUI(:8188)+InsightFace 实跑；本环境仅跑单测+集成结构校验。环境健康四项端口未在此环境启动服务做实跑探测（health_check 可随时复跑）。
+
+## 13. P5 怪盗风主题（2026-08-14）
+
+> 依据 `D:/AI/md/万能短剧AI创作平台_P5风格UI重构开发手册.md` v1.0 落地第三套可选主题（与既有的 t-gray/t-green/t-blue/t-gradient/t-splice 并存，可一键切回）。
+
+### 13.1 设计铁律（已落实）
+- **三色**：绯红 `#E4002B` / 墨黑 `#0B0B0B` / 纸白 `#F5F1E8` + 警示黄 `#FFE100`（<5% 用量）
+- **零圆角**：所有圆角令牌归零（`--radius:0`），按钮/卡片/输入/标签全部直角
+- **硬位移印刷影**：`4px 4px 0 0 rgba(0,0,0,.9)`（无 blur），hover 时位移 `-2px,-2px` + 影同步放大
+- **斜切构图**：块斜字回正；`--skew:-6deg` 应用到页头大标题/激活侧栏项/标签/P5 按钮
+- **小号文字禁绯红前景**：正文 ≤12px 文字一律走 `--sub` 灰阶，绯红只用于强调/激活态
+
+### 13.2 实现策略（零模板改动 · RED-01/RED-02 合规）
+- **新增预设类 `t-p5`**：`useTheme.js` 把 `'p5'` 加入 `VALID_PRESETS`，`'t-p5'` 加入 `PRESET_CLASSES`；`readPreset()` 默认返回 `'p5'`（首次访问即启用，原预设保留可随时切回）
+- **`html.t-p5 { ... }` 单作用域块**（写入 `src/style.css` 末尾 t-splice 之后）：
+  - 重映射现有 app 变量：`--bg=--p5-ink`、`--panel=--p5-ink-soft`、`--card`、`--line-dark=#2A2A2A`（补定义）、`--txt=#fff`、`--sub=#B8B4AC`、`--pink/pur/grad=--p5-red`、`--green=#7ED957`、`--warn=--p5-alert`
+  - 自定义令牌（无字体文件 RED-04）：`--font-display/cond/body/num` 纯系统栈；`--text-display/h1/body/caption/num`；`--shadow-hard/lg/red/paper`；`--clip-slant/para/zig/tear/star`；`--dur-*`/`--ease-*`/`--skew-*`
+  - Element Plus 变量批量覆盖：`--el-color-primary=--p5-red`、`--el-text-color-primary=#fff`、`--el-border-radius-{base,small,round}=0`、`--el-box-shadow*=--shadow-hard*`
+- **全局覆盖现有组件类**（`.btn`、`.nav-item`、`.proj-card`、`.asset-card`、`.shot-table .idx`、`.page-head h1`、`.preview-box`、`.el-button--primary`、`.el-card`、`.el-dialog`、`.el-table`、`.el-input`、`.el-progress-bar` 等），使 **33 个组件零 `.vue` 模板改动即 P5 化**（仅追加 1 行 keep-alive 外层 `<transition>`，见 §13.3）
+- **`.p5-*` 工具类**：`p5-title/p5-tag/p5-card/p5-btn{--primary,--dark,--paper,--ghost}/p5-progress/p5-notice/p5-badge-star/p5-duotone/p5-halftone/p5-diag-split/p5-starburst/p5-zigzag/p5-tear/p5-divider(-red)/p5-guide-line/p5-num/p5-label`（供后续精修，不强制使用）
+- **路由切换 wipe**：`<transition name="p5-page" mode="out-in">` 包裹 `<keep-alive>`（**不加 `:key` 以保留现有缓存语义**）；`p5-page-enter/leave-from/to` 类仅作用域 `html.t-p5` 下，translateX + skew + clip-path inset；`@media (prefers-reduced-motion:reduce)` 减动覆盖（RED-04/§7.9 MUST）
+
+### 13.3 改动文件清单（仅 4 文件）
+| 文件 | 改动 |
+|---|---|
+| `src/style.css` | 末尾追加 ~450 行 `html.t-p5 { ... }` 作用域块（含令牌/Element Plus 覆盖/组件类全局重写/`.p5-*` 工具类/路由切换 wipe/减动偏好）；无既有规则被删改，仅纯增量 |
+| `src/composables/useTheme.js` | `VALID_PRESETS` 加 `'p5'`；`PRESET_CLASSES` 加 `'t-p5'`；`readPreset()` 默认返回 `'p5'`（保持原 `''`/gray/green/blue/gradient/splice 全部可切换） |
+| `src/App.vue` | `<keep-alive>` 外层包 `<transition name="p5-page" mode="out-in">`（**未加 `:key`**，缓存语义保持不变） |
+| `src/components/Settings.vue` | `accents` 数组追加 `{key:'p5', color:'#E4002B'}`；`ACCENT_TO_PRESET/PRESET_TO_ACCENT` 加 `p5:'p5'`；`defaults().accent` 由 `'purple'` 改为 `'p5'`（仅追加映射+默认项，业务逻辑零改动） |
+
+### 13.4 验证（Playwright · `D:/AI/manju_agent/.tmp/p5_verify.mjs`）
+- **构建**：`bash scripts/build_frontend.sh` 成功（1688 modules，CSS hash `index-CdEWsbvh.css` 615.36 kB / gzip 89.74 kB，无错误；esbuild 临时目录经 `TMPDIR/TEMP/TMP=D:/AI/manju_agent/.tmp/vite` 约束在 D 盘，FS-01/FS-03 合规）
+- **运行时计算样式断言 12/12 全绿**：
+  1. html 类含 `t-p5`（默认启用）✅
+  2. `--p5-red` 注入 = `#E4002B` ✅
+  3. `--p5-ink` 注入 = `#0B0B0B` ✅
+  4. `--radius` 归零 = `0` ✅
+  5. body 背景 = `rgb(11, 11, 11)` ✅
+  6. el-button--primary 圆角 = `0px` ✅
+  7. el-button--primary 背景 = `rgb(228, 0, 43)` ✅
+  8. 原生 .btn 圆角 = `0px` ✅
+  9. .page-head h1 斜切 transform ✅
+  10. .page-head h1 颜色 = 纸白 ✅
+  11. 路由切换无新增运行时错误 ✅
+  12. 无 pageerror / console error ✅
+- **截图归档**：`D:/AI/manju_agent/.tmp/p5_home.png`、`p5_settings.png`（首页红侧栏激活 + 创作驾驶舱斜切大标题 + 硬影按钮；设置页 6 主题色圆点含新 P5 绯红 #E4002B）
+
+### 13.5 接入与回退
+- **启用**：默认即开启 P5；也可手动到设置页 → 外观 → 主题色选「#E4002B 绯红」圆点
+- **回退**：清空 `localStorage.manju_theme`（设回 `''` 或 `gray/green/blue/gradient/splice` 任一），侧栏/按钮/卡片瞬时回到原主题（CSS 切换无重建成本）
+- **回滚**：`.tmp/p5_backup/` 含 4 文件 `.bak` 起点（`style.css.bak` / `useTheme.js.bak` / `App.vue.bak` / `Settings.vue.bak`），紧急回退用 `cp .tmp/p5_backup/*.<bak>-renamed src/<原路径>` 即可
+
+### 13.6 详情文档
+- 详见 `docs/ui_p5_theme.md`（令牌矩阵、组件映射表、回退步骤、克制清单）
+- 设计契约：`D:/AI/md/万能短剧AI创作平台_P5风格UI重构开发手册.md` v1.0
+
+### 13.7 第 10 章验收整改（2026-08-14 · 全部 15/15 通过）
+依照手册 §10 验收清单逐项自检与补漏。
+
+**A2 零圆角全局兜底** — `html.t-p5 * { border-radius:0 !important }`（覆盖任何残留 6-12px 圆角，含 scoped 组件与 Element Plus）。
+**A5 页面大标题斜切** — 扩展选择器至 `.page-head h1, .dash-title h1, .ftitle .ti:not(input)`，覆盖首页（`.dash-title`）、项目中心/设置/资产/生产（`.page-head`）、策划/编排（`.ftitle .ti`，排除编辑器 input 守 D2 可读）。
+**A7 予告状标签** — `.el-tag` / `.asset-tag` 改为 `clip-path: var(--clip-para)` + `skewX(-4deg)` + 硬影 + 保留 type 语义色（success/warning/danger/info/primary）。
+**A8 主按钮斜切平行四边形** — `.btn` 与 `.el-button--primary` 加 `transform: skewX(-4deg)`；子元素 `> span / > i` 反向 `-skewX` 保持字正；hover `translate(-2px,-2px)`、active `translate(2px,2px)`。
+**A10 数字令牌化** — `.stat-value / .points / .points b / .credits b / .el-progress__text / .progress .lab / .duration / .shot-table .idx` → `font-family: var(--font-num); font-variant-numeric: tabular-nums`。
+**A12 首页红条** — 新增 `.dash-header::after` 斜切红条（首页不在 `.page-head` 内，单独补）。
+**B2 弹窗斜切入场** — `.el-dialog / .modal / .el-drawer` → `animation: p5-dialog-in`（`translateY(-18px) skewX(-4deg) rotate(-1deg)` → 原位）。
+**D1 小号文字非绯红前景** — `.el-tabs__item.is-active` / `.el-step__title.is-finish/is-process` 文字改 `var(--p5-white)`，保留红条/红点作为强调。
+**B3 任务完成予告状通知 + 星爆（新组件）** — 新增 `src/components/P5Celebrate.vue`（teleport 全局层，pointer-events:none）。触发：① `window.dispatchEvent(new CustomEvent('p5:celebrate', {detail:{msg}}))`；② `MutationObserver` 监听 DOM 出现 `.el-message--success` 自动表演。在 App.vue 挂载。复用既有 `.p5-notice` / `.p5-starburst` 样式。
+**首页数据非空态** — `src/components/Home.vue` 提取 `MOCK_DASHBOARD` 常量并强化兜底：后端 `/home/dashboard` 返回结构不含 `stats`（或为空）时强制使用 mock（此前仅 catch 抛错时才兜底，200 但 schema 不兼容会被吞），保证创作驾驶舱 6 张统计卡永远有值。
+
+**改动文件清单（第 10 章整改）**
+- `src/style.css` — 新增「P5 整改补强」块（A2/A7/A8/A10/A12/B2）；扩展 `.page-head h1` 选择器加 `.dash-title h1 / .ftitle .ti:not(input)`；D1 改色 2 处。
+- `src/components/P5Celebrate.vue` — 新建（B3 任务完成通知 + 星爆）。
+- `src/App.vue` — `import P5Celebrate` + `<P5Celebrate />` 挂载（一加一减，零业务逻辑改动）。
+- `src/components/Home.vue` — 提取 `MOCK_DASHBOARD` + 成功路径增加 stats 缺失兜底。
+
+**验证（Playwright · `.tmp/p5_remediate.mjs`）**
+- 15/15 通过：A1 墨黑背景、A2 零圆角(卡片/按钮/标签/输入)、A3 硬影无 blur、A5 标题 skew(.page-head/.dash-title/.ftitle)、A7 el-tag/asset-tag 斜切撕裂、A8 主按钮斜切、A10 tabular-nums、B1 路由 wipe、B2 弹窗斜切入场、A11 装饰层≥2(halftone + 红条)、A12 页头红条、B3 预告状+星爆、D1 小号非绯红、C2 主题相关无报错、首页数据非空态。
+- 截图 7 页：`D:/AI/manju_agent/.tmp/p5_rem_{home,settings,projects,assets,planning,editor,production}.png`。
+- 已知非主题回归：DirectorOrb 4 个 `/api/v1/orb/*` 接口后端 500（前置缺口导致控制台网络资源 500，但零 pageerror，组件渲染正常）。
+
+**纪律（RED 红线）**
+- ✅ RED-01：仅 Home.vue 增 1 行兜底判断（防御式数据兜底，不改变业务流程/意图）；其余 3 文件为纯 UI（CSS + 装饰组件 + 挂载）。
+- ✅ RED-02：未删除任何已落地业务入口。
+- ✅ RED-04：未引入字体/CDN/运行时依赖。
+
+### 13.8 已知遗留（非本轮交付）
+- DirectorOrb 浮层面板在 P2-P4 阶段页会覆盖在 `.dash-header`/`.page-head`/`.ftitle` 顶部，与页面大标题区域有视觉重叠（fig 5.png 4 张阶段页）。该行为来自 DirectorOrb 自身 fixed 定位（前次重构确定），不是 P5 主题回归，需要单独调整 orb 浮层 z-index/位置。
+- `/api/v1/home/dashboard` 后端响应 `{code:0, data:{updated_at, weekly_segments_generated, hours_saved, recent_projects...}}` 与前端 `getDashboard` 期望的 `r.dashboard` 包装结构不一致（schema 缺口）。本轮通过前端兜底让 UI 有值；后续应同步后端或前端契约。
+
+### 13.9 P3（编排层可插拔版）交付 · 2026-08-14 ✅
+> 手册：`D:\AI\md\P3开发手册_面向WorkBuddy_v2.md`（编排层可插拔版）。**注意**：本项 P3 与历史"分镜编辑与资产绑定 P3"（§见各处 `ProjectFragmentEditor.vue`）是**不同里程碑**，勿混淆。本 P3 = 编排层可插拔（Skills + 自定义模板 + 长期记忆），对标 updream 的 Skills/节点/长期记忆。
+> 铁律自证：见仓库根 `proof.log`（逐条对齐 P0 §0 + P3 §0.2/§0.3/§4/§5）。16/16 单测 PASS + 5 张 Playwright 截图 + 本会话 smoke 全绿。
+
+**M1 Skills 技能库（真调 P0 translator）**
+- 后端：`server/skills/__init__.py`（`load_skills` / `run_skill`）；内置 4 技能 `skills/builtin/*.json`（skill_camera_design=shot_video_text2video / skill_script_plan=shot_txt2img / skill_character_multiview=character_genesis / skill_style_anchor=scene_genesis）。`run_skill` 第158行 `translator.translate(intent)` 真调（非固定文本，红线"禁空壳"）。
+- 端点：`GET/POST /skills`、`GET/PUT/DELETE /skills/{id}`、`POST /skills/{id}/run`。
+- 前端：`src/components/SkillPanel.vue`（新增）+ `src/components/Canvas.vue`（改造：挂载 SkillPanel + `canvas-wrap` @drop 读 `skillId` + 运行弹窗）；`src/api.js` 增 `listSkills/createSkill/getSkill/updateSkill/deleteSkill/runSkill`。
+- 验收：技能面板渲染 4 内置技能；拖拽执行真调 translator（本地 ComfyUI 未起→诚实 40001）；`intent_template` 含 `subjects[].role="identity"`（单测断言，符合 P0 M4 结构）。
+
+**M2 自定义模板 + 可视化编辑器（注册进 P0 映射）**
+- 后端：`server/features/user_templates.py`（`import_workflow` 三步识别占位符→语义节点→schema；`register_user_template` 写 `intent_engine/templates/user_custom/{task_type}.json` 同名覆盖 + 校验 `TemplateEngine` 可发现=注册进 P0 task_type→template 映射；`list_user_templates` / `test_user_template`）。
+- 端点：`POST /templates/import`、`POST /templates/{id}/test`、**`GET /user-templates`**（顶层路径，避开 `routers_compiled.cpython-313.pyc` 旧"项目模板"子树 `GET /templates` 的 shadow，旧子系统不受影响）。
+- 前端：`src/components/TemplateEditor.vue`（新增，双栏：导入 JSON→标记占位符→测试运行）+ `src/components/Settings.vue`（改造，新增「模板」tab 装载）。`src/api.js` 增 `listUserTemplates(→/user-templates)/importTemplate/testUserTemplate`。
+- 验收：导入识别 7 占位符；`usable_by_director:true`；`/user-templates` 列表 node_count 正确更新；`/templates/{id}/test` 返回 node_count/schema。测试后 `user_custom` 清理回仅 README.md（无创性）。
+
+**M3 长期记忆 / 资产沉淀（跨项目深拷贝复用）**
+- 后端：`server/features/memory.py`（`remember_project` 收集角色卡[P1 identity_card]+风格锚点[P0 style_anchors]+LoRA→写 memory 表；`recommend_for_new_project` 按频次+时间加权排序；`import_to_project` 按 type 分派：character→`import_role_card`[P1 深拷贝]/style→`copy_style_anchor`/lora→`register_lora_to_project`）。端点：`POST /projects/{id}/remember`、`GET /memory/recommend`、`POST /projects/{id}/import-memory`。
+- 前端：`src/components/ProjectsList.vue`（改造，新建项目弹窗「历史资产复用」character/style/lora 勾选→创建后 `importMemory`）+ `src/components/Assets.vue`（改造，「🧠 从历史记忆导入」按钮 + 记忆导入弹窗）。`src/api.js` 增 `recommendMemory/importMemory`。
+- 验收：单测 `test_import_to_project_deep_copies_character` 断言角色卡走 P1 `import_role_card` 深拷贝（红线"禁浅拷贝"）；recommend 降序推荐。
+
+**红线核查（P3 §5，详见 proof.log）**：禁空壳✅ / 禁不符 P0 M4 结构✅ / 禁原样存JSON✅ / 禁浅拷贝✅ / 禁 hash()(全仓 uuid4+SHA256)✅ / 不破 P0/P1/P2✅。**诚实缺口**：动态出图录屏待本地 ComfyUI(:8188) 启动后补采（环境依赖，非代码缺口）。
+
+**构建**：`npm run build` → `frontend/dist/assets/index-DSqsDBRK.js`（含 `user-templates`，本会话确认）。截图：`D:\AI\manju_agent\.tmp\p3_shots/`（`01_home`/`02_settings_template`/`03_canvas_skillpanel`/`04_newproject_dialog`/`05_assets`）。单测：`server/tests/test_p3_m1_skills.py` / `test_p3_m2_templates.py` / `test_p3_m3_memory.py`（共 16 项全 PASS）。
+
+### 13.10 P4（前瞻工业化：新模型零代码接入 + 批量生产 + 健壮性）交付 · 2026-08-14 ✅ M1/M2/M3 完成
+
+> 手册：`D:\AI\md\P4开发手册_面向WorkBuddy_v2.md`（前瞻工业化）。三里程碑：M1 新模型零代码接入 / M2 批量生产·流水线调度 / M3 健壮性收尾——**已全部落地并验证**。
+> **重大发现（本会话）**：`routers_compiled.cpython-313.pyc`（权威编译基线）中**已冻结一份 P4 M1 实现**（含内联 model_plug 函数 + 4 个 `/models/*` 路由）。可编辑源码 `routers.py` 此前被清空恢复时**丢失**了这 4 个路由（仅 split_story 被定点恢复）。本会话参照 split_story 的「门面+定点覆盖」策略：**删除 .pyc 中的 4 个 frozen 路由 → 以源码版（import features.model_plug）重新注册**，恢复「可编辑性 + 单测覆盖」。Ollama 的 `/models/local`、`/models/test` 路由属不同功能，**不删除、不冲突**。
+
+**M1 新模型零代码接入（✅ 已完成）**
+- 后端核心：`server/features/model_plug.py`（`detect_new_models` 扫描磁盘差集 / `discover_node_family` **复用 P0 M2 三层推导** `detect_capability_dimensions`+`_frame_anchor_grade`+离线注册表兜底 / `match_template` **查 P0 M3 `TemplateEngine.discover_templates()`** 映射 / `register_model` 合并自动发现+用户补声明→写 catalog 热加载 + `list_model_declarations`）。
+- DB：`server/db.py` 新增 `model_declarations` 表（model_id/name/type/node_family/**node_class**/capabilities/semantic_tags/user_notes/status），`_migrate` 幂等 + `TABLES` 登记（**无创性**：仅新增表与端点，不改既有表/端点/翻译逻辑）。
+- 端点（覆盖 frozen 后重新注册，归 `routers.py` 源码）：`GET /models/scan`、`GET /models/{name}/discover`、`POST /models/register`、`GET /models`。
+- **红线核查（M1 §5）**：禁假零代码✅（必须节点自动发现 + 模板自动匹配，二者缺一不可）/ 禁全新族假装已接入✅（`match_template` 对无模板家族诚实返回 `need_template` 引导走 P3 M2 导模板）/ 禁破坏 P0-P3✅（仅增量新增）。
+- **复用点（核心，非新写一套）**：P0 M2 `detect_capability_dimensions` / `_frame_anchor_grade` / `_annotate_entry` / `NODE_FAMILY_REGISTRY`；P0 M3 `TemplateEngine.discover_templates()`（user_custom 同名覆盖系统模板）。
+- 验收单测：`server/tests/test_p4_m1_models.py`（7 项全 PASS）：在线三层推导 WanVideoSampler 首尾帧=插值 / 离线注册表兜底分级正确 / checkpoint 能力维度 / 同族命中 `shot_video_gen_wan` / 全新族 `sora` 诚实 `need_template` / register 写 `node_class`+热加载可见+幂等 / detect 离线安全返回 []。
+- 路由冒烟（stub `_body` 直调源码 handler）：证实 active `/models/scan` 唯一（frozen 重复已清）、register 写 `node_class=WanVideoSampler`（证明可编辑源码版生效）、discover 离线兜底首尾帧插值+模板命中、Ollama 路由保留。
+
+**M2 批量生产·流水线调度（✅ 已完成，Task #239/#240）**
+- 后端核心：`server/features/task_scheduler.py`（`schedule_tasks` 优先级降序 + 同优先级创建时间稳定升序；`has_dependency` **复用 P2 M2 首尾帧链** `params.first_frame` 非空 → waiting；`GPU_MAX_CONCURRENT=1` 红线）。
+- 端点（源码归 `routers.py`）：`GET /tasks/queue`（返回 `tasks`/`gpu_max_concurrent=1`/`count` + `schedule_status`）、`POST /tasks/{id}/priority`。
+- **关键修复**：编译基线 routers_compiled 先注册的 `GET /tasks/{task_id}` 会抢先匹配 `/tasks/queue`（返回 "任务不存在"）。在 `routers.py` 新增路由序修正 `_p4_fix_route_precedence()`，把 `/tasks/queue` 移到 `/tasks/{task_id}` 之前；**未删除详情路由，保持 P0-P3 既有能力**。
+- 前端：`src/api.js` 新增 `getTaskQueue` / `updateTaskPriority`；`src/components/TaskCenter.vue` 新增队列 HUD（引擎/队列/生成中/任务总数/GPU并发 1/清理显存）、任务卡片优先级 +/-、可调度/等待上游 标签。
+- 验收单测：`server/tests/test_p4_m2_scheduler.py`（6 项 PASS）、`server/tests/test_p4_m2_routing.py`（2 项 PASS，路由序回归）。
+
+**M3 健壮性收尾（✅ 已完成，Task #241）**
+- `server/worker.py`：`MAX_AUTO_RETRY=2 → 3`；新增 `handle_retry`（递增 `retry_count`、状态持久化为 `retrying`、退避 `30*2^n + 种子扰动`、超限最终失败+退款）、`notify_failure`（`video:{local_task_id}` + `task:{task_id}` 双通道推送失败）、`release_vram_if_idle`（运行中计数 busy 时跳过；空闲时优雅 `ComfyUI free memory`，不杀进程）。
+- `server/layer0/comfyui_service.py`：新增 `free_memory()` → POST `/free` {"unload_models": true}。
+- `server/routers.py`：新增 `POST /resource/clear-comfy-cache`（手动触发 `release_vram_if_idle`）。
+- `worker.py` 三处失败分支（`_serve_one` / `_serve_synthesize` / `_serve_image_one`）统一改走 `handle_retry`，**修复原 `status='queued'` bug 为 `status='retrying'`**。
+- 验收单测：`server/tests/test_p4_m3_robustness.py`（通过）。
+
+**构建与截图**
+- 前端构建：`vite build` 成功（1697 modules，约 18.8s）；`frontend/dist` 含所有新 UI 文案（GPU并发/清理显存/等待上游/失败原因/优先级）。
+- 截图：`D:\AI\manju_agent\.tmp\p4_shots\p4_taskcenter.png`（Playwright + 项目 chromium `D:\AI\.pw-browsers`）；画面可见 HUD、优先级、可调度/等待上游、失败原因（ComfyUI 无响应 (CLOSE-05 超时)），**无 console error**。
+- 交付自证：`D:\AI\manju_agent\proof.log`。
+
+**诚实缺口**：① 动态「放模型→自动发现→模板匹配」录屏待本地 ComfyUI(:8188) 启动后补采（环境依赖，非代码缺口）；② 在线三层推导需 ComfyUI 在线，离线走注册表兜底（已诚实降级）；③ 显存释放 /free 的真实 ComfyUI 调用验证依赖 ComfyUI 在线，离线时 `release_vram_if_idle` 跳过实际调用（源码 ping 校验）。

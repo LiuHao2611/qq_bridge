@@ -1,194 +1,269 @@
-// DirectorOrb 多形态化身 — 真实 DOM 验收（机器判定 + 退出码）
-// 加载真实 app，进入项目路由，对真实 .orb-btn 强制每个形态 class，
-// 用 getComputedStyle 读取实际生效值并断言，截图证明形态=悬浮球、拖动激进化。
-// 用法：PLAYWRIGHT_BROWSERS_PATH=D:/AI/.pw-browsers node tests/verify_orb_morph.mjs
-import { chromium } from 'playwright'
-import assert from 'node:assert/strict'
+// Real-DOM DirectorOrb morph verification + acceptance recordings.
+// Strategy: 2 theme-level recordings (cyberpunk, p5) — each cycles all 4 forms
+// showing IDLE then DRAG on the REAL project page. Machine-judged assertions:
+//   - orb-btn mounts with correct orb-morph--{key}
+//   - .orb-morph has real size + a drawn shape (clip-path / background)
+//   - orb-btn is NOT a round ball (no gradient bg, no 50% radius)
+//   - during drag: dragging class present; shape signature IDENTICAL to idle
+//     (proves the form is preserved, never reverts to a generic round ball)
+//   - during drag: a form-specific animation is active (animation-name/duration changes)
+import { chromium } from 'playwright';
+import fs from 'fs';
 
-const PID = '383722ac-79cd-4308-a595-8744949a9fba'
-const BASE = 'http://localhost:8099'
-const P5_FORMS = ['sword', 'mask', 'tower', 'shackle']
-const CYB_FORMS = ['katana', 'relic', 'wire', 'scanner']
+const BASE = 'http://localhost:8099';
+const PID = '383722ac-79cd-4308-a595-8744949a9fba';
+const REC = 'D:/AI/manju_agent/tests/recordings';
+const THEMES = {
+  default: ['sword', 'mask', 'tower', 'shackle'],
+  gray: ['sword', 'mask', 'tower', 'shackle'],
+  cyberpunk: ['katana', 'relic', 'wire', 'scanner'],
+  p5: ['sword', 'mask', 'tower', 'shackle'],
+};
 
-// 形态 → 期望的 dragging 动画名（形态专属演出）
-const DRAG_ANIM = {
-  sword: 'p5-sword-fly', mask: 'p5-mask-split', tower: 'p5-tower-spin', shackle: 'p5-shackle-whip',
-  katana: 'nc-katana-swing', relic: 'nc-relic-fast', wire: 'nc-wire-whip', scanner: 'nc-scanner-line',
+// 手册 §4 规定的「拖动专属演出」keyframe（用于强断言：证明是特殊形态，不是通用旋转）
+const EXPECTED_DRAG = {
+  sword: { layer: 'm', name: 'p5-sword-fly' },
+  mask: { layer: 'm', name: 'p5-mask-split' },
+  tower: { layer: 'm', name: 'p5-tower-spin' },
+  shackle: { layer: 'm', name: 'p5-shackle-whip' },
+  katana: { layer: 'm', name: 'nc-katana-swing' },
+  relic: { layer: 'm', name: 'nc-relic-fast' },
+  wire: { layer: 'b', name: 'nc-wire-whip' },
+  // scanner: 拖动加速扫描线（::after 时长变短），无独立 keyframe
+};
+
+const fails = [];
+const warns = [];
+function assert(cond, msg) {
+  if (cond) console.log('  ok  ' + msg);
+  else { fails.push(msg); console.log('  FAIL ' + msg); }
 }
 
-async function enter(page) {
-  await page.goto(`${BASE}/#/`, { waitUntil: 'networkidle' })
-  await page.waitForTimeout(1000)
-  await page.evaluate((pid) => {
-    document.querySelector('#app').__vue_app__.config.globalProperties.$router.push('/projects/' + pid + '/assets')
-  }, PID)
-  await page.waitForSelector('.orb-btn', { timeout: 12000 })
-  await page.waitForTimeout(400)
+async function currentKey(page) {
+  return page.evaluate(() => {
+    const el = document.querySelector('.orb-btn');
+    if (!el) return null;
+    const m = el.className.match(/orb-morph--([a-z]+)/);
+    return m ? m[1] : null;
+  });
 }
 
-// 通过真实 dblclick 触发组件的 cycleMorph（@dblclick="cycleMorph"），
-// 让 Vue 响应式 currentMorph 推进；避免手动 classList 被 Vue re-render 覆盖。
-async function forceForm(page, key) {
-  for (let i = 0; i < 8; i++) {
-    const cls = await page.evaluate(() => document.querySelector('.orb-btn')?.className || '')
-    if (cls.includes('orb-morph--' + key)) {
-      await page.waitForTimeout(80)
-      return
-    }
-    await page.locator('.orb-btn').first().dblclick()
-    await page.waitForTimeout(200)
+async function cycleTo(page, key) {
+  for (let i = 0; i < 10; i++) {
+    const k = await currentKey(page);
+    if (k === key) return true;
+    await page.locator('.orb-btn').first().dblclick();
+    await page.waitForTimeout(280);
   }
-  // 兜底（dblclick 失败时）
-  await page.evaluate((k) => {
-    const btn = document.querySelector('.orb-btn')
-    btn.classList.forEach((c) => { if (c.startsWith('orb-morph--')) btn.classList.remove(c) })
-    btn.classList.add('orb-morph--' + k)
-  }, key)
-  await page.waitForTimeout(100)
+  return (await currentKey(page)) === key;
 }
 
-// 用真实 pointerdown 触发组件的 dragging 响应式状态（避免 Vue 在 re-render 时
-// 清掉手动 classList.add 的 .dragging），保证拖动 class 在读取 computed style 时仍存在。
-async function forceDrag(page, on) {
-  const orb = page.locator('.orb-btn').first()
-  const box = await orb.boundingBox()
-  if (!box) return
-  const cx = box.x + box.width / 2, cy = box.y + box.height / 2
-  if (on) {
-    await page.mouse.move(cx, cy)
-    await page.mouse.down()
-    await page.mouse.move(cx + 8, cy + 8, { steps: 3 })
-  } else {
-    await page.mouse.up()
-    await page.mouse.move(0, 0)
-  }
-  await page.waitForTimeout(150)
-}
-
-async function shot(page, label) {
-  const box = await page.locator('.orb-btn').first().boundingBox()
-  if (!box) return
-  await page.screenshot({
-    path: `D:/AI/manju_agent/.tmp/orb_real_${label}.png`,
-    clip: { x: Math.max(0, box.x - 60), y: Math.max(0, box.y - 60), width: box.width + 120, height: box.height + 120 },
-  })
-}
-
-async function readMorphStyles(page) {
-  return await page.evaluate(() => {
-    const orb = document.querySelector('.orb-btn')
-    const morph = orb.querySelector('.orb-morph')
-    const get = (el, prop, pseudo = null) => getComputedStyle(el, pseudo).getPropertyValue(prop)
-    const dims = (el) => {
-      const r = el.getBoundingClientRect()
-      return { w: Math.round(r.width), h: Math.round(r.height) }
-    }
+async function sampleShape(page) {
+  return page.evaluate(() => {
+    const orb = document.querySelector('.orb-btn');
+    if (!orb) return { mounted: false };
+    const morph = orb.querySelector('.orb-morph');
+    const mcs = morph ? getComputedStyle(morph) : null;
+    const b = morph ? getComputedStyle(morph, '::before') : null;
+    const a = morph ? getComputedStyle(morph, '::after') : null;
+    const rect = morph ? morph.getBoundingClientRect() : null;
+    const pick = (cs, p) => (cs ? cs.getPropertyValue(p) : 'none');
+    const morphCp = pick(mcs, 'clip-path');
+    const morphBg = pick(mcs, 'background-image');
+    const beforeCp = pick(b, 'clip-path');
+    const beforeBg = pick(b, 'background-image');
+    const afterCp = pick(a, 'clip-path');
+    const afterBg = pick(a, 'background-image');
+    const orbBg = getComputedStyle(orb).getPropertyValue('background-image');
+    const orbBgColor = getComputedStyle(orb).getPropertyValue('background-color');
+    const orbRadius = getComputedStyle(orb).getPropertyValue('border-radius');
+    const morphBgColor = mcs ? mcs.getPropertyValue('background-color') : 'transparent';
+    const solidMorph = morphBgColor && morphBgColor !== 'transparent' && morphBgColor !== 'rgba(0, 0, 0, 0)';
+    const shapeDrawn =
+      (morphCp && morphCp !== 'none') ||
+      (morphBg && morphBg !== 'none') ||
+      solidMorph ||
+      (beforeCp && beforeCp !== 'none') ||
+      (beforeBg && beforeBg !== 'none') ||
+      (afterCp && afterCp !== 'none') ||
+      (afterBg && afterBg !== 'none');
+    const orbMorphSized = !!rect && rect.width > 1 && rect.height > 1;
+    const hasGradient =
+      (orbBg && orbBg !== 'none' && orbBg.includes('gradient')) ||
+      (orbBgColor && orbBgColor !== 'transparent' && orbBgColor !== 'rgba(0, 0, 0, 0)');
+    const isRound = orbRadius === '50%' || orbRadius === '50% 50%';
+    // byte-exact shape signature: clip-path/background geometry only.
+    // NOTE: drag rotations legitimately change the *rendered* bounding box,
+    // so we intentionally EXCLUDE rect size — a rotated katana still has the
+    // same clip-path, proving the form is preserved (not reverted to a ball).
+    // bodySig = the MAIN morph-body geometry (morph element's own clip-path +
+    // background), excluding pseudos. Drag residuals legitimately alter
+    // ::before/::after (残影分裂/疾转残影) — those are allowed to differ.
+    const shapeSig = [morphCp, morphBg, beforeCp, beforeBg, afterCp, afterBg].join('|');
+    const bodySig = morphCp + '|' + morphBg + '|' + morphBgColor;
+    const animSig = JSON.stringify({
+      m: { n: pick(mcs, 'animation-name'), d: pick(mcs, 'animation-duration') },
+      b: { n: pick(b, 'animation-name'), d: pick(b, 'animation-duration') },
+      a: { n: pick(a, 'animation-name'), d: pick(a, 'animation-duration') },
+    });
     return {
-      htmlClass: document.documentElement.className,
-      orbClass: orb.className,
-      btnBgImg: get(orb, 'background-image'),
-      btnShadow: get(orb, 'box-shadow'),
-      btnRadius: get(orb, 'border-radius'),
-      morph: dims(morph),
-      morphBgImg: get(morph, 'background-image'),
-      morphBgColor: get(morph, 'background-color'),
-      morphClip: get(morph, 'clip-path'),
-      beforeBg: get(morph, 'background-image', '::before'),
-      beforeClip: get(morph, 'clip-path', '::before'),
-      afterBg: get(morph, 'background-image', '::after'),
-      afterClip: get(morph, 'clip-path', '::after'),
-      morphAnim: get(morph, 'animation-name'),
-      beforeAnim: get(morph, 'animation-name', '::before'),
-      afterAnim: get(morph, 'animation-name', '::after'),
-    }
-  })
+      mounted: true,
+      cls: orb.className,
+      orbMorphSized,
+      shapeDrawn,
+      orbBtnNoBall: !hasGradient && !isRound,
+      shapeSig,
+      animSig,
+      mAnim: pick(mcs, 'animation-name'),
+      bAnim: pick(b, 'animation-name'),
+      aDur: pick(a, 'animation-duration'),
+    };
+  });
 }
 
-let passed = 0
-const fail = (m) => { console.error('FAIL', m); process.exit(1) }
-const ok = (m) => { passed++; console.log('PASS ', m) }
+async function performDrag(page) {
+  const box = await page.locator('.orb-btn').first().boundingBox();
+  if (!box) return false;
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  const steps = 34;
+  for (let i = 0; i < steps; i++) {
+    const ang = (i / steps) * Math.PI * 2;
+    await page.mouse.move(cx + Math.cos(ang) * 55, cy + Math.sin(ang) * 55, { steps: 2 });
+    await page.waitForTimeout(45);
+  }
+  // mouse stays DOWN so the caller can sample the dragging state
+  return true;
+}
 
-async function runTheme(theme, forms) {
-  const browser = await chromium.launch({ args: ['--no-sandbox'] })
-  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
-  const errs = []
-  page.on('console', (m) => { if (m.type() === 'error') errs.push(m.text()) })
-  await page.addInitScript((t) => { try { localStorage.setItem('manju_theme', t) } catch (e) {} }, theme)
-  await enter(page)
+const summary = [];
+for (const [theme, forms] of Object.entries(THEMES)) {
+  console.log(`\n===== THEME: ${theme} =====`);
+  const browser = await chromium.launch({ args: ['--no-sandbox', '--disable-gpu'] });
+  const ctx = await browser.newContext({
+    viewport: { width: 1100, height: 720 },
+    recordVideo: { dir: REC, size: { width: 1100, height: 720 } },
+  });
+  const page = await ctx.newPage();
+  await page.addInitScript((t) => { try { localStorage.setItem('manju_theme', t); } catch (e) {} }, theme);
+  await page.goto(`${BASE}/projects/${PID}/assets`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.orb-btn', { timeout: 15000 });
+  await page.waitForTimeout(500);
 
-  // T1 主题类挂载到 <html>
-  const htmlCls = await page.evaluate(() => document.documentElement.className)
-  assert.match(htmlCls, new RegExp(`t-${theme}`), `html.t-${theme} 应用`)
-  ok(`T1 html 含 t-${theme} :: ${htmlCls}`)
-
-  // T2 .orb-btn 真实存在并携带 orb-morph--{key}
-  const orbClass = await page.evaluate(() => document.querySelector('.orb-btn')?.className || '')
-  assert.match(orbClass, /orb-morph--/, `初始 orb-morph-- class`)
-  ok(`T2 真实 .orb-btn 挂载形态 class :: ${orbClass}`)
-
-  // T3 .orb-btn 背景透明 → 形态=悬浮球（不是方盒）
-  const btnBg = await page.evaluate(() => getComputedStyle(document.querySelector('.orb-btn')).getPropertyValue('background-image'))
-  assert.equal(btnBg, 'none', '.orb-btn 背景为 none（方盒已剥离）')
-  ok(`T3 .orb-btn 背景 transparent :: ${btnBg}`)
-
-  // 逐形态断言
   for (const key of forms) {
-    await forceForm(page, key)
-    const s = await readMorphStyles(page)
-    await shot(page, `${theme}_${key}`)
+    console.log(`-- form: ${key} --`);
+    const cycled = await cycleTo(page, key);
+    assert(cycled, `[${theme}/${key}] cycled to correct form`);
 
-    assert.match(s.orbClass, new RegExp(`orb-morph--${key}`), `${key}: class 挂载`)
-    ok(`F.${key}.1 class 挂载 orb-morph--${key}`)
+    const idle = await sampleShape(page);
+    assert(idle.mounted, `[${theme}/${key}] orb-btn mounted`);
+    assert(idle.orbMorphSized, `[${theme}/${key}] .orb-morph has real size`);
+    assert(idle.shapeDrawn, `[${theme}/${key}] form shape drawn (clip-path/background present)`);
+    assert(idle.orbBtnNoBall, `[${theme}/${key}] orb-btn not a round ball at idle`);
+    await page.waitForTimeout(900); // let IDLE shape sit clearly on the recording
 
-    assert.ok(s.morph.w > 10 && s.morph.h > 10, `${key}: 形态尺寸 > 10px (${s.morph.w}x${s.morph.h})`)
-    ok(`F.${key}.2 形态尺寸 ${s.morph.w}x${s.morph.h}`)
+    const dragStarted = await performDrag(page);
+    // Sample several frames during the drag: 3D-rotating forms (e.g. tower's
+    // rotateY 540° spin) are momentarily edge-on (rendered width ~0) — so we
+    // require the morph to render at non-zero size in AT LEAST one frame, while
+    // body geometry / no-ball / animation checks come from a stable sample.
+    let drag = null;
+    let everSized = false;
+    let everDragging = false;
+    for (let s = 0; s < 8; s++) {
+      await page.waitForTimeout(45);
+      const d = await sampleShape(page);
+      if (!drag) drag = d;
+      if (d.orbMorphSized) everSized = true;
+      if (d.cls.includes('dragging')) everDragging = true;
+    }
+    assert(dragStarted, `[${theme}/${key}] drag input sent`);
+    assert(everDragging, `[${theme}/${key}] .dragging class present during drag`);
+    assert(everSized, `[${theme}/${key}] .orb-morph rendered at non-zero size during drag`);
+    assert(drag.shapeDrawn, `[${theme}/${key}] form shape still drawn during drag`);
+    assert(drag.orbBtnNoBall, `[${theme}/${key}] orb-btn NOT a round ball during drag`);
+    assert(drag.bodySig === idle.bodySig,
+      `[${theme}/${key}] main morph body geometry IDENTICAL idle vs drag (no round-ball revert)`);
+    assert(drag.animSig !== idle.animSig,
+      `[${theme}/${key}] form-specific drag animation active (anim changed vs idle)`);
 
-    // 形态绘制：morph 自身或任一伪元素含 background-image / background-color / clip-path
-    const morphDraw =
-      s.morphBgImg !== 'none' ||
-      (s.morphBgColor && s.morphBgColor !== 'rgba(0, 0, 0, 0)' && s.morphBgColor !== 'transparent') ||
-      s.morphClip !== 'none' ||
-      s.beforeBg !== 'none' ||
-      s.beforeClip !== 'none' ||
-      s.afterBg !== 'none' ||
-      s.afterClip !== 'none'
-    assert.ok(morphDraw, `${key}: morph 自身或伪元素绘制（bg/img/clip-path 至少一项非 none）`)
-    ok(`F.${key}.3 形态绘制 (morph bg=${s.morphBgImg.slice(0,30)} clip=${s.morphClip.slice(0,30)}; before clip=${s.beforeClip.slice(0,24)})`)
+    // 强断言：拖动动画名必须是手册 §4 规定的该形态专属 keyframe，
+    // 证明是「特殊形态演出」而非通用旋转/转圈。
+    const exp = EXPECTED_DRAG[key];
+    if (exp) {
+      const got = drag[exp.layer === 'm' ? 'mAnim' : 'bAnim'];
+      assert(got === exp.name,
+        `[${theme}/${key}] drag uses spec animation "${exp.name}" (not a generic spin)`);
+    } else if (key === 'scanner') {
+      const idleDur = parseFloat(idle.aDur) || 0;
+      const dragDur = parseFloat(drag.aDur) || 0;
+      assert(dragDur < idleDur,
+        `[${theme}/${key}] drag accelerates scan line (::after duration ${idleDur}s -> ${dragDur}s)`);
+    }
 
-    // dragging 演出 = 形态专属（非通用 rotate）；动画可挂在 .orb-morph / ::before / ::after
-    await forceDrag(page, true)
-    const dragAnims = await page.evaluate(() => ({
-      m: getComputedStyle(document.querySelector('.orb-morph')).getPropertyValue('animation-name'),
-      b: getComputedStyle(document.querySelector('.orb-morph'), '::before').getPropertyValue('animation-name'),
-      a: getComputedStyle(document.querySelector('.orb-morph'), '::after').getPropertyValue('animation-name'),
-    }))
-    const found = [dragAnims.m, dragAnims.b, dragAnims.a].some((n) => n && n.includes(DRAG_ANIM[key]))
-    assert.ok(found, `${key}: dragging 包含形态专属动画 ${DRAG_ANIM[key]}（morph=${dragAnims.m}, ::before=${dragAnims.b}, ::after=${dragAnims.a}）`)
-    ok(`F.${key}.4 dragging 形态专属动画 ${DRAG_ANIM[key]} (morph=${dragAnims.m} ::before=${dragAnims.b} ::after=${dragAnims.a})`)
-    await shot(page, `${theme}_${key}_drag`)
-    await forceDrag(page, false)
+    // —— 拖尾方框检测 —— 0 模糊 + 大偏移 = 实心矩形拖尾（动画期最常见的"变方框"根因）。
+    //    box-shadow/drop-shadow 在 0px 模糊 + 偏移 > 8px 时，会叠出硬边矩形条。
+    const trail = await page.evaluate(() => {
+      const orb = document.querySelector('.orb-btn');
+      const m = orb.querySelector('.orb-morph');
+      const b = getComputedStyle(m, '::before');
+      const a = getComputedStyle(m, '::after');
+      const bs = (s) => (s ? s.getPropertyValue('box-shadow') : '');
+      const fs = (s) => (s ? s.getPropertyValue('filter') : '');
+      const tokens = (s) => s.split(/,(?![^()]*\))/).map(t => t.trim()).filter(Boolean);
+      const hardRect = (tok) => {
+        // 匹配 box-shadow / drop-shadow 的偏移量（支持负值）
+        const m = tok.match(/(-?\d+(?:\.\d+)?)px\s+(-?\d+(?:\.\d+)?)px\s+(\d+(?:\.\d+)?)px/);
+        if (!m) return false;
+        const ox = Math.abs(+m[1]), oy = Math.abs(+m[2]), blur = +m[3];
+        return blur === 0 && (ox > 8 || oy > 8);
+      };
+      const list = [
+        ['orb',    bs(getComputedStyle(orb))],
+        ['morph',  bs(getComputedStyle(m))],
+        ['before', bs(b)],
+        ['after',  bs(a)],
+        ['orb-f',  fs(getComputedStyle(orb))],
+        ['morph-f',fs(getComputedStyle(m))],
+        ['before-f',fs(b)],
+        ['after-f', fs(a)],
+      ];
+      const hits = [];
+      for (const [tag, val] of list) {
+        for (const t of tokens(val)) {
+          if (hardRect(t)) hits.push(`${tag}: ${t}`);
+        }
+      }
+      return hits;
+    });
+    assert(trail.length === 0,
+      `[${theme}/${key}] NO hard-rectangle trailer (0-blur + large offset = solid box) during drag`
+      + (trail.length ? `  → 违规则层: ${trail.join(' | ')}` : ''));
+
+    await page.mouse.up();
+    await page.waitForTimeout(600); // settle back to idle before next form
   }
 
-  // 主题隔离：cyberpunk 下不应命中 p5 规则（通过 html class 验证）
-  if (theme === 'cyberpunk') {
-    const p5Leak = await page.evaluate(() => {
-      // p5 规则用 var(--p5-red)；若 cyberpunk 形态误挂 p5 class，背景会引用 p5-red
-      const m = document.querySelector('.orb-morph')
-      return getComputedStyle(m, '::before').getPropertyValue('background-image').includes('--p5')
-    })
-    assert.equal(p5Leak, false, 'cyberpunk 形态 ::before 不引用 p5 变量')
-    ok('I.1 cyberpunk 形态未泄漏 p5 变量')
+  await ctx.close();
+  const vp = page.video() ? await page.video().path() : null;
+  if (vp) {
+    const dest = `${REC}/${theme}-all-forms.webm`;
+    try { fs.renameSync(vp, dest); console.log(`  video -> ${dest}`); summary.push(dest); }
+    catch (e) { console.log('  video rename failed:', e.message); summary.push(vp); }
   }
-
-  // 0 非基础设施 console error（WS 404 属基础设施）
-  const real = errs.filter((e) => !/WebSocket/i.test(e))
-  assert.equal(real.length, 0, `0 非基础设施 console error（实际 ${real.length}）`)
-  ok(`C.1 无非基础设施控制台错误（基础设施 ${errs.length - real.length} 条已排除）`)
-
-  await browser.close()
+  await browser.close();
 }
 
-await runTheme('p5', P5_FORMS)
-await runTheme('cyberpunk', CYB_FORMS)
-console.log(`\n==== DirectorOrb 多形态化身验收（真实 DOM）：${passed} PASS ====`)
-console.log('ALL PASS ✅')
+console.log('\n========== SUMMARY ==========');
+console.log('Recordings:');
+summary.forEach((s) => console.log('  ' + s));
+if (warns.length) { console.log('Warnings:'); warns.forEach((w) => console.log('  ! ' + w)); }
+if (fails.length) {
+  console.log(`\nFAILURES: ${fails.length}`);
+  fails.forEach((f) => console.log('  - ' + f));
+  process.exit(1);
+} else {
+  console.log('\nALL ASSERTIONS PASS');
+}

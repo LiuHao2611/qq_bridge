@@ -125,6 +125,10 @@ async def serve_file(name: str, request: Request):
         p = os.path.join(BASE, "server", "outputs", safe)
     if not os.path.isfile(p):
         p = os.path.join(BASE, "server", ".uploads", safe)
+    # 参考图集（P1 M2 / 角色卡标准肖像 / IP-Adapter 输入）落盘于 server/outputs/references/，
+    # 此前 /file 不搜索该子目录 → 参考图 404（界面「无图却显示512维」的根因之一）。补齐搜索。
+    if not os.path.isfile(p):
+        p = os.path.join(BASE, "server", "outputs", "references", safe)
     if not os.path.isfile(p):
         logger.warning("[FILE] 404 name=%s tried=%s ua=%s" % (safe, p, request.headers.get("User-Agent", "-")))
         return JSONResponse(status_code=404, content=envelope(40001, None, "文件不存在"))

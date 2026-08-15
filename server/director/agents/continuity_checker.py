@@ -13,8 +13,14 @@
 import json
 from typing import List, Dict, Any, Optional
 
-# 与 sequence_scheduler.DEFAULT_MODEL_ID 对齐（避免循环 import，本地常量）
-DEFAULT_VIDEO_MODEL = "seedance-2.0-mini"
+# 视频模型兜底：模型无关，从能力注册表 / 设置解析（避免硬编码）。
+# 与 sequence_scheduler._preferred_video_model_id 同源（capabilities.preferred_video_model）。
+def _default_video_model():
+    try:
+        from capabilities import preferred_video_model
+        return preferred_video_model()
+    except Exception:
+        return "seedance-2.0-mini"
 
 
 def _load_json(raw, default):
@@ -69,7 +75,7 @@ def preview_shot_intent(shot_id: str) -> Dict[str, Any]:
             "weight": float(override.get("ip_adapter_weight") or (0.8 if role_refs else 0.0)),
             "role_count": len(role_refs),
         }
-        video_model = override.get("video_model") or DEFAULT_VIDEO_MODEL
+        video_model = override.get("video_model") or _default_video_model()
         first_frame_anchor = bool(override.get("first_frame_anchor"))
         if "first_frame_anchor" not in override:
             first_frame_anchor = bool(seg.get("return_last_frame") or 0)

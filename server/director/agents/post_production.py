@@ -252,7 +252,7 @@ class PostProductionAgent(BaseAgent):
                 if not stage_id:
                     continue
                 try:
-                    vec = ff.load_face_vector(stage_id)
+                    vec = ff.load_face_vector_by_stage(stage_id)
                 except Exception:
                     vec = None
                 if vec is None:

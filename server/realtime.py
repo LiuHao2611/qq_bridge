@@ -125,12 +125,16 @@ def publish_director_insight(project_id, data=None):
     publish("director:%s" % project_id, "insight", data or {})
 
 
+# translator 选型可视化频道事件名（契约：须与前端 composables/useDirectorOrb._onTranslator 严格对齐）
+EVENT_TRANSLATOR_SELECTION = "selection"
+
+
 def publish_translator_selection(project_id, trace_id, task_type, selected):
     """translator:{project_id}：推送「当前使用的模型/节点/参数」（决策可视化，设计 §7.3）。
 
     :param selected: 字典，建议含 checkpoint / node / loras / seed 等选型字段。
     """
-    publish("translator:%s" % project_id, "selection", {
+    publish("translator:%s" % project_id, EVENT_TRANSLATOR_SELECTION, {
         "trace_id": trace_id,
         "task_type": task_type,
         "selected": selected or {},

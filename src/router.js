@@ -15,6 +15,7 @@ import GlobalAssets from './components/GlobalAssets.vue'
 import ProjectPlanning from './components/ProjectPlanning.vue'
 import ProductionStage from './components/ProductionStage.vue'
 import Img2Prompt from './components/Img2Prompt.vue'
+import LoraTrain from './components/LoraTrain.vue'
 import History from './components/History.vue'
 import Membership from './components/Membership.vue'
 import MyData from './components/MyData.vue'
@@ -23,6 +24,7 @@ import Help from './components/Help.vue'
 import Logs from './components/Logs.vue'
 import Settings from './components/Settings.vue'
 import SystemManager from './components/SystemManager.vue'
+import CustomPage from './pages/CustomPage/index.vue'
 import { useModuleFlags } from './composables/useModuleFlags'
 
 const router = createRouter({
@@ -38,6 +40,7 @@ const router = createRouter({
     { path: '/creative', component: Creative, meta: { moduleKey: 'creative' } },
     { path: '/global-assets', component: GlobalAssets, meta: { moduleKey: 'assets' } },
     { path: '/img2prompt', component: Img2Prompt, meta: { moduleKey: 'creative' } },
+    { path: '/lora-train', component: LoraTrain },
     { path: '/history', component: History },
     { path: '/membership', component: Membership },
     { path: '/my-data', component: MyData },
@@ -52,6 +55,8 @@ const router = createRouter({
     { path: '/projects/:id/canvas', component: Canvas, meta: { moduleKey: 'canvas' } },
     // 服务与版本管理器
     { path: '/system', component: SystemManager },
+    // 页面自定义（UI 沙盒 + 所见即所得编辑器；独立模块，不依赖业务模块开关）
+    { path: '/custom-page', component: CustomPage },
     // 项目统一入口：按 current_phase 自动跳转到进行中阶段
     { path: '/projects/:id', component: ProjectEntry },
     { path: '/memoir/:id', component: MemoirDirectorBoard, meta: { moduleKey: 'memoir' } },

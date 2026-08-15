@@ -490,6 +490,9 @@ html.light .el-button:not(.el-button--primary):hover { background: var(--card-2)
 }
 .toast.ok { border-color: rgba(61,220,132,.5); }
 .toast.warn { border-color: rgba(255,176,32,.5); }
+.toast.warning { border-color: rgba(255,176,32,.5); }
+.toast.success { border-color: rgba(61,220,132,.5); }
+.toast.error { border-color: rgba(239,68,68,.6); color: #ffb4b4; background: rgba(239,68,68,.12); }
 @keyframes toastIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
 
 /* ---------- 过渡 ---------- */
@@ -1110,84 +1113,270 @@ html.t-p5 .el-dialog, html.t-p5 .modal, html.t-p5 .el-drawer {
 }
 
 /* ============================================================================
-   5.2 / 8.2 工具类（.p5-*，供组件精修使用；不影响未使用处）
+   5.2 / 8.2 工具类（.p5-*，仅 P5 主题生效）
+   已作用域到 html.t-p5：原规则为全局无前缀，会泄漏到夜城/默认/灰主题
+   （FC-05：夜城下项目策划/首页/分镜编排的标题出现 P5 描边+绯红阴影）。
+   作用域后，非 P5 主题下这些类完全不生效，由各主题自己的语义类接管。
    ============================================================================ */
-.p5-title {
+html.t-p5 .p5-title {
   font-family:var(--font-display); font-weight:900; font-size:var(--text-display); line-height:var(--lh-display);
   letter-spacing:var(--ls-display); text-transform:uppercase; transform:skewX(var(--skew-title));
   display:inline-block; color:var(--p5-white); -webkit-text-stroke:1px var(--p5-ink);
   text-shadow:3px 3px 0 var(--p5-red), 6px 6px 0 var(--p5-ink);
 }
-.p5-tag {
+html.t-p5 .p5-tag {
   display:inline-block; padding:3px 14px 3px 18px; background:var(--p5-red); color:var(--p5-white);
   font-family:var(--font-cond); font-size:var(--text-caption); font-weight:800; letter-spacing:var(--ls-caption);
   text-transform:uppercase; clip-path:var(--clip-para); transform:rotate(var(--skew-sm)); box-shadow:var(--shadow-hard-sm); line-height:var(--lh-caption);
 }
-.p5-tag.on-paper { background:var(--p5-paper); color:var(--p5-red-ink); }
-.p5-tag.ink { background:var(--p5-ink); color:var(--p5-white); border:1px solid var(--line-dark); }
-.p5-tag.alert { background:var(--p5-alert); color:var(--p5-ink); }
-.p5-tag.ok { background:var(--ok); color:var(--p5-ink); }
+html.t-p5 .p5-tag.on-paper { background:var(--p5-paper); color:var(--p5-red-ink); }
+html.t-p5 .p5-tag.ink { background:var(--p5-ink); color:var(--p5-white); border:1px solid var(--line-dark); }
+html.t-p5 .p5-tag.alert { background:var(--p5-alert); color:var(--p5-ink); }
+html.t-p5 .p5-tag.ok { background:var(--ok); color:var(--p5-ink); }
 
-.p5-card {
+html.t-p5 .p5-card {
   background:var(--surface); border:1px solid var(--line-dark); border-radius:0; box-shadow:var(--shadow-hard);
   transition:transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
 }
-.p5-card:hover { transform:translate(-2px,-2px); box-shadow:var(--shadow-hard-lg); }
+html.t-p5 .p5-card:hover { transform:translate(-2px,-2px); box-shadow:var(--shadow-hard-lg); }
 
-.p5-btn {
+html.t-p5 .p5-btn {
   position:relative; display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:8px 20px;
   border:0; border-radius:0; font-family:var(--font-display); font-weight:800; font-size:14px; letter-spacing:.04em;
   cursor:pointer; transform:skewX(var(--skew-sm)); box-shadow:var(--shadow-hard);
   transition:transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
 }
-.p5-btn > span, .p5-btn > i { transform:skewX(calc(-1 * var(--skew-sm))); display:inline-block; }
-.p5-btn:hover { transform:skewX(var(--skew-sm)) translate(-2px,-2px); box-shadow:var(--shadow-hard-lg); }
-.p5-btn:active { transform:skewX(var(--skew-sm)) translate(2px,2px); box-shadow:var(--shadow-hard-sm); }
-.p5-btn--primary { background:var(--p5-red); color:var(--p5-white); }
-.p5-btn--dark { background:var(--p5-ink-soft); color:var(--p5-white); border:1px solid var(--line-dark); }
-.p5-btn--paper { background:var(--p5-paper); color:var(--p5-red-ink); box-shadow:var(--shadow-red); }
-.p5-btn--ghost { background:transparent; color:var(--p5-white); border:2px solid var(--p5-white); box-shadow:none; }
-.p5-btn[disabled] { opacity:.45; cursor:not-allowed; transform:none; box-shadow:none; }
+html.t-p5 .p5-btn > span, html.t-p5 .p5-btn > i { transform:skewX(calc(-1 * var(--skew-sm))); display:inline-block; }
+html.t-p5 .p5-btn:hover { transform:skewX(var(--skew-sm)) translate(-2px,-2px); box-shadow:var(--shadow-hard-lg); }
+html.t-p5 .p5-btn:active { transform:skewX(var(--skew-sm)) translate(2px,2px); box-shadow:var(--shadow-hard-sm); }
+html.t-p5 .p5-btn--primary { background:var(--p5-red); color:var(--p5-white); }
+html.t-p5 .p5-btn--dark { background:var(--p5-ink-soft); color:var(--p5-white); border:1px solid var(--line-dark); }
+html.t-p5 .p5-btn--paper { background:var(--p5-paper); color:var(--p5-red-ink); box-shadow:var(--shadow-red); }
+html.t-p5 .p5-btn--ghost { background:transparent; color:var(--p5-white); border:2px solid var(--p5-white); box-shadow:none; }
+html.t-p5 .p5-btn[disabled] { opacity:.45; cursor:not-allowed; transform:none; box-shadow:none; }
 
-.p5-progress { height:18px; background:var(--p5-ink); border:1px solid var(--line-dark); position:relative; overflow:hidden; }
-.p5-progress > .bar { height:100%; background:linear-gradient(115deg, var(--p5-red) 0 90%, transparent 90% 100%); transition:width var(--dur-base) var(--ease-out); position:relative; }
-.p5-progress > .bar::after { content:''; position:absolute; right:-8px; top:0; bottom:0; width:16px; background:var(--p5-ink); clip-path:var(--clip-slant); }
+html.t-p5 .p5-progress { height:18px; background:var(--p5-ink); border:1px solid var(--line-dark); position:relative; overflow:hidden; }
+html.t-p5 .p5-progress > .bar { height:100%; background:linear-gradient(115deg, var(--p5-red) 0 90%, transparent 90% 100%); transition:width var(--dur-base) var(--ease-out); position:relative; }
+html.t-p5 .p5-progress > .bar::after { content:''; position:absolute; right:-8px; top:0; bottom:0; width:16px; background:var(--p5-ink); clip-path:var(--clip-slant); }
 
-.p5-notice {
+html.t-p5 .p5-notice {
   position:relative; background:var(--p5-ink-soft); border-left:4px solid var(--p5-red); box-shadow:var(--shadow-hard);
   padding:var(--space-4); font-family:var(--font-body); transform:skewX(var(--skew-sm));
   animation:p5-notice-in var(--dur-epic) var(--ease-pop) both;
 }
-.p5-notice > * { transform:skewX(calc(-1 * var(--skew-sm))); }
-.p5-notice h4 { font-family:var(--font-display); font-weight:900; margin:0 0 4px; letter-spacing:.04em; }
+html.t-p5 .p5-notice > * { transform:skewX(calc(-1 * var(--skew-sm))); }
+html.t-p5 .p5-notice h4 { font-family:var(--font-display); font-weight:900; margin:0 0 4px; letter-spacing:.04em; }
 @keyframes p5-notice-in { from { transform:skewX(var(--skew-sm)) translateX(120%) rotate(3deg); } to { transform:skewX(var(--skew-sm)) translateX(0) rotate(0); } }
 
-.p5-badge-star {
+html.t-p5 .p5-badge-star {
   display:inline-grid; place-items:center; width:48px; height:48px; background:var(--p5-red); color:var(--p5-white);
   clip-path:var(--clip-star); transform:rotate(8deg); animation:p5-star-in var(--dur-epic) var(--ease-pop) both; pointer-events:none;
 }
-.p5-badge-star > span { transform:rotate(-8deg); font-family:var(--font-display); font-weight:900; font-size:18px; }
+html.t-p5 .p5-badge-star > span { transform:rotate(-8deg); font-family:var(--font-display); font-weight:900; font-size:18px; }
 @keyframes p5-star-in { from { transform:rotate(0deg) scale(0); } to { transform:rotate(8deg) scale(1); } }
 
-.p5-duotone { position:relative; overflow:hidden; border-radius:0; }
-.p5-duotone img { filter:grayscale(1) contrast(1.15); width:100%; height:100%; object-fit:cover; display:block; }
-.p5-duotone::after { content:''; position:absolute; inset:0; background:var(--p5-red); mix-blend-mode:multiply; opacity:.55; pointer-events:none; }
+html.t-p5 .p5-duotone { position:relative; overflow:hidden; border-radius:0; }
+html.t-p5 .p5-duotone img { filter:grayscale(1) contrast(1.15); width:100%; height:100%; object-fit:cover; display:block; }
+html.t-p5 .p5-duotone::after { content:''; position:absolute; inset:0; background:var(--p5-red); mix-blend-mode:multiply; opacity:.55; pointer-events:none; }
 
-.p5-halftone { position:relative; }
-.p5-halftone::before { content:''; position:absolute; inset:0; z-index:0; pointer-events:none; opacity:.14; background-image:radial-gradient(rgba(255,255,255,.5) 1px, transparent 1.5px); background-size:14px 14px; }
-.p5-diag-split { background:linear-gradient(115deg, var(--p5-ink) 0 44%, var(--p5-red) 44% 52%, var(--p5-ink) 52% 100%); }
-.p5-starburst { position:relative; display:inline-grid; place-items:center; width:56px; height:56px; background:var(--p5-red); clip-path:var(--clip-star); transform:rotate(8deg); color:var(--p5-white); font-family:var(--font-display); font-weight:900; }
-.p5-starburst > * { transform:rotate(-8deg); }
-.p5-zigzag { clip-path:var(--clip-zig); }
-.p5-tear { position:relative; background:var(--p5-ink-soft); clip-path:var(--clip-tear); box-shadow:var(--shadow-hard); padding:var(--space-5) var(--space-6); }
-.p5-tear::before { content:''; position:absolute; inset:0; z-index:-1; background:var(--p5-red-deep); transform:translate(6px,6px); clip-path:var(--clip-tear); }
-.p5-tear.paper { background:var(--p5-paper); color:var(--fg-invert); }
+html.t-p5 .p5-halftone { position:relative; }
+html.t-p5 .p5-halftone::before { content:''; position:absolute; inset:0; z-index:0; pointer-events:none; opacity:.14; background-image:radial-gradient(rgba(255,255,255,.5) 1px, transparent 1.5px); background-size:14px 14px; }
+html.t-p5 .p5-diag-split { background:linear-gradient(115deg, var(--p5-ink) 0 44%, var(--p5-red) 44% 52%, var(--p5-ink) 52% 100%); }
+html.t-p5 .p5-starburst { position:relative; display:inline-grid; place-items:center; width:56px; height:56px; background:var(--p5-red); clip-path:var(--clip-star); transform:rotate(8deg); color:var(--p5-white); font-family:var(--font-display); font-weight:900; }
+html.t-p5 .p5-starburst > * { transform:rotate(-8deg); }
+html.t-p5 .p5-zigzag { clip-path:var(--clip-zig); }
+html.t-p5 .p5-tear { position:relative; background:var(--p5-ink-soft); clip-path:var(--clip-tear); box-shadow:var(--shadow-hard); padding:var(--space-5) var(--space-6); }
+html.t-p5 .p5-tear::before { content:''; position:absolute; inset:0; z-index:-1; background:var(--p5-red-deep); transform:translate(6px,6px); clip-path:var(--clip-tear); }
+html.t-p5 .p5-tear.paper { background:var(--p5-paper); color:var(--fg-invert); }
 
-.p5-divider { height:1px; background:var(--line-dark); }
-.p5-divider-red { height:3px; background:var(--p5-red); }
-.p5-guide-line { position:absolute; top:0; bottom:0; left:var(--guide-x,24px); width:1px; background:rgba(255,255,255,.18); pointer-events:none; }
-.p5-num { font-family:var(--font-num); font-variant-numeric:tabular-nums; font-weight:700; }
-.p5-label { font-family:var(--font-cond); font-size:var(--text-caption); font-weight:800; letter-spacing:var(--ls-caption); text-transform:uppercase; }
+html.t-p5 .p5-divider { height:1px; background:var(--line-dark); }
+html.t-p5 .p5-divider-red { height:3px; background:var(--p5-red); }
+html.t-p5 .p5-guide-line { position:absolute; top:0; bottom:0; left:var(--guide-x,24px); width:1px; background:rgba(255,255,255,.18); pointer-events:none; }
+html.t-p5 .p5-num { font-family:var(--font-num); font-variant-numeric:tabular-nums; font-weight:700; }
+html.t-p5 .p5-label { font-family:var(--font-cond); font-size:var(--text-caption); font-weight:800; letter-spacing:var(--ls-caption); text-transform:uppercase; }
+
+/* ============================================================================
+   P5 主题二次强化（万能短剧AI创作平台_P5主题二次强化补充规格 v1.0 · 2026-08-15）
+   新增签名元素家族：对话框(4变体) / 双层错位横幅 / 信物徽章 / 按钮(4变体) /
+   快捷键标签 / 锯齿纹理带 / 描边大标题。全部作用域 html.t-p5（FC-05 铁律：
+   绝不泄漏到其他主题），纯原创 CSS、零外部资源、令牌沿用原手册第 3 章。
+   每个家族用 html.p5ft-<key> 启用类门控（默认全开），供「主题编辑选项」单独开关
+   （见 Settings.vue）。元素按需在模板上加类即可（opt-in）。
+   ============================================================================ */
+
+/* ---------- 第 2 章 对话框家族（4 变体，统一：粗描边≥2px + 硬影 + 指向 + 高对比） ---------- */
+/* 变体 A：云朵手绘气泡（导演发言/叙事文本） */
+html.t-p5.p5ft-dialog .p5-dbox { position: relative; }
+html.t-p5.p5ft-dialog .p5-dbox--cloud {
+  background: var(--p5-ink); color: var(--p5-white); border: 3px solid var(--p5-white);
+  border-radius: 24px 24px 24px 8px; padding: 14px 20px; box-shadow: var(--shadow-hard); max-width: 420px;
+}
+html.t-p5.p5ft-dialog .p5-dbox--cloud::before {
+  content: ''; position: absolute; inset: 4px; border: 1px dashed rgba(255,255,255,.25);
+  border-radius: 20px 20px 20px 6px; pointer-events: none;
+}
+html.t-p5.p5ft-dialog .p5-dbox--cloud::after {
+  content: ''; position: absolute; right: 28px; bottom: -16px; width: 20px; height: 20px; background: var(--p5-ink);
+  border-right: 3px solid var(--p5-white); border-bottom: 3px solid var(--p5-white); transform: rotate(45deg);
+}
+html.t-p5.p5ft-dialog .p5-dbox .who {
+  display: inline-block; font-family: var(--font-display); font-weight: 900; font-size: 12px;
+  letter-spacing: .12em; color: var(--p5-red); margin-bottom: 4px;
+}
+html.t-p5.p5ft-dialog .p5-dbox .who::before { content: '◆ '; }
+
+/* 变体 B：姓名标签 + 主气泡（标准漫画对话框） */
+html.t-p5.p5ft-dialog .p5-dbox--comic { position: relative; max-width: 440px; }
+html.t-p5.p5ft-dialog .p5-dbox--comic .name {
+  display: inline-block; position: relative; background: var(--p5-paper); color: var(--p5-ink); border: 3px solid var(--p5-ink);
+  padding: 4px 16px 4px 20px; font-family: var(--font-display); font-weight: 900; font-size: 13px; letter-spacing: .08em;
+  clip-path: polygon(10px 0, 100% 0, calc(100% - 6px) 100%, 0 100%, 0 40%); box-shadow: var(--shadow-hard-sm); margin-left: 8px;
+}
+html.t-p5.p5ft-dialog .p5-dbox--comic .body {
+  position: relative; background: var(--p5-ink); color: var(--p5-white); border: 3px solid var(--p5-white);
+  padding: 14px 20px; margin-top: 6px; box-shadow: var(--shadow-hard);
+}
+html.t-p5.p5ft-dialog .p5-dbox--comic .body::after {
+  content: ''; position: absolute; right: 22px; bottom: -14px; width: 18px; height: 18px; background: var(--p5-ink);
+  border-right: 3px solid var(--p5-white); border-bottom: 3px solid var(--p5-white); transform: rotate(45deg);
+}
+
+/* 变体 C：斜切编号条（对话序号/步骤提示） */
+html.t-p5.p5ft-dialog .p5-dbox--index {
+  position: relative; display: flex; align-items: center; gap: 12px; background: var(--p5-ink); color: var(--p5-white);
+  border: 3px solid var(--p5-white); border-left: none; clip-path: polygon(14px 0, 100% 0, 100% 100%, 0 100%, 0 50%);
+  padding: 10px 20px 10px 30px; box-shadow: var(--shadow-hard); max-width: 460px;
+}
+html.t-p5.p5ft-dialog .p5-dbox--index .idx {
+  display: grid; place-items: center; width: 24px; height: 24px; background: var(--p5-ink); color: var(--p5-white);
+  border: 2px solid var(--p5-red); font-family: var(--font-num); font-weight: 800; box-shadow: var(--shadow-hard-sm);
+}
+
+/* 变体 D：撕纸边 + 信物宝石（重要事件/秘宝提示） */
+html.t-p5.p5ft-dialog .p5-dbox--torn {
+  position: relative; background: var(--p5-paper); color: var(--p5-ink); padding: 16px 60px 16px 20px;
+  clip-path: var(--clip-tear); box-shadow: var(--shadow-hard); max-width: 440px; display: flex; align-items: center; gap: 12px;
+}
+html.t-p5.p5ft-dialog .p5-dbox--torn p { flex: 1; margin: 0; font-weight: 600; }
+html.t-p5.p5ft-dialog .p5-dbox--torn .p5-relic { position: static; }
+
+/* ---------- 第 3 章 双层错位横幅（功能标签 / 地点标记） ---------- */
+html.t-p5.p5ft-banner .p5-banner { display: inline-block; position: relative; filter: drop-shadow(4px 4px 0 rgba(0,0,0,.85)); }
+html.t-p5.p5ft-banner .p5-banner .top {
+  display: block; background: var(--p5-paper); color: var(--p5-ink); padding: 6px 22px 6px 26px;
+  font-family: var(--font-display); font-weight: 900; font-size: 15px; letter-spacing: .06em;
+  clip-path: polygon(10px 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
+  background-image: radial-gradient(rgba(0,0,0,.18) 1px, transparent 1.5px); background-size: 8px 8px; background-position: 0 0;
+}
+html.t-p5.p5ft-banner .p5-banner .bottom {
+  display: block; background: var(--p5-ink); color: var(--p5-white); padding: 5px 24px 5px 20px;
+  font-family: var(--font-cond); font-size: 11px; letter-spacing: var(--ls-caption); text-transform: uppercase;
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 100%, 8px 100%); margin-top: -6px; margin-left: 14px;
+  background-image: linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px);
+  background-size: 10px 10px;
+}
+
+/* ---------- 第 4 章 信物徽章（多层嵌套菱形宝石 · 唯一允许发光的元素） ---------- */
+html.t-p5.p5ft-relic .p5-relic {
+  position: relative; display: inline-grid; place-items: center; width: 56px; height: 56px;
+  filter: drop-shadow(3px 3px 0 rgba(0,0,0,.8));
+}
+html.t-p5.p5ft-relic .p5-relic::before {
+  content: ''; position: absolute; inset: 0; background: var(--p5-paper); clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+html.t-p5.p5ft-relic .p5-relic::after {
+  content: ''; position: absolute; inset: 10px; background: var(--p5-red);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); transform: rotate(45deg); box-shadow: inset 0 0 0 2px var(--p5-white);
+}
+html.t-p5.p5ft-relic .p5-relic .core {
+  position: absolute; inset: 0; margin: auto; width: 10px; height: 10px; background: var(--p5-white);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  box-shadow: 0 0 8px rgba(255,255,255,.9), 0 0 20px rgba(255,255,255,.5); z-index: 1;
+}
+html.t-p5.p5ft-relic .p5-relic .glow {
+  position: absolute; inset: -8px; background: radial-gradient(circle, rgba(255,255,255,.35), transparent 70%);
+  animation: p5-relic-breathe 2s ease-in-out infinite; z-index: 0;
+}
+@keyframes p5-relic-breathe { 0%,100% { opacity: .6; transform: scale(1); } 50% { opacity: 1; transform: scale(1.08); } }
+
+/* ---------- 第 5 章 按钮家族（变体） ---------- */
+/* 变体 A：贴纸按钮（半色调网点 + 白细边框） */
+html.t-p5.p5ft-button .p5-btn--sticker {
+  display: inline-flex; flex-direction: column; align-items: center; gap: 6px; min-width: 88px; padding: 12px 10px 10px;
+  background: var(--p5-ink); border: 3px solid var(--p5-white); border-radius: 10px; color: var(--p5-white);
+  font-family: var(--font-display); font-weight: 800; font-size: 14px; letter-spacing: .1em; box-shadow: var(--shadow-hard); cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+  background-image: radial-gradient(rgba(255,255,255,.16) 1px, transparent 1.5px); background-size: 9px 9px;
+}
+html.t-p5.p5ft-button .p5-btn--sticker:hover { transform: translate(-2px,-2px); box-shadow: var(--shadow-hard-lg); }
+html.t-p5.p5ft-button .p5-btn--sticker:active { transform: translate(2px,2px); box-shadow: var(--shadow-hard-sm); }
+html.t-p5.p5ft-button .p5-btn--sticker .ico {
+  width: 40px; height: 34px; display: grid; place-items: center; font-size: 22px; transform: rotate(-6deg); filter: drop-shadow(2px 2px 0 rgba(0,0,0,.7));
+}
+/* 变体 B：描边图标按钮（红色填充 + 粗黑描边 + 硬影） */
+html.t-p5.p5ft-button .p5-btn--stroke {
+  display: inline-grid; place-items: center; width: 56px; height: 56px; background: var(--p5-red); color: var(--p5-white);
+  border: 4px solid var(--p5-ink); box-shadow: var(--shadow-hard); cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+html.t-p5.p5ft-button .p5-btn--stroke:hover { transform: translate(-2px,-2px) rotate(-2deg); box-shadow: var(--shadow-hard-lg); }
+html.t-p5.p5ft-button .p5-btn--stroke:active { transform: translate(2px,2px); box-shadow: var(--shadow-hard-sm); }
+html.t-p5.p5ft-button .p5-btn--stroke svg, html.t-p5.p5ft-button .p5-btn--stroke .ico { width: 60%; height: 60%; filter: drop-shadow(2px 2px 0 rgba(0,0,0,.6)); }
+html.t-p5.p5ft-button .p5-btn--stroke.paper { background: var(--p5-paper); color: var(--p5-red-ink); }
+/* 变体 C：快捷键按钮组 */
+html.t-p5.p5ft-button .p5-keygroup { display: flex; gap: 14px; }
+html.t-p5.p5ft-button .p5-keygroup__item {
+  display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 10px; background: transparent;
+  color: var(--p5-white); font-family: var(--font-cond); font-size: 13px; font-weight: 700; letter-spacing: .08em; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+html.t-p5.p5ft-button .p5-keygroup__item:hover { background: rgba(255,255,255,.08); }
+html.t-p5.p5ft-button .p5-keygroup__item .ico { font-size: 18px; filter: drop-shadow(2px 2px 0 rgba(0,0,0,.7)); }
+html.t-p5.p5ft-button .p5-keygroup__item kbd {
+  min-width: 34px; padding: 2px 8px; border: 2px solid var(--p5-white); font-family: var(--font-mono); font-size: 10px; text-align: center; box-shadow: var(--shadow-hard-sm);
+}
+/* 变体 D：异形倒计时条（斜切 + 撕裂延伸） */
+html.t-p5.p5ft-button .p5-countdown {
+  position: relative; display: inline-flex; align-items: center; background: var(--p5-ink); color: var(--p5-white);
+  border: 4px solid var(--p5-white); border-right: none; padding: 8px 20px 8px 28px;
+  font-family: var(--font-num); font-weight: 900; font-size: clamp(20px, 3vw, 34px); letter-spacing: .04em; box-shadow: var(--shadow-hard);
+  clip-path: polygon(12px 0, 100% 0, 100% 100%, 0 100%, 0 50%);
+}
+html.t-p5.p5ft-button .p5-countdown::after {
+  content: ''; position: absolute; right: -22px; top: -4px; bottom: -4px; width: 22px; background: var(--p5-ink);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 100% 50%); border-top: 4px solid var(--p5-white); border-bottom: 4px solid var(--p5-white);
+}
+html.t-p5.p5ft-button .p5-countdown em {
+  position: absolute; right: -16px; top: 50%; transform: translateY(-50%); width: 4px; height: 60%; background: var(--p5-white);
+  box-shadow: 7px 0 0 var(--p5-white); pointer-events: none; z-index: 1;
+}
+html.t-p5.p5ft-button .p5-countdown--flat { clip-path: polygon(12px 0, 100% 0, 100% 100%, 0 100%, 0 50%); }
+html.t-p5.p5ft-button .p5-countdown--flat::after, html.t-p5.p5ft-button .p5-countdown--flat em { display: none; }
+
+/* ---------- 第 6 章 辅助元素 ---------- */
+/* 快捷键标签框 */
+html.t-p5.p5ft-key .p5-key {
+  display: inline-block; min-width: 34px; padding: 3px 8px; border: 2px solid var(--p5-white); color: var(--p5-white);
+  font-family: var(--font-mono); font-size: 11px; text-align: center; box-shadow: var(--shadow-hard-sm); background: var(--p5-ink);
+}
+html.t-p5.p5ft-key .p5-key--paper { background: var(--p5-paper); color: var(--p5-ink); border-color: var(--p5-ink); }
+/* 底部锯齿纹理带 */
+html.t-p5.p5ft-texture .p5-texband {
+  height: 14px; background: repeating-linear-gradient(135deg, var(--p5-ink) 0 8px, var(--p5-ink-soft) 8px 16px);
+  clip-path: var(--clip-zig); opacity: .6; pointer-events: none;
+}
+/* 描边倾斜大标题（强化版） */
+html.t-p5.p5ft-poster .p5-title--poster {
+  font-family: var(--font-display); font-weight: 900; font-size: var(--text-display); color: var(--p5-white);
+  -webkit-text-stroke: 2px var(--p5-ink); text-shadow: 4px 4px 0 var(--p5-red), 8px 8px 0 var(--p5-ink);
+  transform: skewX(var(--skew-title)) rotate(-1deg); letter-spacing: .02em;
+}
+
+/* 降级：reduced-motion 下关闭信物辉光呼吸（D-10 / 手册 7.2） */
+@media (prefers-reduced-motion: reduce) {
+  html.t-p5 .p5-relic .glow { animation: none; opacity: .8; }
+  html.t-p5 .p5-badge-star, html.t-p5 .p5-starburst { animation: none; }
+}
 
 /* ============================================================================
    7.1 路由切换 wipe
@@ -1432,11 +1621,34 @@ html.t-p5 .lora-train .field {
    ============================================================================ */
 
 /* 4.0 形态容器：绝对居中 + 不挡点击（C-3） */
+/* 形态化身：主题无关配色兜底（默认/gray 等主题也渲染 P5+夜城形态，对齐 useDirectorOrb activeMorphList 的 ||MORPH_REGISTRY.p5 意图） */
+:root {
+  /* P5 怪盗配色 */
+  --p5-red:#E4002B; --p5-red-ink:#B00020; --p5-red-deep:#8A0018;
+  --p5-ink:#0B0B0B; --p5-ink-soft:#191919;
+  --p5-paper:#F5F1E8; --p5-paper-dim:#E8E2D4;
+  --p5-white:#FFFFFF; --p5-alert:#FFE100;
+  --shadow-hard-sm:2px 2px 0 0 rgba(0,0,0,.9);
+  --ease-out:cubic-bezier(.22,.61,.36,1);
+  --ease-pop:cubic-bezier(.34,1.56,.64,1);
+  --ease-steps:steps(4,end);
+  --clip-star:polygon(50% 0,58% 24%,84% 12%,74% 38%,100% 50%,74% 62%,84% 88%,58% 76%,50% 100%,42% 76%,16% 88%,26% 62%,0 50%,26% 38%,16% 12%,42% 24%);
+  /* 夜城霓虹配色 */
+  --nc-yellow:#FEE100; --nc-cyan:#00F0FF; --nc-magenta:#FF0055; --nc-green:#00FF9C;
+  --nc-bg:#0A0A0A; --nc-bg-2:#0D0F12;
+  --nc-glow-yellow:0 0 6px rgba(254,225,0,.55), 0 0 18px rgba(254,225,0,.22);
+  --nc-glow-cyan:0 0 6px rgba(0,240,255,.55), 0 0 18px rgba(0,240,255,.22);
+  --nc-glow-magenta:0 0 6px rgba(255,0,85,.55), 0 0 18px rgba(255,0,85,.22);
+  --nc-glow-green:0 0 6px rgba(0,255,156,.5), 0 0 16px rgba(0,255,156,.2);
+  --dur-fast:120ms; --dur-base:240ms; --dur-slow:420ms; --dur-epic:700ms;
+}
+
 /* 形态 = 悬浮球（剥离 .orb-btn 方盒背景 / 阴影 / 通用动画）
    组件 scoped 基线 .orb-btn 带紫蓝渐变 + 阴影 + border-radius:50%，
-   P5 全局 * {border-radius:0} 把它压成方盒；形态只画在内部小装饰。
-   用 !important 压过组件 scoped [data-v-*]，让形态本身成为悬浮球可视本体。 */
-html.t-p5 .orb-btn {
+   形态只画在内部小装饰；用 !important 压过组件 scoped [data-v-*]，让形态本身成为悬浮球可视本体。
+   形态化解为「主题无关」：任何主题下只要 .orb-btn 带 orb-morph--{key} 即渲染形态（对齐 activeMorphList 的默认回退 P5 意图）。 */
+.orb-btn[class*="orb-morph--"] {
+  /* 形态化身增强：去除通用圆球背景，仅保留形态图形本体（规格 §4，用户要求"刀是刀/芯片是芯片"） */
   background: transparent !important;
   box-shadow: none !important;
   border: none !important;
@@ -1444,53 +1656,59 @@ html.t-p5 .orb-btn {
   animation: none !important;
   overflow: visible !important;
 }
+/* 形态激活时隐藏角标/徽标装饰（规格 §4 只绘制形态本体，避免黄数字方块/橙角标混入形态图形） */
+.orb-corner,
+.orb-badge,
+.orb-badge-err,
+.orb-badge-adv { display: none !important; }
 /* P5 形态尺寸适度放大，使形态直接撑起悬浮球视觉（56px 球内 ~80% 占比） */
-html.t-p5 .orb-morph--sword   .orb-morph { width: 24px; height: 50px; }
-html.t-p5 .orb-morph--mask    .orb-morph { width: 46px; height: 28px; }
-html.t-p5 .orb-morph--tower   .orb-morph { width: 32px; height: 44px; }
-html.t-p5 .orb-morph--shackle .orb-morph { width: 42px; height: 32px; }
+.orb-morph--sword   .orb-morph { width: 24px; height: 50px; }
+.orb-morph--mask    .orb-morph { width: 46px; height: 28px; }
+.orb-morph--tower   .orb-morph { width: 32px; height: 44px; }
+.orb-morph--shackle .orb-morph { width: 42px; height: 32px; }
 /* P5 形态伪元素按新尺寸同比放大（保持识别度） */
-html.t-p5 .orb-morph--sword .orb-morph::before { width: 12px; height: 38px; }
-html.t-p5 .orb-morph--sword .orb-morph::after  { width: 20px; height: 7px; }
-html.t-p5 .orb-morph--mask  .orb-morph::before,
-html.t-p5 .orb-morph--mask  .orb-morph::after  { width: 11px; height: 8px; }
-html.t-p5 .orb-morph--shackle .orb-morph::before { width: 14px; height: 14px; }
-html.t-p5 .orb-morph--shackle .orb-morph::after  { width: 12px; height: 11px; }
+.orb-morph--sword .orb-morph::before { width: 12px; height: 38px; }
+.orb-morph--sword .orb-morph::after  { width: 20px; height: 7px; }
+.orb-morph--mask  .orb-morph::before,
+.orb-morph--mask  .orb-morph::after  { width: 11px; height: 8px; }
+.orb-morph--shackle .orb-morph::before { width: 14px; height: 14px; }
+.orb-morph--shackle .orb-morph::after  { width: 12px; height: 11px; }
 
-html.t-p5 .orb-morph {
+.orb-morph {
   position: absolute; inset: 0; margin: auto;
   display: grid; place-items: center;
   pointer-events: none;
 }
-/* P5 主题下隐藏胶片图标，改显怪盗形态（T-1：P5 只显示怪盗四形态） */
-html.t-p5 .orb-btn .orb-core { display: none; }
+/* 形态激活时隐藏胶片图标，改显形态本体 */
+.orb-btn[class*="orb-morph--"] .orb-core { display: none; }
 
 /* 4.1 P5-1 绅士细剑（御剑飞行） */
-html.t-p5 .orb-morph--sword .orb-morph {
+.orb-morph--sword .orb-morph {
   width: 18px; height: 44px;
   transform: rotate(0deg);
   transition: transform .3s var(--ease-pop);
 }
-html.t-p5 .orb-morph--sword .orb-morph::before {
+.orb-morph--sword .orb-morph::before {
   content: '';
-  width: 10px; height: 34px;
-  background: linear-gradient(180deg, var(--p5-paper) 0 8%, var(--p5-red) 8% 100%);
-  clip-path: polygon(50% 0, 100% 8%, 100% 88%, 50% 100%, 0 88%, 0 8%);
+  /* 收窄剑刃、加大尖头比例，让 56px 下也能读出"剑"而非"口红" */
+  width: 7px; height: 36px;
+  background: linear-gradient(180deg, #ff8a9e 0%, var(--p5-red) 35% 100%);
+  clip-path: polygon(50% 0, 100% 15%, 100% 80%, 50% 100%, 0 80%, 0 15%);
   box-shadow: var(--shadow-hard-sm);
 }
-html.t-p5 .orb-morph--sword .orb-morph::after {
+.orb-morph--sword .orb-morph::after {
   content: '';
   position: absolute; bottom: 6px;
   width: 16px; height: 6px;
   background: var(--p5-ink);
   clip-path: polygon(8% 0, 92% 0, 100% 100%, 0 100%);
 }
-html.t-p5 .orb-morph--sword:not(.dragging) .orb-morph { animation: p5-sword-idle 3s ease-in-out infinite; }
+.orb-morph--sword:not(.dragging) .orb-morph { animation: p5-sword-idle 3s ease-in-out infinite; }
 @keyframes p5-sword-idle {
   0%,100% { transform: translateY(0) rotate(-3deg); }
   50%     { transform: translateY(-6px) rotate(3deg); }
 }
-html.t-p5 .orb-btn.dragging.orb-morph--sword .orb-morph {
+.orb-btn.dragging.orb-morph--sword .orb-morph {
   transform: rotate(55deg) scale(1.2);
   animation: p5-sword-fly .22s linear infinite;
   filter: drop-shadow(0 0 8px rgba(228,0,43,.85));
@@ -1502,34 +1720,34 @@ html.t-p5 .orb-btn.dragging.orb-morph--sword .orb-morph {
   75%  { transform: rotate(60deg) translate(4px,2px); }
   100% { transform: rotate(48deg) translate(0,0); }
 }
-html.t-p5 .orb-btn.dragging.orb-morph--sword .orb-morph::before {
+/* 拖尾改为沿剑轴向的软发光（不再用 0 模糊实心矩形堆叠形成方框）。
+   旋转 55° 后 local +Y 指向斜下，刚好拖在剑身后方。 */
+.orb-btn.dragging.orb-morph--sword .orb-morph::before {
   box-shadow:
-    -8px 8px 0 -2px rgba(228,0,43,.75),
-    -16px 16px 0 -4px rgba(228,0,43,.5),
-    -24px 24px 0 -6px rgba(228,0,43,.3),
-    -32px 32px 0 -8px rgba(228,0,43,.15);
+    0 10px 8px -2px rgba(228, 0, 43, .65),
+    0 22px 16px -4px rgba(228, 0, 43, .35);
 }
 
 /* 4.2 P5-2 怪盗面具（残影分裂） */
-html.t-p5 .orb-morph--mask .orb-morph {
+.orb-morph--mask .orb-morph {
   width: 36px; height: 20px;
   background: var(--p5-ink);
   clip-path: polygon(0 30%, 18% 0, 82% 0, 100% 30%, 88% 100%, 12% 100%);
   border: 2px solid var(--p5-red);
 }
-html.t-p5 .orb-morph--mask .orb-morph::before,
-html.t-p5 .orb-morph--mask .orb-morph::after {
+.orb-morph--mask .orb-morph::before,
+.orb-morph--mask .orb-morph::after {
   content: '';
   position: absolute; top: 4px;
   width: 9px; height: 6px;
   background: var(--p5-red);
   clip-path: polygon(20% 0, 80% 0, 100% 100%, 0 100%);
 }
-html.t-p5 .orb-morph--mask .orb-morph::before { left: 5px; }
-html.t-p5 .orb-morph--mask .orb-morph::after  { right: 5px; }
-html.t-p5 .orb-morph--mask:not(.dragging) .orb-morph { animation: p5-mask-breathe 2.4s ease-in-out infinite; }
+.orb-morph--mask .orb-morph::before { left: 5px; }
+.orb-morph--mask .orb-morph::after  { right: 5px; }
+.orb-morph--mask:not(.dragging) .orb-morph { animation: p5-mask-breathe 2.4s ease-in-out infinite; }
 @keyframes p5-mask-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
-html.t-p5 .orb-btn.dragging.orb-morph--mask .orb-morph {
+.orb-btn.dragging.orb-morph--mask .orb-morph {
   animation: p5-mask-split .14s steps(3) infinite;
   filter: drop-shadow(0 0 6px rgba(228,0,43,.7));
 }
@@ -1539,17 +1757,17 @@ html.t-p5 .orb-btn.dragging.orb-morph--mask .orb-morph {
   66%  { transform: translate(6px,-2px) scale(.94); }
   100% { transform: translate(0,0) scale(1); }
 }
-html.t-p5 .orb-btn.dragging.orb-morph--mask .orb-morph::before {
+.orb-btn.dragging.orb-morph--mask .orb-morph::before {
   content: ''; position: absolute; inset: 0;
   background: inherit; clip-path: inherit; opacity: .55; transform: translate(-12px,5px) scale(.92);
 }
-html.t-p5 .orb-btn.dragging.orb-morph--mask .orb-morph::after {
+.orb-btn.dragging.orb-morph--mask .orb-morph::after {
   content: ''; position: absolute; inset: 0;
   background: inherit; clip-path: inherit; opacity: .25; transform: translate(-22px,12px) scale(.82);
 }
 
 /* 4.3 P5-3 命运塔罗（疾转 + 残影） */
-html.t-p5 .orb-morph--tower .orb-morph {
+.orb-morph--tower .orb-morph {
   width: 24px; height: 34px;
   background:
     linear-gradient(45deg, transparent 42%, var(--p5-white) 42% 58%, transparent 58%) 0 0 / 100% 100% no-repeat,
@@ -1558,49 +1776,50 @@ html.t-p5 .orb-morph--tower .orb-morph {
   box-shadow: var(--shadow-hard-sm);
   transform-style: preserve-3d;
 }
-html.t-p5 .orb-morph--tower .orb-morph::before {
+.orb-morph--tower .orb-morph::before {
   content: '';
   position: absolute; inset: 6px;
   border: 2px solid var(--p5-white);
   clip-path: polygon(50% 0, 62% 30%, 92% 24%, 76% 52%, 100% 72%, 68% 74%, 62% 100%, 38% 74%, 6% 72%, 24% 52%, 8% 24%, 38% 30%);
 }
-html.t-p5 .orb-morph--tower:not(.dragging) .orb-morph { animation: p5-tower-idle 3.6s ease-in-out infinite; }
+.orb-morph--tower:not(.dragging) .orb-morph { animation: p5-tower-idle 3.6s ease-in-out infinite; }
 @keyframes p5-tower-idle { 0%,100% { transform: rotateY(0); } 50% { transform: rotateY(18deg); } }
-html.t-p5 .orb-btn.dragging.orb-morph--tower .orb-morph {
+.orb-btn.dragging.orb-morph--tower .orb-morph {
   animation: p5-tower-spin .12s linear infinite;
   filter: drop-shadow(0 0 8px rgba(228,0,43,.7));
 }
 @keyframes p5-tower-spin { from { transform: rotateY(0); } to { transform: rotateY(540deg); } }
-html.t-p5 .orb-btn.dragging.orb-morph--tower .orb-morph::after {
+.orb-btn.dragging.orb-morph--tower .orb-morph::after {
   content: ''; position: absolute; inset: 0;
   background: inherit; opacity: .5; transform: translateX(-14px) skewX(-14deg);
 }
-html.t-p5 .orb-btn.dragging.orb-morph--tower .orb-morph::before {
+.orb-btn.dragging.orb-morph--tower .orb-morph::before {
   opacity: .4;
 }
 
 /* 4.4 P5-4 心锁锁链（甩动） */
-html.t-p5 .orb-morph--shackle .orb-morph {
+.orb-morph--shackle .orb-morph {
   width: 34px; height: 26px;
   display: flex; align-items: center; justify-content: center;
 }
-html.t-p5 .orb-morph--shackle .orb-morph::before {
+.orb-morph--shackle .orb-morph::before {
   content: '';
   width: 12px; height: 12px;
   border: 3px solid var(--p5-red);
   border-radius: 50%;
-  box-shadow: -9px 0 0 -2px var(--p5-red), 9px 0 0 -2px var(--p5-red);
+  /* 软发光代替 0 模糊实心矩形（否则两侧是两个红色方块） */
+  box-shadow: -10px 0 5px -3px rgba(228, 0, 43, .7), 10px 0 5px -3px rgba(228, 0, 43, .7);
 }
-html.t-p5 .orb-morph--shackle .orb-morph::after {
+.orb-morph--shackle .orb-morph::after {
   content: '';
   position: absolute;
   width: 10px; height: 9px;
   background: var(--p5-ink);
   clip-path: polygon(50% 100%, 0 38%, 12% 20%, 50% 44%, 88% 20%, 100% 38%);
 }
-html.t-p5 .orb-morph--shackle:not(.dragging) .orb-morph { animation: p5-shackle-idle 2.2s ease-in-out infinite; transform-origin: top center; }
+.orb-morph--shackle:not(.dragging) .orb-morph { animation: p5-shackle-idle 2.2s ease-in-out infinite; transform-origin: top center; }
 @keyframes p5-shackle-idle { 0%,100% { transform: rotate(-8deg); } 50% { transform: rotate(8deg); } }
-html.t-p5 .orb-btn.dragging.orb-morph--shackle .orb-morph {
+.orb-btn.dragging.orb-morph--shackle .orb-morph {
   animation: p5-shackle-whip .1s linear infinite;
   transform-origin: top center;
   filter: drop-shadow(0 0 6px rgba(228,0,43,.6));
@@ -1612,12 +1831,12 @@ html.t-p5 .orb-btn.dragging.orb-morph--shackle .orb-morph {
   75%  { transform: rotate(0deg)   translateX(0); }
   100% { transform: rotate(-32deg) translateX(-3px); }
 }
-html.t-p5 .orb-btn.dragging.orb-morph--shackle .orb-morph::before {
+.orb-btn.dragging.orb-morph--shackle .orb-morph::before {
   filter: drop-shadow(-6px 0 0 rgba(228,0,43,.55)) drop-shadow(6px 0 0 rgba(228,0,43,.35));
 }
 
 /* 5.1 切换爆发（双击时绯红星爆扩散） */
-html.t-p5 .orb-btn.switching::after {
+.orb-btn.switching::after {
   content: '';
   position: absolute; inset: 0;
   background: var(--p5-red);
@@ -1631,7 +1850,7 @@ html.t-p5 .orb-btn.switching::after {
 }
 
 /* 5.2 完成爆发（celebrate：纸白闪光 + 绯红缩放） */
-html.t-p5 .orb-btn.celebrating .orb-morph { animation: p5-celebrate .8s var(--ease-pop) both; }
+.orb-btn.celebrating .orb-morph { animation: p5-celebrate .8s var(--ease-pop) both; }
 @keyframes p5-celebrate {
   0%   { filter: brightness(1); transform: scale(1); }
   40%  { filter: brightness(2.2); transform: scale(1.25); }
@@ -2161,6 +2380,29 @@ html.t-cyberpunk .nc-page-head::after {
   box-shadow: var(--nc-glow-yellow);
 }
 
+/* 通用标题基底：FC-05 修复后 .p5-title 仅在 P5 主题生效，夜城下由本规则接管霓虹语言 */
+html.t-cyberpunk h1, html.t-cyberpunk h2, html.t-cyberpunk h3 {
+  font-family: var(--font-display);
+  font-weight: 800;
+  color: var(--nc-fg);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-display);
+  position: relative;
+  margin: 0 0 12px;
+  text-shadow: var(--nc-glow-cyan);
+}
+html.t-cyberpunk h1 { font-size: var(--text-display); line-height: var(--lh-display); }
+html.t-cyberpunk h3 { font-size: 20px; line-height: 1.2; }
+html.t-cyberpunk h1::before, html.t-cyberpunk h2::before, html.t-cyberpunk h3::before {
+  content: '>'; color: var(--nc-yellow); text-shadow: var(--nc-glow-yellow); margin-right: 8px;
+}
+/* 夜城主按钮：接管原 .p5-btn 在夜城的霓虹语言（不破坏 P5，P5 用 html.t-p5 .p5-btn） */
+html.t-cyberpunk .el-button--primary {
+  background: var(--nc-cyan); border-color: var(--nc-cyan); color: #04141a;
+  box-shadow: var(--nc-glow-cyan); border-radius: 0;
+}
+html.t-cyberpunk .el-button--primary:hover { background: #5ffbff; box-shadow: 0 0 14px var(--nc-cyan); }
+
 /* ---------- 5.2 路由切换（扫描线 wipe，接入 App.vue 过渡名 nc-page） ---------- */
 html.t-cyberpunk .nc-page-enter-active { transition: all var(--dur-slow) var(--ease-out); }
 html.t-cyberpunk .nc-page-leave-active { transition: all calc(var(--dur-slow) * .5) var(--ease-out); }
@@ -2496,18 +2738,20 @@ html.t-cyberpunk .el-checkbox__input.is-checked + .el-checkbox__label { color: v
    原阶段4b 把 .orb-btn 装饰成 HUD 方框 + 扫描线 + 色调旋转，形态仅作内部装饰；
    现按形态增强规格：形态本身即为悬浮球可视本体，仅保留极薄的赛博边框做"持有感"。 */
 html.t-cyberpunk .dir-orb-root { font-family: var(--font-body); }
-html.t-cyberpunk .orb-btn {
+.orb-btn[class*="orb-morph--"] {
+  /* 形态化身增强：去除通用圆球背景，仅保留形态图形本体（规格 §4，用户要求形态不被圆球覆盖） */
   background: transparent !important;
-  border: 1px solid rgba(0,240,255,.25) !important;
+  border: none !important;
   border-radius: 0 !important;
-  box-shadow: 0 0 14px rgba(0,240,255,.25) !important;
+  box-shadow: none !important;
   position: relative; overflow: visible;
   transition: all var(--dur-fast) var(--ease-out);
   animation: none !important;
 }
+/* 角标/徽标隐藏已全局化（见上方统一规则），夜城无需重复声明 */
 /* 去掉原 ::after 扫描横线 与 ::before 内框 + nc-orb-scan 色调旋转（消除"通用旋转"观感） */
-html.t-cyberpunk .orb-btn::before,
-html.t-cyberpunk .orb-btn::after { content: none !important; animation: none !important; display: none !important; }
+.orb-btn[class*="orb-morph--"]::before,
+.orb-btn[class*="orb-morph--"]::after { content: none !important; animation: none !important; display: none !important; }
 html.t-cyberpunk .orb-btn:hover {
   border-color: var(--nc-yellow) !important;
   box-shadow: 0 0 18px var(--nc-glow-yellow) !important;
@@ -2643,10 +2887,9 @@ html.t-cyberpunk .m3-conv .conv-bubble.insight .conv-tag::before { content: '[QC
 
 /* C-4 无障碍：减少动效时关闭悬浮球形态演出（形态静态仍肉眼可辨） */
 @media (prefers-reduced-motion: reduce) {
-  html.t-p5 .orb-morph, html.t-p5 .orb-morph::before, html.t-p5 .orb-morph::after,
-  html.t-cyberpunk .orb-morph, html.t-cyberpunk .orb-morph::before, html.t-cyberpunk .orb-morph::after,
-  html.t-p5 .orb-btn.switching, html.t-cyberpunk .orb-btn.switching,
-  html.t-p5 .orb-btn.celebrating .orb-morph, html.t-cyberpunk .orb-btn.celebrating .orb-morph {
+  .orb-morph, .orb-morph::before, .orb-morph::after,
+  .orb-btn.switching,
+  .orb-btn.celebrating .orb-morph {
     animation: none !important;
   }
 }
@@ -2655,51 +2898,50 @@ html.t-cyberpunk .m3-conv .conv-bubble.insight .conv-tag::before { content: '[QC
    DirectorOrb 多形态化身（皮肤）· 夜城 HUD 主题
    来源：《DirectorOrb悬浮球多形态化身增强规格》v2.0 §4 / §5
    适配：规格 .orb-body 改为真实类 .orb-btn；形态绘制于 .orb-morph 伪元素。
-   仅挂在 html.t-cyberpunk，零泄漏（RED-03）。
+   已全局化（形态无关）：默认/gray 等主题同样渲染赛博四形态，对齐 activeMorphList 的 ||MORPH_REGISTRY.p5 意图。
    ============================================================================ */
 
 /* 4.0 形态容器：绝对居中 + 不挡点击（C-3） */
-html.t-cyberpunk .orb-morph {
+.orb-morph {
   position: absolute; inset: 0; margin: auto;
   display: grid; place-items: center;
   pointer-events: none;
 }
-/* 夜城主题下隐藏胶片图标，改显赛博形态（T-1：夜城只显示赛博四形态） */
-html.t-cyberpunk .orb-btn .orb-core { display: none; }
+/* 形态激活时隐藏胶片图标（全局，已统一处理） */
 
 /* 4.5 NC-1 霓虹武士刀（刀光拖尾） */
-html.t-cyberpunk .orb-morph--katana .orb-morph {
-  width: 20px; height: 50px;
+.orb-morph--katana .orb-morph {
+  width: 14px; height: 40px;
   transition: transform .3s var(--ease-out);
 }
-html.t-cyberpunk .orb-morph--katana .orb-morph::before {
+.orb-morph--katana .orb-morph::before {
   content: '';
-  width: 10px; height: 38px;
-  background: linear-gradient(180deg, #E8FFFF 0 10%, var(--nc-cyan) 10% 100%);
-  clip-path: polygon(50% 0, 100% 6%, 100% 90%, 50% 100%, 0 90%, 0 6%);
+  /* 收窄 + 加长，让 56px 下尖头与刀身比例清晰，不再像"蜡烛" */
+  width: 6px; height: 36px;
+  background: linear-gradient(180deg, #E8FFFF 0 8%, var(--nc-cyan) 8% 55%, #6cf 55% 100%);
+  clip-path: polygon(50% 0, 100% 12%, 100% 86%, 50% 100%, 0 86%, 0 12%);
   filter: drop-shadow(0 0 4px var(--nc-cyan));
 }
-html.t-cyberpunk .orb-morph--katana .orb-morph::after {
+.orb-morph--katana .orb-morph::after {
   content: '';
   position: absolute; bottom: 2px;
-  width: 16px; height: 10px;
+  width: 12px; height: 8px;
   background: var(--nc-bg);
   clip-path: polygon(10% 0, 90% 0, 100% 100%, 0 100%);
   border-top: 2px solid var(--nc-yellow);
 }
-html.t-cyberpunk .orb-morph--katana:not(.dragging) .orb-morph { animation: nc-katana-idle 2.8s ease-in-out infinite; }
+.orb-morph--katana:not(.dragging) .orb-morph { animation: nc-katana-idle 2.8s ease-in-out infinite; }
 @keyframes nc-katana-idle {
   0%,100% { transform: translateY(0); filter: drop-shadow(0 0 2px var(--nc-cyan)); }
   50%     { transform: translateY(-5px); filter: drop-shadow(0 0 6px var(--nc-cyan)); }
 }
-html.t-cyberpunk .orb-btn.dragging.orb-morph--katana .orb-morph {
+/* 拖尾改为轴向软发光（不再横向 drop-shadow 堆叠成青条）。 */
+.orb-btn.dragging.orb-morph--katana .orb-morph {
   transform: rotate(95deg) scale(1.25);
   animation: nc-katana-swing .22s linear infinite;
   filter:
-    drop-shadow(0 0 6px var(--nc-cyan))
-    drop-shadow(-8px 0 3px rgba(0,240,255,.65))
-    drop-shadow(-18px 0 2px rgba(0,240,255,.4))
-    drop-shadow(-28px 0 1px rgba(0,240,255,.2));
+    drop-shadow(0 0 7px var(--nc-cyan))
+    drop-shadow(0 12px 8px rgba(0, 240, 255, .45));
 }
 @keyframes nc-katana-swing {
   0%   { transform: rotate(86deg) translateY(-2px); }
@@ -2710,21 +2952,21 @@ html.t-cyberpunk .orb-btn.dragging.orb-morph--katana .orb-morph {
 }
 
 /* 4.6 NC-2 Relic 芯片（数据流拖尾） */
-html.t-cyberpunk .orb-morph--relic .orb-morph {
-  width: 42px; height: 32px;
+.orb-morph--relic .orb-morph {
+  width: 30px; height: 24px;
   background: var(--nc-bg-2);
   border: 1px solid var(--nc-yellow);
   box-shadow: var(--nc-glow-yellow);
   position: relative;
 }
-html.t-cyberpunk .orb-morph--relic .orb-morph::before {
+.orb-morph--relic .orb-morph::before {
   content: '';
   position: absolute; inset: 3px;
   background:
     linear-gradient(135deg, transparent 42%, var(--nc-yellow) 42% 50%, transparent 50%) 0 0 / 60% 60% no-repeat,
     linear-gradient(-135deg, transparent 42%, var(--nc-yellow) 42% 50%, transparent 50%) 100% 100% / 60% 60% no-repeat;
 }
-html.t-cyberpunk .orb-morph--relic .orb-morph::after {
+.orb-morph--relic .orb-morph::after {
   content: '';
   position: absolute; inset: 0; margin: auto;
   width: 6px; height: 6px;
@@ -2732,23 +2974,23 @@ html.t-cyberpunk .orb-morph--relic .orb-morph::after {
   box-shadow: var(--nc-glow-cyan);
   clip-path: var(--clip-star);
 }
-html.t-cyberpunk .orb-morph--relic:not(.dragging) .orb-morph { animation: nc-relic-spin 8s linear infinite; }
+.orb-morph--relic:not(.dragging) .orb-morph { animation: nc-relic-spin 8s linear infinite; }
 @keyframes nc-relic-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
-html.t-cyberpunk .orb-btn.dragging.orb-morph--relic .orb-morph {
+.orb-btn.dragging.orb-morph--relic .orb-morph {
   animation: nc-relic-fast .5s linear infinite;
   filter: drop-shadow(0 0 8px var(--nc-yellow)) drop-shadow(-10px 0 4px rgba(254,225,0,.5));
 }
 @keyframes nc-relic-fast { from { transform: rotate(0); } to { transform: rotate(720deg); } }
-html.t-cyberpunk .orb-btn.dragging.orb-morph--relic .orb-morph::after { animation: nc-relic-datastream .3s linear infinite; }
-html.t-cyberpunk .orb-btn.dragging.orb-morph--relic .orb-morph::before { opacity: .5; }
+.orb-btn.dragging.orb-morph--relic .orb-morph::after { animation: nc-relic-datastream .3s linear infinite; }
+.orb-btn.dragging.orb-morph--relic .orb-morph::before { opacity: .5; }
 @keyframes nc-relic-datastream {
   0%   { transform: translate(0,0); opacity: 1; }
   100% { transform: translate(-20px,14px); opacity: 0; }
 }
 
 /* 4.7 NC-3 纳米线（鞭甩） */
-html.t-cyberpunk .orb-morph--wire .orb-morph { width: 34px; height: 34px; }
-html.t-cyberpunk .orb-morph--wire .orb-morph::before {
+.orb-morph--wire .orb-morph { width: 34px; height: 34px; }
+.orb-morph--wire .orb-morph::before {
   content: '';
   position: absolute; inset: 0;
   border: 3px solid transparent;
@@ -2758,7 +3000,7 @@ html.t-cyberpunk .orb-morph--wire .orb-morph::before {
   filter: drop-shadow(0 0 3px var(--nc-cyan));
   animation: nc-wire-rot 3s linear infinite;
 }
-html.t-cyberpunk .orb-morph--wire .orb-morph::after {
+.orb-morph--wire .orb-morph::after {
   content: '';
   position: absolute; inset: 0; margin: auto;
   width: 8px; height: 8px;
@@ -2767,7 +3009,7 @@ html.t-cyberpunk .orb-morph--wire .orb-morph::after {
   box-shadow: var(--nc-glow-magenta);
 }
 @keyframes nc-wire-rot { from { transform: rotate(0); } to { transform: rotate(360deg); } }
-html.t-cyberpunk .orb-btn.dragging.orb-morph--wire .orb-morph::before {
+.orb-btn.dragging.orb-morph--wire .orb-morph::before {
   animation: nc-wire-whip .3s linear infinite;
   border-top-color: var(--nc-cyan);
   border-right-color: var(--nc-magenta);
@@ -2784,8 +3026,8 @@ html.t-cyberpunk .orb-btn.dragging.orb-morph--wire .orb-morph::before {
 }
 
 /* 4.8 NC-4 HUD 扫描框（扫描加速 + 速度线） */
-html.t-cyberpunk .orb-morph--scanner .orb-morph { width: 46px; height: 46px; }
-html.t-cyberpunk .orb-morph--scanner .orb-morph::before {
+.orb-morph--scanner .orb-morph { width: 46px; height: 46px; }
+.orb-morph--scanner .orb-morph::before {
   content: '';
   position: absolute; inset: 2px;
   border: 2px solid var(--nc-cyan);
@@ -2795,7 +3037,7 @@ html.t-cyberpunk .orb-morph--scanner .orb-morph::before {
     linear-gradient(var(--nc-cyan), var(--nc-cyan)) center / 1px 100% no-repeat;
   clip-path: polygon(0 0, 30% 0, 30% 8%, 70% 8%, 70% 0, 100% 0, 100% 30%, 92% 30%, 92% 70%, 100% 70%, 100% 100%, 70% 100%, 70% 92%, 30% 92%, 30% 100%, 0 100%, 0 70%, 8% 70%, 8% 30%, 0 30%);
 }
-html.t-cyberpunk .orb-morph--scanner .orb-morph::after {
+.orb-morph--scanner .orb-morph::after {
   content: '';
   position: absolute; left: 10%; right: 10%; top: 0;
   height: 2px;
@@ -2804,16 +3046,16 @@ html.t-cyberpunk .orb-morph--scanner .orb-morph::after {
   animation: nc-scanner-line 1.6s ease-in-out infinite;
 }
 @keyframes nc-scanner-line { 0%,100% { top: 10%; } 50% { top: 88%; } }
-html.t-cyberpunk .orb-btn.dragging.orb-morph--scanner .orb-morph::after { animation-duration: .15s; filter: drop-shadow(0 0 6px var(--nc-green)); }
-html.t-cyberpunk .orb-btn.dragging.orb-morph--scanner .orb-morph::before {
+.orb-btn.dragging.orb-morph--scanner .orb-morph::after { animation-duration: .15s; filter: drop-shadow(0 0 6px var(--nc-green)); }
+/* 速度线改为短软光痕（不再用 0 模糊实心矩形横叠成青条）。 */
+.orb-btn.dragging.orb-morph--scanner .orb-morph::before {
   filter:
-    drop-shadow(-10px 0 0 rgba(0,240,255,.55))
-    drop-shadow(-18px 0 0 rgba(0,240,255,.3))
-    drop-shadow(-26px 0 0 rgba(0,240,255,.15));
+    drop-shadow(-6px 0 3px rgba(0, 240, 255, .55))
+    drop-shadow(-12px 0 6px rgba(0, 240, 255, .3));
 }
 
 /* 5.1 切换爆发（双击时故障闪光：RGB 分离 + 切片位移） */
-html.t-cyberpunk .orb-btn.switching { animation: nc-switch-glitch .3s var(--ease-steps) both; }
+.orb-btn.switching { animation: nc-switch-glitch .3s var(--ease-steps) both; }
 @keyframes nc-switch-glitch {
   0%   { filter: none; transform: translate(0); }
   25%  { filter: hue-rotate(90deg); transform: translate(-3px,1px); }
@@ -2823,7 +3065,7 @@ html.t-cyberpunk .orb-btn.switching { animation: nc-switch-glitch .3s var(--ease
 }
 
 /* 5.2 完成爆发（celebrate：终端绿脉冲） */
-html.t-cyberpunk .orb-btn.celebrating .orb-morph {
+.orb-btn.celebrating .orb-morph {
   animation: nc-celebrate .8s var(--ease-pop) both;
   filter: drop-shadow(0 0 8px var(--nc-green));
 }

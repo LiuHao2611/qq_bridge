@@ -1,0 +1,15 @@
+{
+  "skill_id": "skill_camera_design",
+  "name": "运镜设计",
+  "intent_template": {
+    "task_type": "shot_video_text2video",
+    "intent_tags": ["写实", "{{user_input}}"],
+    "subjects": [
+      {"asset_id": "{{subject_asset_id}}", "role": "identity", "weight": 0.85}
+    ],
+    "style_constraints": {"lighting": "{{style_lighting}}"},
+    "generation_params": {"seed": 42, "steps": 30, "cfg_scale": 7.0, "width": 768, "height": 1024}
+  },
+  "capability_hints": {"camera": "prompt_driven"},
+  "params": {"strength": 0.45}
+}

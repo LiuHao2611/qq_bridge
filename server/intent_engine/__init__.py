@@ -13,7 +13,8 @@
   translator         翻译主入口（七步）+ 视频专用分支
 """
 from .production_intent import (
-    BoundAsset, GenerationParams, StyleConstraints, ProductionIntent, VALID_TASK_TYPES)
+    BoundAsset, GenerationParams, StyleConstraints, ProductionIntent, Subject,
+    VALID_TASK_TYPES)
 from .resource_catalog import ResourceCatalog, _infer_auto_tags
 from .node_family_mapper import NodeFamilyMapper, NODE_FAMILY_REGISTRY
 from .template_engine import TemplateEngine
@@ -31,7 +32,7 @@ from .translator import (
 )
 
 __all__ = [
-    "BoundAsset", "GenerationParams", "StyleConstraints", "ProductionIntent",
+    "BoundAsset", "GenerationParams", "StyleConstraints", "ProductionIntent", "Subject",
     "VALID_TASK_TYPES",
     "ResourceCatalog", "NodeFamilyMapper", "NODE_FAMILY_REGISTRY", "TemplateEngine",
     "ParameterInjector", "derive_seed", "IntentTranslator",

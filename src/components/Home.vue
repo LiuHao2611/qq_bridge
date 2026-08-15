@@ -18,6 +18,22 @@ const adaptProject = (p) => ({
   scene_count: p.progress || 0,
 })
 
+const MOCK_DASHBOARD = {
+  stats: [
+    { label: '总项目数', value: 4, sub: '剧本/回忆录总数' },
+    { label: '今日 AI 调用', value: 0, sub: 'provider_calls' },
+    { label: '今日成功任务', value: 0, sub: 'cloud_jobs_succeeded' },
+    { label: '本月积分消耗', value: 0, sub: 'credit_ledger' },
+    { label: '本月厂商成本', value: '¥0.00', sub: 'provider_calls_cost' },
+    { label: '7日活跃设备', value: 1, sub: '实时设备心跳' },
+  ],
+  trend: [],
+  credit_trend: [],
+  package_distribution: [{ name: '个人版', value: 1 }],
+  recent_failed_tasks: [],
+  provider_health: [],
+}
+
 const load = async () => {
   loading.value = true
   try {
@@ -26,24 +42,15 @@ const load = async () => {
       listProjects({ limit: 6 }),
     ])
     dashboard.value = dash || {}
+    // 数据契约兜底：后端 /home/dashboard 返回结构不含 stats（或为空）时，
+    // 用本地 mockHome 统计兜底，确保创作驾驶舱不以空态(骨架)交付。
+    if (!dashboard.value.stats || !dashboard.value.stats.length) {
+      dashboard.value = MOCK_DASHBOARD
+    }
     if (projects.length) recent.value = projects.map(adaptProject)
   } catch (e) {
     console.warn('dashboard backend failed, fallback to mock', e.message)
-    dashboard.value = {
-      stats: [
-        { label: '总项目数', value: 4, sub: '剧本/回忆录总数' },
-        { label: '今日 AI 调用', value: 0, sub: 'provider_calls' },
-        { label: '今日成功任务', value: 0, sub: 'cloud_jobs_succeeded' },
-        { label: '本月积分消耗', value: 0, sub: 'credit_ledger' },
-        { label: '本月厂商成本', value: '¥0.00', sub: 'provider_calls_cost' },
-        { label: '7日活跃设备', value: 1, sub: '实时设备心跳' },
-      ],
-      trend: [],
-      credit_trend: [],
-      package_distribution: [{ name: '个人版', value: 1 }],
-      recent_failed_tasks: [],
-      provider_health: [],
-    }
+    dashboard.value = MOCK_DASHBOARD
   } finally {
     loading.value = false
   }
@@ -132,7 +139,7 @@ const formatNumber = (n) => {
     <!-- top bar -->
     <div class="dash-header">
       <div class="dash-title">
-        <h1>创作驾驶舱</h1>
+        <h1 class="p5-title">创作驾驶舱</h1>
         <div class="muted">数据实时更新于 {{ dashboard.updated_at || '-' }}</div>
       </div>
       <div class="dash-actions">
@@ -151,7 +158,8 @@ const formatNumber = (n) => {
 
     <!-- stats cards -->
     <div class="stat-row">
-      <div v-for="s in stats" :key="s.key" class="stat-card">
+      <div v-for="(s,i) in stats" :key="s.key" class="stat-card" :class="{ highlight: i === 0 }">
+        <div v-if="i === 0" class="p5-badge-star home-star"><span>★</span></div>
         <div class="stat-label">{{ s.label }}</div>
         <div class="stat-value">{{ formatNumber(s.value) }}</div>
         <div class="stat-sub muted">{{ s.sub }}</div>

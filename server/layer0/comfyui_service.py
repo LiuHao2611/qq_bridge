@@ -172,6 +172,16 @@ class ComfyUIService:
         """
         return json.loads(_http_get(self.base_url + "/system_stats", timeout))
 
+    def free_memory(self, timeout=30):
+        """M3 §4.3 优雅释放显存：POST /free，卸载已加载模型（不杀进程）。
+
+        返回 True 表示请求成功；网络/HTTP 异常如实抛出（由调用方决定降级，不静默）。
+        """
+        payload = json.dumps({"unload_models": True, "unload_loaded_models": True}).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        _http_post(self.base_url + "/free", payload, headers, timeout)
+        return True
+
 
 # 模块级便捷实例（与 ai_local 全局 COMFY_URL 约定一致）
 _default_service = None

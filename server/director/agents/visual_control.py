@@ -71,7 +71,7 @@ class VisualControlAgent(BaseAgent):
                 vec = None
                 try:
                     from features import load_face_vector
-                    vec = load_face_vector(stage_id)
+                    vec = load_face_vector_by_stage(stage_id)
                 except Exception:
                     vec = None
                 if vec is None and spec.get("ref_image"):
@@ -114,6 +114,45 @@ class VisualControlAgent(BaseAgent):
         # ------------------------------------------------------------------
         style_ref_local, style_ref_comfy, warm_cool = self._generate_style_ref(segments, gparams)
 
+        # ------------------------------------------------------------------
+        # M5 全局风格锚点（遗漏 2 修复）：结构化风格设定 + 持久化 + 悬浮球通知
+        # 输入→处理→输出（v3 §0.2）：scene 文描 + gparams(style_tone/mood) →
+        #   _decide_style_spec → 结构化 {lighting,color_temperature,mood}；
+        #   处理：①存 style_anchors 表并挂接 projects.style_anchor_id；
+        #        ②WS 通知 director:<project_id> notice「已应用全局风格锚点」。
+        #   输出：style_anchor 透传给下游（intent_bridge → translator → 每分镜 workflow）。
+        # ------------------------------------------------------------------
+        style_spec = self._decide_style_spec(segments, gparams, style)
+        style_anchor = dict(style_spec)
+        style_anchor["reference_image"] = style_ref_local or ""   # 真实风格参考图（无则空）
+
+        try:
+            import db as _db
+            if ctx.project_id:
+                _db.save_style_anchor(
+                    ctx.project_id, style_anchor["reference_image"],
+                    style_anchor["lighting"], style_anchor["color_temperature"],
+                    style_anchor["mood"])
+                self._log("style_anchor_persisted", level="info",
+                          project_id=ctx.project_id, **style_spec)
+        except Exception as e:
+            self._log("style_anchor_persist_failed", level="warning",
+                      reason="全局风格锚点持久化失败（不阻塞生成）: %s" % str(e)[:160])
+
+        # 悬浮球通知：已应用全局风格锚点（director:<project_id> notice；WS 不可用时 no-op）
+        try:
+            from realtime import publish_director_notice
+            if ctx.project_id:
+                publish_director_notice(ctx.project_id, {
+                    "type": "style_anchor_applied",
+                    "message": "已应用全局风格锚点",
+                    "lighting": style_anchor["lighting"],
+                    "color_temperature": style_anchor["color_temperature"],
+                    "mood": style_anchor["mood"],
+                })
+        except Exception:
+            pass
+
         asset_inject_config = {
             "enable_real_asset": enable_real_asset,
             "face_vector_dim": FACE_VECTOR_DIM,
@@ -125,6 +164,7 @@ class VisualControlAgent(BaseAgent):
             "style_ref_comfy_name": style_ref_comfy,
             "style_weight": STYLE_WEIGHT,
             "warm_cool": warm_cool,
+            "style_anchor": style_anchor,
             "roles": role_configs,
         }
 
@@ -179,12 +219,37 @@ class VisualControlAgent(BaseAgent):
                   enable_real_asset=enable_real_asset, role_count=len(role_configs),
                   style_ref=bool(style_ref_local), warm_cool=warm_cool,
                   aspect_ratio=aspect_ratio, seed_strategy=seed_strategy)
+
+        # ---- M4 结构化意图输出（增量，不破现有 enhanced/global_style_ref 消费方）----
+        # subjects：锁定角色清单（asset_id + role + 权重），供意图翻译引擎一致性维度消费；
+        #   role 默认 identity（锁脸）；可由 subject_roles 覆盖（如某角色仅锁服装 outfit）。
+        # intent_tags：本 Agent 的视觉/风格意图（风格 + 色温），供匹配算法打分。
+        subject_roles = (gparams.get("subject_roles")
+                         or ctx.params.get("subject_roles") or {})
+        subjects = [
+            {
+                "asset_id": spec.get("asset_id"),
+                "role": subject_roles.get(spec.get("asset_id"), "identity"),
+                "weight": spec.get("base_weight", 0.85),
+            }
+            for spec in role_configs.values()
+            if spec.get("asset_id")
+        ]
+        intent_tags = [style]
+        if warm_cool and warm_cool != "neutral":
+            intent_tags.append(warm_cool)
+
         return AgentResult(
             status="success",
             data={
                 "enhanced": enhanced,
                 "global_style_ref": style_ref_local or "",   # 真实风格参考图路径（无则空）
                 "asset_inject_config": asset_inject_config,
+                # M4 新增（手册 §2.6 / M4）：结构化意图，供 intent_bridge 流转到 translator
+                "subjects": subjects,
+                "intent_tags": intent_tags,
+                # M5 新增（手册 §2.6 / M5）：全局风格锚点，供 intent_bridge 流转到 translator
+                "style_anchor": style_anchor,
             },
             warnings=face_problems,
         )
@@ -312,6 +377,36 @@ class VisualControlAgent(BaseAgent):
                       reason="全局风格参考图生成失败（不阻塞生成）: %s" % str(e)[:160],
                       warm_cool=warm_cool)
         return None, None, warm_cool
+
+    @staticmethod
+    def _decide_style_spec(segments, gparams, style="cinematic"):
+        """M5 全局风格锚点·结构化风格设定（输入→处理→输出，v3 §0.2 禁止空谈）。
+
+        输入：主场景文描 segments + 用户/导演覆盖 gparams(style_tone/mood/color_temperature)
+              + 视觉风格 style
+        处理：
+          - warm_cool 由 _decide_warm_cool 推导（暖/冷/中性）
+          - color_temperature 由 warm_cool 映射（暖3200/冷6500/中性5000，Kelvin），
+            允许 gparams.color_temperature 显式覆盖
+          - lighting 由 warm_cool + 风格 token 拼成结构化词（下划线分隔，
+            供 semantic 注入时转空格得 "warm cafe lighting"）
+          - mood 由 gparams.mood 覆盖或默认 "都市情感"
+        输出：{lighting, color_temperature, mood}（确定性、可持久化、可回看）
+        """
+        main_scene = " ".join(
+            (seg.get("scene_description") or seg.get("summary") or "")
+            for seg in (segments or [])
+        )[:400]
+        warm_cool = VisualControlAgent._decide_warm_cool(main_scene, gparams)
+        ct_map = {"warm": 3200, "cool": 6500, "neutral": 5000}
+        color_temperature = int(gparams.get("color_temperature")
+                                or ct_map.get(warm_cool, 5000))
+        if warm_cool == "neutral":
+            lighting = "neutral_balanced"
+        else:
+            lighting = "%s_%s" % (warm_cool, (style or "neutral"))
+        mood = (gparams.get("mood") or "都市情感")
+        return {"lighting": lighting, "color_temperature": color_temperature, "mood": mood}
 
     @staticmethod
     def _decide_warm_cool(scene_text, gparams):

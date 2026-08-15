@@ -11,7 +11,8 @@ import { aiPolish, estimatePoints, preAuthPoints, regenerateSegment, exportSegme
 import { saveDraft, loadDraft, clearDraft, draftAge, draftKey } from '../composables/useDraft'
 import { pushHistory, genKey } from '../composables/useGenHistory'
 import { pushGeneration } from '../composables/useDirectorOrb'
-import ProjectFlowNav from './ProjectFlowNav.vue'
+import { useVideoGate } from '../composables/useVideoGate'
+import ProjectBookShell from './ProjectBookShell.vue'
 import HistoryPanel from './HistoryPanel.vue'
 import AssetRichInput from './AssetRichInput.vue'
 import RoleEditorModal from './RoleEditorModal.vue'
@@ -48,6 +49,8 @@ const router = useRouter()
 const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true'
 const PLACEHOLDER = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0%25' stop-color='%2320242e'/><stop offset='100%25' stop-color='%233a3f4d'/></linearGradient></defs><rect width='200' height='200' fill='url(%23g)'/><text x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' fill='%236b7283' font-size='70'>🖼️</text></svg>"
 const { project: p, load, save, generate, pollTask, switchSegment, addSegment, removeSegment, refreshAssets } = useProject(route.params.id, 'short')
+// 视频生成前置闸门：本机显存不足时诚实提示，避免白等 30 分钟
+const { ensureVideoReady } = useVideoGate()
 
 // 模型输出自动草稿（P3）：AI 润色成功后保存 descriptions，导航离开/丢改动后可一键还原
 const polishDraft = ref(null)
@@ -641,7 +644,6 @@ const onModalAssetDrop = (ref) => {
   tryMergeRef(s, ref)
 }
 
-const onBack = () => router.push('/projects')
 const onSave = async () => {
   // Phase 3：保存前把画外音 / 对白里的 @提及 同步进 refs（驱动多模态资产注入）
   ;(p.value?.scenes || []).forEach((s) => syncMentionRefs(s))
@@ -700,6 +702,8 @@ const onSyncAll = async () => {
 // 重新生成（spec §2.1 状态机 GENERATING / BR-004 预授权）：预授权 → 重新提交生成 → 轮询任务
 const onRegen = async () => {
   if (!p.value) return
+  // 视频生成前置闸门：本机显存不足时诚实提示，用户取消即停止（避免白等 30 分钟）
+  if (!(await ensureVideoReady())) { toast('已取消：当前设备不满足视频生成条件'); return }
   const pid = p.value.id
   const sid = p.value._activeSegmentId
   const params = {
@@ -800,7 +804,7 @@ const onAddChapter = async () => {
   if (USE_MOCK) {
     const id = 'ch' + (p.value.chapters.length + 1)
     p.value.chapters.push({ id, title: '新片段 ' + (p.value.chapters.length + 1), duration: p.value.duration, count: 1, thumb: '' })
-    p.value.scenes.push({ scene_id: 'sc' + Date.now(), chapter_id: id, no: 1, caption: '新分镜', description: '', prompt: '', negative_prompt: '', duration: Math.min(p.value.duration, 4) || 4, shot_type: 'medium', camera_angle: 'eye_level', camera_movement: 'static', focal_length: '35mm', thumb: '', voiceover: '', dialogue: '', refs: [], setting: '' })
+    p.value.scenes.push({ scene_id: 'sc' + Date.now(), chapter_id: id, no: 1, caption: '新分镜', description: '', prompt: '', negative_prompt: '', duration: Math.min(p.value.duration, 4) || 4, shot_type: 'medium', camera_angle: 'eye_level', camera_movement: 'static', action: '', focal_length: '35mm', thumb: '', voiceover: '', dialogue: '', refs: [], setting: '' })
     p.value._activeSegmentId = id
     toast('已新增片段（演示）')
     return
@@ -821,7 +825,7 @@ const onDeleteChapter = async (ch) => {
 const onAddScene = () => {
   if (!p.value || !activeChapterId.value) return
   const id = 'sc' + (p.value.scenes.length + 1)
-  p.value.scenes.push({ scene_id: id, chapter_id: activeChapterId.value, no: activeScenes.value.length + 1, caption: '新分镜', description: '', prompt: '', negative_prompt: '', duration: 4, shot_type: 'medium', camera_angle: 'eye_level', camera_movement: 'static', focal_length: '35mm', thumb: '', voiceover: '', dialogue: '', refs: [], setting: '' })
+  p.value.scenes.push({ scene_id: id, chapter_id: activeChapterId.value, no: activeScenes.value.length + 1, caption: '新分镜', description: '', prompt: '', negative_prompt: '', duration: 4, shot_type: 'medium', camera_angle: 'eye_level', camera_movement: 'static', action: '', focal_length: '35mm', thumb: '', voiceover: '', dialogue: '', refs: [], setting: '' })
 }
 
 // 分镜高级参数折叠：默认收起，只保留核心文案/引用外露
@@ -876,10 +880,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
 </script>
 
 <template>
-  <div v-if="p && ready" class="frag">
-    <!-- 0️⃣ 项目 5 步流程导航 -->
-    <ProjectFlowNav :pid="route.params.id" :step="3" @synthesize="onSyncAll" />
-
+  <ProjectBookShell v-if="p && ready" :step="3" @synthesize="onSyncAll">
     <!-- 左侧：历史生成记录（页面级，固定在内容区左侧，默认折叠，点击展开可选择覆盖使用） -->
     <HistoryPanel
       ref="editorHist"
@@ -892,7 +893,6 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
 
     <!-- ① 顶部窗口栏 -->
     <div class="frag-top">
-      <button class="back" @click="onBack">← 返回</button>
       <div class="ftitle">
         <input v-model="p.title" class="ti" @dblclick="toast('重命名（演示）')" />
         <span class="tsub">{{ p.subtitle }}</span>
@@ -970,7 +970,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
           <el-button size="small" type="success" plain @click="restorePolishDraft">↶ 还原润色（{{ draftAge(polishDraft.ts) }}）</el-button>
           <el-button size="small" text @click="discardPolishDraft">丢弃草稿</el-button>
         </template>
-        <el-button type="primary" size="small" @click="onSyncAll">🎞️ 合成全集</el-button>
+        <el-button type="primary" size="small" class="p5-btn p5-btn--primary" @click="onSyncAll">🎞️ 合成全集</el-button>
         <span class="credits-tag">预估 {{ estimatedCredits }} 积分</span>
       </div>
     </div>
@@ -991,7 +991,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
       <div class="col col-left">
         <h3>资产库 <span class="add-asset" title="新建资产" @click="openCreateAsset(activeAssetType === '角色' ? 'role' : activeAssetType === '场景' ? 'scene' : 'prop')">＋</span></h3>
         <div class="asset-tabs">
-          <div v-for="t in assetTabs" :key="t" class="t" :class="{ on: assetTab === t }" @click="toggleAssetTab(t)">{{ t }}</div>
+          <div v-for="t in assetTabs" :key="t" class="t p5-menu-item" :class="{ on: assetTab === t }" @click="toggleAssetTab(t)">{{ t }}</div>
         </div>
         <div v-if="br009Exceed" class="br-bar bad">⚠ BR-009：片段资产引用 {{ segRefCount }} 个，超过上限 9 个</div>
         <div v-else class="br-bar ok">资产引用 {{ segRefCount }}/9（BR-009）</div>
@@ -1178,12 +1178,22 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
                     <el-option v-for="o in CAMERA_MOVEMENT_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
                   </el-select>
                 </div>
+                <div class="sg"><label>动作</label>
+                  <el-input v-model="s.action" size="small" placeholder="可选：主体动作短语，如『主角推门而入』；留空则由 AI 自动扩写" />
+                </div>
                 <div class="sg"><label>焦段</label>
                   <el-select v-model="s.focal_length" size="small" style="width:100%">
                     <el-option v-for="o in FOCAL_LENGTH_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
                   </el-select>
                 </div>
                 <div class="sg"><label>时长(s)</label><el-input-number v-model="s.duration" :min="1" :max="30" size="small" style="width:100%" /></div>
+              </div>
+              <div class="sg full camera-action-preview">
+                <label>运镜执行预览（P2·意图与控制）</label>
+                <div class="cap-preview-text">
+                  运镜：{{ (CAMERA_MOVEMENT_OPTIONS.find(o => o.value === s.camera_movement) || {}).label }}
+                  ｜ 动作：{{ s.action || '（留空将由 AI 自动扩写）' }}
+                </div>
               </div>
               <div class="sg full"><label>反向提示词</label><el-input v-model="s.negative_prompt" size="small" placeholder="不希望出现的元素，如 blurry, extra hands, watermark…" /></div>
               <div class="sg full drop-field" :class="{ 'drop-active': dropActive === dropKey(s, 'setting') }" @dragover.prevent="onFieldDragOver" @dragenter="onFieldDragEnter($event, dropKey(s, 'setting'))" @dragleave="onFieldDragLeave($event, dropKey(s, 'setting'))" @drop="onFieldDrop($event, s, 'setting')"><label>镜头设定 <span class="drag-tip">可拖入左侧资产</span></label><el-input v-model="s.setting" type="textarea" :autosize="{ minRows: 1, maxRows: 2 }" size="small" placeholder="本分镜的时空、环境、基调等设定…" /></div>
@@ -1261,7 +1271,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
           <div class="nav-th add" @click="onAddChapter">＋</div>
         </div>
     </div>
-  </div>
+  </ProjectBookShell>
   <div v-else class="page"><div class="empty">加载中…</div></div>
 
     <!-- 新建资产弹窗 -->
@@ -1326,7 +1336,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
         <div class="desc-modal-assets">
           <h3>资产库 <span class="add-asset" title="新建资产" @click="openCreateAsset(activeAssetType === '角色' ? 'role' : activeAssetType === '场景' ? 'scene' : 'prop')">＋</span></h3>
           <div class="asset-tabs">
-            <div v-for="t in assetTabs" :key="t" class="t" :class="{ on: assetTab === t }" @click="toggleAssetTab(t)">{{ t }}</div>
+            <div v-for="t in assetTabs" :key="t" class="t p5-menu-item" :class="{ on: assetTab === t }" @click="toggleAssetTab(t)">{{ t }}</div>
           </div>
           <div v-if="br009Exceed" class="br-bar bad">⚠ BR-009：片段资产引用 {{ segRefCount }} 个，超过上限 9 个</div>
           <div v-else class="br-bar ok">资产引用 {{ segRefCount }}/9（BR-009）</div>
@@ -1437,9 +1447,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
 
 <style scoped>
 .frag { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.frag-top { flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 10px 18px; background: var(--bg-2); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-.back { background: var(--card); border: 1px solid var(--line); color: var(--sub); border-radius: 10px; padding: 7px 14px; cursor: pointer; font-size: 13px; font-weight: 600; transition: .15s; }
-.back:hover { color: var(--txt); border-color: var(--pur); background: var(--card-2); }
+.frag-top { flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 6px 18px; background: var(--bg-2); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .ftitle { display: flex; flex-direction: column; }
 .ti { background: transparent; border: 0; border-bottom: 1px solid transparent; color: var(--txt); font-size: 16px; font-weight: 800; outline: none; width: 200px; }
 .ti:focus { border-bottom-color: var(--pur); }

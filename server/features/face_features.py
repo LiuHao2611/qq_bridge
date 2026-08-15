@@ -199,8 +199,11 @@ def store_face_vector(stage_id, vector):
             pass
 
 
-def load_face_vector(stage_id):
-    """读取 asset_stages.face_vector；无则返回 None。"""
+def load_face_vector_by_stage(stage_id):
+    """读取 asset_stages.face_vector（按 stage_id）；无则返回 None。
+
+    历史调用保留（阶段级向量查询）。
+    """
     np = _require_numpy()
     try:
         import db
@@ -233,3 +236,62 @@ def load_face_vector(stage_id):
             conn.close()
         except Exception:
             pass
+
+
+def load_face_vector(asset_id):
+    """P0 依赖（手册 §0.3）：按 asset_id 读取角色主阶段（selected 优先）的 512 维向量。
+
+    输入：asset_id → 处理：查 asset_stages(ORDER BY selected DESC) → 解码 base64/float32 →
+    输出：np.float32(512,) 或 None（无向量时诚实返回 None，不抛不假）。
+    """
+    np = _require_numpy()
+    try:
+        import db
+        conn = db.get_conn()
+    except Exception:
+        return None
+    try:
+        import base64
+        row = conn.execute(
+            "SELECT face_vector FROM asset_stages WHERE asset_id=? "
+            "ORDER BY selected DESC, stage_id LIMIT 1", (asset_id,)).fetchone()
+        if row and row["face_vector"]:
+            raw = row["face_vector"]
+            if isinstance(raw, str):
+                data = base64.b64decode(raw)
+            else:
+                try:
+                    data = base64.b64decode(raw)
+                except Exception:
+                    data = raw
+            vec = np.frombuffer(data, dtype=np.float32).reshape(-1)
+            if vec.shape[0] != FACE_VECTOR_DIM:
+                return None
+            return vec
+        return None
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def find_ipadapter_weight():
+    """P0 依赖（手册 §3 / §6 红线）：返回 IP-Adapter 权重文件名。
+
+    输入：comfy_env 探测 ipadapter 目录 → 处理：discover_weight 扫描 *.safetensors/*.bin →
+    输出：权重文件名（str）。缺失 → 抛 FeatureUnavailable（附下载指引），**绝不返回 None / 静默降级**。
+    """
+    from comfy_env import discover_weight
+    try:
+        return discover_weight(
+            "ipadapter", ["*.safetensors", "*.bin"],
+            what="IP-Adapter 权重")
+    except Exception as e:
+        raise FeatureUnavailable(
+            "ipadapter",
+            "IP-Adapter 权重缺失：%s。请在秋葉 ComfyUI 的 models/ipadapter 目录放入 "
+            "ip-adapter_sd15.safetensors 等权重文件后重试。" % e,
+            code="IPADAPTER_WEIGHT_MISSING")

@@ -39,7 +39,36 @@ os.makedirs(OUTPUTS, exist_ok=True)
 # 跟踪上限（略大于 worker 30min 看门狗，确保卡死任务先被回收再收敛）OPS-04
 SEQ_WAIT_CAP_SECS = 30 * 60 + 120
 SEQ_POLL_SECS = 3.0
-DEFAULT_MODEL_ID = "seedance-2.0-mini"
+
+
+def _preferred_video_model_id():
+    """模型无关：优选视频模型从能力注册表 / 设置解析，绝不硬编码（手册 §2.3 / M4）。
+
+    优先级：capabilities.preferred_video_model()（DB settings.preferred_video_model
+    → 兼容默认 seedance-2.0-mini）。任何异常回落兼容默认，不阻断调度。
+    """
+    try:
+        from capabilities import preferred_video_model
+        return preferred_video_model()
+    except Exception:
+        return "seedance-2.0-mini"
+
+
+def _resolve_ip_node_class():
+    """M5 修正：从 face_lock 节点族注册表解析实际使用的 IP 节点类（非硬编码字符串）。
+
+    与 NodeFamilyMapper 共用同一注册表；取 priority 首项（IPAdapterFaceID）。
+    导入失败 / 注册表缺失时回落 IPAdapterFaceID（诚实兜底，不谎报节点名）。
+    """
+    try:
+        from intent_engine.node_family_mapper import NODE_FAMILY_REGISTRY
+        fam = NODE_FAMILY_REGISTRY.get("face_lock", {})
+        priority = fam.get("priority") or []
+        if priority:
+            return priority[0]
+    except Exception:
+        pass
+    return "IPAdapterFaceID"
 
 
 class SequenceSchedulerAgent(BaseAgent):
@@ -72,7 +101,7 @@ class SequenceSchedulerAgent(BaseAgent):
             from director.enqueue import (enqueue_segment, fetch_task_statuses,
                                           fetch_segment_video_url, resolve_segment_id,
                                           persist_segment)
-            from realtime import publish as ws_publish
+            from realtime import publish as ws_publish, EVENT_TRANSLATOR_SELECTION
         except Exception:
             enqueue_segment = None
             fetch_task_statuses = None
@@ -136,7 +165,7 @@ class SequenceSchedulerAgent(BaseAgent):
             duration = int(seg.get("duration") or 12)
             resolution = resolution0 or seg.get("resolution") or "720p"
             model_cfg = ctx.params.get("model_config") or {}
-            model_id = model_cfg.get("video") or DEFAULT_MODEL_ID
+            model_id = model_cfg.get("video") or _preferred_video_model_id()
             prio = priority
             # 项 ④ REDUN 降级链：降级标志透传 → 切换降级模型
             if getattr(ctx, "use_fallback_model", False):
@@ -173,14 +202,16 @@ class SequenceSchedulerAgent(BaseAgent):
             # （已为分镜匹配生成底模 + IP-Adapter/LoRA 注入策略），悬浮球选型卡展示。
             if (not self._translator_pushed) and ws_publish and project_id:
                 self._translator_pushed = True
-                _ip_node = "IP-Adapter" if asset_inject_config else None
+                # M5 修正：推送「实际解析的 IP 节点类」（来自 face_lock 注册表首项
+                # IPAdapterFaceID），而非硬编码字符串 "IP-Adapter"（手册 M5 / §5）。
+                _ip_node = self._resolve_ip_node_class() if asset_inject_config else None
                 _loras = []
                 try:
                     _loras = [l.get("name") for l in (asset_inject_config.get("roles") or {}).values()
                               if isinstance(l, dict) and l.get("name")]
                 except Exception:
                     _loras = []
-                ws_publish("translator:%s" % project_id, "selection", {
+                ws_publish("translator:%s" % project_id, EVENT_TRANSLATOR_SELECTION, {
                     "trace_id": trace_id,
                     "task_type": "shot_gen",
                     "selected": {
@@ -287,7 +318,35 @@ class SequenceSchedulerAgent(BaseAgent):
                   generated=len(results) - len(failed), failed=len(failed),
                   chained=len(task_of) - len(roots))
         warnings = [r["note"] for r in failed if r.get("note")]
-        return AgentResult(status=status, data={"clips": results, "priority_level": priority}, warnings=warnings)
+
+        # ---- M4 结构化意图输出（增量，不破现有 clips/priority_level 消费方）----
+        # camera：本批次的运镜意图（movement / shot_type），供意图翻译引擎 camera 维度消费；
+        # frame_anchor：首尾帧锚定意图（模式 + 首/尾帧路径），供 frame_anchor 维度消费；
+        # spatial：空间站位蓝图（多人同框），供语义维度注入「A 在左、面朝右、看向 B」。
+        camera = {
+            "movement": ctx.params.get("camera_movement", "static"),
+            "shot_type": ctx.params.get("shot_type", "medium"),
+        }
+        frame_anchor = {
+            "mode": "first_frame_only" if enable_tail else "none",
+            "first_frame_path": None,   # 根分镜无首帧；依赖链由前序尾帧注入
+            "last_frame_path": None,
+            "enable_tail_frame": enable_tail,
+        }
+        # 空间站位蓝图（遗漏 3 修复）：由绑定角色推导，默认左/右相对位
+        spatial = self._plan_spatial(bound)
+
+        return AgentResult(
+            status=status,
+            data={
+                "clips": results,
+                "priority_level": priority,
+                # M4 新增（手册 §2.6 / M4）：结构化意图，供 intent_bridge 流转到 translator
+                "camera": camera,
+                "frame_anchor": frame_anchor,
+                "spatial": spatial,
+            },
+            warnings=warnings)
 
     # -- 跟踪 worker 消费（REDUN-01） -----------------------------------------
     def _track_tasks(self, task_ids, project_id, trace_id, ws_publish):
@@ -386,3 +445,45 @@ class SequenceSchedulerAgent(BaseAgent):
                 conn.close()
             except Exception:
                 pass
+
+    # -- 空间站位蓝图（手册 M4 / 遗漏 3 修复）---------------------------------
+    def _plan_spatial(self, bound):
+        """输入：本批次分镜绑定角色资产（bound: {seg_id: [{asset_id, asset_type, ...}]}）。
+        处理：去重收集角色 asset_id；按人数推导构图与相对位（默认 left/right 相对位）。
+        输出：spatial = {composition, subjects:[{asset_id, position, orientation, gaze}]}，
+              供语义维度注入 prompt（「A 在左、面朝右、看向 B」）。
+        """
+        asset_ids = []
+        for _seg, lst in (bound or {}).items():
+            for b in (lst or []):
+                aid = b.get("asset_id")
+                if aid and aid not in asset_ids:
+                    asset_ids.append(aid)
+        n = len(asset_ids)
+        if n == 0:
+            return {"composition": "empty", "subjects": []}
+        if n == 1:
+            return {
+                "composition": "single",
+                "subjects": [{
+                    "asset_id": asset_ids[0], "position": "center",
+                    "orientation": "front", "gaze": "camera",
+                }],
+            }
+        composition = "two_shot" if n == 2 else "group_shot"
+        # 默认相对位：左→面朝右看右；右→面朝左看左；更多→侧位
+        positions = ["left", "right", "center_back"]
+        subs = []
+        for i, aid in enumerate(asset_ids):
+            pos = positions[i] if i < len(positions) else "side_%d" % (i + 1)
+            if pos == "left":
+                orientation, gaze = "facing_right", "to_%s" % asset_ids[1]
+            elif pos == "right":
+                orientation, gaze = "facing_left", "to_%s" % asset_ids[0]
+            else:
+                orientation, gaze = "front", "camera"
+            subs.append({
+                "asset_id": aid, "position": pos,
+                "orientation": orientation, "gaze": gaze,
+            })
+        return {"composition": composition, "subjects": subs}

@@ -1,0 +1,14 @@
+{
+  "skill_id": "skill_character_multiview",
+  "name": "人物多视角",
+  "intent_template": {
+    "task_type": "character_genesis",
+    "intent_tags": ["写实", "{{user_input}}"],
+    "subjects": [
+      {"asset_id": "{{subject_asset_id}}", "role": "identity", "weight": 0.9}
+    ],
+    "generation_params": {"seed": 0, "steps": 28, "cfg_scale": 8.5, "width": 512, "height": 768}
+  },
+  "capability_hints": {"character": "multi_view"},
+  "params": {"strength": 0.6}
+}

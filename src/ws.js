@@ -56,7 +56,9 @@ class WsClient {
       this.reconnectDelay = 1000
       this._startPing()
       // 断线重连后重新订阅所有频道（CLOSE-03 幂等：subscribe 不会重复叠加 handler）
-      this.handlers.forEach((_, channel) => this._send({ action: 'subscribe', channel }))
+      // 注意：服务端 handle_ws 只认 payload.channels，顶层 channel 字段会被忽略，
+      // 故重订阅必须按服务端协议封装（否则订阅静默失效 → 导演事件黑洞）。
+      this.handlers.forEach((_, channel) => this._send({ action: 'subscribe', payload: { channels: [channel] } }))
     }
     sock.onmessage = (ev) => {
       let msg
@@ -125,7 +127,8 @@ class WsClient {
     if (!this.handlers.has(channel)) this.handlers.set(channel, new Set())
     this.handlers.get(channel).add(fn)
     this.connect()
-    this._send({ action: 'subscribe', channel })
+    // 服务端协议：action=subscribe 必须带 payload.channels（顶层 channel 字段无效）
+    this._send({ action: 'subscribe', payload: { channels: [channel] } })
     return () => this.unsubscribe(channel, fn)
   }
 
@@ -134,7 +137,7 @@ class WsClient {
     const set = this.handlers.get(channel)
     if (fn) set.delete(fn)
     else set.clear()
-    if (!set.size) this._send({ action: 'unsubscribe', channel })
+    if (!set.size) this._send({ action: 'unsubscribe', payload: { channels: [channel] } })
   }
 
   onGlobal(fn) {

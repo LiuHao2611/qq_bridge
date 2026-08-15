@@ -3,7 +3,7 @@ import { ref, computed, onMounted, reactive, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   listProjects, createProject, createSegment, deleteProject, fmtTime, coverStyle,
-  STATUS_TXT, COVER_PRESETS,
+  STATUS_TXT, COVER_PRESETS, recommendMemory, importMemory,
 } from '../api'
 import { toast } from '../store'
 import { mockHome } from '../mock'
@@ -38,6 +38,7 @@ const load = async () => {
     const data = await listProjects({ limit: 100 })
     if (Array.isArray(data) && data.length) {
       projects.value = data.map(adaptProject)
+      loading.value = false
       return
     }
   } catch (e) {
@@ -98,8 +99,39 @@ const resetForm = () => {
 
 const onOpenCreate = () => {
   resetForm()
+  selectedMemory.clear()
   createVisible.value = true
 }
+
+// ---- P3 M3 长期记忆：新建项目时从历史复用角色卡 / 风格锚点 / LoRA ----
+const recommendVisible = ref(false)
+const recommendLoading = ref(false)
+const recommendItems = ref([])
+const selectedMemory = reactive(new Set())
+const TYPE_LABEL = { character: '角色卡', style: '风格锚点', lora: 'LoRA' }
+
+const openRecommend = async () => {
+  recommendVisible.value = true
+  recommendLoading.value = true
+  try {
+    const items = await recommendMemory()
+    recommendItems.value = Array.isArray(items) ? items : []
+    if (!recommendItems.value.length) {
+      toast('暂无历史资产可复用（请先在其他项目沉淀：设置/资产页「记忆本项目」）')
+    }
+  } catch (e) {
+    recommendItems.value = []
+    toast('历史资产加载失败: ' + (e.message || e))
+  } finally {
+    recommendLoading.value = false
+  }
+}
+const toggleMemory = (id) => {
+  if (selectedMemory.has(id)) selectedMemory.delete(id)
+  else selectedMemory.add(id)
+}
+const memoryName = (it) => (it.payload && it.payload.name) || it.memory_id
+const confirmRecommend = () => { recommendVisible.value = false }
 
 const estimatedCredits = computed(() => {
   const RES_COEF = { '480p': 0.6, '720p': 1.0, '1080p': 2.0, '2K': 3.0, '4K': 4.0 }
@@ -148,6 +180,14 @@ const onCreateProject = async () => {
     createVisible.value = false
     toast('项目创建成功')
     router.push('/projects/' + p.project_id)
+
+    // P3 M3 历史资产复用：创建后立即把勾选的记忆项导入新项目（角色卡深拷贝 / 风格锚点 / LoRA 复制）
+    const mids = [...selectedMemory]
+    if (mids.length) {
+      importMemory(p.project_id, mids)
+        .then((r) => toast('已导入 ' + (r?.imported ?? mids.length) + ' 项历史资产到新项目'))
+        .catch((err) => toast('历史资产导入失败: ' + (err.message || err)))
+    }
   } catch (e) {
     toast('创建失败: ' + (e.message || e))
   } finally {
@@ -198,7 +238,7 @@ onMounted(load)
   <div class="page">
     <div class="page-head">
       <div>
-        <h1>我的项目</h1>
+        <h1 class="p5-title">我的项目</h1>
         <p class="muted">本地离线 · 免费 AI 漫剧生成工作台</p>
       </div>
       <button class="btn" @click="onOpenCreate">＋ 新建项目</button>
@@ -227,8 +267,14 @@ onMounted(load)
       </div>
     </div>
 
+    <!-- 加载动画：首次打开项目中心 / 拉取列表时 -->
+    <div v-if="loading" class="pl-loading">
+      <div class="spinner" />
+      <p>正在加载项目…</p>
+    </div>
+
     <!-- 网格视图 -->
-    <div v-if="viewMode === 'grid' && filtered.length" class="pl-grid">
+    <div v-else-if="viewMode === 'grid' && filtered.length" class="pl-grid">
       <div v-for="p in filtered" :key="p.id" class="pl-card" @click="open(p.id)">
         <div class="pl-cover" :style="coverStyle(p.id)">
           <span class="pl-badge" :class="p.status">{{ STATUS_TXT[p.status] || '草稿' }}</span>
@@ -258,7 +304,7 @@ onMounted(load)
       </div>
     </div>
 
-    <div v-else-if="!loading" class="empty">暂无项目</div>
+    <div v-else class="empty">暂无项目</div>
 
     <!-- 新建项目弹窗 -->
     <el-dialog
@@ -409,12 +455,51 @@ onMounted(load)
             </div>
           </template>
         </div>
+
+        <!-- P3 M3 历史资产复用：新建项目时从其他项目引入角色卡 / 风格锚点 / LoRA -->
+        <div class="form-section">
+          <div class="section-label">历史资产复用（可选）</div>
+          <div class="mem-reuse">
+            <span class="muted">从已有项目沉淀的长期记忆中，带入角色卡 / 风格锚点 / LoRA，新项目开局即有积累。</span>
+            <div class="mem-reuse-row">
+              <button class="btn ghost" type="button" @click="openRecommend">📦 浏览历史资产</button>
+              <span v-if="selectedMemory.size" class="mem-count">已选 {{ selectedMemory.size }} 项</span>
+            </div>
+            <div v-if="selectedMemory.size" class="mem-chips">
+              <span v-for="id in [...selectedMemory]" :key="id" class="mem-chip">
+                {{ (recommendItems.find((x) => x.memory_id === id) && memoryName(recommendItems.find((x) => x.memory_id === id))) || id }}
+                <b @click="toggleMemory(id)">×</b>
+              </span>
+            </div>
+          </div>
+        </div>
       </el-form>
 
       <template #footer>
         <div class="dialog-footer">
           <el-button @click="createVisible = false">取消</el-button>
           <el-button type="primary" :loading="createLoading" @click="onCreateProject">立即创建</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- P3 M3 历史资产浏览弹窗（跨项目复用）-->
+    <el-dialog v-model="recommendVisible" title="浏览历史资产" width="640" align-center>
+      <div v-loading="recommendLoading">
+        <div v-if="!recommendItems.length" class="empty muted">暂无历史资产（请先在其它项目的设置/资产页「沉淀本项目记忆」）</div>
+        <div v-else class="mem-list">
+          <label v-for="it in recommendItems" :key="it.memory_id" class="mem-item" :class="{ on: selectedMemory.has(it.memory_id) }">
+            <input type="checkbox" :checked="selectedMemory.has(it.memory_id)" @change="toggleMemory(it.memory_id)" />
+            <span class="mem-type" :class="it.type">{{ TYPE_LABEL[it.type] || it.type }}</span>
+            <span class="mem-name">{{ memoryName(it) }}</span>
+            <span class="mem-meta">来自项目 {{ it.source_project_id?.slice(0, 8) }} · 复用 {{ it.usage_count || 0 }} 次</span>
+          </label>
+        </div>
+      </div>
+      <template #footer>
+        <div class="dialog-footer">
+          <span class="muted">已选 {{ selectedMemory.size }} 项</span>
+          <el-button type="primary" @click="confirmRecommend">确认选择</el-button>
         </div>
       </template>
     </el-dialog>
@@ -463,6 +548,12 @@ onMounted(load)
 .pl-del { background: transparent; border: 1px solid var(--line); color: var(--sub); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
 .pl-del:hover { border-color: var(--pink); color: var(--pink); }
 .empty { text-align: center; color: var(--sub); padding: 60px 0; }
+
+/* ---------- 加载动画（首次打开项目中心） ---------- */
+.pl-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 90px 0; }
+.pl-loading p { color: var(--sub); font-size: 13px; margin: 0; }
+.spinner { width: 38px; height: 38px; border: 4px solid var(--line); border-top-color: var(--pur, #8a5cff); border-radius: 50%; animation: pl-spin .8s linear infinite; }
+@keyframes pl-spin { to { transform: rotate(360deg); } }
 
 /* ---------- 新建项目弹窗 ---------- */
 :deep(.create-dialog) { --el-dialog-bg-color: var(--card); --el-dialog-border-radius: 16px; }
@@ -526,6 +617,25 @@ onMounted(load)
 .dialog-footer { display: flex; justify-content: flex-end; gap: 10px; }
 :deep(.create-dialog .el-button) { border-radius: 8px; }
 :deep(.create-dialog .el-button--primary) { background: var(--grad); border: 0; }
+
+/* P3 M3 历史资产复用 */
+.mem-reuse { display: flex; flex-direction: column; gap: 10px; }
+.mem-reuse-row { display: flex; align-items: center; gap: 12px; }
+.btn.ghost { background: var(--card-2); color: var(--txt); border: 1px solid var(--line); }
+.mem-count { font-size: 12px; color: var(--pur); font-weight: 700; }
+.mem-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.mem-chip { font-size: 11px; padding: 3px 8px; border-radius: 6px; background: var(--bg-2); border: 1px solid var(--line); color: var(--txt); display: inline-flex; align-items: center; gap: 6px; }
+.mem-chip b { cursor: pointer; color: var(--pink); font-size: 13px; line-height: 1; }
+.mem-list { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow: auto; }
+.mem-item { display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+.mem-item.on { border-color: var(--pur); background: rgba(138,92,255,.08); }
+.mem-type { font-size: 11px; padding: 2px 8px; border-radius: 6px; color: #fff; flex: 0 0 auto; }
+.mem-type.character { background: #6d28d9; }
+.mem-type.style { background: #0ea5e9; }
+.mem-type.lora { background: #d94f3a; }
+.mem-name { font-size: 13px; font-weight: 700; color: var(--txt); }
+.mem-meta { font-size: 11px; color: var(--sub); margin-left: auto; }
+.muted { color: var(--sub); font-size: 12px; }
 
 @media (max-width: 700px) {
   .form-row { grid-template-columns: 1fr; }

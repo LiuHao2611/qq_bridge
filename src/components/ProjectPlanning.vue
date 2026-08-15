@@ -10,7 +10,7 @@ import { saveDraft, loadDraft, clearDraft as clearDraftByKey, draftAge, draftKey
 import { pushHistory, genKey } from '../composables/useGenHistory'
 import { pushGeneration } from '../composables/useDirectorOrb'
 import { parseDocx } from '../parseDocx'
-import ProjectFlowNav from './ProjectFlowNav.vue'
+import ProjectBookShell from './ProjectBookShell.vue'
 import HistoryPanel from './HistoryPanel.vue'
 
 const route = useRoute()
@@ -569,9 +569,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="p" class="planning">
-    <ProjectFlowNav :pid="pid" :step="2" />
-
+  <ProjectBookShell v-if="p" :step="2">
     <!-- 左侧：历史生成记录（页面级，固定在内容区左侧，默认折叠，点击展开可选择覆盖使用） -->
     <HistoryPanel
       ref="splitHist"
@@ -599,7 +597,6 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="plan-head">
-      <button class="back" @click="$router.push('/projects')">← 返回项目中心</button>
       <div class="ftitle">
         <div class="ti">{{ p.title }}</div>
         <div class="tsub">项目策划与分场拆解</div>
@@ -621,7 +618,7 @@ onBeforeUnmount(() => {
         @dragleave.prevent="dragOver = false"
         @drop.prevent="onDropFile"
       >
-        <h3>📖 原始故事</h3>
+        <h3 class="p5-title">📖 原始故事</h3>
         <el-input
           v-model="story"
           type="textarea"
@@ -662,7 +659,7 @@ onBeforeUnmount(() => {
 
       <div class="result-col">
         <div class="result-head">
-          <h3>🎬 拆解结果</h3>
+          <h3 class="p5-title">🎬 拆解结果</h3>
           <div v-if="segments.length" class="result-stats muted">
             共 {{ segments.length }} 场 · 已选 {{ selected.length }} 场
             <span v-if="keyword.trim()">· 筛选后 {{ filteredSegments.length }} 场</span>
@@ -792,7 +789,7 @@ onBeforeUnmount(() => {
         <el-button size="small" type="primary" @click="applyOnlineConfig">保存</el-button>
       </template>
     </el-dialog>
-  </div>
+  </ProjectBookShell>
   <div v-else class="planning"><div class="loading">加载中…</div></div>
 </template>
 
@@ -801,10 +798,8 @@ onBeforeUnmount(() => {
 .plan-head {
   flex: 0 0 auto;
   display: flex; align-items: center; gap: 14px;
-  padding: 10px 18px; background: var(--bg-2); border-bottom: 1px solid var(--line);
+  padding: 6px 18px; background: var(--bg-2); border-bottom: 1px solid var(--line);
 }
-.back { background: var(--card); border: 1px solid var(--line); color: var(--sub); border-radius: 10px; padding: 7px 14px; cursor: pointer; font-size: 13px; font-weight: 600; }
-.back:hover { color: var(--txt); border-color: var(--pur); background: var(--card-2); }
 .ftitle { display: flex; flex-direction: column; flex: 1; }
 .ti { font-size: 16px; font-weight: 800; color: var(--txt); }
 .tsub { font-size: 12px; color: var(--sub); }
@@ -916,4 +911,6 @@ h3 { font-size: 13px; color: var(--sub); text-transform: uppercase; letter-spaci
 .log-line { display: flex; gap: 8px; color: var(--txt); }
 .log-time { color: var(--sub); flex: 0 0 auto; }
 .log-msg { color: var(--txt); word-break: break-word; white-space: pre-wrap; }
+/* h3 应用 .p5-title 是为了统一全站 P5 斜切+涂鸦；将字号封顶为节标题尺寸（避开顶部面包屑） */
+h3.p5-title { font-size: 20px; line-height: 1.2; letter-spacing: var(--ls-display); }
 </style>

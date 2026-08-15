@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "pid": "04ac82eb-e65a-4e1a-b800-44d86bdaf89f",
+  "checks": {
+    "coverUnique": true,
+    "idCardThumbCount": 0,
+    "idCardVecBadgeCount": 0
+  },
+  "timestamp": "2026-08-15T04:50:17.430Z"
+}

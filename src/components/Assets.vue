@@ -5,11 +5,12 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   getProject, listAssets, listProjectAssets, listSegments,
   uploadGlobalAsset, uploadProjectAsset, uploadImage,
-  importRole, importScene, importProp,
+  importRole, importScene, importProp, listImportableRoles,
   updateAsset, deleteAsset,
   listStagesWithPoses, addStage, delStage, addPose, delPose,
   extractAssetsFromStory, batchCreateProjectAssets, getOllamaStatus,
   getLocalModels, testModelConnection, generateCharacterCardV2,
+  recommendMemory, importMemory,
 } from '../api'
 import { saveDraft, loadDraft, clearDraft, draftAge, draftKey } from '../composables/useDraft'
 import { pushHistory, genKey } from '../composables/useGenHistory'
@@ -17,7 +18,7 @@ import { pushGeneration } from '../composables/useDirectorOrb'
 import { toast } from '../store'
 import { splitVoice, joinVoice, stageNameFor } from '../assetMeta'
 import { pruneRefs } from '../composables/useProject'
-import ProjectFlowNav from './ProjectFlowNav.vue'
+import ProjectBookShell from './ProjectBookShell.vue'
 import RoleEditorModal from './RoleEditorModal.vue'
 import HistoryPanel from './HistoryPanel.vue'
 import {
@@ -880,6 +881,82 @@ const doImportFromDialog = async (item) => {
   }
 }
 
+// P1 M4 复用阶段：跨项目导入历史角色卡（深拷贝，含向量 + 参考图集）
+// 与「从全集导入」并存：全集导入面向 is_global 资产；本弹窗面向其他项目中的 role 资产（跨项目复用）。
+const roleImportDialog = reactive({ open: false, loading: false, keyword: '', items: [] })
+const filteredRoleImports = computed(() => {
+  const k = roleImportDialog.keyword.trim().toLowerCase()
+  if (!k) return roleImportDialog.items
+  return roleImportDialog.items.filter((a) => a.name.toLowerCase().includes(k))
+})
+const openRoleImportDialog = async () => {
+  roleImportDialog.open = true
+  roleImportDialog.loading = true
+  roleImportDialog.keyword = ''
+  roleImportDialog.items = []
+  try {
+    const items = await listImportableRoles(pid)
+    roleImportDialog.items = items || []
+  } catch (e) {
+    toast('历史角色卡加载失败: ' + e.message)
+  } finally {
+    roleImportDialog.loading = false
+  }
+}
+const doRoleImport = async (item) => {
+  busy.value = true
+  try {
+    const r = await importRole(item.asset_id, pid)
+    toast('已导入「' + (r?.name || item.name) + '」到本集（深拷贝含向量+参考图集）')
+    item.already_imported = true
+    await loadList()
+  } catch (e) {
+    toast('导入失败: ' + e.message)
+  } finally {
+    busy.value = false
+  }
+}
+
+// P3 M3 长期记忆复用：从记忆库导入历史角色卡 / 风格锚点 / LoRA 到本集
+const TYPE_LABEL = { character: '角色卡', style: '风格锚点', lora: 'LoRA' }
+const memImportDialog = reactive({ open: false, loading: false, items: [], selected: reactive(new Set()) })
+const memImportBusy = ref(false)
+const openMemImportDialog = async () => {
+  memImportDialog.open = true
+  memImportDialog.loading = true
+  memImportDialog.items = []
+  memImportDialog.selected.clear()
+  try {
+    const items = await recommendMemory()
+    memImportDialog.items = Array.isArray(items) ? items : []
+    if (!memImportDialog.items.length) toast('暂无历史记忆资产（请先在项目设置页「沉淀本项目记忆」）')
+  } catch (e) {
+    toast('历史记忆加载失败: ' + e.message)
+  } finally {
+    memImportDialog.loading = false
+  }
+}
+const toggleMem = (id) => {
+  if (memImportDialog.selected.has(id)) memImportDialog.selected.delete(id)
+  else memImportDialog.selected.add(id)
+}
+const memName = (it) => (it.payload && it.payload.name) || it.memory_id
+const doMemImport = async () => {
+  const ids = [...memImportDialog.selected]
+  if (!ids.length) return
+  memImportBusy.value = true
+  try {
+    const r = await importMemory(pid, ids)
+    toast('已导入 ' + (r?.imported ?? ids.length) + ' 项历史资产到本集')
+    memImportDialog.open = false
+    await loadList()
+  } catch (e) {
+    toast('导入失败: ' + e.message)
+  } finally {
+    memImportBusy.value = false
+  }
+}
+
 // ---- 角色阶段 / 姿势 ----
 const selectRole = async (a) => {
   if (a.type !== 'role') return
@@ -983,12 +1060,10 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page">
-    <ProjectFlowNav :pid="pid" :step="1" />
+  <ProjectBookShell :step="1">
     <div class="page-head">
-      <button class="back" @click="router.push('/projects')">← 返回项目中心</button>
       <div>
-        <h1>🖼 资产初始化 <span class="cold">（冷启动）</span></h1>
+        <h1 class="p5-title">🖼 资产初始化 <span class="cold">（冷启动）</span></h1>
         <p class="muted">{{ project.title }} · 上传角色定妆照 / 场景参考 / 道具图，系统预处理；全集可一键复用至本集</p>
       </div>
       <div class="head-actions">
@@ -1023,6 +1098,8 @@ onMounted(load)
       </label>
       <button v-if="scope === 'project'" class="btn import-btn" @click="openExtractDialog">📝 从剧本提取</button>
       <button v-if="scope === 'project'" class="btn import-btn" @click="openImportDialog">🌐 从全集导入</button>
+      <button v-if="scope === 'project' && tab === 'characters'" class="btn import-btn accent" @click="openRoleImportDialog">📥 导入历史角色卡</button>
+      <button v-if="scope === 'project'" class="btn import-btn accent" @click="openMemImportDialog">🧠 从历史记忆导入</button>
       <button v-if="scope === 'project'" class="btn import-btn accent" :disabled="genRolesBusy" @click="generateRolesFromScript">
         🎬 从剧本生成角色{{ genRolesBusy ? '…' : '' }}
       </button>
@@ -1211,6 +1288,53 @@ onMounted(load)
             <div class="import-name">{{ a.name }}</div>
             <button class="btn sm" @click="doImportFromDialog(a)">导入</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- P1 M4 跨项目导入历史角色卡弹窗（深拷贝：向量 + 身份卡 + 参考图集） -->
+    <div class="modal-mask" v-if="roleImportDialog.open" @click="roleImportDialog.open=false">
+      <div class="modal-box wide" @click.stop>
+        <h3>📥 导入历史角色卡（跨项目复用）</h3>
+        <p class="muted" style="margin:0 0 12px">从其他项目 / 全局库深拷贝角色卡到本集，含 512 维向量 + 身份卡 + 参考图集；同名角色幂等不重复。</p>
+        <div class="search-box" style="width:240px;margin-bottom:12px">
+          <span class="search-icon">🔍</span>
+          <input v-model="roleImportDialog.keyword" class="search-input" placeholder="搜索历史角色…" />
+        </div>
+        <div v-if="roleImportDialog.loading" class="muted" style="padding:20px;text-align:center">加载中…</div>
+        <div v-else-if="!filteredRoleImports.length" class="empty">暂无其他项目的角色卡可导入</div>
+        <div v-else class="import-grid">
+          <div v-for="a in filteredRoleImports" :key="a.asset_id" class="import-card">
+            <div class="import-thumb"><img :src="a.cover_url || PLACEHOLDER" @error="(e)=>(e.target.src=PLACEHOLDER)" /></div>
+            <div class="import-name">{{ a.name }}</div>
+            <div class="import-sub">{{ a.project_name }}<span v-if="a.role_type"> · {{ (ROLE_TYPE_OPTS.find(o=>o.value===a.role_type)||{label:a.role_type}).label }}</span></div>
+            <button v-if="a.already_imported" class="btn sm ghost" disabled>已导入</button>
+            <button v-else class="btn sm" @click="doRoleImport(a)">导入（深拷贝）</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- P3 M3 长期记忆复用弹窗：历史角色卡 / 风格锚点 / LoRA -->
+    <div class="modal-mask" v-if="memImportDialog.open" @click="memImportDialog.open=false">
+      <div class="modal-box wide" @click.stop>
+        <h3>🧠 从历史记忆导入（跨项目复用）</h3>
+        <p class="muted" style="margin:0 0 12px">勾选历史沉淀的资产带入本集：角色卡走深拷贝（含向量+参考图集），风格锚点 / LoRA 实体复制到本集。</p>
+        <div v-if="memImportDialog.loading" class="muted" style="padding:20px;text-align:center">加载中…</div>
+        <div v-else-if="!memImportDialog.items.length" class="empty">暂无历史记忆资产</div>
+        <div v-else class="mem-list">
+          <label v-for="it in memImportDialog.items" :key="it.memory_id" class="mem-item" :class="{ on: memImportDialog.selected.has(it.memory_id) }">
+            <input type="checkbox" :checked="memImportDialog.selected.has(it.memory_id)" @change="toggleMem(it.memory_id)" />
+            <span class="mem-type" :class="it.type">{{ TYPE_LABEL[it.type] || it.type }}</span>
+            <span class="mem-name">{{ memName(it) }}</span>
+            <span class="mem-meta">来自项目 {{ (it.source_project_id||'').slice(0,8) }} · 复用 {{ it.usage_count || 0 }} 次</span>
+          </label>
+        </div>
+        <div class="dialog-footer">
+          <span class="muted">已选 {{ memImportDialog.selected.size }} 项</span>
+          <button class="btn sm" :disabled="!memImportDialog.selected.size || memImportBusy" @click="doMemImport">
+            {{ memImportBusy ? '导入中…' : '导入选中' }}
+          </button>
         </div>
       </div>
     </div>
@@ -1563,12 +1687,12 @@ onMounted(load)
 
     <!-- 角色编辑弹窗 -->
     <RoleEditorModal v-model="editorVisible" :role="editingRole" :project-id="pid" @saved="onRoleSaved" @preview="preview = $event" />
-  </div>
+  </ProjectBookShell>
 </template>
 
 <style scoped>
 .page { padding: 0 24px 24px; }
-.page-head { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 12px; gap: 12px; flex-wrap: wrap; }
+.page-head { display: flex; align-items: center; justify-content: space-between; margin: 4px 0 12px; gap: 12px; flex-wrap: wrap; }
 .page-head h1 { margin: 0; font-size: 20px; }
 .cold { font-size: 12px; color: var(--sub); font-weight: 400; }
 .muted { color: var(--sub); font-size: 13px; }
@@ -1758,4 +1882,18 @@ onMounted(load)
 .em-disabled-tag { display: inline-block; margin-left: 6px; font-size: 10px; color: var(--sub); background: var(--bg); padding: 1px 6px; border-radius: 4px; font-weight: 400; }
 .em-provider-url { font-size: 11px; word-break: break-all; margin-top: 2px; }
 .em-provider-acts { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+
+/* P3 M3 长期记忆复用弹窗 */
+.mem-list { display: flex; flex-direction: column; gap: 8px; max-height: 56vh; overflow: auto; }
+.mem-item { display: flex; align-items: center; gap: 10px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+.mem-item.on { border-color: var(--pur); background: rgba(138,92,255,.08); }
+.mem-type { font-size: 11px; padding: 2px 8px; border-radius: 6px; color: #fff; flex: 0 0 auto; }
+.mem-type.character { background: #6d28d9; }
+.mem-type.style { background: #0ea5e9; }
+.mem-type.lora { background: #d94f3a; }
+.mem-name { font-size: 13px; font-weight: 700; color: var(--txt); }
+.mem-meta { font-size: 11px; color: var(--sub); margin-left: auto; }
+.mem-dialog-footer { display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 14px; }
+.btn.sm { background: var(--grad); color: #fff; border: 0; border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer; }
+.btn.sm:disabled { opacity: .5; cursor: not-allowed; }
 </style>

@@ -97,6 +97,13 @@ export const splitStory = (pid, body, opts = {}) =>
     ...opts,
   })
 export const getLocalModels = () => get('/models/local').then((r) => r.models || [])
+
+// ---- P4 M1 新模型零代码接入 ----
+export const scanModels = () => get('/models/scan').then((r) => r.models || [])
+export const discoverModel = (name) => get('/models/' + encodeURIComponent(name) + '/discover')
+export const registerModel = (body) => post('/models/register', body)
+export const listModels = (status) =>
+  get('/models' + (status ? ('?status=' + status) : '')).then((r) => r.models || [])
 export const getOllamaStatus = () => get('/ollama/status').then((r) => r || { ok: false, models: [] })
 export const getSegment = (pid, sid) => get('/projects/' + pid + '/segments/' + sid).then((r) => ({ segment: r.segment, shots: r.shots || [] }))
 export const updateSegment = (pid, sid, body) => patch('/projects/' + pid + '/segments/' + sid, body).then((r) => r.segment)
@@ -107,14 +114,17 @@ export const putAssetRefs = (pid, sid, refs) => put('/projects/' + pid + '/segme
 export const pruneAssetRefs = (projectId, { assetId, stageId } = {}) =>
   post('/projects/' + projectId + '/prune-refs', { asset_id: assetId, stage_id: stageId || null })
 export const deleteSegment = (pid, sid) => del('/projects/' + pid + '/segments/' + sid)
+// 分镜生视频 / 重生成：ComfyUI 多帧渲染耗时远超默认 30s，必须放宽超时，
+// 否则出现「signal timed out」假失败（前端已取消但后端仍在跑）。30 分钟上限。
 export const generateSegment = (pid, sid, preAuthId, params) =>
-  post('/projects/' + pid + '/segments/' + sid + '/generate', { pre_auth_id: preAuthId, params })
+  post('/projects/' + pid + '/segments/' + sid + '/generate', { pre_auth_id: preAuthId, params }, { timeout: 1800000 })
 export const regenerateSegment = (pid, sid, preAuthId, params) =>
-  post('/projects/' + pid + '/segments/' + sid + '/regenerate', { pre_auth_id: preAuthId, params })
-export const exportSegment = (pid, sid, fmt) => post('/projects/' + pid + '/segments/' + sid + '/export', { format: fmt })
-// Phase 5 合成全集：把项目下所有已生成成功的片段拼接为一个完整视频
+  post('/projects/' + pid + '/segments/' + sid + '/regenerate', { pre_auth_id: preAuthId, params }, { timeout: 1800000 })
+// 片段导出（视频文件合成）放宽至 10 分钟
+export const exportSegment = (pid, sid, fmt) => post('/projects/' + pid + '/segments/' + sid + '/export', { format: fmt }, { timeout: 600000 })
+// Phase 5 合成全集：把项目下所有已生成成功的片段拼接为一个完整视频（长任务，30 分钟）
 export const synthesizeProject = (pid, preAuthId, options = {}) =>
-  post('/synthesize', { project_id: pid, pre_auth_id: preAuthId, options })
+  post('/synthesize', { project_id: pid, pre_auth_id: preAuthId, options }, { timeout: 1800000 })
 
 // ---- Director Agent Core 一站式生成（N01→N09 全链路编排）----
 // POST 启动后台编排，返回 { run_id, status:'running', trace_id }；进度经 WS 频道 director:<pid> 推送
@@ -199,6 +209,11 @@ export const cancelTask = (id) => post('/tasks/' + id + '/cancel')
 export const retryTask = (id) => post('/tasks/' + id + '/retry')
 export const pauseTask = (id) => post('/tasks/' + id + '/pause')
 export const resumeTask = (id) => post('/tasks/' + id + '/resume')
+// P4 M2 批量调度：队列视图 + 优先级调整
+export const getTaskQueue = () => get('/tasks/queue').then((r) => r || { tasks: [], gpu_max_concurrent: 1 })
+export const updateTaskPriority = (id, priority) => post('/tasks/' + id + '/priority', { priority }).then((r) => r || {})
+// P4 M3 健壮性：手动清理 ComfyUI 显存（优雅 free memory，不杀进程）
+export const clearComfyCache = () => post('/resource/clear-comfy-cache').then((r) => r || {})
 
 // ---- 通知（KB notifications，本地用 messages 表） ----
 export const listNotifications = (params) => {
@@ -220,6 +235,9 @@ export const getDashboard = () => get('/home/dashboard').then((r) => r.dashboard
 
 // ---- 健康检查 ----
 export const healthCheck = () => get('/health')
+
+// ---- M2 资源注册表（能力维度声明 / 模型无关）----
+export const getResourceCatalog = () => get('/resource/catalog')
 
 // ---- 回忆录导演板（AGENT_SPEC_15 真实后端） ----
 export const STORYBOARD_COST = 800 // spec §5 storyboard_credits
@@ -250,6 +268,15 @@ export const generateChapterVideo = (memoirId, chapterId, preAuthId) =>
 export const getChapterTask = (memoirId, chapterId) => get('/memoirs/' + memoirId + '/chapters/' + chapterId + '/task').then((r) => r.task)
 export const preCheck = (memoirId) => get('/memoirs/' + memoirId + '/pre-check')
 export const exportPackage = (memoirId) => post('/memoirs/' + memoirId + '/export-package')
+
+// ---- 设备算力探测与能力分级（多设备兼容：诚实告知显存与视频生成可行性）----
+// GET /device/capabilities → 完整探测（GPU 名称 / 总显存 / 图像·视频生成可行性分级）
+export const deviceCapabilities = () =>
+  get('/device/capabilities').then((r) => r || {})
+// GET /video/readiness → 视频生成前置闸门（前端在 generateSegment 前读此接口，
+// 不可行时诚实提示，避免用户等待 30 分钟后才 OOM 假失败）
+export const videoReadiness = () =>
+  get('/video/readiness').then((r) => r || { feasible: true, reason: '', device: {} })
 
 // ---- §09 MEM-03 事实锚点（用户对 AI 的硬约束） ----
 export const listAnchors = (memoirId) => get('/memoirs/' + memoirId + '/anchors').then((r) => r.anchors || [])
@@ -291,8 +318,16 @@ export const importScene = (assetId, projectId) =>
   post('/asset-hub/scenes/' + assetId + '/import', { project_id: projectId }).then((r) => r.asset)
 export const importProp = (assetId, projectId) =>
   post('/asset-hub/props/' + assetId + '/import', { project_id: projectId }).then((r) => r.asset)
+// P1 M4 复用阶段：角色卡跨项目深拷贝导入（POST /projects/{pid}/assets/import）
+// 深拷贝含 512 维向量 + 身份卡 + 参考图集；同名幂等。
 export const importRole = (assetId, projectId) =>
-  post('/asset-hub/roles/' + assetId + '/import', { project_id: projectId }).then((r) => r.asset)
+  post('/projects/' + projectId + '/assets/import', { asset_id: assetId }).then((r) => r.asset)
+// 列出可导入的历史角色卡（其他项目 / 全局库中的 role 资产）
+export const listImportableRoles = (projectId) =>
+  get('/projects/' + projectId + '/assets/importable-roles').then((r) => r.items || [])
+// P1 M3/M5 权重前置诚实探测：四杠杆所需权重就绪状态
+export const getConsistencyReadiness = () =>
+  get('/consistency/readiness').then((r) => r || { weights: {}, all_ready: false, missing: [] })
 
 // ---- Phase 1 角色多阶段 + 多姿势（KB §02 character_stages / character_poses）----
 export const uploadImage = (file) => {
@@ -321,6 +356,22 @@ export const extractStageFaceVector = (assetId, stageId) =>
 // 角色卡 AI 生成（导演agent优化草稿 #1）：经意图翻译引擎产出首张定妆照，确定性 seed 不随机
 export const generateCharacterCard = (assetId, body = {}) =>
   post('/assets/' + assetId + '/generate-card', body).then((r) => r || {})
+
+// ---- P1 M1 角色身份系统（身份卡）----
+export const getIdentityCard = (assetId) =>
+  get('/assets/' + assetId + '/identity-card').then((r) => r || {})
+export const patchIdentityCard = (assetId, body = {}) =>
+  patch('/assets/' + assetId + '/identity-card', body).then((r) => r || {})
+
+// ---- P1 M2 Lock 锁定阶段（标准肖像 + 参考图集）----
+// generate：一键生成标准肖像 + 4 张参考图（光线一致），每张提取 512 维向量；
+// 依赖（ComfyUI / IP-Adapter / insightface）缺失时后端诚实抛错。
+export const generateReferenceSet = (assetId) =>
+  post('/assets/' + assetId + '/reference-set/generate', {}, { timeout: 1200000 }).then((r) => r || {})
+export const getReferenceSet = (assetId) =>
+  get('/assets/' + assetId + '/reference-set').then((r) => r || { items: [] })
+export const regenerateReference = (assetId, refKind) =>
+  post('/assets/' + assetId + '/reference-set/' + refKind + '/regenerate', {}, { timeout: 300000 }).then((r) => r || {})
 
 // M3 悬浮球前端化 · 导演决策点 + 角色卡增强管线（手册 §4.2）
 // ① 决策点：列出项目待确认/已确认清单；提交用户答案回传悬浮球决策卡
@@ -481,3 +532,72 @@ export const orbApi = {
   synthesizeReport: (pid) => get('/orb/projects/' + pid + '/synthesize-report'),
   batchAction: (pid, body) => post('/orb/projects/' + pid + '/batch-action', body),
 }
+
+// ---- LoRA 训练模块（手册 §8 / 设计思路 §8）----
+export const loraPresets = () => get('/lora/presets')
+export const createLoraTrain = (body) => post('/lora/train', body).then((r) => r.task)
+export const listLoraTrain = (params) => {
+  const q = params ? '?' + new URLSearchParams(params).toString() : ''
+  return get('/lora/train' + q).then((r) => r)
+}
+export const getLoraTrain = (id) => get('/lora/train/' + id).then((r) => r)
+export const cancelLoraTrain = (id) => post('/lora/train/' + id + '/cancel').then((r) => r)
+export const loraCaption = (body) => post('/lora/caption', body).then((r) => r)
+export const listLoraModels = (params) => {
+  const q = params ? '?' + new URLSearchParams(params).toString() : ''
+  return get('/lora/models' + q).then((r) => r)
+}
+export const registerLoraModel = (id) => post('/lora/models/' + id + '/register').then((r) => r)
+export const enableLoraModel = (id) => post('/lora/models/' + id + '/enable').then((r) => r)
+export const disableLoraModel = (id) => post('/lora/models/' + id + '/disable').then((r) => r)
+export const deleteLoraModel = (id) => del('/lora/models/' + id).then((r) => r)
+export const validateLoraModel = (id) => post('/lora/models/' + id + '/validate').then((r) => r)
+
+// ---- LoRA 数据集上传（multipart）----
+export async function uploadLoraDataset(files, loraType) {
+  const form = new FormData()
+  for (const f of files) form.append('files', f)
+  form.append('lora_type', loraType || 'style')
+  const r = await fetch(BASE + '/lora/dataset/upload', {
+    method: 'POST',
+    body: form,
+  })
+  const ct = r.headers.get('content-type') || ''
+  let body = null
+  if (ct.indexOf('application/json') >= 0) body = await r.json()
+  else if (!r.ok) throw new ApiError('HTTP_' + r.status, (await r.text().catch(() => '')) || r.statusText)
+  if (!r.ok) {
+    const msg = body?.message || body?.detail || r.statusText
+    throw new ApiError(body?.code || ('HTTP_' + r.status), msg)
+  }
+  if (body && typeof body === 'object' && 'code' in body) {
+    if (body.code !== 0) throw new ApiError(body.code, body.message || '未知错误')
+    return body.data
+  }
+  return body
+}
+
+// ============================================================
+// P3 编排层可插拔：Skills 技能库 / 自定义模板 / 长期记忆
+// ============================================================
+
+// ---- P3 M1 Skills 技能库 ----
+export const listSkills = () => get('/skills').then((r) => r.skills || [])
+export const createSkill = (body) => post('/skills', body).then((r) => r.skill_id)
+export const getSkill = (id) => get('/skills/' + id).then((r) => r.skill)
+export const updateSkill = (id, body) => put('/skills/' + id, body)
+export const deleteSkill = (id) => del('/skills/' + id)
+// 拖拽执行：填 user_input + context → 后端真调 P0 translator.translate
+export const runSkill = (id, body) => post('/skills/' + id + '/run', body).then((r) => r.workflow)
+
+// ---- P3 M2 用户自定义模板（ComfyUI workflow → 语义模板 → 注册进 P0 映射）----
+export const importTemplate = (taskType, comfyJson) =>
+  post('/templates/import', { task_type: taskType, comfy_json: comfyJson }).then((r) => r)
+export const listUserTemplates = () => get('/user-templates').then((r) => r.templates || [])
+export const testUserTemplate = (id) => post('/templates/' + id + '/test').then((r) => r)
+
+// ---- P3 M3 长期记忆 / 资产沉淀（跨项目复用）----
+export const rememberProject = (pid) => post('/projects/' + pid + '/remember').then((r) => r.remembered)
+export const recommendMemory = () => get('/memory/recommend').then((r) => r.items || [])
+export const importMemory = (pid, memoryIds) =>
+  post('/projects/' + pid + '/import-memory', { memory_ids: memoryIds }).then((r) => r)

@@ -1,0 +1,40 @@
+{
+  "p1": {
+    "advice": [
+      "建议 【测P1】资产就绪建议 仅资产初始化阶段可见 ×"
+    ],
+    "decisions": [
+      "【测P1】资产决策 P1 P1决策 确认"
+    ],
+    "conv": [
+      "导演发言 【测P1】导演资产发言 12:02:53"
+    ],
+    "feeds": [
+      "【测P1】P1生成任务"
+    ],
+    "translatorCards": 0,
+    "lockCards": 0,
+    "outputCards": 0,
+    "phase": 1
+  },
+  "p2": {
+    "advice": [
+      "提醒 【测P2】连续同场景 其他阶段问题不应在P1显示 ×"
+    ],
+    "decisions": [
+      "【测P2】策划决策 P2 P2决策 确认"
+    ],
+    "conv": [
+      "导演发言 【测P2】导演策划发言 12:02:53"
+    ],
+    "feeds": [
+      "【测P2】P2生成任务"
+    ],
+    "translatorText": "🎬 导演选型 底模 ckpt-test IP节点 N-test IP权重 0.85 LORA lora-test SEED 123 任务类型：test",
+    "lockText": "已锁定角色「角色X」 i2v 首帧锚定 标准肖像 512维向量 一致句 参考图集 0",
+    "outputCards": 0,
+    "phase": 2
+  },
+  "inject": "OK",
+  "failures": 0
+}
