@@ -1,0 +1,30 @@
+{
+  "checks": [
+    {
+      "name": "no-silent-elmessagebox-dialogs",
+      "pass": true,
+      "detail": "扫描 53 个 .vue，无 ElMessageBox 弹窗 / 无 512 维假阳性"
+    },
+    {
+      "name": "global-asset-no-fake-done",
+      "pass": true,
+      "detail": "无硬编码「已定稿」"
+    },
+    {
+      "name": "global-asset-delete-confirm-shown",
+      "pass": true,
+      "detail": "点击删除后出现确认框：全局资产「ui_sample」被所有项目共享，删…"
+    },
+    {
+      "name": "global-asset-not-deleted-without-confirm",
+      "pass": true,
+      "detail": "取消后资产数不变(9)"
+    },
+    {
+      "name": "no-page-errors",
+      "pass": true,
+      "detail": "无未捕获页面错误"
+    }
+  ],
+  "ok": true
+}

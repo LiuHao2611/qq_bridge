@@ -1,7 +1,7 @@
 <script setup>
 import { reactive, ref, computed, watch, onBeforeUnmount, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { useTheme } from '../composables/useTheme'
 import { setOrbSkin, ORB_SKINS, ORB_SKINS_CYBER } from '../composables/useDirectorOrb'
 import { getSettings, updateSettings, getLocalModels, testModelConnection, post, getResourceCatalog, getConsistencyReadiness, deviceCapabilities } from '../api'
@@ -309,7 +309,7 @@ const clearCache = () => {
   }
   keys.forEach(k => localStorage.removeItem(k))
   Object.assign(settings, defaults())
-  ElMessage.success('已清理本地缓存')
+  ElMessage.warning('已清理本地缓存，所有偏好设置已恢复默认，记得点「保存设置」重新落盘')
 }
 
 // 导出当前设置（及部分运行信息）为 JSON
@@ -356,15 +356,7 @@ const rebuildIng = ref(false)
 const rebuildResult = ref(null)   // { success, exit_code, busy, output } | null
 const reloadPage = () => location.reload()
 const rebuildFrontend = async () => {
-  try {
-    await ElMessageBox.confirm(
-      '将重新构建整个前端（执行 vite build，约 15–30 秒）。构建期间页面可能短暂不可用，完成后请刷新页面。是否继续？',
-      '一键重构前端',
-      { confirmButtonText: '开始重构', cancelButtonText: '取消', type: 'warning' }
-    )
-  } catch {
-    return
-  }
+  if (!confirm('将重新构建整个前端（执行 vite build，约 15–30 秒）。构建期间页面可能短暂不可用，完成后请刷新页面。是否继续？')) return
   rebuildIng.value = true
   rebuildResult.value = null
   try {
@@ -845,7 +837,7 @@ const hotkeys = [
         <div class="field" style="align-items:flex-start">
           <label>一键重构</label>
           <div style="flex:1">
-            <el-button type="warning" :loading="rebuildIng" @click="rebuildFrontend">
+            <el-button type="warning" :loading="rebuildIng" :disabled="rebuildIng" @click="rebuildFrontend">
               {{ rebuildIng ? '重构中…' : '一键重构前端' }}
             </el-button>
             <span class="muted" style="margin-left:10px">重新构建整个前端（vite build），构建完成后请刷新页面</span>

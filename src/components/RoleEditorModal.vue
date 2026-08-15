@@ -12,7 +12,7 @@ import { toast } from '../store'
 import { splitVoice, joinVoice, stageNameFor } from '../assetMeta'
 import { pruneRefs } from '../composables/useProject'
 import { useAutoSave } from '../composables/useAutoSave'
-import { ElMessageBox } from 'element-plus'
+// ElMessageBox 不渲染（自研弹窗）；关闭/删除确认改用原生 confirm()
 import {
   ASSET_STAGE_OPTIONS, ASSET_ROLE_TYPE_OPTIONS, ASSET_POSE_OPTIONS,
 } from '../mock'
@@ -454,9 +454,9 @@ const { status: saveStatus } = useAutoSave({ dirty, save: persist, enabled: ref(
 // 点遮罩/ESC/× 关闭：有未保存修改则二次确认（防误关丢稿）
 const beforeClose = (done) => {
   if (dirty.value) {
-    ElMessageBox.confirm('角色有未保存的修改，关闭后将丢失。确定关闭？', '未保存修改', { confirmButtonText: '丢弃修改', cancelButtonText: '继续编辑', type: 'warning' })
-      .then(() => done()).catch(() => {})
-  } else { done() }
+    if (!confirm('角色有未保存的修改，关闭后将丢失。确定关闭？（点「取消」可继续编辑）')) return
+  }
+  done()
 }
 
 const roleTypeLabel = computed(() => ASSET_ROLE_TYPE_OPTIONS.find((o) => o.value === form.roleType)?.label || form.roleType)
@@ -520,8 +520,8 @@ const submitStage = async () => {
   }
 }
 const removeStage = async (st) => {
+  if (!confirm('删除该阶段及其姿势？')) return
   try {
-    await ElMessageBox.confirm('删除该阶段及其姿势？', '删除确认', { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' })
     await delStage(form.id, st.stage_id)
     // F1：级联清理该角色阶段在所有片段中的悬空 @引用
     await pruneRefs(pid.value, { assetId: form.id, stageId: st.stage_id })
@@ -529,7 +529,7 @@ const removeStage = async (st) => {
     await loadStages({ id: form.id })
     emit('stagesChanged')
   } catch (e) {
-    if (e !== 'cancel') toast('删除失败: ' + (e.message || e))
+    toast('删除失败: ' + (e.message || e))
   }
 }
 
@@ -558,13 +558,13 @@ const submitPose = async () => {
   }
 }
 const removePose = async (st, p) => {
+  if (!confirm('删除该姿势？')) return
   try {
-    await ElMessageBox.confirm('删除该姿势？', '删除确认', { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' })
     await delPose(st.stage_id, p.pose_id)
     await loadStages({ id: form.id })
     emit('stagesChanged')
   } catch (e) {
-    if (e !== 'cancel') toast('删除失败: ' + (e.message || e))
+    toast('删除失败: ' + (e.message || e))
   }
 }
 </script>

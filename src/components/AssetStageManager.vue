@@ -131,11 +131,12 @@ const submitStage = async () => {
   busy.value = true
   try {
     const up = await uploadImage(stageForm.file)
+    if (!up || !up.url) { toast('参考图上传失败，请重试'); return }
     // F4：阶段命名统一（role→层级名 roleName-suffix；scene/prop→裸名），三处一致
     await addStage(props.assetId, {
       stage_name: stageNameFor(props.assetName, props.type, stageForm.stage_name),
       age: showAge.value ? (Number(stageForm.age) || 25) : 0,
-      reference_image_url: up.url || '',
+      reference_image_url: up.url,
     })
     toast('已添加' + i18n.value.stageLabel)
     stageForm.open = false
@@ -181,7 +182,8 @@ const submitPose = async () => {
   busy.value = true
   try {
     const up = await uploadImage(poseForm.file)
-    await addPose(poseForm.stageId, { pose_name: poseForm.pose_name.trim(), reference_image_url: up.url || '' })
+    if (!up || !up.url) { toast('参考图上传失败，请重试'); return }
+    await addPose(poseForm.stageId, { pose_name: poseForm.pose_name.trim(), reference_image_url: up.url })
     toast('已添加' + i18n.value.addPose)
     poseForm.open = false
     await load()
@@ -193,6 +195,7 @@ const submitPose = async () => {
   }
 }
 const removePose = async (st, p) => {
+  if (!confirm('确定删除该姿势？')) return
   try {
     await delPose(st.stage_id, p.pose_id)
     await load()

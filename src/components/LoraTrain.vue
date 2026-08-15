@@ -8,7 +8,7 @@
 // 多边形切割/胶带/星爆/超大编号），所有业务逻辑与 WS/模型管理保持不变（无创性铁律）。
 // ============================================================
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import {
   loraPresets, createLoraTrain, listLoraTrain, cancelLoraTrain,
   loraCaption, listLoraModels, registerLoraModel, enableLoraModel,
@@ -322,7 +322,7 @@ async function doRegister(m) { try { await registerLoraModel(m.id); ElMessage.su
 async function doEnable(m) { try { await enableLoraModel(m.id); ElMessage.success('已启用'); loadModels() } catch (e) { ElMessage.error(e.message || e) } }
 async function doDisable(m) { try { await disableLoraModel(m.id); ElMessage.success('已停用'); loadModels() } catch (e) { ElMessage.error(e.message || e) } }
 async function doDelete(m) {
-  try { await ElMessageBox.confirm('确认删除模型「' + m.name + '」？磁盘文件保留，仅移除目录记录。', '删除确认', { type: 'warning' }) } catch { return }
+  if (!confirm('确认删除模型「' + m.name + '」？磁盘文件保留，仅移除目录记录。')) return
   try { await deleteLoraModel(m.id); ElMessage.success('已删除'); loadModels() } catch (e) { ElMessage.error(e.message || e) }
 }
 async function doValidate(m) {

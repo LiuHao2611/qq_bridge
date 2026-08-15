@@ -6,7 +6,7 @@ import { useProject } from '../composables/useProject'
 import { useHotkeys } from '../composables/useHotkeys'
 import { useAutoSave } from '../composables/useAutoSave'
 import { toast } from '../store'
-import { ElMessageBox } from 'element-plus'
+// ElMessageBox 不渲染（自研弹窗）；关闭确认改用原生 confirm()
 import { aiPolish, estimatePoints, preAuthPoints, regenerateSegment, exportSegment, updateProject, batchCreateProjectAssets, synthesizeProject } from '../api'
 import { saveDraft, loadDraft, clearDraft, draftAge, draftKey } from '../composables/useDraft'
 import { pushHistory, genKey } from '../composables/useGenHistory'
@@ -346,9 +346,9 @@ const openCreateAsset = (type) => {
 // 已填内容时点遮罩/× 关闭：二次确认防丢稿
 const beforeAssetDialogClose = (done) => {
   if (assetForm.name || assetForm.description) {
-    ElMessageBox.confirm('新建资产有未提交内容，关闭后将丢失。确定关闭？', '未保存内容', { confirmButtonText: '丢弃', cancelButtonText: '继续填写', type: 'warning' })
-      .then(() => done()).catch(() => {})
-  } else { done() }
+    if (!confirm('新建资产有未提交内容，关闭后将丢失。确定关闭？（点「取消」可继续填写）')) return
+  }
+  done()
 }
 const confirmCreateAsset = async () => {
   const name = (assetForm.name || '').trim()
@@ -622,9 +622,9 @@ const beforeDescModalClose = (done) => {
   const s = descModalShot.value
   const orig = s ? (s.description || '') : ''
   if (descModalText.value !== orig) {
-    ElMessageBox.confirm('画面描述有未保存的修改，关闭后将丢失。确定关闭？', '未保存修改', { confirmButtonText: '丢弃修改', cancelButtonText: '继续编辑', type: 'warning' })
-      .then(() => done()).catch(() => {})
-  } else { done() }
+    if (!confirm('画面描述有未保存的修改，关闭后将丢失。确定关闭？（点「取消」可继续编辑）')) return
+  }
+  done()
 }
 const saveDescModal = () => {
   const s = descModalShot.value
@@ -697,7 +697,7 @@ const onSyncAll = async () => {
       }
     })
     router.push('/projects/' + pid + '/production')
-  } catch (e) { /* toast 已在内部 */ }
+  } catch (e) { toast.error('合成失败: ' + (e.message || e)) }
 }
 // 重新生成（spec §2.1 状态机 GENERATING / BR-004 预授权）：预授权 → 重新提交生成 → 轮询任务
 const onRegen = async () => {
@@ -744,6 +744,39 @@ const onRegen = async () => {
       }
     })
   } catch (e) { toast('重新生成失败: ' + (e.message || e)) }
+}
+// 生成视频（spec §2.1 首发生成当前片段）：复用 useProject.generate（视频算力闸门 / 积分预授权 / 首次生成 / 轮询）
+// 修复：此前编辑器引入了 generate 却未绑定任何按钮，导致分镜编排阶段「无生成视频入口」（空状态文案指向幽灵按钮）。
+const onGenerate = async () => {
+  if (!p.value) return
+  if (!p.value._activeSegmentId) { toast('请先选择一个片段'); return }
+  try {
+    const res = await generate()
+    if (!res || !res.task_id) return // 演示态或未提交（generate 内部已 toast）
+    p.value.status = 'rendering'
+    toast('已提交生成视频任务')
+    pollTask(res.task_id, (t) => {
+      if (t.status === 'succeeded') {
+        p.value.video_url = t.result_url || ''
+        p.value.thumb = t.thumbnail_url || ''
+        p.value.status = 'done'
+        toast('视频生成完成')
+        const h = pushHistory(genKey.editor(p.value.id), {
+          kind: 'video',
+          title: '生成视频 · 片段',
+          preview: t.thumbnail_url || '',
+          previewText: '视频',
+          payload: { video_url: t.result_url || '', thumb: t.thumbnail_url || '' },
+        })
+        if (h && editorHist.value) editorHist.value.refresh()
+      } else if (t.status === 'failed') {
+        p.value.status = 'failed'
+        toast('视频生成失败: ' + (t.error_message || '未知'))
+      }
+    })
+  } catch (e) {
+    // generate() 内部已 toast（含 VIDEO_GATE_CANCELLED 受控取消），此处不重复提示
+  }
 }
 const onPolish = async () => {
   const texts = activeScenes.value.map((s) => (s.description || s.caption || '')).filter(Boolean)
@@ -812,7 +845,7 @@ const onAddChapter = async () => {
   try {
     await withSuppressDirty(() => addSegment('新片段 ' + (p.value.chapters.length + 1), p.value.duration))
     toast('已新增片段')
-  } catch (e) { /* toast 已在内部 */ }
+  } catch (e) { toast.error('新增片段失败: ' + (e.message || e)) }
 }
 const onDeleteChapter = async (ch) => {
   if (!p.value) return
@@ -820,7 +853,7 @@ const onDeleteChapter = async (ch) => {
   try {
     await withSuppressDirty(() => removeSegment(ch.id))
     toast('已删除片段')
-  } catch (e) { /* toast 已在内部 */ }
+  } catch (e) { toast.error('删除片段失败: ' + (e.message || e)) }
 }
 const onAddScene = () => {
   if (!p.value || !activeChapterId.value) return
@@ -881,6 +914,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
 
 <template>
   <ProjectBookShell v-if="p && ready" :step="3" @synthesize="onSyncAll">
+   <div class="frag">
     <!-- 左侧：历史生成记录（页面级，固定在内容区左侧，默认折叠，点击展开可选择覆盖使用） -->
     <HistoryPanel
       ref="editorHist"
@@ -1213,6 +1247,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
             <el-button size="small" type="primary" @click="onSave">保存</el-button>
             <el-button size="small" @click="onPolish">AI 润色</el-button>
             <el-button size="small" type="warning" @click="onRegen">重新生成</el-button>
+            <el-button size="small" type="success" @click="onGenerate">🎬 生成视频</el-button>
           </div>
         </div>
         <div v-else class="empty">请选择左侧片段</div>
@@ -1223,7 +1258,11 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
         <h3>视频预览 <span class="vstatus" :class="vstat.cls">{{ vstat.text }}</span></h3>
         <div class="preview-box">
           <video v-if="p.video_url" :src="p.video_url" controls class="pv" />
-          <div v-else class="empty">🎞️ 暂无视频<br />点击「生成视频」开始合成</div>
+          <div v-else class="empty">
+            🎞️ 暂无视频
+            <el-button type="primary" size="small" @click="onGenerate">🎬 生成视频</el-button>
+            <span class="muted">按当前片段参数首发生成视频</span>
+          </div>
         </div>
         <el-collapse :model-value="['params', 'log']" class="mt">
           <el-collapse-item title="模型参数" name="params">
@@ -1271,6 +1310,7 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
           <div class="nav-th add" @click="onAddChapter">＋</div>
         </div>
     </div>
+   </div>
   </ProjectBookShell>
   <div v-else class="page"><div class="empty">加载中…</div></div>
 
@@ -1480,8 +1520,8 @@ useHotkeys({ save: onSave, undo: () => toast('撤销（演示）'), fullscreen: 
 .hint-bar label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .hint-bar .seed { display: flex; align-items: center; gap: 6px; }
 
-.frag-body { flex: 1; display: grid; grid-template-columns: 280px 1fr 360px; min-height: 0; overflow: hidden; }
-.col { overflow-y: auto; padding: 16px; border-right: 1px solid var(--line); }
+.frag-body { flex: 1; display: grid; grid-template-columns: 280px 1fr 360px; grid-template-rows: minmax(0, 1fr); min-height: 0; overflow: hidden; }
+.col { min-height: 0; overflow-y: auto; padding: 16px; border-right: 1px solid var(--line); }
 .col-left { background: var(--panel); }
 .col-mid { background: var(--bg-2); }
 .col-right { border-right: 0; }

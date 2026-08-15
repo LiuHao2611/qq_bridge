@@ -43,7 +43,7 @@ const KIND_RED = {
 
 function fire(detail) {
   if (!document.documentElement.classList.contains('t-p5')) return
-  const k = detail && detail.kind && KIND_LABEL[detail.kind] ? detail.kind : 'success'
+  const k = detail && detail.kind && KIND_LABEL[detail.kind] ? detail.kind : 'info'
   kind.value = k
   msg.value = (detail && detail.msg) || KIND_LABEL[k]
   // 用 :key 强制 Vue 重新挂载覆盖层 DOM，从而让入场动画每次都从头播放，
@@ -67,7 +67,12 @@ function detectKind(el) {
   if (el.classList.contains('el-notification--success')) return 'success'
   if (el.classList.contains('el-notification--warning')) return 'warning'
   if (el.classList.contains('el-notification--error')) return 'error'
-  if (el.classList.contains('toast')) return 'info'
+  if (el.classList.contains('toast')) {
+    if (el.classList.contains('toast-error')) return 'error'
+    if (el.classList.contains('toast-warning')) return 'warning'
+    if (el.classList.contains('toast-success')) return 'success'
+    return 'info'
+  }
   return 'info'
 }
 
@@ -120,7 +125,7 @@ onMounted(() => {
         }
         // 自研 .toast
         if (n.classList && n.classList.contains('toast')) {
-          fire({ kind: 'info', msg: extractText(n) })
+          fire({ kind: detectKind(n), msg: extractText(n) })
         }
       }
     }

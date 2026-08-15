@@ -751,21 +751,39 @@ def _extract_json_block(text):
     return None
 
 
-def _split_story_prompt(story):
-    """构造分场提示词，本地/在线模型共用（对齐手册 §3.1.2/§3.1.3 输出 schema）。"""
+def _split_story_prompt(story, cast_summary=None):
+    """构造分场提示词，本地/在线模型共用（对齐手册 §3.1.2/§3.1.3 输出 schema）。
+
+    cast_summary: 可选 list[dict{name,desc}]，来自 P1 已锁定角色（身份卡）。
+      作为 LLM 上下文，让拆分 AI 知道真实角色名，提升 characters/refs 抽取准确度。
+      为空/None 时行为与历史完全一致（无创性，不破坏现有握手）。
+    """
+    objective_body = (
+        "把下面长故事拆成若干个「场次」，严格输出 JSON 数组。每个场次字段：\n"
+        "  title(场次标题), duration(秒, 取值 5/8/10/12/15), scene_description(场景描述),\n"
+        "  characters(出现的中文人名数组), summary(一句话梗概),\n"
+        "  shots(分镜数组，按动作断点/台词停顿切分，每镜 3-12 秒)。每个分镜字段：\n"
+        "    shot_id(字符串, 如 's1'), duration(秒), shot_type(景别),\n"
+        "    camera_params:{ focal_length(焦距), angle(机位), movement(运镜) },\n"
+        "    scene_desc(镜头画面/场景描述), action_desc(动作/表演描述), audio_desc(台词/音效描述),\n"
+        "    refs(本镜出现的中文人名数组, 用于资产绑定)\n"
+    )
+    # 增强②：注入 P1 已知角色，作为 characters/refs 候选（仅提示，不强制新增、不覆盖「不新增未出现角色」约束）
+    if cast_summary:
+        names = "、".join(c.get("name", "") for c in cast_summary if c.get("name"))
+        if names:
+            objective_body += "【已知角色（来自资产库身份卡，优先作为 characters/refs 候选）】：%s\n" % names
+    objective = objective_body + "故事：\n%s" % story
+    invariants = [
+        "不新增故事里未出现过的角色",
+        "保留原始情节先后顺序",
+        "每个分镜必须有 scene_desc 与 action_desc（禁止无约束自由描述）",
+    ]
+    if cast_summary:
+        invariants.append("characters/refs 应优先取自已知角色列表（若故事确有该角色）")
     return build_prompt(
         role="你是一个专业短剧编剧 / 分场导演",
-        objective=(
-            "把下面长故事拆成若干个「场次」，严格输出 JSON 数组。每个场次字段：\n"
-            "  title(场次标题), duration(秒, 取值 5/8/10/12/15), scene_description(场景描述),\n"
-            "  characters(出现的中文人名数组), summary(一句话梗概),\n"
-            "  shots(分镜数组，按动作断点/台词停顿切分，每镜 3-12 秒)。每个分镜字段：\n"
-            "    shot_id(字符串, 如 's1'), duration(秒), shot_type(景别),\n"
-            "    camera_params:{ focal_length(焦距), angle(机位), movement(运镜) },\n"
-            "    scene_desc(镜头画面/场景描述), action_desc(动作/表演描述), audio_desc(台词/音效描述),\n"
-            "    refs(本镜出现的中文人名数组, 用于资产绑定)\n"
-            "故事：\n%s" % story
-        ),
+        objective=objective,
         constraints=[
             "严格只输出 JSON 数组，不要任何解释文字",
             "每场 shots 时长之和 = duration（容差≤0.5s）",
@@ -775,11 +793,7 @@ def _split_story_prompt(story):
             "camera_params.focal_length∈{24mm,35mm,50mm,85mm,135mm}",
             "紧张情节用近景+手持运镜，抒情情节用全景+慢推轨（按剧情情绪补全未明确参数）",
         ],
-        invariants=[
-            "不新增故事里未出现过的角色",
-            "保留原始情节先后顺序",
-            "每个分镜必须有 scene_desc 与 action_desc（禁止无约束自由描述）",
-        ],
+        invariants=invariants,
     )
 
 
@@ -1077,7 +1091,7 @@ def extract_assets_from_story(story, model_config=None):
     return out
 
 
-def split_story_with_llm(story, model_config=None):
+def split_story_with_llm(story, model_config=None, cast_summary=None):
     """Phase 2：用本地 Ollama 或在线模型把长故事拆为场次（含角色/场景/分镜）。
 
     model_config: dict，可选字段 provider/local/openai-compatible、model、apiBase、apiKey。
@@ -1088,7 +1102,7 @@ def split_story_with_llm(story, model_config=None):
     provider = model_config.get("provider") or "local"
     model = model_config.get("model") or MODEL
     meta = {"model": model, "source": "llm", "provider": provider}
-    prompt = _split_story_prompt(story)
+    prompt = _split_story_prompt(story, cast_summary=cast_summary)
     start = time.time()
     raw = None
     try:

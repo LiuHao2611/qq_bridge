@@ -1,0 +1,65 @@
+{
+  "checks": [
+    {
+      "name": "navigate-to-editor",
+      "pass": true,
+      "detail": "进入项目 c3f56bfa-4c52-40c0-bb60-46430f1efde9 的分镜编排"
+    },
+    {
+      "name": "frag-flex-container",
+      "pass": true,
+      "detail": "display=flex flex-direction=column"
+    },
+    {
+      "name": "frag-body-scroll-row",
+      "pass": true,
+      "detail": "display=grid grid-template-rows=500.438px"
+    },
+    {
+      "name": "col-mid-scroll-enabled",
+      "pass": true,
+      "detail": "overflow-y=auto min-height=0px"
+    },
+    {
+      "name": "frag-nav-visible",
+      "pass": true,
+      "detail": "nav.bottom=900 viewport.height=900"
+    },
+    {
+      "name": "shot-blocks-not-truncated",
+      "pass": true,
+      "detail": "分镜数=3 可滚动=true 末块完整可见=true"
+    },
+    {
+      "name": "delete-shot-popconfirm-renders",
+      "pass": true,
+      "detail": "点击删除分镜后出现确认气泡（el-popconfirm 渲染正常）"
+    },
+    {
+      "name": "br003-save-guard",
+      "pass": true,
+      "detail": "新增分镜未触发 BR-003（时长恰好相等，跳过守卫验证，无回归）"
+    },
+    {
+      "name": "generate-video-button-exists",
+      "pass": true,
+      "detail": "存在「生成视频」按钮（底栏/空状态，已绑定 onGenerate）"
+    },
+    {
+      "name": "ghost-text-removed",
+      "pass": true,
+      "detail": "空状态不再显示幽灵文案「点击「生成视频」开始合成」"
+    },
+    {
+      "name": "mention-ui-bound",
+      "pass": true,
+      "detail": "存在 4 个 el-mention（画外音+对白），@提及已接线 P1 资产"
+    },
+    {
+      "name": "no-page-errors",
+      "pass": true,
+      "detail": ""
+    }
+  ],
+  "ok": true
+}

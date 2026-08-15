@@ -1,7 +1,7 @@
 <script setup>
 defineOptions({ name: 'PlanningPhase' })
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
-import { ElMessageBox } from 'element-plus'
+// ElMessageBox 不渲染（自研弹窗）；在线模型关闭确认改用原生 confirm()
 import { useRoute, useRouter } from 'vue-router'
 import { useProject } from '../composables/useProject'
 import { toast } from '../store'
@@ -202,11 +202,8 @@ function beforeOnlineClose(done) {
   const c = modelConfig.value
   const dirty = c.apiBase || c.apiKey || c.model
   if (!dirty) { done(); return }
-  ElMessageBox.confirm('在线模型配置尚未保存，确定关闭？', '提示', {
-    confirmButtonText: '放弃并关闭',
-    cancelButtonText: '继续编辑',
-    type: 'warning',
-  }).then(() => done()).catch(() => {})
+  if (!confirm('在线模型配置尚未保存，确定关闭？（点「取消」可继续编辑）')) return
+  done()
 }
 function applyOnlineConfig() {
   const cfg = modelConfig.value
@@ -229,6 +226,13 @@ function buildSplitPayload() {
       apiKey: cfg.apiKey,
     }
   }
+  // 增强②：把 P1 已锁定角色（身份卡）摘要作为 LLM 上下文，让拆分 AI 知道真实角色名，
+  // 提升 characters/refs 抽取准确度。不破坏现有 {story, model_config} 契约；
+  // 角色为空时不发送该字段，后端优雅降级（不影响已验证行为）。
+  const cast = (p.value?.characters || [])
+    .map((c) => ({ name: c.name, desc: (c.description || '').slice(0, 60) }))
+    .filter((c) => c.name)
+  if (cast.length) payload.cast_summary = cast
   return payload
 }
 

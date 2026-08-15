@@ -398,6 +398,7 @@ function _createProject(id, kind) {
   const pollTask = async (taskId, onUpdate) => {
     if (USE_MOCK || taskId === 'demo') return
     let attempts = 0
+    let failCount = 0
     const max = 120 // 5秒×120=10分钟
     const timer = setInterval(async () => {
       attempts++
@@ -408,7 +409,11 @@ function _createProject(id, kind) {
           clearInterval(timer)
         }
       } catch (e) {
+        // 真实失败需对用户可见（避免视频状态永久卡"生成中"而无人告知）
         console.warn('poll task failed', e.message)
+        failCount++
+        if (failCount === 3) toast.warn('视频状态轮询失败，请刷新或检查后端')
+        if (failCount >= 5) clearInterval(timer)
       }
     }, 5000)
   }

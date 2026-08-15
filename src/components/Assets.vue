@@ -866,6 +866,7 @@ const doImportFromDialog = async (item) => {
     else if (item.type === 'scene') r = await importScene(item.id, pid)
     else r = await importProp(item.id, pid)
     toast('已导入「' + (r?.name || item.name) + '」到本集')
+    item.already_imported = true
     // 如果导入的类型与当前 tab 一致，刷新当前列表
     const importedType = ASSET_TAB_OPTIONS.find((t) => t.type === r?.type)?.key
     if (importedType && importedType === tab.value) {
@@ -1040,6 +1041,7 @@ const submitPose = async () => {
   }
 }
 const removePose = async (st, p) => {
+  if (!confirm('确定删除该姿势？')) return
   try {
     await delPose(st.stage_id, p.pose_id)
     await loadStages(selectedRole.value)
@@ -1284,9 +1286,10 @@ onMounted(load)
         <div v-else-if="!filteredImportItems.length" class="empty">全集中没有匹配资产</div>
         <div v-else class="import-grid">
           <div v-for="a in filteredImportItems" :key="a.id" class="import-card">
-            <div class="import-thumb"><img :src="a.url" /></div>
+            <div class="import-thumb"><img :src="a.url || PLACEHOLDER" @error="(e)=>(e.target.src=PLACEHOLDER)" /></div>
             <div class="import-name">{{ a.name }}</div>
-            <button class="btn sm" @click="doImportFromDialog(a)">导入</button>
+            <button v-if="a.already_imported" class="btn sm ghost" disabled>已导入</button>
+            <button v-else class="btn sm" @click="doImportFromDialog(a)">导入</button>
           </div>
         </div>
       </div>

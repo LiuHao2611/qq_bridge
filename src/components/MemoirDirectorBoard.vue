@@ -127,7 +127,11 @@ const onFullscreen = () => toast('全屏预览（演示）')
 const onDownload = () => toast('下载指导板（演示）')
 
 const onStoryboard = () => storyboard()
-const onVideo = () => { if (!canGenerate.value && taskStatus.value !== 'running') { toast('生成前检查未全部通过（BR-021 / MEM-05）'); return } video() }
+const onVideo = () => {
+  if (!canGenerate.value) { toast('生成前检查未全部通过（BR-021 / MEM-05）'); return }
+  if (taskStatus.value === 'running') { toast('有任务正在生成中，请稍候'); return }
+  video()
+}
 
 const startEditShots = () => { editingShots.value = true }
 const saveShots = async () => {

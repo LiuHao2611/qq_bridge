@@ -107,12 +107,14 @@ async def split_story(project_id: str, req: Request):
         raise ApiError("INVALID_PARAMS", "story 不能为空")
 
     model_config = b.get("model_config") or {}
+    # 增强②：P1 已锁定角色摘要（可选），透传给拆分 LLM 作为上下文；缺失时 None → 行为与历史一致
+    cast_summary = b.get("cast_summary") or None
     meta = {}
     try:
         # 关键：用 asyncio.to_thread 把同步 Ollama HTTP 调用丢到工作线程池
         # → FastAPI 事件循环不阻塞，/ollama/status 轮询 / stages-with-poses 等
         #   其他请求在 22 分钟长跑期间依然可以响应（修根因：之前单次 split 把整个 ASGI 卡死）。
-        result = await asyncio.to_thread(split_story_with_llm, text, model_config) or {}
+        result = await asyncio.to_thread(split_story_with_llm, text, model_config, cast_summary) or {}
         segs = result.get("segments")
         meta = result.get("meta") or {}
         source = meta.get("source") or ("llm" if segs else "regex")
@@ -157,6 +159,7 @@ async def split_story(project_id: str, req: Request):
         "count": len(segments),
         "source": source,
         "meta": meta,
+        "cast_summary": cast_summary or [],
     })
 
 

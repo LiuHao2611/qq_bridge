@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import {
   getServices, controlService, listModules, snapshotModule, rollbackModule, setModuleEnabled, getGitLog,
 } from '../api'
@@ -75,6 +75,10 @@ function refresh() {
 }
 
 async function doControl(svc, action) {
+  // 本应用弹窗为自研组件，ElMessageBox 不渲染；用原生 confirm（与 Assets.vue 删除一致）
+  if (action === 'stop' || action === 'restart') {
+    if (!confirm(`确定要${action === 'stop' ? '停止' : '重启'}受管服务「${svc.name}」吗？该操作会中断正在进行的生成链路。`)) return
+  }
   try {
     await controlService(svc.name, action)
     ElMessage.success(`已向 ${svc.name} 发送 ${action} 指令`)
@@ -115,13 +119,7 @@ function openRoll(m) {
 }
 async function confirmRoll() {
   if (!rollTarget.value || !rollVersion.value) return
-  try {
-    await ElMessageBox.confirm(
-      `确认将「${rollTarget.value.name}」回退到版本 ${rollVersion.value}？将恢复源文件并重建前端。`,
-      '版本回退', { type: 'warning' })
-  } catch {
-    return
-  }
+  if (!confirm(`确认将「${rollTarget.value.name}」回退到版本 ${rollVersion.value}？将恢复源文件并重建前端。`)) return
   loading.value = true
   try {
     const r = await rollbackModule(rollTarget.value.key, rollVersion.value)

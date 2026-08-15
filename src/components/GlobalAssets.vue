@@ -32,7 +32,7 @@ const adaptAsset = (a) => {
     type: desc || a.role_type || a.type,
     role: a.type === 'role' ? (a.role_type || '主角') : '',
     voice,
-    stage: '已定稿',
+    stage: a.cover_url ? '已配置' : '草稿',
     from: '全局资产库',
     cover_url: a.cover_url || '',
     raw: a,
@@ -70,6 +70,8 @@ const total = computed(() => (assets[tab.value] || []).length)
 
 // ---------- 删除 ----------
 const remove = async (item) => {
+  // 与 Assets.vue 删除一致：原生 confirm（本应用弹窗为自研组件，ElMessageBox 不渲染）
+  if (!confirm(`全局资产「${item.name}」被所有项目共享，删除将级联清理全部项目中指向它的引用。确定删除？`)) return
   try {
     await deleteAsset(item.id)
     // F1：全局资产删除后级联清理所有项目中指向它的悬空 @引用（无项目上下文 → 后端全局清理）
@@ -253,7 +255,7 @@ const gradOf = (id) => {
     <div class="asset-grid">
       <div v-for="a in list" :key="a.id" class="asset-card">
         <div class="thumb" :style="{ background: a.cover_url ? '#0f1117' : gradOf(a.id) }">
-          <img v-if="a.cover_url" :src="a.cover_url" class="thumb-img" />
+          <img v-if="a.cover_url" :src="a.cover_url" class="thumb-img" @error="(e)=>(e.target.style.display='none')" />
           <span class="src-badge">{{ a.from }}</span>
           <div class="acts">
             <button v-if="tab==='characters'" class="btn sm ghost" @click="openRoleEditor(a)">编辑</button>
@@ -267,7 +269,7 @@ const gradOf = (id) => {
           <div class="type">{{ a.type }}</div>
           <div class="meta">
             <el-tag v-if="a.role" size="small" :type="a.role === '主角' ? 'danger' : 'info'">{{ a.role }}</el-tag>
-            <span class="stage" :class="{ done: a.stage === '已定稿' }">{{ a.stage }}</span>
+            <span class="stage" :class="{ done: !!a.cover_url }">{{ a.stage }}</span>
           </div>
         </div>
       </div>

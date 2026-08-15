@@ -221,8 +221,15 @@ function ensureWatch(seg) {
       pushLog(tid, data)
     }
     if (event === 'completed' || event === 'failed') {
-      task.status = event === 'completed' ? 'succeeded' : 'failed'
-      pushGeneration('video', '视频生成·' + (seg.title || seg.segment_id), event === 'completed' ? 'done' : 'failed', event === 'failed' ? (task.error_message || '生成失败') : undefined)
+      // 诚实判定：收到 completed 但无产物链接 → 不能谎报成功（手册铁律：全链路可观测/不静默降级）
+      if (event === 'completed' && !data.result_url) {
+        task.status = 'failed'
+        task.error_message = data.error_message || '视频产物缺失（result_url 为空）'
+        pushGeneration('video', '视频生成·' + (seg.title || seg.segment_id), 'failed', task.error_message)
+      } else {
+        task.status = event === 'completed' ? 'succeeded' : 'failed'
+        pushGeneration('video', '视频生成·' + (seg.title || seg.segment_id), event === 'completed' ? 'done' : 'failed', event === 'failed' ? (task.error_message || '生成失败') : undefined)
+      }
       if (event === 'completed' && seg.video_url) {
         try {
           pushHistory(genKey.prod(pid), {
@@ -392,6 +399,10 @@ async function cancelSeg(s) {
 
 async function onSynthesize() {
   const segs = segments.value
+  // 守卫1：空项目不能合成（与 dispatchSegment 一致）
+  if (!segs.length) { toast('当前项目还没有分镜，无法合成全集'); return }
+  // 守卫2：视频生成前置算力闸门（诚实提示，取消即停止，避免白等 30 分钟）
+  if (!(await ensureVideoReady())) { toast('已取消：当前设备不满足视频生成条件'); return }
   const totalDur = segs.reduce((a, c) => a + (Number(c.duration) || 0), 0)
   const params = buildParams(project.value)
   try {
@@ -406,7 +417,11 @@ async function onSynthesize() {
     const onEvent = (event, data) => {
       if (event === 'status_update' || event === 'completed' || event === 'failed') {
         if (data.status) synthStatus.value = data.status
-        if (event === 'completed') { synthStatus.value = 'succeeded'; toast('合成全集完成'); loadProd() }
+        if (event === 'completed') {
+          // 合成完成但无产物链接 → 不能谎报成功（与 dispatchSegment 同源判定）
+          if (!data.result_url) { synthStatus.value = 'failed'; toast.error('合成失败：产物缺失（result_url 为空）') }
+          else { synthStatus.value = 'succeeded'; toast('合成全集完成'); loadProd() }
+        }
         if (event === 'failed') { synthStatus.value = 'failed'; toast('合成失败: ' + (data.error_message || '未知')) }
       }
     }
@@ -419,6 +434,7 @@ async function onSynthesize() {
           if (wsConnected()) { clearInterval(timer); subscribeTask(res.task_id, onEvent) }
         } catch {}
       }, 3000)
+      polls.set(res.task_id, timer)
     }
   } catch (e) { toast('合成失败: ' + (e.message || e)) }
 }
