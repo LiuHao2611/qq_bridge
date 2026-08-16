@@ -1997,28 +1997,12 @@ html.t-p5 .m3-conv .conv-bubble.insight .conv-tag { color: var(--p5-red); }
    P5 首页加载动画 · 跑路轨迹（依据《P5动漫跑路轨迹动画_行为规格v3》）
    仅 P5 主题首页 loading 期间出现；作用域 html.t-p5；颜色走 --p5-* 令牌。
    ============================================================================ */
+/* 全屏暗底遮罩（无边框、无居中面板）：轨迹直接贯穿整个页面 */
 html.t-p5 .p5-loading-overlay {
   position: fixed; inset: 0; z-index: 4000;
-  display: flex; align-items: center; justify-content: center;
-  background: rgba(11, 11, 11, 0.94);
-  backdrop-filter: blur(2px);
+  background: #0B0B0B;
+  overflow: hidden;
 }
-html.t-p5 .p5-loading-inner {
-  display: flex; flex-direction: column; align-items: center; gap: 18px;
-  padding: 28px 36px;
-  border: 1px solid var(--line-dark);
-  background: var(--p5-ink-soft);
-  box-shadow: var(--shadow-hard-lg);
-}
-html.t-p5 .p5-loading-label {
-  font-family: var(--font-cond);
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  font-weight: 800;
-  font-size: 14px;
-  color: var(--p5-white);
-}
-html.t-p5 .p5-loading-label::before { content: '▶ '; color: var(--p5-red); }
 html.t-p5 .p5-loading-fade-enter-active,
 html.t-p5 .p5-loading-fade-leave-active { transition: opacity 0.32s var(--ease-out); }
 html.t-p5 .p5-loading-fade-enter-from,

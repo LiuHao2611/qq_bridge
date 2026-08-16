@@ -149,14 +149,13 @@ const formatNumber = (n) => {
 <template>
   <div class="page home">
     <!-- P5 主题首页加载动画：跑路轨迹 -->
-    <transition name="p5-loading-fade">
-      <div v-if="loading && isP5" class="p5-loading-overlay">
-        <div class="p5-loading-inner">
+    <teleport to="body">
+      <transition name="p5-loading-fade">
+        <div v-if="loading && isP5" class="p5-loading-overlay">
           <P5RunTrail :loop="true" />
-          <div class="p5-loading-label">载入创作驾驶舱…</div>
         </div>
-      </div>
-    </transition>
+      </transition>
+    </teleport>
     <!-- top bar -->
     <div class="dash-header">
       <div class="dash-title">

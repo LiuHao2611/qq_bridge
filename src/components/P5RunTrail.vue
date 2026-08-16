@@ -3,10 +3,11 @@
  * P5RunTrail.vue —— P5 动漫跑路轨迹加载动画
  * 依据《P5动漫跑路轨迹动画_行为规格v3》实现：
  *  - 白色光点（奔跑者）沿无规则蜿蜒路径向右前方奔跑
- *  - 身后恒定 ~100px 绯红拖尾，尾部持续消散（分段 stroke-opacity，沿路径衰减）
+ *  - 身后恒定 ~170(viewBox单位) 绯红拖尾，尾部持续消散（分段 stroke-opacity，沿路径衰减）
  *  - 3 团白色卡通云朵（近大远小、近实远淡）+ 放射速度线
- *  - 头部实色绯红 + 黑描边；尾部渐隐至透明
- * 作用域：仅在 P5 主题下使用（html.t-p5 提供 --p5-* 颜色令牌）
+ *  - 头部白色光点 + 辉光；拖尾头部端实色绯红 + 黑描边，尾部渐隐至透明
+ * 全屏贯穿：组件铺满父级（.p5-loading-overlay 全屏），SVG 用 slice 填满视口，
+ * 轨迹从左贯穿到右，不再塞进小面板。颜色为本组件硬编码（P5 专用，避免依赖 html.t-p5 令牌解析时机）。
  */
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 
@@ -15,12 +16,14 @@ const props = defineProps({
   loop: { type: Boolean, default: false },
 })
 
-const W = 640
-const H = 240
-const DURATION = 1600 // 奔跑节奏 ≈1.6s
-const TAIL_LEN = 100 // 尾巴恒定 ≈100px
-const HEAD_R = 6
-const HEAD_W = 5
+// 全屏坐标系：viewBox 1000 x 600，路径从左贯穿到右（preserveAspectRatio=slice 填满视口）
+const W = 1000
+const H = 600
+const DURATION = 1700 // 奔跑节奏 ≈1.7s
+const TAIL_LEN = 170 // 拖尾（viewBox 单位，≈17% 宽，满屏下明显可见）
+const HEAD_R = 16 // 白色光点半径
+const HEAD_W = 16 // 绯红拖尾线宽
+const INK_W = 26 // 黑描边线宽（HEAD_W + 10）
 
 const head = ref(null)
 const segs = ref([])
@@ -37,17 +40,17 @@ let reduced = false
 
 const rand = (a, b) => a + Math.random() * (b - a)
 
-// 2.1 无规则路径生成：起点(左,y≈150) → 终点(右,y≈80)，中间 5~7 个随机控制点
+// 2.1 无规则路径生成：起点(左) → 终点(右)，中间 5~7 个随机控制点，大弯折
 function buildPath() {
-  const P0 = { x: 30, y: 150 }
-  const Pn = { x: 610, y: 80 }
+  const P0 = { x: 20, y: 330 }
+  const Pn = { x: 980, y: 250 }
   const n = Math.floor(rand(5, 8)) // 5~7
   const pts = [P0]
   for (let i = 1; i <= n; i++) {
     const fx = i / (n + 1)
     const x = P0.x + (Pn.x - P0.x) * fx
     const yBase = P0.y + (Pn.y - P0.y) * fx
-    const y = yBase + (Math.random() - 0.5) * 90 // ±45 随机弯折
+    const y = yBase + (Math.random() - 0.5) * 280 // ±140 随机大弯折
     pts.push({ x, y })
   }
   pts.push(Pn)
@@ -90,7 +93,7 @@ function frame(now) {
   head.value = h
   // 2.2 轨迹数组：最新点在头部端（数组头）
   history.unshift(h)
-  if (history.length > 200) history.pop()
+  if (history.length > 400) history.pop()
 
   // 拖尾：头部前进多少，尾部就消散多少 → 取距头部弧长 ≤ TAIL_LEN 的点
   const pts = [h]
@@ -115,10 +118,10 @@ function frame(now) {
   }
   segs.value = arr
 
-  // 2.3 卡通云朵：落后头部 8/16/26 个轨迹点；scale 1.0/0.8/0.6；opacity .9/.6/.35
+  // 2.3 卡通云朵：落后头部 10/22/36 个轨迹点；scale 1.0/0.8/0.6；opacity .9/.6/.35
   const scales = [1.0, 0.8, 0.6]
   const ops = [0.9, 0.6, 0.35]
-  const idxs = [8, 16, 26]
+  const idxs = [10, 22, 36]
   const cl = []
   for (let k = 0; k < 3; k++) {
     const idx = idxs[k]
@@ -129,8 +132,8 @@ function frame(now) {
       const len = Math.hypot(dxh, dyh) || 1
       const ux = dxh / len
       const uy = dyh / len
-      const slen = 12 + k * 4 // 速度线 12~20px，向「远离头部」方向延伸
-      cl.push({ x: c.x, y: c.y, r: 7 * scales[k], op: ops[k], dx: ux * slen, dy: uy * slen })
+      const slen = 26 + k * 8 // 速度线 26~42px，向「远离头部」方向延伸
+      cl.push({ x: c.x, y: c.y, r: 16 * scales[k], op: ops[k], dx: ux * slen, dy: uy * slen })
     }
   }
   clouds.value = cl
@@ -140,7 +143,7 @@ function frame(now) {
       raf = 0
       replayTimer = setTimeout(() => {
         if (!reduced) { reset(); raf = requestAnimationFrame(frame) }
-      }, 420)
+      }, 500)
       return
     }
     raf = 0
@@ -182,10 +185,10 @@ watch(() => props.replayKey, () => { if (!reduced) start() })
 
 <template>
   <div class="p5-run-trail" role="img" aria-label="加载中">
-    <svg ref="svg" :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="xMidYMid meet" class="rt-svg">
+    <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="xMidYMid slice" class="rt-svg">
       <defs>
-        <filter id="rtGlow" x="-80%" y="-80%" width="260%" height="260%">
-          <feGaussianBlur stdDeviation="3" />
+        <filter id="rtGlow" x="-100%" y="-100%" width="300%" height="300%">
+          <feGaussianBlur stdDeviation="6" />
         </filter>
       </defs>
 
@@ -193,7 +196,7 @@ watch(() => props.replayKey, () => { if (!reduced) start() })
       <g class="rt-ink">
         <line v-for="(s, i) in segs" :key="'k' + i"
           :x1="s.x1" :y1="s.y1" :x2="s.x2" :y2="s.y2"
-          :stroke-width="HEAD_W + 4" :stroke-opacity="s.o" stroke-linecap="round" />
+          :stroke-width="INK_W" :stroke-opacity="s.o" stroke-linecap="round" />
       </g>
 
       <!-- 绯红拖尾层 -->
@@ -217,20 +220,34 @@ watch(() => props.replayKey, () => { if (!reduced) start() })
 
       <!-- 头部白色光点 + 辉光 -->
       <g v-if="head" :transform="`translate(${head.x},${head.y})`">
-        <circle :r="HEAD_W * 1.7" class="rt-glow" filter="url(#rtGlow)" />
+        <circle :r="HEAD_R * 2.2" class="rt-glow" filter="url(#rtGlow)" />
         <circle :r="HEAD_R" class="rt-head" />
       </g>
     </svg>
+
+    <div class="rt-label">载入创作驾驶舱…</div>
   </div>
 </template>
 
 <style scoped>
-.p5-run-trail { width: 100%; display: flex; justify-content: center; }
-.rt-svg { width: min(640px, 86vw); height: auto; overflow: visible; }
-.rt-ink line { stroke: var(--p5-ink, #0B0B0B); }
-.rt-red line { stroke: var(--p5-red, #E4002B); }
-.rt-glow { fill: var(--p5-white, #FFFFFF); opacity: 0.28; }
+/* 铺满父级（.p5-loading-overlay 已是全屏 fixed），轨迹贯穿整页 */
+.p5-run-trail { position: absolute; inset: 0; width: 100%; height: 100%; }
+.rt-svg { width: 100%; height: 100%; display: block; overflow: visible; }
+/* 颜色硬编码：本组件仅 P5 专用，避免依赖 html.t-p5 令牌解析时机导致红色缺失 */
+.rt-ink line { stroke: #0B0B0B; }
+.rt-red line { stroke: #E4002B; }
+.rt-glow { fill: #FFFFFF; opacity: 0.35; }
 .rt-head { fill: #FFFFFF; }
-.rt-cloud { fill: #FFFFFF; stroke: rgba(0, 0, 0, 0.3); stroke-width: 0.5; }
-.rt-speed { stroke: var(--p5-white, #FFFFFF); stroke-width: 2; stroke-linecap: round; opacity: 0.65; }
+.rt-cloud { fill: #FFFFFF; stroke: rgba(0, 0, 0, 0.25); stroke-width: 1; }
+.rt-speed { stroke: #FFFFFF; stroke-width: 3; stroke-linecap: round; opacity: 0.6; }
+.rt-label {
+  position: absolute; left: 50%; bottom: 9%; transform: translateX(-50%);
+  font-family: 'Arial Narrow', 'Oswald', sans-serif;
+  letter-spacing: 0.32em; text-transform: uppercase;
+  font-weight: 800; font-size: clamp(16px, 2.6vw, 34px);
+  color: #FFFFFF; white-space: nowrap;
+  text-shadow: 0 0 16px rgba(228, 0, 43, 0.85), 2px 2px 0 #0B0B0B;
+  pointer-events: none;
+}
+.rt-label::before { content: '▶ '; color: #E4002B; }
 </style>
