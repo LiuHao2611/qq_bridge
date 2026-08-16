@@ -41,14 +41,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   if (layout.hasInner) fails.push('仍存在居中面板 .p5-loading-inner（应无背景板）')
   if (!/^(0px|none)\s/.test(layout.ovBorder)) fails.push('遮罩有边框(背景板): ' + layout.ovBorder)
 
-  // 2) 颜色机器证明：getComputedStyle 红线 = rgb(228,0,43)；白点 = #FFF
+  // 2) 颜色机器证明：getComputedStyle 红线 = rgb(228,0,43)；白点 = #FFF；硬影层深红存在
   const colors = await page.evaluate(() => {
     const rl = document.querySelector('.rt-red line')
     const hd = document.querySelector('.rt-head')
-    return { red: rl ? getComputedStyle(rl).stroke : null, head: hd ? getComputedStyle(hd).fill : null }
+    const sh = document.querySelector('.rt-shadow line')
+    return {
+      red: rl ? getComputedStyle(rl).stroke : null,
+      head: hd ? getComputedStyle(hd).fill : null,
+      shadow: sh ? getComputedStyle(sh).stroke : null,
+      shadowLines: document.querySelectorAll('.rt-shadow line').length,
+    }
   })
   if (!colors.red || !/228,\s*0,\s*43/.test(colors.red)) fails.push('红色 stroke 未解析为绯红: ' + colors.red)
   if (!colors.head || !/rgb\(255,\s*255,\s*255\)/.test(colors.head)) fails.push('头部非白色: ' + colors.head)
+  if (!colors.shadow || !/138,\s*0,\s*24/.test(colors.shadow)) fails.push('硬影层未用深红: ' + colors.shadow)
+  if (colors.shadowLines < 5) fails.push('硬影层折线段过少: ' + colors.shadowLines)
 
   // 3) 像素级证明：对真实截图在浏览器内取像素，统计红/白像素（证明红色真的画在屏幕上）
   const shotBuf = await page.screenshot()
@@ -89,8 +97,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
       for (const s of segs) tailLen += Math.hypot(s.x2 - s.x1, s.y2 - s.y1)
       const firstOp = segs.length ? segs[0].o : null
       const lastOp = segs.length ? segs[segs.length - 1].o : null
-      const clouds = document.querySelectorAll('.rt-clouds > g').length
-      return { n: segs.length, tailLen, firstOp, lastOp, headX, clouds }
+      const dust = document.querySelectorAll('.rt-dust > g').length
+      const stars = document.querySelectorAll('.rt-star').length
+      return { n: segs.length, tailLen, firstOp, lastOp, headX, dust, stars }
     })
     samples.push(s)
     await sleep(35)
@@ -100,21 +109,25 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   // 尾部消散：存在近零长度帧（循环重启 t=0）
   const minTail = Math.min(...withSvg.map((s) => s.tailLen))
   if (minTail >= 45) fails.push('未出现尾部消散(近零长度帧): minTail=' + minTail.toFixed(1))
-  // 中段恒定：取长度较大的样本，max-min 不应过大
-  const big = withSvg.filter((s) => s.tailLen > 120).map((s) => s.tailLen)
+  // 中段恒定：仅对「已长满」的帧（≈TAIL_LEN）检查，排除成长期的 0→300 增长帧
+  const big = withSvg.filter((s) => s.tailLen > 280).map((s) => s.tailLen)
   if (big.length) {
     const mx = Math.max(...big), mn = Math.min(...big)
-    if (mx - mn > 120) fails.push(`拖尾长度不稳: min=${mn.toFixed(0)} max=${mx.toFixed(0)}`)
+    if (mx - mn > 60) fails.push(`拖尾长度不稳: min=${mn.toFixed(0)} max=${mx.toFixed(0)}`)
   }
-  // 头部实、尾部虚（取中段样本）
-  const mid = withSvg.find((s) => s.tailLen > 120) || withSvg[withSvg.length - 1]
+  const maxTail = Math.max(...withSvg.map((s) => s.tailLen))
+  if (maxTail < 220) fails.push('拖尾偏短(用户要求更长): maxTail=' + maxTail.toFixed(0))
+  // 头部实、尾部虚（取已长满样本）
+  const mid = withSvg.find((s) => s.tailLen > 280) || withSvg[withSvg.length - 1]
   if (mid.firstOp == null || mid.firstOp < 0.8) fails.push('头部端不实色: firstOp=' + mid.firstOp)
   if (mid.lastOp == null || mid.lastOp > 0.15) fails.push('尾部端未透明: lastOp=' + mid.lastOp)
   // 头部抵达右端（viewBox x≈980）
   const maxHeadX = Math.max(...withSvg.map((s) => s.headX || 0))
   if (maxHeadX < 880) fails.push('头部未抵达右端: maxHeadX=' + maxHeadX)
-  // 3 团云朵
-  if (!withSvg.some((s) => s.clouds === 3)) fails.push('未出现 3 团云朵')
+  // 烟尘少（≤2 团）+ 四角星爆（3 颗）
+  const maxDust = Math.max(...withSvg.map((s) => s.dust))
+  if (maxDust > 2) fails.push('烟尘过多(应≤2): maxDust=' + maxDust)
+  if (!withSvg.some((s) => s.stars === 3)) fails.push('未出现 3 颗四角星爆')
 
   // 截图留存（视觉复核）
   await page.screenshot({ path: SHOT_DIR + '/p5trail_full_early.png' })
@@ -139,6 +152,6 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
     console.log('FAIL(' + fails.length + '): ' + fails.join(' ; '))
     process.exit(1)
   }
-  console.log('PASS · 全屏贯穿 / 红色渲染 / 拖尾消散 / 头部白点 / 云朵×3 全部满足')
+  console.log('PASS · 全屏贯穿 / 红色闪电折线 / 深红硬影 / 拖尾消散 / 头部白点 / 烟尘×2 / 四角星爆×3 全部满足')
   process.exit(0)
 })().catch((e) => { console.error('RUN_ERROR', e); process.exit(2) })

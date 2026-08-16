@@ -1,13 +1,17 @@
 <script setup>
 /**
- * P5RunTrail.vue —— P5 动漫跑路轨迹加载动画
- * 依据《P5动漫跑路轨迹动画_行为规格v3》实现：
- *  - 白色光点（奔跑者）沿无规则蜿蜒路径向右前方奔跑
- *  - 身后恒定 ~170(viewBox单位) 绯红拖尾，尾部持续消散（分段 stroke-opacity，沿路径衰减）
- *  - 3 团白色卡通云朵（近大远小、近实远淡）+ 放射速度线
- *  - 头部白色光点 + 辉光；拖尾头部端实色绯红 + 黑描边，尾部渐隐至透明
- * 全屏贯穿：组件铺满父级（.p5-loading-overlay 全屏），SVG 用 slice 填满视口，
- * 轨迹从左贯穿到右，不再塞进小面板。颜色为本组件硬编码（P5 专用，避免依赖 html.t-p5 令牌解析时机）。
+ * P5RunTrail.vue —— P5 动漫逃跑路径加载动画（红色闪电）
+ * 依据：
+ *  - 《P5动漫跑路轨迹动画_行为规格v3》：白色光点（奔跑者）沿无规则路径奔跑，身后拖红色尾巴（尾部持续消散），
+ *    头部端实色、尾部渐隐；分帧 stroke-opacity（不用固定渐变）；方向正确（头=实色端）。
+ *  - 《P5主题二次强化补充规格》第24行 + 第575行：逃跑路径 = 行动本身（红色闪电）
+ *    = 红色折线 + 烟尘 + 四角星/五角星 + 硬影。
+ * 视觉落点：
+ *  - 折线/闪电：路径为尖锐折角折线（straight segment + butt cap + 大摆幅），非平滑曲线 → "硬"且像逃跑。
+ *  - 硬影：深红(#8A0018)偏移(+7,+7)投影层，印刷式零模糊硬影。
+ *  - 烟尘：仅 2 团小淡白 puff（远少于上一版 3×4 大云朵）。
+ *  - 四角星爆：3 颗白色四角星随头部拖尾（P5 签名星爆）。
+ *  - 全屏贯穿：组件铺满 .p5-loading-overlay；颜色硬编码（P5 专用，避免依赖 html.t-p5 令牌解析时机）。
  */
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 
@@ -20,14 +24,17 @@ const props = defineProps({
 const W = 1000
 const H = 600
 const DURATION = 1700 // 奔跑节奏 ≈1.7s
-const TAIL_LEN = 170 // 拖尾（viewBox 单位，≈17% 宽，满屏下明显可见）
-const HEAD_R = 16 // 白色光点半径
-const HEAD_W = 16 // 绯红拖尾线宽
-const INK_W = 26 // 黑描边线宽（HEAD_W + 10）
+const TAIL_LEN = 300 // 拖尾（viewBox 单位）——按用户要求拉长，明显一条红色闪电
+const HEAD_R = 14 // 白色光点半径
+const HEAD_W = 20 // 绯红折线线宽（粗，硬）
+const SHADOW_W = 22 // 硬影线宽
+const SHADOW_DX = 7 // 硬影偏移 X
+const SHADOW_DY = 7 // 硬影偏移 Y
 
 const head = ref(null)
 const segs = ref([])
-const clouds = ref([])
+const dust = ref([])
+const stars = ref([])
 
 let raf = 0
 let replayTimer = 0
@@ -40,17 +47,18 @@ let reduced = false
 
 const rand = (a, b) => a + Math.random() * (b - a)
 
-// 2.1 无规则路径生成：起点(左) → 终点(右)，中间 5~7 个随机控制点，大弯折
+// 2.1 无规则路径生成：起点(左) → 终点(右)，中间 5~7 个随机折线控制点（大摆幅、随机折向 → 闪电感）
 function buildPath() {
-  const P0 = { x: 20, y: 330 }
-  const Pn = { x: 980, y: 250 }
+  const P0 = { x: 20, y: 300 }
+  const Pn = { x: 980, y: 300 }
   const n = Math.floor(rand(5, 8)) // 5~7
   const pts = [P0]
   for (let i = 1; i <= n; i++) {
     const fx = i / (n + 1)
     const x = P0.x + (Pn.x - P0.x) * fx
-    const yBase = P0.y + (Pn.y - P0.y) * fx
-    const y = yBase + (Math.random() - 0.5) * 280 // ±140 随机大弯折
+    // 随机折向 + 随机摆幅（非规则 Z、非波形）→ 不规则闪电折线
+    const dir = Math.random() < 0.5 ? -1 : 1
+    const y = 300 + dir * (90 + Math.random() * 170) // ±90~260 大摆幅
     pts.push({ x, y })
   }
   pts.push(Pn)
@@ -78,11 +86,18 @@ function posAt(dist) {
 function reset() {
   history = []
   segs.value = []
-  clouds.value = []
+  dust.value = []
+  stars.value = []
   head.value = null
   buildPath()
   startTime = performance.now()
 }
+
+// 四角星（P5 星爆）path
+function starPath(S, s) {
+  return `M0,${-S} L${s},${-s} L${S},0 L${s},${s} L0,${S} L${-s},${s} L${-S},0 L${-s},${-s} Z`
+}
+const STAR_D = starPath(13, 4)
 
 function frame(now) {
   if (reduced) return
@@ -118,25 +133,33 @@ function frame(now) {
   }
   segs.value = arr
 
-  // 2.3 卡通云朵：落后头部 10/22/36 个轨迹点；scale 1.0/0.8/0.6；opacity .9/.6/.35
-  const scales = [1.0, 0.8, 0.6]
-  const ops = [0.9, 0.6, 0.35]
-  const idxs = [10, 22, 36]
-  const cl = []
-  for (let k = 0; k < 3; k++) {
-    const idx = idxs[k]
+  // 烟尘：仅 2 团小淡白 puff（落后于头部 16 / 34 个轨迹点）
+  const dl = []
+  const dustIdx = [16, 34]
+  const dustOps = [0.5, 0.32]
+  const dustR = [9, 6]
+  for (let k = 0; k < 2; k++) {
+    const idx = dustIdx[k]
     if (history.length > idx) {
       const c = history[idx]
-      const dxh = c.x - h.x
-      const dyh = c.y - h.y
-      const len = Math.hypot(dxh, dyh) || 1
-      const ux = dxh / len
-      const uy = dyh / len
-      const slen = 26 + k * 8 // 速度线 26~42px，向「远离头部」方向延伸
-      cl.push({ x: c.x, y: c.y, r: 16 * scales[k], op: ops[k], dx: ux * slen, dy: uy * slen })
+      dl.push({ x: c.x, y: c.y, r: dustR[k], op: dustOps[k] })
     }
   }
-  clouds.value = cl
+  dust.value = dl
+
+  // 四角星爆：3 颗白色四角星随头部拖尾（落后于头部 9 / 21 / 33 个轨迹点）
+  const sl = []
+  const starIdx = [9, 21, 33]
+  const starOps = [0.95, 0.7, 0.45]
+  const starScale = [1.0, 0.8, 0.6]
+  for (let k = 0; k < 3; k++) {
+    const idx = starIdx[k]
+    if (history.length > idx) {
+      const c = history[idx]
+      sl.push({ x: c.x, y: c.y, op: starOps[k], sc: starScale[k], rot: (k * 37) % 90 - 45 })
+    }
+  }
+  stars.value = sl
 
   if (t >= 1) {
     if (props.loop) {
@@ -156,11 +179,11 @@ function start() {
   if (raf) cancelAnimationFrame(raf)
   if (replayTimer) clearTimeout(replayTimer)
   if (reduced) {
-    // reduced-motion：静态显示头部终点一帧（不播放）
     buildPath()
     head.value = { ...controlPts[controlPts.length - 1] }
     segs.value = []
-    clouds.value = []
+    dust.value = []
+    stars.value = []
     return
   }
   reset()
@@ -179,7 +202,6 @@ onBeforeUnmount(() => {
   if (replayTimer) clearTimeout(replayTimer)
 })
 
-// replayKey 变化时重放
 watch(() => props.replayKey, () => { if (!reduced) start() })
 </script>
 
@@ -188,39 +210,42 @@ watch(() => props.replayKey, () => { if (!reduced) start() })
     <svg :viewBox="`0 0 ${W} ${H}`" preserveAspectRatio="xMidYMid slice" class="rt-svg">
       <defs>
         <filter id="rtGlow" x="-100%" y="-100%" width="300%" height="300%">
-          <feGaussianBlur stdDeviation="6" />
+          <feGaussianBlur stdDeviation="5" />
         </filter>
       </defs>
 
-      <!-- 黑描边层（头部端清晰，尾部随透明度同步消散） -->
-      <g class="rt-ink">
-        <line v-for="(s, i) in segs" :key="'k' + i"
+      <!-- 硬影层：深红偏移投影（印刷式零模糊硬影） -->
+      <g class="rt-shadow" :transform="`translate(${SHADOW_DX},${SHADOW_DY})`">
+        <line v-for="(s, i) in segs" :key="'s' + i"
           :x1="s.x1" :y1="s.y1" :x2="s.x2" :y2="s.y2"
-          :stroke-width="INK_W" :stroke-opacity="s.o" stroke-linecap="round" />
+          :stroke-width="SHADOW_W" :stroke-opacity="s.o" stroke-linecap="butt" />
       </g>
 
-      <!-- 绯红拖尾层 -->
+      <!-- 绯红折线层（头部端实色，尾部渐隐至透明） -->
       <g class="rt-red">
         <line v-for="(s, i) in segs" :key="'r' + i"
           :x1="s.x1" :y1="s.y1" :x2="s.x2" :y2="s.y2"
-          :stroke-width="HEAD_W" :stroke-opacity="s.o" stroke-linecap="round" />
+          :stroke-width="HEAD_W" :stroke-opacity="s.o" stroke-linecap="butt" stroke-linejoin="miter" />
       </g>
 
-      <!-- 卡通云朵 + 速度线 -->
-      <g class="rt-clouds">
-        <g v-for="(c, i) in clouds" :key="'c' + i"
-          :transform="`translate(${c.x},${c.y})`" :opacity="c.op">
-          <line :x1="0" :y1="0" :x2="c.dx" :y2="c.dy" class="rt-speed" />
-          <circle :cx="-1.2 * c.r" cy="0" :r="c.r" class="rt-cloud" />
-          <circle cx="0" :cy="-0.4 * c.r" :r="c.r" class="rt-cloud" />
-          <circle :cx="1.2 * c.r" cy="0" :r="c.r" class="rt-cloud" />
-          <circle cx="0" :cy="0.2 * c.r" :r="c.r" class="rt-cloud" />
+      <!-- 烟尘：少量小淡白 puff -->
+      <g class="rt-dust">
+        <g v-for="(c, i) in dust" :key="'d' + i" :transform="`translate(${c.x},${c.y})`" :opacity="c.op">
+          <circle :r="c.r" class="rt-dust-puff" filter="url(#rtGlow)" />
         </g>
       </g>
 
-      <!-- 头部白色光点 + 辉光 -->
+      <!-- 四角星爆（P5 签名星） -->
+      <g class="rt-stars">
+        <path v-for="(s, i) in stars" :key="'t' + i"
+          :d="STAR_D" class="rt-star"
+          :transform="`translate(${s.x},${s.y}) rotate(${s.rot}) scale(${s.sc})`"
+          :opacity="s.op" />
+      </g>
+
+      <!-- 头部白色光点 + 辉光（奔跑者） -->
       <g v-if="head" :transform="`translate(${head.x},${head.y})`">
-        <circle :r="HEAD_R * 2.2" class="rt-glow" filter="url(#rtGlow)" />
+        <circle :r="HEAD_R * 2.4" class="rt-glow" filter="url(#rtGlow)" />
         <circle :r="HEAD_R" class="rt-head" />
       </g>
     </svg>
@@ -233,20 +258,20 @@ watch(() => props.replayKey, () => { if (!reduced) start() })
 /* 铺满父级（.p5-loading-overlay 已是全屏 fixed），轨迹贯穿整页 */
 .p5-run-trail { position: absolute; inset: 0; width: 100%; height: 100%; }
 .rt-svg { width: 100%; height: 100%; display: block; overflow: visible; }
-/* 颜色硬编码：本组件仅 P5 专用，避免依赖 html.t-p5 令牌解析时机导致红色缺失 */
-.rt-ink line { stroke: #0B0B0B; }
-.rt-red line { stroke: #E4002B; }
-.rt-glow { fill: #FFFFFF; opacity: 0.35; }
+/* 颜色硬编码：本组件仅 P5 专用，避免依赖 html.t-p5 令牌解析时机导致红色/星缺失 */
+.rt-shadow line { stroke: #8A0018; } /* 深红硬影 */
+.rt-red line { stroke: #E4002B; }    /* 绯红折线 */
+.rt-glow { fill: #FFFFFF; opacity: 0.4; }
 .rt-head { fill: #FFFFFF; }
-.rt-cloud { fill: #FFFFFF; stroke: rgba(0, 0, 0, 0.25); stroke-width: 1; }
-.rt-speed { stroke: #FFFFFF; stroke-width: 3; stroke-linecap: round; opacity: 0.6; }
+.rt-dust-puff { fill: #FFFFFF; }
+.rt-star { fill: #FFFFFF; }
 .rt-label {
-  position: absolute; left: 50%; bottom: 9%; transform: translateX(-50%);
+  position: absolute; left: 50%; bottom: 9%; transform: translateX(-50%) skewX(-8deg);
   font-family: 'Arial Narrow', 'Oswald', sans-serif;
   letter-spacing: 0.32em; text-transform: uppercase;
-  font-weight: 800; font-size: clamp(16px, 2.6vw, 34px);
+  font-weight: 900; font-size: clamp(16px, 2.6vw, 34px);
   color: #FFFFFF; white-space: nowrap;
-  text-shadow: 0 0 16px rgba(228, 0, 43, 0.85), 2px 2px 0 #0B0B0B;
+  text-shadow: 5px 5px 0 #E4002B, 5px 5px 0 #E4002B;
   pointer-events: none;
 }
 .rt-label::before { content: '▶ '; color: #E4002B; }
