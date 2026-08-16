@@ -1994,6 +1994,37 @@ html.t-p5 .m3-conv .conv-bubble.insight .conv-tag::before { content: '品控 // 
 html.t-p5 .m3-conv .conv-bubble.insight .conv-tag { color: var(--p5-red); }
 
 /* ============================================================================
+   P5 首页加载动画 · 跑路轨迹（依据《P5动漫跑路轨迹动画_行为规格v3》）
+   仅 P5 主题首页 loading 期间出现；作用域 html.t-p5；颜色走 --p5-* 令牌。
+   ============================================================================ */
+html.t-p5 .p5-loading-overlay {
+  position: fixed; inset: 0; z-index: 4000;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(11, 11, 11, 0.94);
+  backdrop-filter: blur(2px);
+}
+html.t-p5 .p5-loading-inner {
+  display: flex; flex-direction: column; align-items: center; gap: 18px;
+  padding: 28px 36px;
+  border: 1px solid var(--line-dark);
+  background: var(--p5-ink-soft);
+  box-shadow: var(--shadow-hard-lg);
+}
+html.t-p5 .p5-loading-label {
+  font-family: var(--font-cond);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 800;
+  font-size: 14px;
+  color: var(--p5-white);
+}
+html.t-p5 .p5-loading-label::before { content: '▶ '; color: var(--p5-red); }
+html.t-p5 .p5-loading-fade-enter-active,
+html.t-p5 .p5-loading-fade-leave-active { transition: opacity 0.32s var(--ease-out); }
+html.t-p5 .p5-loading-fade-enter-from,
+html.t-p5 .p5-loading-fade-leave-to { opacity: 0; }
+
+/* ============================================================================
    夜城 HUD（Cyberpunk 2077）主题 · v2.0
    依据：D:\AI\md\万能短剧AI创作平台_赛博朋克2077新主题开发手册.md
    接入方式：useTheme 预设类 `t-cyberpunk`（html 上加 class）。默认/P5/gray 等全部保留，可随时切回。

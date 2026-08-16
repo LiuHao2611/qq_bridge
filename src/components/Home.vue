@@ -4,6 +4,14 @@ import { useRouter } from 'vue-router'
 import { getDashboard, listProjects, createProject, coverStyle, STATUS_TXT } from '../api'
 import { mockHome } from '../mock'
 import { toast } from '../store'
+import { useTheme } from '../composables/useTheme'
+import P5RunTrail from './P5RunTrail.vue'
+
+const { preset } = useTheme()
+// 仅 P5 主题首页展示跑路轨迹加载动画
+const isP5 = computed(() => preset.value === 'p5')
+// 为让加载动画完整可见，P5 主题下人为放慢首页加载
+const P5_LOADING_DELAY = 5000
 
 const router = useRouter()
 const dashboard = ref({})
@@ -52,6 +60,10 @@ const load = async () => {
     console.warn('dashboard backend failed, fallback to mock', e.message)
     dashboard.value = MOCK_DASHBOARD
   } finally {
+    // P5 主题：放慢加载，保证跑路轨迹加载动画完整可见
+    if (isP5.value) {
+      await new Promise((r) => setTimeout(r, P5_LOADING_DELAY))
+    }
     loading.value = false
   }
 }
@@ -136,6 +148,15 @@ const formatNumber = (n) => {
 
 <template>
   <div class="page home">
+    <!-- P5 主题首页加载动画：跑路轨迹 -->
+    <transition name="p5-loading-fade">
+      <div v-if="loading && isP5" class="p5-loading-overlay">
+        <div class="p5-loading-inner">
+          <P5RunTrail :loop="true" />
+          <div class="p5-loading-label">载入创作驾驶舱…</div>
+        </div>
+      </div>
+    </transition>
     <!-- top bar -->
     <div class="dash-header">
       <div class="dash-title">
