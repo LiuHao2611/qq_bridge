@@ -41,6 +41,7 @@ const testResult = ref(null)
 
 function loadSample() {
   jsonText.value = JSON.stringify(SAMPLE, null, 2)
+  ElMessage.info('已载入示例工作流（ComfyUI API 格式）')
 }
 
 // 归一化：ComfyUI 导出有 UI 格式({nodes:[...]}) 与 API 格式({prompt:{id:{...}}}) 两种，
@@ -101,7 +102,8 @@ async function onTest(tid) {
 }
 
 onMounted(() => {
-  loadSample()
+  // 注意：不再在挂载时自动填入示例，避免「载入示例」按钮点击后看似无反应
+  // （字段已被预填 → 内容不变）。改为由按钮显式载入，并给出 toast 反馈。
   loadTemplates()
 })
 </script>
