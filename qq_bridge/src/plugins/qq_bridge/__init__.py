@@ -105,6 +105,10 @@ from .ops import (FrpError, GitInfo, GitInfoError,  # noqa: F401
 # memory 包同款零主包依赖（仅延迟 import tools.llm）。
 from .memory import (ExtractError, MemoryError, MemoryManager,  # noqa: F401
                      MemoryStore, memory_manager, memory_store)
+# M3 情感 + 日程 + 关系（2026-10-20）：二维情感（MaiBot valence-arousal）
+# + 好感度/关系阶段 + 日程（到期关心）。emotion 包同款零主包依赖。
+from .emotion import (EmotionError, EmotionManager, EmotionStore,  # noqa: F401
+                      ScheduleError, emotion_manager, emotion_store)
 # 智能表情包（2026-10-19）：自动收集 + OCR/VLM 分类 + 人设语境选用
 from .stickers import (DEFAULT_PERSONA_MAP, STICKER_CATS,  # noqa: F401
                        collect_group_stickers, parse_persona_map, sticker_lib)
@@ -435,6 +439,14 @@ async def _on_startup() -> None:
     except Exception as e:  # noqa: BLE001
         log.error(jlog("ops_notify_start_failed", error=type(e).__name__,
                        detail=str(e)[:200]))
+    # 情感到期关心循环（2026-10-20 M3）：日程到期 → 人设语气主动关心一句
+    if Config.EMO_ENABLE and Config.EMO_SCHEDULE_EXTRACT:
+        try:
+            asyncio.ensure_future(_emotion_care_loop())
+            log.info(jlog("emotion_care_loop_started"))
+        except Exception as e:  # noqa: BLE001
+            log.error(jlog("emotion_care_start_failed", error=type(e).__name__,
+                           detail=str(e)[:200]))
 
 
 async def _on_shutdown() -> None:
@@ -2520,6 +2532,18 @@ async def _handle_ai_chat(ev, trace_id: str) -> None:
             log.warning(jlog("memory_recall_error", scope=scope,
                              error=type(e).__name__, detail=str(e)[:160],
                              trace_id=trace_id))
+    # ---- M3 情感/关系/日程（2026-10-20）：注入「此刻心情 + 对这个人的亲疏
+    # + 他接下来的安排」。语气由模型决定（personification 原则：代码只给事实）。
+    if Config.EMO_ENABLE:
+        try:
+            _emo_text = emotion_manager.prompt(scope, ev.user_id)
+            if _emo_text:
+                extra_system = ((extra_system + "\n\n" + _emo_text)
+                                if extra_system else _emo_text)
+        except Exception as e:  # noqa: BLE001 — CLOSE-02 记而不吞
+            log.warning(jlog("emotion_prompt_error", scope=scope,
+                             error=type(e).__name__, detail=str(e)[:160],
+                             trace_id=trace_id))
     # ---- M2 工具总线（2026-10-20）：开关开且已有工具注册 → FC 多回合路径；
     # 否则（关/无工具/注册失败）走原纯对话路径。这是路由选择不是兜底降级——
     # 两条路径能力差异只在「能不能调工具」，纯对话行为零变化。
@@ -2581,6 +2605,16 @@ async def _handle_ai_chat(ev, trace_id: str) -> None:
             asyncio.ensure_future(_memory_ingest_bg(scope, ev.user_id, text, reply))
         except Exception as e:  # noqa: BLE001
             log.warning(jlog("memory_ingest_spawn_failed", scope=scope,
+                             error=type(e).__name__))
+    # ---- M3 情感/日程（2026-10-20）：对话后异步更新（不阻塞回复）----
+    # 后台跑日程抽取（对话里听到的未来安排）。情感/好感度变化不在本处自动判
+    # ——要模型判定得再调一次 LLM，成本高且易抖；改由 /情感 命令与到期关心
+    # 驱动，或后续接入情绪判定模型时再打开（如实记录：一期不自动判情感）。
+    if Config.EMO_ENABLE and Config.EMO_SCHEDULE_EXTRACT and not err:
+        try:
+            asyncio.ensure_future(_emotion_update_bg(scope, ev.user_id, text))
+        except Exception as e:  # noqa: BLE001
+            log.warning(jlog("emotion_update_spawn_failed", scope=scope,
                              error=type(e).__name__))
     # reply 已被 chat() 剥掉 [表情:分类] marker；mood 从 last_mood 取
     mood = ai_chatter.last_mood.get(scope)
@@ -4204,6 +4238,253 @@ async def _handle_memory_command(ev, trace_id: str) -> None:
                  title="记忆系统")
 
 
+# ==================== M3 情感 + 日程 + 关系（2026-10-20）====================
+# emotion 包（mood/store/schedule/manager）不 import 主包；LLM 抽取经
+# tools.llm 延迟导入。
+
+
+async def _emotion_update_bg(scope: str, user_id: int, user_text: str) -> None:
+    """后台日程抽取（_handle_ai_chat 对话后 spawn；失败只记日志）。"""
+    try:
+        await emotion_manager.update_from_chat(scope, user_id, user_text)
+    except (ScheduleError, EmotionError) as e:
+        log.info(jlog("emotion_update_skipped", scope=scope, user_id=user_id,
+                      detail=str(e)[:160]))
+    except Exception as e:  # noqa: BLE001 — 显式化，绝不静默
+        log.warning(jlog("emotion_update_failed", scope=scope, user_id=user_id,
+                         error=type(e).__name__, detail=str(e)[:160]))
+
+
+async def _emotion_care_loop() -> None:
+    """到期关心循环（M3）：到点/快到点的日程 → 经通知中枢推一句关心。
+
+    与 M2 提醒循环的区别：提醒回传用户原话；这里是机器人**自己记下的**
+    安排到期，主动问一句（情绪 + 日程 + 人设语气）。关心后 mark_notified
+    幂等去重（防重复打扰）。
+    """
+    from .emotion.schedule import format_due_line
+    interval = max(60.0, float(getattr(Config, "EMO_SCHEDULE_WINDOW", 3600.0) or 3600.0) / 6)
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            if not (Config.EMO_ENABLE and Config.EMO_SCHEDULE_EXTRACT):
+                continue
+            due = emotion_store.due_schedules(
+                "", now=time.time(),
+                window=float(getattr(Config, "EMO_SCHEDULE_WINDOW", 3600.0) or 3600.0),
+                limit=5)
+            for item in due:
+                scope = item.get("scope") or ""
+                if not scope:
+                    continue
+                ctx = {"user_id": int(item.get("user_id") or 0), "group_id": 0,
+                       "channel": "napcat"}
+                if scope.startswith("g:"):
+                    try:
+                        ctx["group_id"] = int(scope.split(":", 1)[1] or 0)
+                    except ValueError:
+                        continue
+                # 关心文案：事实给全，语气交给模型（personification 原则）
+                line = format_due_line(item)
+                text = ("（系统事件：你记着对方的一个安排——%s。用人设语气"
+                        "主动关心一句，别提'系统'二字。）" % line)
+                try:
+                    care, perr = await ai_chatter.say("emo:care", text, user_id=0)
+                except Exception as e:  # noqa: BLE001
+                    log.warning(jlog("emotion_care_llm_failed", sid=item.get("id"),
+                                     error=type(e).__name__))
+                    continue
+                if perr or not care:
+                    log.info(jlog("emotion_care_empty", sid=item.get("id"),
+                                  detail=str(perr)[:120]))
+                    continue
+                await send_text(ctx, care)
+                emotion_store.mark_notified(item["id"], scope)
+                log.info(jlog("emotion_care_sent", sid=item["id"], scope=scope,
+                              title=(item.get("title") or "")[:40]))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — 单轮失败不杀循环
+            log.warning(jlog("emotion_care_loop_error", error=type(e).__name__,
+                             detail=str(e)[:160]))
+
+
+async def _handle_emotion_command(ev, trace_id: str) -> None:
+    """/情感 命令族（M3 2026-10-20）：我 / 日程 / 加日程 / 完成 / 删 /
+    好感 / 心情。
+
+    权限：查看/管理自己的情感与日程对所有人开放；`好感`（榜单）仅主人
+    （亲疏数据敏感）。
+    """
+    if not Config.EMO_ENABLE:
+        return
+    ctx = _ctx(ev)
+    sess = session_store.get(ev.user_id)
+    scope = ev.scope_key
+    parts = (ev.raw_text or "").strip().split(None, 2)
+    sub = parts[1].strip() if len(parts) > 1 else ""
+    rest = parts[2].strip() if len(parts) > 2 else ""
+    low = sub.lower()
+    from .emotion.mood import relation_stage
+    from .emotion.schedule import format_due_line
+
+    # ---- 我：我的情感状态 ----
+    if low in ("我", "me", "状态", "status", ""):
+        try:
+            text = emotion_manager.status_text(scope, ev.user_id)
+        except EmotionError as e:
+            await _reply(ctx, sess, str(e), title="情感")
+            return
+        await _reply(ctx, sess, text, title="情感状态")
+        return
+
+    # ---- 日程：列出 ----
+    if low in ("日程", "schedule", "安排"):
+        try:
+            items = emotion_store.list_schedules(scope)
+        except EmotionError as e:
+            await _reply(ctx, sess, str(e), title="日程")
+            return
+        if not items:
+            await _reply(ctx, sess, "没记着你的安排（聊天里提到面试/考试之类"
+                                    "本喵会自己记下）", title="日程")
+            return
+        lines = ["记着的安排："]
+        now = time.time()
+        lines.extend(format_due_line(s, now=now) for s in items[:15])
+        await _reply(ctx, sess, "\n".join(lines), title="日程")
+        return
+
+    # ---- 加日程：手动补一条（时间用「N 分钟后/明天 HH:MM」简写）----
+    if low in ("加日程", "记一下", "add"):
+        head = rest.split(None, 1)
+        if len(head) < 2:
+            await _reply(ctx, sess,
+                         "用法：/情感 加日程 <时间> <安排>\n"
+                         "时间写法：30分钟 / 2小时 / 明天09:00 / 后天14:30\n"
+                         "例：/情感 加日程 明天09:00 面试", title="加日程")
+            return
+        when, title = head[0], head[1].strip()
+        try:
+            due = _parse_when(when)
+        except ValueError as e:
+            await _reply(ctx, sess, str(e), title="加日程")
+            return
+        try:
+            item = emotion_store.add_schedule(title, due, scope,
+                                              user_id=ev.user_id, source="cmd")
+        except EmotionError as e:
+            await _reply(ctx, sess, str(e), title="加日程")
+            return
+        await _reply(ctx, sess,
+                     "记下了：%s（%s）" % (title[:40], time.strftime(
+                         "%m-%d %H:%M", time.localtime(due))), title="加日程")
+        return
+
+    # ---- 完成/删 ----
+    if low in ("完成", "done"):
+        if not rest:
+            await _reply(ctx, sess, "用法：/情感 完成 <编号>", title="日程")
+            return
+        ok = emotion_store.mark_done(rest.split()[0], scope)
+        await _reply(ctx, sess, "标记完成" if ok else "没找到那个日程", title="日程")
+        return
+    if low in ("删", "删除", "del", "忘掉"):
+        if not rest:
+            await _reply(ctx, sess, "用法：/情感 删 <编号>", title="日程")
+            return
+        ok = emotion_store.soft_delete_schedule(rest.split()[0], scope)
+        await _reply(ctx, sess, "已删除" if ok else "没找到那个日程", title="日程")
+        return
+
+    # ---- 好感：榜单（仅主人）----
+    if low in ("好感", "好感度", "关系"):
+        if not _is_owner(ev.user_id):
+            await _reply(ctx, sess, "看亲疏榜单是主人的权限喵。", title="权限不足")
+            return
+        try:
+            rows = emotion_store.top_favors(scope, limit=10)
+        except EmotionError as e:
+            await _reply(ctx, sess, str(e), title="好感度")
+            return
+        if not rows:
+            await _reply(ctx, sess, "这个会话还没有好感度记录。", title="好感度")
+            return
+        lines = ["好感度排行："]
+        for i, r in enumerate(rows, 1):
+            lines.append("%d. QQ %s — %d/100（%s）" % (
+                i, r["user_id"], r["favor"],
+                r.get("relation") or relation_stage(int(r["favor"]))))
+        await _reply(ctx, sess, "\n".join(lines), title="好感度")
+        return
+
+    # ---- 心情：手动调情绪（仅主人，调试/演出用）----
+    if low in ("心情", "mood"):
+        if not _is_owner(ev.user_id):
+            await _reply(ctx, sess, "调心情是主人的权限喵。", title="权限不足")
+            return
+        if not rest:
+            await _reply(ctx, sess,
+                         "用法：/情感 心情 <情感名> [强度0-1]\n"
+                         "情感名：开心/生气/难过/平静/兴奋/疲倦/焦虑…",
+                         title="心情")
+            return
+        head = rest.split()
+        name = head[0]
+        try:
+            intensity = float(head[1]) if len(head) > 1 else 0.6
+        except ValueError:
+            intensity = 0.6
+        try:
+            snap = emotion_manager.bump(scope, ev.user_id, emotion=name,
+                                        intensity=intensity)
+        except EmotionError as e:
+            await _reply(ctx, sess, str(e), title="心情")
+            return
+        await _reply(ctx, sess, "心情调到：%s（愉悦 %.2f / 兴奋 %.2f）" % (
+            snap["mood"]["text"], snap["mood"]["valence"],
+            snap["mood"]["arousal"]), title="心情")
+        return
+
+    # ---- 帮助 ----
+    await _reply(ctx, sess,
+                 "情感命令族：\n"
+                 "· /情感 我 —— 心情 + 对你的亲疏 + 记着的安排\n"
+                 "· /情感 日程 —— 列出安排\n"
+                 "· /情感 加日程 <时间> <安排> —— 手动补一条\n"
+                 "· /情感 完成/删 <编号> —— 标记完成/删除\n"
+                 "· /情感 好感 —— 好感度排行（主人）\n"
+                 "· /情感 心情 <情感名> [强度] —— 调心情（主人）",
+                 title="情感系统")
+
+
+def _parse_when(when: str) -> float:
+    """简写时间 → Unix 时间戳（30分钟 / 2小时 / 明天09:00 / 后天14:30 / 3天）。
+
+    解析不了显式 ValueError（不猜、不兜底）。
+    """
+    import re as _re
+    w = (when or "").strip()
+    now = time.time()
+    m = _re.match(r"^(\d+)\s*(分钟|分|m)$", w, _re.I)
+    if m:
+        return now + int(m.group(1)) * 60
+    m = _re.match(r"^(\d+)\s*(小时|时|h)$", w, _re.I)
+    if m:
+        return now + int(m.group(1)) * 3600
+    m = _re.match(r"^(\d+)\s*(天|d)$", w, _re.I)
+    if m:
+        return now + int(m.group(1)) * 86400
+    m = _re.match(r"^(今天|明天|后天)\s*(\d{1,2}):(\d{2})$", w)
+    if m:
+        base = {"今天": 0, "明天": 1, "后天": 2}[m.group(1)]
+        import datetime as _dt
+        d = _dt.date.today() + _dt.timedelta(days=base)
+        return time.mktime(_dt.datetime.combine(
+            d, _dt.time(int(m.group(2)), int(m.group(3)))).timetuple())
+    raise ValueError("时间看不懂（%s）——用 30分钟 / 2小时 / 明天09:00 这种写法" % w)
+
+
 async def _route(ev, trace_id: str) -> None:
     """归一化之后的**统一业务路由**（与协议无关）。
 
@@ -4282,6 +4563,11 @@ async def _route(ev, trace_id: str) -> None:
     # ---- M1 记忆命令族（2026-10-20）：/记忆 我/更正/忘记/事件/清理 ----
     if (ev.raw_text or "").strip().startswith("/记忆"):
         await _handle_memory_command(ev, trace_id)
+        return
+
+    # ---- M3 情感命令族（2026-10-20）：/情感 我/日程/加日程/好感/心情 ----
+    if (ev.raw_text or "").strip().startswith("/情感"):
+        await _handle_emotion_command(ev, trace_id)
         return
 
     # ---- 宿主机管家（M6 2026-10-20）：/pc 命令族 + 自然语言直通车 ----

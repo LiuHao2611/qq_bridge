@@ -352,3 +352,25 @@ M1 记忆 ──┬─→ M2 工具总线 ──┬─→ M3 情感日程
 **验收**：`tests/test_memory_store.py`（FTS/衰减/软删恢复/画像 override 优先/群档案/gc）+ `test_memory_manager.py`（抽取校验/recall 三段组装/ingest/profile_view/forget）共 33 断言，与 M2/M7/M9/config 组合 **206/206 全绿**。向量检索二期（在线 embedding API）——能力分层明确，非偷偷降级。
 
 **M8 前置探测（同期执行）**：本机 8123 端口有代理服务但**无 Home Assistant 实例**（`/api/config` 返回代理错误）→ M8 按 roadmap §10.4（未配置 HA 时功能关闭不阻塞）跳过，先做人格面 M1。
+
+### 10.10 M3 情感 + 日程 + 关系交付记录（2026-10-20 ✅）
+契约来源（2026-10-20 实读验证）：**MaiBot / MaiMBot Mood System**（valence-arousal 二维环状情感模型：valence −1.0~+1.0 愉悦度、arousal 0.0~1.0 唤醒度；情感→坐标映射；**时间衰减** valence→0、arousal→0.5；象限→情绪文本；get_prompt 注入 LLM）；**personification**（好感度 + inner state + 关系图 + **动态态度**——语气由 LLM 决定，代码只注入事实，**不用关键词表**硬编码「对谁说什么话」）。
+
+**交付物**（`src/plugins/qq_bridge/emotion/` 四件套，不 import 主包，可裸单测）：
+| 文件 | 职责 |
+|---|---|
+| `mood.py` | 二维情感状态机：MoodState{valence, arousal, text}；**EMOTION_MAP 由 MOOD_TEXTS 派生**（单一事实源，杜绝「设成开心却叫兴奋」）+ 口语别名归一（生气→愤怒）；指数衰减回中性（半衰期 EMO_DECAY_HALFLIFE 默认 600s，幂等）；好感度 0~100 钳制；关系阶段阈值派生（陌生人/点头之交/熟人/朋友/挚友）；注入文本只给事实不硬编码语气 |
+| `store.py` | SQLite `data/qq_emotion.db` 三表：`moods`（per scope 情感）/ `affections`（per scope+user 好感度 + 手动关系标签）/ `schedules`（日程：软删 + mark_notified 幂等去重 + gc 分批 ≤500） |
+| `schedule.py` | 日程 LLM 抽取（对话里的**未来安排** → `{items:[{title,due_ts}]}`，REDUN-03 校验：过去/超 1 年/空标题剔除、条数上限）+ 到期判定辅助 + 人话行格式化 |
+| `manager.py` | 门面：`prompt`（情绪+亲疏+安排三段注入）/ `bump`（情感+好感度一次更新）/ `update_from_chat`（抽日程落库）/ `status_text`（/情感 我 的人话状态） |
+
+**接线**：`config.py`「情感关系」配置组 8 项 + `config_api.py` 配置页同款；`__init__.py`：`_handle_ai_chat` 对话前注入 `emotion_manager.prompt`（失败只记日志不阻对话）、对话后 `ensure_future(_emotion_update_bg)` 抽日程（不阻塞回复）；`_route` 挂 `/情感` 命令族（我/日程/加日程/完成/删/好感/心情——自看自管，好感榜单与调心情仅主人）；`_on_startup` 起 `_emotion_care_loop`（到期关心：日程到点 → `ai_chatter.say` 人设语气主动问一句 → mark_notified 幂等去重）。
+
+**与既有能力的分工（不重复造轮子）**：
+  - 提醒（M2 reminders）= 用户**主动设**的，到点回传原话；
+  - 日程（M3 schedules）= 机器人**自己从对话里听到并记下**的，到点主动关心；
+  - 记忆（M1）= 事实/画像/群档案；情感是另一维，互不覆盖。
+
+**一期如实未做**：情感/好感度**不在每轮对话自动判定**（要模型判定需再调一次 LLM，成本高且易抖）——改由 `/情感` 命令与到期关心驱动，二期可接情绪判定模型打开（已在代码注释与本文档标注）。
+
+**验收**：`tests/test_emotion_mood.py`（边界钳制/象限文本/衰减半衰期与幂等/delta/情感名插值/好感度钳制/关系阈值/注入文本无硬编码语气）+ `test_emotion_store.py`（三表 CRUD/scope 隔离/到期窗口/幂等去重/gc/抽取校验/门面）共 33 断言，与 M1/M2/M7/M9/config 组合 **239/239 全绿**。顺带修 `mark_notified` 幂等语义与情感命名表-坐标表不自洽 bug（AGENTS.md F16）。

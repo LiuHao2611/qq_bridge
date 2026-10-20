@@ -571,6 +571,26 @@ class Config:
     # 记忆保留天数 + 总数上限（OPS-02：超期滚动清理）
     MEMORY_KEEP_DAYS: float = _as_float(os.environ.get("MEMORY_KEEP_DAYS"), 180.0)
 
+    # ---- 情感 + 日程 + 关系（2026-10-20 M3：二维情感 / 好感度 / 关系阶段 / 日程）----
+    # 契约：MaiBot valence-arousal 二维环状模型（valence −1~+1，arousal 0~1，
+    # 衰减回中性）；personification 原则——语气由 LLM 决定，代码只注入事实。
+    EMO_ENABLE: bool = _as_bool(os.environ.get("EMO_ENABLE"), True)
+    # 情感库路径（默认 data/qq_emotion.db，与 history 同目录）
+    EMOTION_DB: str = os.environ.get("EMOTION_DB") or ""
+    # 情感衰减半衰期（秒）：多久衰减一半回到中性（默认 10 分钟）
+    EMO_DECAY_HALFLIFE: float = _as_float(os.environ.get("EMO_DECAY_HALFLIFE"), 600.0)
+    # 好感度总开关（关=不注入亲疏描述、不增减）
+    EMO_FAVOR_ENABLE: bool = _as_bool(os.environ.get("EMO_FAVOR_ENABLE"), True)
+    # 单轮好感度变化上限（防一次对话暴涨暴跌）
+    EMO_FAVOR_STEP: int = _as_int(os.environ.get("EMO_FAVOR_STEP"), 5)
+    # 日程抽取开关（对话里听到的未来安排 → 记下来到点关心）
+    EMO_SCHEDULE_EXTRACT: bool = _as_bool(os.environ.get("EMO_SCHEDULE_EXTRACT"), True)
+    # 到期关心提前量（秒）：提前多久算「快到了」（默认 1 小时）
+    EMO_SCHEDULE_WINDOW: float = _as_float(os.environ.get("EMO_SCHEDULE_WINDOW"), 3600.0)
+    # 日程保留天数（已完成/过期超此天数滚动清理）
+    EMOTION_SCHEDULE_KEEP_DAYS: float = _as_float(
+        os.environ.get("EMOTION_SCHEDULE_KEEP_DAYS"), 30.0)
+
     @classmethod
     def official_configured(cls) -> bool:
         """官方通道是否配置完整（缺 AppID/Secret 时不启用，避免启动即报错）。"""
