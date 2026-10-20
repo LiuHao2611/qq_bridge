@@ -522,6 +522,40 @@ class Config:
     # 每会话订阅上限（防刷屏）
     DL_SUB_MAX_PER_SCOPE: int = _as_int(os.environ.get("DL_SUB_MAX_PER_SCOPE"), 5)
 
+    # ---- 运维面与通知中枢（2026-10-20 M9：/ops 命令族 + git/SSH/WoL/frp + 通知中枢）----
+    # 安全模型（dev_plan §五：M9 远程 shell 严格走「仅主人 + 二次确认 + 审计」，
+    # 比 dsh-qq-remote 的 /exec 更严——它 README 自认可执行任意命令）。
+    OPS_ENABLE: bool = _as_bool(os.environ.get("OPS_ENABLE"), True)
+    # 开发机 git 仓库（roadmap：本机 manju_agent 仓库；只读子命令白名单，禁写操作）
+    OPS_GIT_REPO: str = os.environ.get("OPS_GIT_REPO") or r"D:\AI\manju_agent"
+    # 仓库巡检（定时 git status → 通知中枢；状态变化才推，防刷屏）
+    OPS_WATCH_ENABLE: bool = _as_bool(os.environ.get("OPS_WATCH_ENABLE"), True)
+    OPS_WATCH_INTERVAL: float = _as_float(os.environ.get("OPS_WATCH_INTERVAL"), 1800.0)
+    # 巡检自检命令（分号分隔；必须只读/无副作用，如 pytest；退出码非零 → 告警）
+    OPS_WATCH_CHECKS: str = os.environ.get("OPS_WATCH_CHECKS") or ""
+    OPS_WATCH_CHECK_TIMEOUT: float = _as_float(os.environ.get("OPS_WATCH_CHECK_TIMEOUT"), 120.0)
+    # SSH 主机白名单：`别名:user@host:port` 分号分隔（拒绝任意地址）
+    OPS_SSH_HOSTS: str = os.environ.get("OPS_SSH_HOSTS") or ""
+    # SSH 远程命令白名单（分号分隔前缀；空=默认只读运维表）
+    OPS_SSH_CMD_WHITELIST: str = os.environ.get("OPS_SSH_CMD_WHITELIST") or ""
+    # SSH 私钥路径（空=SSH agent/默认 key；密码鉴权不支持——LOG-04 禁落密码）
+    OPS_SSH_KEY: str = os.environ.get("OPS_SSH_KEY") or ""
+    # SSH 执行超时（秒，CLOSE-05）
+    OPS_SSH_TIMEOUT: float = _as_float(os.environ.get("OPS_SSH_TIMEOUT"), 30.0)
+    # WoL 唤醒目标白名单：`别名:MAC[:广播地址[:端口]]` 分号分隔
+    OPS_WOL_HOSTS: str = os.environ.get("OPS_WOL_HOSTS") or ""
+    # frpc admin API 地址（frpc.toml 的 adminAddr:adminPort，默认 7400）
+    OPS_FRP_ADMIN: str = os.environ.get("OPS_FRP_ADMIN") or ""
+    OPS_FRP_TIMEOUT: float = _as_float(os.environ.get("OPS_FRP_TIMEOUT"), 10.0)
+    # 通知中枢：事件统一人格化转述推送（M9 出口）
+    OPS_NOTIFY_ENABLE: bool = _as_bool(os.environ.get("OPS_NOTIFY_ENABLE"), True)
+    # 推送目标：QQ 号=私聊 / 群号=群（空=只记日志不发）
+    OPS_NOTIFY_TARGET: str = os.environ.get("OPS_NOTIFY_TARGET") or ""
+    # 最低推送级别（info/warn/error；低于只记日志）
+    OPS_NOTIFY_MIN_LEVEL: str = os.environ.get("OPS_NOTIFY_MIN_LEVEL") or "info"
+    # 同类事件冷却（秒）：5 分钟一条才是人话（防刷屏 + LLM 成本）
+    OPS_NOTIFY_COOLDOWN: float = _as_float(os.environ.get("OPS_NOTIFY_COOLDOWN"), 300.0)
+
     @classmethod
     def official_configured(cls) -> bool:
         """官方通道是否配置完整（缺 AppID/Secret 时不启用，避免启动即报错）。"""

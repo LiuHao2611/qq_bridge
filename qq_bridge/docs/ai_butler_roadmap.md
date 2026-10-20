@@ -306,3 +306,22 @@ M1 记忆 ──┬─→ M2 工具总线 ──┬─→ M3 情感日程
 **文件中转站**：`/dl 发我 <序号|编号|绝对路径>` 复用 M6 `_pc_send_file`（PC_DISK_ROOTS 白名单 + PC_FILE_MAX_MB 上限 + send_file）；删文件不在 M7 范围（高危留 M6 确认流）。
 
 **验收**：`tests/test_download_aria2.py`（MockTransport 打假服务测真实协议路径）+ `test_download_btselect.py` + `test_download_manager.py` + `test_download_subscribe.py` 共 55 断言，与 M2/config 组合 **128/128 全绿**；**真实链路抽样 OK**（aria2c 1.37.0 RPC 实测 getVersion→addUri→下载 22B 文件→complete 通知→listTasks，抽样后进程已关）。顺带修复 falsy 配置吞噬 bug（`getattr or default` 把合法 0 值吃掉，详见 AGENTS.md F13）。
+
+### 10.8 M9 运维面 + 通知中枢交付记录（2026-10-20 ✅）
+契约来源（2026-10-20 实读验证）：**dsh-qq-remote**（ASAKAFENG）README——QQ→SSH `/exec` 远程执行范式（其自认「可执行任意命令」；本项目安全模型**更严**：主机白名单 + 命令白名单 + 危险模式双保险 + 审计 + 仅主人 + 二次确认）；**frp**（fatedier）——frpc admin API（`/api/status`）作隧道状态查询协议。
+
+**交付物**（`src/plugins/qq_bridge/ops/` 六件套，不 import 主包，可裸单测）：
+| 文件 | 职责 |
+|---|---|
+| `gitinfo.py` | 开发机 git 仓库状态（只读子命令白名单 status/diff/log/branch/rev-parse/show/remote/stash-list，写操作一律拒绝）；subprocess 显式超时 + 参数数组化（不经 shell 防注入） |
+| `ssh.py` | SSH 命令白名单执行（paramiko）：`别名:user@host[:port]` 主机白名单 + 命令前缀白名单 + 危险模式（rm/poweroff/git push/管道 sh）双保险；显式超时不重试（远程执行重试=重复副作用）；审计 jlog（谁/何时/主机/命令）；key 鉴权（密码禁落配置 LOG-04） |
+| `wol.py` | Wake-on-LAN 魔术包（标准 6×0xFF+16×MAC，UDP 广播）；主机白名单 `别名:MAC[@广播/端口]`；发送失败显式报错 + BIOS/网卡/路由器三处排查指引 |
+| `frp.py` | frpc admin API `/api/status` 查询（httpx 显式超时）；未配/不通诚实告知缺什么，不返回假在线状态 |
+| `notify.py` | **通知中枢**：机器事件统一入口 `hub.push(NotifyEvent)` → 级别过滤 → 目标路由（OPS_NOTIFY_TARGET）→ LLM 人格化转述（rephrase 回调）→ 发送（send 回调）；同类事件冷却期合并计数到点补发（防刷屏+LLM 成本）；转述失败**原文照发+显式附注**（不冒充转述成功）；最近 50 条内存环供查询 |
+| `watchdog.py` | 开发机仓库巡检循环：定时 git status（脏改动/未推送**从无到有才推**——没变化静默，防刷屏）+ 可选自检命令（OPS_WATCH_CHECKS，退出码非零→error 级事件） |
+
+**接线**：`config.py`「运维面」配置组 17 项 + `config_api.py` 配置页同款；`__init__.py`：`_route` 挂 `/ops` 命令族（git/gitlog/ssh/wol/frp/通知/通知历史；**全部仅主人私聊**，群聊静默同 /pc 口径；SSH 走「确认」二次确认 30s 有效 + 审计）；`_on_startup` 起 repo_watchdog（on_event=hub.push）+ 注入 hub.rephrase（借 `ai_chatter.say` 人设）/hub.send（`_ops_notify_send` 发往 OPS_NOTIFY_TARGET）；`_on_shutdown` 停巡检；FC 工具 2 个（ops_git_status/ops_frp_status，owner 级；**SSH 不注册 FC**——高危只走 /ops 确认流）。
+
+**通知中枢接入策略（分期，如实记录）**：一期服务 M9 自有事件（仓库巡检脏改动/未推送/自检失败）；M6 告警/M7 下载完成保持既有直发链路（它们本就是人话，无需转述），二期按「机器事件才转述」原则逐个收编——hub 的 push API 即统一契约，收编是接入问题不是重构。
+
+**验收**：`tests/test_ops_gitinfo.py`（含真实仓库实测）+ `test_ops_ssh.py` + `test_ops_wol_frp.py`（MockTransport/FakeSock）+ `test_ops_notify.py` 共 45 断言，与 M2/M7/config 组合 **173/173 全绿**。顺带修复 SSH/WoL 配置解析缺陷与 socket import 位置（见 AGENTS.md F14）。

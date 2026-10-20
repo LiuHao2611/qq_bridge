@@ -33,6 +33,8 @@ log = get_logger()
 #   download_add: async (url, ctx) -> str
 #   download_list: async (ctx) -> str
 #   download_cancel: async (ref, ctx) -> str
+#   ops_git_status: async () -> str
+#   ops_frp_status: async () -> str
 Deps = dict
 
 
@@ -182,6 +184,38 @@ def register_builtin_tools(registry: ToolRegistry, deps: Deps | None = None) -> 
             risk=RISK_OWNER,
         ))
         registered.append("download_cancel")
+
+    # ---- 运维面（M9，owner：暴露宿主机/内网信息，仅主人）----
+    if callable(deps.get("ops_git_status")):
+        async def ops_git_status(args: dict, ctx) -> str:
+            return await deps["ops_git_status"]()
+
+        registry.register(_tool(
+            "ops_git_status",
+            "查看开发机 git 仓库状态：分支、未提交改动、未推送提交、最近提交。"
+            "仅主人可用（暴露宿主机工作区）。用户问「仓库啥情况」「git 状态」"
+            "「我改了多少文件」时使用。",
+            {},
+            [],
+            ops_git_status,
+            risk=RISK_OWNER,
+        ))
+        registered.append("ops_git_status")
+
+    if callable(deps.get("ops_frp_status")):
+        async def ops_frp_status(args: dict, ctx) -> str:
+            return await deps["ops_frp_status"]()
+
+        registry.register(_tool(
+            "ops_frp_status",
+            "查看 frp 内网穿透隧道在线状态（代理总数/在线/离线）。仅主人可用。"
+            "用户问「穿透通不通」「隧道在线吗」「frp 状态」时使用。",
+            {},
+            [],
+            ops_frp_status,
+            risk=RISK_OWNER,
+        ))
+        registered.append("ops_frp_status")
 
     log.info(jlog("builtin_tools_registered", tools=registered,
                   count=len(registered)))

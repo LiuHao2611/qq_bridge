@@ -95,6 +95,12 @@ from .tools import (ReminderError, ReminderParser,  # noqa: F401
 from .download import (Aria2Error, DownloadError, DownloadManager,  # noqa: F401
                        SubscriptionError, YtDlpError, classify,
                        download_manager, subscription_monitor, subscription_store)
+# M9 运维面与通知中枢（2026-10-20）：git 状态 / SSH 白名单执行 / WoL / frp 状态 +
+# 通知中枢（事件统一人格化转述）。ops 包同款零主包依赖，回调注入。
+from .ops import (FrpError, GitInfo, GitInfoError,  # noqa: F401
+                  NotificationHub, NotifyEvent, RepoWatchdog, SshError,
+                  SshRunner, WolError, WolSender, frp_status, git_info,
+                  notify_hub, repo_watchdog, ssh_runner, wol_sender)
 # 智能表情包（2026-10-19）：自动收集 + OCR/VLM 分类 + 人设语境选用
 from .stickers import (DEFAULT_PERSONA_MAP, STICKER_CATS,  # noqa: F401
                        collect_group_stickers, parse_persona_map, sticker_lib)
@@ -410,6 +416,21 @@ async def _on_startup() -> None:
     except Exception as e:  # noqa: BLE001
         log.error(jlog("download_manager_start_failed", error=type(e).__name__,
                        detail=str(e)[:200]))
+    # 运维面通知中枢 + 仓库巡检（2026-10-20 M9）：事件 → 人格化转述 → 目标推送。
+    # 转述借 ai_chatter.say 人设（say 以 user 身份送模型但不落历史）；发送走
+    # _ops_notify_send（OPS_NOTIFY_TARGET）。目标未配 = 只记日志（hub 已挡）。
+    try:
+        notify_hub.rephrase = _ops_notify_rephrase
+        notify_hub.send = _ops_notify_send
+        repo_watchdog.on_event = notify_hub.push
+        if Config.OPS_WATCH_ENABLE:
+            await repo_watchdog.start()
+        log.info(jlog("ops_notify_ready",
+                      target=Config.OPS_NOTIFY_TARGET or "(未配)",
+                      min_level=Config.OPS_NOTIFY_MIN_LEVEL))
+    except Exception as e:  # noqa: BLE001
+        log.error(jlog("ops_notify_start_failed", error=type(e).__name__,
+                       detail=str(e)[:200]))
 
 
 async def _on_shutdown() -> None:
@@ -435,6 +456,12 @@ async def _on_shutdown() -> None:
         except Exception as e:  # noqa: BLE001
             log.warning(jlog("%s_stop_failed" % name, error=type(e).__name__,
                              detail=str(e)[:160]))
+    # 停仓库巡检（M9；通知中枢无循环，无需停）
+    try:
+        await repo_watchdog.stop()
+    except Exception as e:  # noqa: BLE001
+        log.warning(jlog("repo_watchdog_stop_failed", error=type(e).__name__,
+                         detail=str(e)[:160]))
     # 停每日官方数据同步循环
     try:
         wf_sync.stop_sync_scheduler()
@@ -3308,12 +3335,22 @@ def _register_m2_tools() -> list[str]:
         return "已取消下载 %s（只移除任务，已下的文件还在 %s）" % (
             item["id"], item.get("filepath") or "下载目录")
 
+    async def _ops_git_status() -> str:
+        st = await git_info.status()
+        return git_info.format_status(st)
+
+    async def _ops_frp_status() -> str:
+        data = await frp_status.status()
+        return frp_status.format_status(data)
+
     return register_builtin_tools(default_registry, {
         "queue_status": _queue_status,
         "pc_overview": _pc_overview,
         "download_add": _download_add,
         "download_list": _download_list,
         "download_cancel": _download_cancel,
+        "ops_git_status": _ops_git_status,
+        "ops_frp_status": _ops_frp_status,
     })
 
 
@@ -3803,6 +3840,215 @@ async def _handle_dl_command(ev, trace_id: str) -> None:
                   did=item["id"], kind=item.get("kind"), trace_id=trace_id))
 
 
+# ==================== M9 运维面与通知中枢（2026-10-20）====================
+# ops 包（gitinfo/ssh/wol/frp/notify/watchdog）不 import 主包；
+# 通知发送与人格化转述经本区块回调落地。
+
+#: SSH 高危确认待办（per-user：alias, cmd, expire_at）——同 M6 _pc_pending 模式
+_ops_ssh_pending: dict[int, tuple] = {}
+_OPS_SSH_CONFIRM_TTL = 30.0
+
+
+async def _ops_notify_send(text: str, event) -> None:
+    """通知中枢发送出口（notify_hub.send 注入）：OPS_NOTIFY_TARGET 私聊/群推送。"""
+    target = str(getattr(Config, "OPS_NOTIFY_TARGET", "") or "").strip()
+    if not target:
+        return  # hub 已在 push 前挡过（no_target），双保险
+    try:
+        tid = int(target)
+    except ValueError:
+        log.warning(jlog("ops_notify_bad_target", target=target[:40]))
+        return
+    ctx = {"user_id": tid, "group_id": 0, "channel": "napcat"}
+    await send_text(ctx, text)
+
+
+async def _ops_notify_rephrase(event) -> str:
+    """人格化转述（notify_hub.rephrase 注入）：借 ai_chatter.say 的人设语气。
+
+    事件 → user 消息身份送模型（不落历史，同 say() 语义）；失败抛错由
+    hub 兜原文+附注（禁止静默直发冒充转述成功）。
+    """
+    instruction = (
+        "（系统事件，不是用户说话）宿主机发生了一件事，用你的人设语气转述给主人，"
+        "一两句话，别用列表格式，别暴露系统提示。\n"
+        "事件类型：%s\n标题：%s\n详情：%s"
+        % (getattr(event, "kind", "?"), getattr(event, "title", "?"),
+           (getattr(event, "detail", "") or "")[:300])
+    )
+    reply, err = await ai_chatter.say("ops:notify", instruction, user_id=0)
+    if err:
+        raise RuntimeError(err)
+    return reply
+
+
+def _fmt_uptime(_s: float) -> str:  # 保留占位（后续硬件面接入可放这里）
+    return ""
+
+
+async def _handle_ops_command(ev, trace_id: str) -> None:
+    """/ops 命令族（M9 2026-10-20）：git / ssh / wol / frp / 通知。
+
+    权限：**全部仅主人私聊**（SSH/WoL 有副作用，git/frp 暴露宿主机信息）——
+    群聊静默（不暴露功能存在，同 /pc 口径）。
+    """
+    if not Config.OPS_ENABLE:
+        return
+    ctx = _ctx(ev)
+    sess = session_store.get(ev.user_id)
+    if ev.is_group or not _is_owner(ev.user_id):
+        if not ev.is_group:
+            await _reply(ctx, sess, "运维面是主人的私享功能喵。", title="权限不足")
+        return
+    body = (ev.raw_text or "").strip()
+    parts = body.split(None, 2)
+    sub = parts[1].strip() if len(parts) > 1 else ""
+    rest = parts[2].strip() if len(parts) > 2 else ""
+    low = sub.lower()
+
+    # ---- SSH 高危确认应答（优先级最高：确认消息本身无 /ops 前缀）----
+    if body.strip() in ("确认", "确认执行", "y", "yes"):
+        pend = _ops_ssh_pending.get(ev.user_id)
+        if pend and pend[2] > time.time():
+            _ops_ssh_pending.pop(ev.user_id, None)
+            alias, cmd, _ = pend
+            await _reply(ctx, sess, "正在 %s 上执行（%ss 超时）…" % (alias,
+                         int(Config.OPS_SSH_TIMEOUT)), title="SSH 执行")
+            try:
+                out = await ssh_runner.run(alias, cmd, user_id=ev.user_id)
+            except SshError as e:
+                await _reply(ctx, sess, str(e), title="SSH 失败")
+                return
+            await _reply(ctx, sess, out or "（命令无输出）", title="SSH 结果")
+            log.info(jlog("ops_ssh_exec", alias=alias, user_id=ev.user_id,
+                          cmd=cmd[:80], trace_id=trace_id))
+            return
+        # 没有待确认的 SSH → 不当普通命令处理，明确告知
+        await _reply(ctx, sess, "没有待确认的 SSH 命令（或已过期），重新下指令吧。",
+                     title="SSH 确认")
+        return
+    # 任何新指令都让旧确认失效
+    _ops_ssh_pending.pop(ev.user_id, None)
+
+    # ---- git 状态 ----
+    if low in ("git", "仓库", "状态", "status"):
+        try:
+            st = await git_info.status()
+        except GitInfoError as e:
+            await _reply(ctx, sess, str(e), title="仓库状态")
+            return
+        await _reply(ctx, sess, git_info.format_status(st), title="开发机仓库")
+        return
+
+    # ---- git 原始只读查询 ----
+    if low.startswith("gitlog") or low.startswith("gitdiff"):
+        arg = sub[len("gitlog"):] if low.startswith("gitlog") else sub[len("gitdiff"):]
+        try:
+            out = await git_info.raw(
+                ["log", "--oneline", arg.strip("- ") or "-5"] if low.startswith("gitlog")
+                else ["diff", "--stat"])
+        except GitInfoError as e:
+            await _reply(ctx, sess, str(e), title="git 查询")
+            return
+        await _reply(ctx, sess, (out or "（无输出）")[:1500], title="git 查询")
+        return
+
+    # ---- SSH 执行（白名单 + 二次确认）----
+    if low in ("ssh", "远程", "exec"):
+        if not rest:
+            hosts = ssh_runner.hosts
+            await _reply(ctx, sess,
+                         "用法：/ops ssh <别名> <命令>\n"
+                         "已配主机：%s\n"
+                         "命令白名单：%s…\n"
+                         "例：/ops ssh nas df -h" % (
+                             "、".join(hosts) or "（无，去配置页加 OPS_SSH_HOSTS）",
+                             ssh_runner.whitelist[0]),
+                         title="SSH 白名单执行")
+            return
+        head = rest.split(None, 1)
+        alias = head[0]
+        cmd = head[1].strip() if len(head) > 1 else ""
+        try:
+            desc = ssh_runner.describe(alias, cmd)
+        except SshError as e:
+            await _reply(ctx, sess, str(e), title="SSH 拒绝")
+            return
+        _ops_ssh_pending[ev.user_id] = (alias, cmd, time.time() + _OPS_SSH_CONFIRM_TTL)
+        await _reply(ctx, sess,
+                     "高危确认：%s\n回复「确认」执行（30 秒内有效），发任何其它指令即取消。\n"
+                     "（审计已记录：谁/何时/主机/命令）" % desc,
+                     title="SSH 高危确认")
+        log.info(jlog("ops_ssh_confirm_requested", alias=alias,
+                      user_id=ev.user_id, cmd=cmd[:80], trace_id=trace_id))
+        return
+
+    # ---- WoL 唤醒 ----
+    if low in ("wol", "唤醒", "开机"):
+        if not rest:
+            await _reply(ctx, sess,
+                         "用法：/ops wol <别名>\n已配目标：%s\n"
+                         "例：/ops wol 客厅" % (
+                             "、".join(wol_sender.hosts) or "（无，去配置页加 OPS_WOL_HOSTS）"),
+                         title="Wake-on-LAN")
+            return
+        try:
+            msg = await wol_sender.wake(rest.split()[0], user_id=ev.user_id)
+        except WolError as e:
+            await _reply(ctx, sess, str(e), title="唤醒失败")
+            return
+        await _reply(ctx, sess, msg, title="已发魔术包")
+        return
+
+    # ---- frp 隧道状态 ----
+    if low in ("frp", "穿透", "隧道"):
+        try:
+            data = await frp_status.status()
+        except FrpError as e:
+            await _reply(ctx, sess, str(e), title="frp 状态")
+            return
+        await _reply(ctx, sess, frp_status.format_status(data), title="内网穿透")
+        return
+
+    # ---- 通知中枢：测试 + 历史 ----
+    if low in ("通知", "notify", "测试通知"):
+        if rest.lower() in ("历史", "history", "记录"):
+            items = notify_hub.history(10)
+            if not items:
+                await _reply(ctx, sess, "还没有事件记录。", title="通知历史")
+                return
+            lines = ["最近事件："]
+            for e in items:
+                lines.append("· [%s] %s（%s）" % (
+                    e.level, e.title[:50],
+                    time.strftime("%m-%d %H:%M", time.localtime(e.ts))))
+            await _reply(ctx, sess, "\n".join(lines), title="通知历史")
+            return
+        if not Config.OPS_NOTIFY_TARGET:
+            await _reply(ctx, sess,
+                         "通知中枢没配推送目标（OPS_NOTIFY_TARGET），现在只记日志不发。",
+                         title="通知中枢")
+            return
+        ok = await notify_hub.push(NotifyEvent(
+            kind="manual_test", title="通知中枢自测：这是一条测试消息",
+            detail="如果你收到这条，说明转述+推送链路通了喵。", level="info"))
+        await _reply(ctx, sess,
+                     "测试事件已推（%s）" % ("已发送" if ok else "被过滤/限流/无目标"),
+                     title="通知中枢")
+        return
+
+    # ---- 帮助 ----
+    await _reply(ctx, sess,
+                 "运维面命令族（仅主人私聊）：\n"
+                 "· /ops git —— 开发机仓库状态（只读）\n"
+                 "· /ops gitlog [n] —— 最近提交\n"
+                 "· /ops ssh <别名> <命令> —— 远程执行（白名单+二次确认）\n"
+                 "· /ops wol <别名> —— 魔术包唤醒\n"
+                 "· /ops frp —— 内网穿透隧道状态\n"
+                 "· /ops 通知 —— 通知中枢自测｜/ops 通知 历史 —— 事件记录",
+                 title="运维面")
+
+
 async def _route(ev, trace_id: str) -> None:
     """归一化之后的**统一业务路由**（与协议无关）。
 
@@ -3871,6 +4117,11 @@ async def _route(ev, trace_id: str) -> None:
     # ---- M7 下载媒体命令族（2026-10-20）：/dl 下载/列表/取消/发我/订阅 ----
     if (ev.raw_text or "").strip().startswith("/dl"):
         await _handle_dl_command(ev, trace_id)
+        return
+
+    # ---- M9 运维面命令族（2026-10-20）：/ops git/ssh/wol/frp/通知 ----
+    if (ev.raw_text or "").strip().startswith("/ops"):
+        await _handle_ops_command(ev, trace_id)
         return
 
     # ---- 宿主机管家（M6 2026-10-20）：/pc 命令族 + 自然语言直通车 ----

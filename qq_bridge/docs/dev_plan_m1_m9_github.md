@@ -2,7 +2,7 @@
 
 > 版本：v2.1 配套开发计划 ｜ 日期：2026-10-20 ｜ 配套路线图：`ai_butler_roadmap.md`
 > 链接核实：全部 GitHub 地址于 2026-10-20 经 Web 检索核实，使用 canonical `github.com` 地址。
-> 状态口径：M2/M6/M7 已交付（M6：88/88 PASS，commit `ce8503b`+`8f46bcf`；M2：73 断言，commit `6029324`；M7：128 断言组合，2026-10-20）；M1–M5、M8–M9 未开工。
+> 状态口径：M2/M6/M7/M9 已交付（M6：88/88 PASS，commit `ce8503b`+`8f46bcf`；M2：73 断言，commit `6029324`；M7：128 断言组合，commit `a5d1248`；M9：173 断言组合，2026-10-20）；M1–M5、M8 未开工。
 
 ---
 
@@ -51,7 +51,7 @@
 |---|---|---|---|---|---|
 | **M7 下载媒体中心** | aria2 RPC 桥 / BT 智能选文件 / yt-dlp 解析 / 订阅监控 / 文件中转站 | 2 天 | **DownloadBot**（iaman1998）— aria2/qBittorrent JSON-RPC 远程控制范式（聊天发链接→下载、BT 只选最大文件、完成回传 QQ、文件树转图）<br>**StreamVault**（Lugic1993）— yt-dlp 多平台解析 + **下载完成 Webhook 通知**（可直推 QQ 群） | https://github.com/iaman1998/DownloadBot<br>https://github.com/Lugic1993/StreamVault | ✅ 已交付（2026-10-20）：download 五件套 + /dl 命令族 + FC 工具 3 个，55 断言 + 与 M2/config 组合 128/128 全绿，真实 aria2 链路抽样 OK（详见 `ai_butler_roadmap.md` §10.7） |
 | **M8 智能家居中枢** | HA 桥接 / 设备白名单 + 场景脚本 / Webhook 反向告警 / 摄像头 stream→视频 / ASR 语音指令 | 2 天 | **HAQBot**（RicterZ）— 与需求**完全同构**的先例：QQ 自然语言控 HA（LLM 意图→HA 服务）、Webhook 反向推送（传感器/安防→QQ 群）、摄像头 stream→视频、腾讯云 ASR、设备白名单、猫娘管家 system prompt（指令明确无条件执行/未响应如实告知/禁回原始 JSON） | https://github.com/RicterZ/HAQBot | ⬜ 未开工（已详设 §M8） |
-| **M9 运维面 + 通知中枢** | 开发机状态(git/CI) / 远程主机 SSH 白名单 / WoL / 内网穿透状态 / 通知中枢 | 1–2 天 | **dsh-qq-remote**（ASAKAFENG）— `/exec` SSH 范式（复用）<br>**frp**（fatedier）— 内网穿透隧道在线状态查询参考<br>通知中枢为**内部设计**（人格化转述推送，无专属外部仓库） | https://github.com/ASAKAFENG/dsh-qq-remote<br>https://github.com/fatedier/frp | ⬜ 未开工（已详设 §M9） |
+| **M9 运维面 + 通知中枢** | 开发机状态(git/CI) / 远程主机 SSH 白名单 / WoL / 内网穿透状态 / 通知中枢 | 1–2 天 | **dsh-qq-remote**（ASAKAFENG）— `/exec` SSH 范式（复用；其 /exec 自认可执行任意命令，本项目安全模型更严：主机+命令双白名单+审计+仅主人+二次确认）<br>**frp**（fatedier）— 内网穿透隧道在线状态查询参考<br>通知中枢为**内部设计**（人格化转述推送，无专属外部仓库） | https://github.com/ASAKAFENG/dsh-qq-remote<br>https://github.com/fatedier/frp | ✅ 已交付（2026-10-20）：ops 六件套 + /ops 命令族 + 通知中枢，45 断言 + 全相关组合 173/173 全绿（详见 `ai_butler_roadmap.md` §10.8） |
 
 ---
 
