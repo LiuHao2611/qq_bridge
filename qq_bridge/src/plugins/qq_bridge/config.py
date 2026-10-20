@@ -556,6 +556,21 @@ class Config:
     # 同类事件冷却（秒）：5 分钟一条才是人话（防刷屏 + LLM 成本）
     OPS_NOTIFY_COOLDOWN: float = _as_float(os.environ.get("OPS_NOTIFY_COOLDOWN"), 300.0)
 
+    # ---- 记忆系统（2026-10-20 M1：三态记忆 + 画像 + 群档案）----
+    # 三态分工：短期=ai_mode 会话历史（既有）；长期=events（FTS+时间衰减）；
+    # 核心=profiles 画像 + group_profiles 群档案。向量检索二期（在线 embedding）。
+    MEMORY_ENABLE: bool = _as_bool(os.environ.get("MEMORY_ENABLE"), True)
+    # 记忆库路径（默认 data/qq_memory.db，与 history 同目录）
+    MEMORY_DB: str = os.environ.get("MEMORY_DB") or ""
+    # 对话后异步抽取开关（LLM 抽取 facts/events；失败只记日志不阻对话）
+    MEMORY_EXTRACT: bool = _as_bool(os.environ.get("MEMORY_EXTRACT"), True)
+    # recall 注入的相关记忆条数（system 提示追加）
+    MEMORY_RECALL_LIMIT: int = _as_int(os.environ.get("MEMORY_RECALL_LIMIT"), 5)
+    # 时间衰减半衰期（天）：越老的记忆权重越低
+    MEMORY_DECAY_DAYS: float = _as_float(os.environ.get("MEMORY_DECAY_DAYS"), 30.0)
+    # 记忆保留天数 + 总数上限（OPS-02：超期滚动清理）
+    MEMORY_KEEP_DAYS: float = _as_float(os.environ.get("MEMORY_KEEP_DAYS"), 180.0)
+
     @classmethod
     def official_configured(cls) -> bool:
         """官方通道是否配置完整（缺 AppID/Secret 时不启用，避免启动即报错）。"""

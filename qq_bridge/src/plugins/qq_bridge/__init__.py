@@ -101,6 +101,10 @@ from .ops import (FrpError, GitInfo, GitInfoError,  # noqa: F401
                   NotificationHub, NotifyEvent, RepoWatchdog, SshError,
                   SshRunner, WolError, WolSender, frp_status, git_info,
                   notify_hub, repo_watchdog, ssh_runner, wol_sender)
+# M1 记忆系统（2026-10-20）：三态记忆（长期 events/核心画像+群档案）+ LLM 抽取。
+# memory 包同款零主包依赖（仅延迟 import tools.llm）。
+from .memory import (ExtractError, MemoryError, MemoryManager,  # noqa: F401
+                     MemoryStore, memory_manager, memory_store)
 # 智能表情包（2026-10-19）：自动收集 + OCR/VLM 分类 + 人设语境选用
 from .stickers import (DEFAULT_PERSONA_MAP, STICKER_CATS,  # noqa: F401
                        collect_group_stickers, parse_persona_map, sticker_lib)
@@ -2504,6 +2508,18 @@ async def _handle_ai_chat(ev, trace_id: str) -> None:
     _sticker_sys = _sticker_system_hint()
     if _sticker_sys:
         extra_system = (extra_system + "\n" + _sticker_sys) if extra_system else _sticker_sys
+    # ---- M1 记忆系统（2026-10-20）：对话前注入相关记忆（画像/长期事件/群档案）----
+    # recall 失败不阻断对话（manager 内部已挡：记日志+本轮无记忆）。
+    if Config.MEMORY_ENABLE:
+        try:
+            _mem_text = memory_manager.recall_text(scope, ev.user_id, query=text)
+            if _mem_text:
+                extra_system = ((extra_system + "\n\n" + _mem_text)
+                                if extra_system else _mem_text)
+        except Exception as e:  # noqa: BLE001 — CLOSE-02 记而不吞
+            log.warning(jlog("memory_recall_error", scope=scope,
+                             error=type(e).__name__, detail=str(e)[:160],
+                             trace_id=trace_id))
     # ---- M2 工具总线（2026-10-20）：开关开且已有工具注册 → FC 多回合路径；
     # 否则（关/无工具/注册失败）走原纯对话路径。这是路由选择不是兜底降级——
     # 两条路径能力差异只在「能不能调工具」，纯对话行为零变化。
@@ -2557,6 +2573,15 @@ async def _handle_ai_chat(ev, trace_id: str) -> None:
     if gs:
         gs.turns += 1
         _arm_game_timer(ev)  # 每回一手 → 重布倒计时（旧任务取消，防叠加）
+    # ---- M1 记忆系统（2026-10-20）：对话后异步抽取（不阻塞回复）----
+    # 后台 task 跑 ingest（LLM 抽取 facts/events）；失败只在 task 内记日志，
+    # 不影响用户已收到的回复。抽取不到东西是正常态（静默）。
+    if Config.MEMORY_ENABLE and Config.MEMORY_EXTRACT and not err:
+        try:
+            asyncio.ensure_future(_memory_ingest_bg(scope, ev.user_id, text, reply))
+        except Exception as e:  # noqa: BLE001
+            log.warning(jlog("memory_ingest_spawn_failed", scope=scope,
+                             error=type(e).__name__))
     # reply 已被 chat() 剥掉 [表情:分类] marker；mood 从 last_mood 取
     mood = ai_chatter.last_mood.get(scope)
     # ---- 连发（概率拆 2~3 条 + 条间拟人延迟 + 中间夹表情包）----
@@ -4049,6 +4074,136 @@ async def _handle_ops_command(ev, trace_id: str) -> None:
                  title="运维面")
 
 
+# ==================== M1 记忆系统（2026-10-20）====================
+# memory 包（store/extract/manager）不 import 主包；ingest 的 LLM 抽取经
+# tools.llm 延迟导入。
+
+
+async def _memory_ingest_bg(scope: str, user_id: int, user_text: str,
+                            bot_reply: str) -> None:
+    """后台记忆抽取（_handle_ai_chat 对话后 spawn；失败只记日志）。"""
+    try:
+        await memory_manager.ingest(scope, user_id, user_text, bot_reply)
+    except (ExtractError, MemoryError) as e:
+        # 抽取失败/无 Key：静默记日志（下轮对话还能再抽，不打扰用户）
+        log.info(jlog("memory_ingest_skipped", scope=scope, user_id=user_id,
+                      detail=str(e)[:160]))
+    except Exception as e:  # noqa: BLE001 — 兜底显式化，绝不静默
+        log.warning(jlog("memory_ingest_failed", scope=scope, user_id=user_id,
+                         error=type(e).__name__, detail=str(e)[:160]))
+
+
+async def _handle_memory_command(ev, trace_id: str) -> None:
+    """/记忆 命令族（M1 2026-10-20）：我 / 忘记 / 更正 / 事件 / 清理。
+
+    权限口径：
+      - `/记忆 我`、`/记忆 忘记 <字段>`：任何人可看/删**自己**在本会话的记忆；
+      - `/记忆 更正 <字段> <值>`：任何人可更正自己的画像（结构化画像更正，
+        override 优先于自动快照——personification 范式）；
+      - `/记忆 事件`、`/记忆 清理`：仅主人（看全会话长期记忆/触发滚动清理）。
+    """
+    if not Config.MEMORY_ENABLE:
+        return
+    ctx = _ctx(ev)
+    sess = session_store.get(ev.user_id)
+    scope = ev.scope_key
+    parts = (ev.raw_text or "").strip().split(None, 2)
+    sub = parts[1].strip() if len(parts) > 1 else ""
+    rest = parts[2].strip() if len(parts) > 2 else ""
+    low = sub.lower()
+
+    # ---- 我：我的画像 ----
+    if low in ("我", "me", "画像", "profile", ""):
+        try:
+            text = memory_manager.profile_view(scope, ev.user_id)
+        except MemoryError as e:
+            await _reply(ctx, sess, str(e), title="记忆")
+            return
+        await _reply(ctx, sess, text, title="本喵对你的了解")
+        return
+
+    # ---- 更正：结构化画像更正（override 优先）----
+    if low in ("更正", "纠正", "correct", "set"):
+        head = rest.split(None, 1)
+        if len(head) < 2:
+            await _reply(ctx, sess,
+                         "用法：/记忆 更正 <字段> <值>\n"
+                         "例：/记忆 更正 喜好 猫猫和代码\n"
+                         "（更正后你的话优先——自动抽取的同字段会被覆盖）",
+                         title="记忆更正")
+            return
+        key, value = head[0], head[1].strip()
+        try:
+            memory_store.set_override(scope, ev.user_id, key, value,
+                                      by=ev.user_id)
+        except MemoryError as e:
+            await _reply(ctx, sess, str(e), title="记忆更正")
+            return
+        await _reply(ctx, sess, "记住了：%s = %s（你的更正优先）" % (key, value),
+                     title="记忆更正")
+        return
+
+    # ---- 忘记：删一条自己的记忆 ----
+    if low in ("忘记", "忘掉", "forget", "删"):
+        if not rest:
+            await _reply(ctx, sess,
+                         "用法：/记忆 忘记 <字段>\n例：/记忆 忘记 喜好\n"
+                         "（先 /记忆 我 看有哪些字段）", title="记忆")
+            return
+        try:
+            msg = memory_manager.forget(scope, ev.user_id, rest.split()[0])
+        except MemoryError as e:
+            await _reply(ctx, sess, str(e), title="记忆")
+            return
+        await _reply(ctx, sess, msg, title="记忆")
+        return
+
+    # ---- 事件：本会话长期记忆（仅主人）----
+    if low in ("事件", "events", "长期"):
+        if not _is_owner(ev.user_id):
+            await _reply(ctx, sess, "看会话记忆是主人的权限喵。", title="权限不足")
+            return
+        try:
+            hits = memory_store.recent(scope, limit=15)
+        except MemoryError as e:
+            await _reply(ctx, sess, str(e), title="记忆")
+            return
+        if not hits:
+            await _reply(ctx, sess, "这个会话还没有长期记忆。", title="长期记忆")
+            return
+        lines = ["本会话长期记忆（最近 15 条）："]
+        for h in hits:
+            lines.append("· [%s] %s（%s）" % (
+                h.get("kind"), str(h.get("text") or "")[:60],
+                time.strftime("%m-%d", time.localtime(float(h.get("created_at") or 0)))))
+        await _reply(ctx, sess, "\n".join(lines), title="长期记忆")
+        return
+
+    # ---- 清理：滚动清理（仅主人）----
+    if low in ("清理", "gc", "整理"):
+        if not _is_owner(ev.user_id):
+            await _reply(ctx, sess, "清理是主人的权限喵。", title="权限不足")
+            return
+        try:
+            n = memory_store.gc()
+        except MemoryError as e:
+            await _reply(ctx, sess, str(e), title="记忆清理")
+            return
+        await _reply(ctx, sess, "清理完成：%d 条超期/超额记忆已软删（可恢复）" % n,
+                     title="记忆清理")
+        return
+
+    # ---- 帮助 ----
+    await _reply(ctx, sess,
+                 "记忆命令族：\n"
+                 "· /记忆 我 —— 本喵对你的了解（画像）\n"
+                 "· /记忆 更正 <字段> <值> —— 你说的话优先（覆盖自动抽取）\n"
+                 "· /记忆 忘记 <字段> —— 删一条\n"
+                 "· /记忆 事件 —— 本会话长期记忆（主人）\n"
+                 "· /记忆 清理 —— 滚动清理超期记忆（主人）",
+                 title="记忆系统")
+
+
 async def _route(ev, trace_id: str) -> None:
     """归一化之后的**统一业务路由**（与协议无关）。
 
@@ -4122,6 +4277,11 @@ async def _route(ev, trace_id: str) -> None:
     # ---- M9 运维面命令族（2026-10-20）：/ops git/ssh/wol/frp/通知 ----
     if (ev.raw_text or "").strip().startswith("/ops"):
         await _handle_ops_command(ev, trace_id)
+        return
+
+    # ---- M1 记忆命令族（2026-10-20）：/记忆 我/更正/忘记/事件/清理 ----
+    if (ev.raw_text or "").strip().startswith("/记忆"):
+        await _handle_memory_command(ev, trace_id)
         return
 
     # ---- 宿主机管家（M6 2026-10-20）：/pc 命令族 + 自然语言直通车 ----

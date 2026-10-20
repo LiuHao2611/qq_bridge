@@ -325,3 +325,30 @@ M1 记忆 ──┬─→ M2 工具总线 ──┬─→ M3 情感日程
 **通知中枢接入策略（分期，如实记录）**：一期服务 M9 自有事件（仓库巡检脏改动/未推送/自检失败）；M6 告警/M7 下载完成保持既有直发链路（它们本就是人话，无需转述），二期按「机器事件才转述」原则逐个收编——hub 的 push API 即统一契约，收编是接入问题不是重构。
 
 **验收**：`tests/test_ops_gitinfo.py`（含真实仓库实测）+ `test_ops_ssh.py` + `test_ops_wol_frp.py`（MockTransport/FakeSock）+ `test_ops_notify.py` 共 45 断言，与 M2/M7/config 组合 **173/173 全绿**。顺带修复 SSH/WoL 配置解析缺陷与 socket import 位置（见 AGENTS.md F14）。
+
+### 10.9 M1 记忆系统交付记录（2026-10-20 ✅）
+契约来源（2026-10-20 实读 MaiBot A-Memorix README v2.0.0 验证）：长期记忆子系统 = 文本段落 + 关系 + Episode 事件 + 人物画像（**自动快照 + 手动 override**）+ 检索（稀疏 FTS / 向量）+ **删除可恢复**（recycle_bin）。另参考 ai-groupmate 的「明确记忆按会话/用户/Bot/群隔离」与 personification 的「结构化画像更正」。
+
+**三态分工**（与既有资产的边界）：
+| 态 | 落点 | 说明 |
+|---|---|---|
+| 短期 | `ai_mode.AIChatter.history`（内存+TTL 30min） | 既有能力，M1 不改动 |
+| 长期 | `memory/store.py` events 表 | 值得记的事件/对话摘要；FTS5 检索 + 时间衰减（半衰期 30 天）+ 软删可恢复 + 滚动清理 |
+| 核心 | `profiles`（人物画像 facts+overrides）+ `group_profiles`（群档案 氛围/话题/常客） | 画像 = LLM 自动快照 + **用户手动 override 优先**（结构化画像更正） |
+
+**交付物**（`src/plugins/qq_bridge/memory/` 三件套，不 import 主包，可裸单测）：
+| 文件 | 职责 |
+|---|---|
+| `store.py` | 三态存储（SQLite `data/qq_memory.db`）：events（FTS5 + 时间衰减 + soft_delete/restore + gc 幂等分批 ≤500）、profiles（facts 自动快照 + overrides 覆盖，view 展开 override 优先）、group_profiles（upsert 合并）；CLOSE-02 全路径显式 MemoryError |
+| `extract.py` | LLM 抽取：对话 → `{facts:[{key,value}], events:[...], relation}`；REDUN-03 JSON schema 校验（坏 JSON/非数组/超容截断/空输入 → 显式 ExtractError）；markdown 围栏宽容剥壳；LLM 失败显式上抛 |
+| `manager.py` | 门面：`recall_text(scope,user,query)` 组装注入文本（画像 + 相关记忆 + 群档案）；`ingest()` 抽取→落库（facts 进画像/events 进长期库/relation 落库）；`/记忆` 命令族服务（profile_view/forget，override 优先删） |
+
+**CJK 检索方案（2026-10-20 实测返工，重要）**：FTS5 默认 `unicode61` 分词器**不索引 CJK**（汉字当分隔符丢弃 → 中文检索全空）；换 `tokenize='trigram'`（SQLite 3.50.4 支持），但 trigram 有**最小 3 字符**约束。最终双路径（明确规则路由，非兜底）：查询 ≥3 字符 → FTS trigram `MATCH`（phrase 转义：双写引号包住，防 OR/AND/引号运算符注入）；<3 字符 → `LIKE` 子串匹配。两条路径统一叠加「时间衰减 × weight」打分。
+
+**接线**：`config.py`「记忆系统」配置组 6 项 + `config_api.py` 配置页同款；`__init__.py`：`_handle_ai_chat` 对话前 `recall_text` 注入 extra_system（失败只记日志不阻对话）、对话后 `asyncio.create_task(_memory_ingest_bg)` 后台抽取（不阻塞回复，失败只记日志）；`_route` 挂 `/记忆` 命令族（我/更正/忘记/事件/清理——自看自改，看全会话记忆与清理仅主人）。
+
+**隐私口径（一期保守，诚实记录）**：只抽「本会话发起用户自己暴露的事实」+「公共事件」，第三人隐私不抽（EXTRACT_SYSTEM 约束 + validate 结构校验双保险）；`/记忆` 提供主人查看/删除/更正入口。
+
+**验收**：`tests/test_memory_store.py`（FTS/衰减/软删恢复/画像 override 优先/群档案/gc）+ `test_memory_manager.py`（抽取校验/recall 三段组装/ingest/profile_view/forget）共 33 断言，与 M2/M7/M9/config 组合 **206/206 全绿**。向量检索二期（在线 embedding API）——能力分层明确，非偷偷降级。
+
+**M8 前置探测（同期执行）**：本机 8123 端口有代理服务但**无 Home Assistant 实例**（`/api/config` 返回代理错误）→ M8 按 roadmap §10.4（未配置 HA 时功能关闭不阻塞）跳过，先做人格面 M1。
