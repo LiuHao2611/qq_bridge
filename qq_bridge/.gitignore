@@ -1,0 +1,35 @@
+# ===== 密钥与环境（绝不入库） =====
+.env
+.env.example
+.venv/
+napcat/
+napcat_node/
+node20.to-delete/
+
+# ===== 运行时数据 / 缓存 / 日志 =====
+data/
+logs/
+.playwright-cli/
+.pytest_tmp/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# ===== 临时与废弃文件 =====
+*.to-delete
+*.to-delete.*
+__tmp_*.py
+
+# ===== 调试 scratch 产物（非源码，不入仓） =====
+_wf_*.txt
+_wf_*.mjs
+_wf_*.html
+_backup_*.py
+*_preview*.png
+_verify_*.png
+_icon_*.png
+_halo_*.png
+_panel_*.png
+_e2e_*.png
+_probe_*.png
+*.to-delete.png
