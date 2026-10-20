@@ -394,11 +394,11 @@ SCHEMA: list[tuple] = [
     ("宿主机管家", "PC_FILE_UPLOAD_DIR", "QQ文件落盘目录", "text", None, False,
      "QQ 发来的文件保存到此目录；留空=项目 data/pc_inbox（始终落在项目内，不散到系统盘）；需为 PC_DISK_ROOTS 内或独立目录（热生效）",
      "", "", False),
-    ("宿主机管家", "PC_SCREENSHOT_METHOD", "截图方法", "select", "auto|dxgi|mss", False,
-     "截图引擎：auto=优先 DXGI(Desktop Duplication，GPU 全屏不再黑屏)失败回退 mss；"
-     "dxgi=仅 DXGI（需装 windows-capture）；mss=仅传统 mss（GPU 全屏可能黑屏）。"
-     "WGC 在本机 Win10 21H2 因系统限制不可用，故统一走 DXGI（热生效）",
-     "auto", "auto", False),
+    ("宿主机管家", "PC_SCREENSHOT_METHOD", "截图方法", "select", "dxgi|mss", False,
+     "截图引擎：dxgi=DXGI Desktop Duplication（捕获桌面合成器输出，GPU 全屏内容不再黑屏，本机唯一推荐）；"
+     "mss=传统 mss（已知 GPU 全屏内容会黑屏，仅在 DXGI 不可用且明确需要时选用）。"
+     "WGC 在本机 Win10 21H2 因系统限制不可用，故统一走 DXGI。选中方法失败即如实报错，无降级/回退（热生效）",
+     "dxgi", "dxgi", False),
     # ---- 常规·超时与风控 ----
     ("常规·超时与风控", "MANJU_HTTP_TIMEOUT", "HTTP 默认超时(秒)", "float", None, False,
      "外部调用默认超时", "30.0", "", False),

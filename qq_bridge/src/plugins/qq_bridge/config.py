@@ -459,9 +459,10 @@ class Config:
     PC_DISK_ROOTS: str = os.environ.get("PC_DISK_ROOTS") or r"D:\AI"
     # 截图后经 base64 回传的大小上限（MB）；NapCat WS 单帧 16MB，base64 实传 ≤10MB
     PC_SHOT_MAX_MB: int = _as_int(os.environ.get("PC_SHOT_MAX_MB"), 8)
-    # 截图方法：auto(优先 DXGI，失败回退 mss) / dxgi(仅 DXGI，GPU 全屏不黑屏) /
-    # mss(仅传统 mss，GPU 全屏可能黑屏)。DXGI 用 windows-capture 的 Desktop Duplication。
-    PC_SCREENSHOT_METHOD: str = os.environ.get("PC_SCREENSHOT_METHOD") or "auto"
+    # 截图方法：dxgi(默认，DXGI Desktop Duplication，GPU 全屏不黑屏，失败如实报错无兜底) /
+    # mss(仅传统 mss，GPU 全屏可能黑屏，仅在 DXGI 不可用且明确需要时选用)。
+    # DXGI 用 windows-capture 的 Desktop Duplication。不做 mss 回退（禁止降级/兜底）。
+    PC_SCREENSHOT_METHOD: str = os.environ.get("PC_SCREENSHOT_METHOD") or "dxgi"
     # 文件互传：QQ→宿主 单文件上限（MB）；超限拒绝落盘（防撑爆）
     PC_FILE_MAX_MB: int = _as_int(os.environ.get("PC_FILE_MAX_MB"), 100)
     # 文件互传：QQ→宿主 落盘目录；空=项目 data/pc_inbox（始终落在项目内，不散到系统盘）

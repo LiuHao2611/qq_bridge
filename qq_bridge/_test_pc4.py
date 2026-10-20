@@ -4,8 +4,8 @@
 覆盖：
   A. 纯函数：_is_blackish（全黑/非黑/损坏PNG 容错）；
   B. pc.screenshot_dxgi 未装组件时诚实报错（mock import）；
-  C. __init__._pc_shot_bytes 方法选择：auto(优先DXGI, 失败/全黑回退mss) /
-     dxgi(仅DXGI, 失败不回退) / mss(仅mss)；
+  C. __init__._pc_shot_bytes 方法选择（无降级/无兜底）：
+     dxgi(仅DXGI, 失败/全黑/空数据如实报错, 绝不回退 mss) / mss(仅mss, 显式选择非兜底)；
   D. 真机 DXGI 捕获（仅当 windows-capture 可导入）：产出非黑屏 PNG。
 """
 from __future__ import annotations
@@ -64,7 +64,7 @@ async def test_pc4() -> None:
         else:
             sys.modules["windows_capture"] = real_wc
 
-    print("[M6 截图 WGC/DXGI] C. _pc_shot_bytes 方法选择")
+    print("[M6 截图 WGC/DXGI] C. _pc_shot_bytes 方法选择（无降级/无兜底）")
     OWNER = 10001
     qb.Config.BOT_OWNER_QQ = (OWNER,)
     qb.Config.PC_ENABLE = True
@@ -72,40 +72,42 @@ async def test_pc4() -> None:
     orig_dxgi = pc_mod.screenshot_dxgi
     orig_mss = pc_mod.screenshot
     try:
-        # auto + DXGI 成功 → 返回 DXGI 图
-        pc_mod.screenshot_dxgi = lambda: (b"dxgi-bytes", "")
+        # dxgi（默认） + DXGI 成功 → 返回 DXGI 图
+        pc_mod.screenshot_dxgi = lambda: (_color_png(), "")
+        qb.Config.PC_SCREENSHOT_METHOD = "dxgi"
+        d, e = await qb._pc_shot_bytes()
+        check("dxgi 成功返回 DXGI 图", d == _color_png() and not e, str((len(d or b""), e)))
+
+        # dxgi + DXGI 失败 → 显式报错，绝不回退 mss
+        pc_mod.screenshot_dxgi = lambda: (None, "dxgi err")
+        d, e = await qb._pc_shot_bytes()
+        check("dxgi 失败如实报错不回退", d is None and "DXGI 截图失败" in e, str((d, e)))
+
+        # dxgi + DXGI 全黑 → 显式报错，绝不回退 mss
+        pc_mod.screenshot_dxgi = lambda: (_black_png(), "")
+        d, e = await qb._pc_shot_bytes()
+        check("dxgi 全黑如实报错不回退", d is None and "全黑" in e, str((d, e)))
+
+        # dxgi + DXGI 返回空数据 → 显式报错
+        pc_mod.screenshot_dxgi = lambda: (None, "")
+        d, e = await qb._pc_shot_bytes()
+        check("dxgi 空数据如实报错不回退", d is None and "未返回" in e, str((d, e)))
+
+        # mss 模式 → 只用 mss，忽略 DXGI 可用性（显式选择，非兜底）
+        qb.Config.PC_SCREENSHOT_METHOD = "mss"
+        pc_mod.screenshot_dxgi = lambda: (_color_png(), "")  # 即便 DXGI 可用也应忽略
         async def _mss_ok():
             return (b"mss-bytes", "")
         pc_mod.screenshot = _mss_ok
-        qb.Config.PC_SCREENSHOT_METHOD = "auto"
-        d, e = await qb._pc_shot_bytes()
-        check("auto DXGI 成功", d == b"dxgi-bytes" and not e, str((len(d or b""), e)))
-
-        # auto + DXGI 失败 → 回退 mss
-        pc_mod.screenshot_dxgi = lambda: (None, "dxgi err")
-        d, e = await qb._pc_shot_bytes()
-        check("auto DXGI 失败回退 mss", d == b"mss-bytes", str((len(d or b""), e)))
-
-        # auto + DXGI 全黑 → 回退 mss
-        pc_mod.screenshot_dxgi = lambda: (_black_png(), "")
-        d, e = await qb._pc_shot_bytes()
-        check("auto DXGI 全黑回退 mss", d == b"mss-bytes", str((len(d or b""), e)))
-
-        # dxgi 模式 + DXGI 失败 → 不回退，报错
-        qb.Config.PC_SCREENSHOT_METHOD = "dxgi"
-        pc_mod.screenshot_dxgi = lambda: (None, "dxgi err")
-        d, e = await qb._pc_shot_bytes()
-        check("dxgi 模式失败不回退", d is None and "dxgi err" in e, str((d, e)))
-        # dxgi 模式 + DXGI 成功（非黑）→ 返回 DXGI
-        pc_mod.screenshot_dxgi = lambda: (_color_png(), "")
-        d, e = await qb._pc_shot_bytes()
-        check("dxgi 模式成功", d == _color_png() and not e, str((len(d or b""), e)))
-
-        # mss 模式 → 只用 mss
-        qb.Config.PC_SCREENSHOT_METHOD = "mss"
-        pc_mod.screenshot_dxgi = lambda: (_color_png(), "")  # 即便 DXGI 可用也应忽略
         d, e = await qb._pc_shot_bytes()
         check("mss 模式忽略 DXGI", d == b"mss-bytes" and not e, str((len(d or b""), e)))
+
+        # mss 模式 + mss 失败 → 如实报错（无兜底）
+        async def _mss_fail():
+            return (None, "mss err")
+        pc_mod.screenshot = _mss_fail
+        d, e = await qb._pc_shot_bytes()
+        check("mss 失败如实报错不回退", d is None and "mss err" in e, str((d, e)))
     finally:
         pc_mod.screenshot_dxgi = orig_dxgi
         pc_mod.screenshot = orig_mss

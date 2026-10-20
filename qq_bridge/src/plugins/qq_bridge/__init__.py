@@ -2711,28 +2711,29 @@ async def _pc_shot_bytes() -> tuple[bytes | None, str]:
     """M6 截图方法选择（WGC/DXGI 黑屏修复，2026-10-20）。
 
     按 Config.PC_SCREENSHOT_METHOD：
-      - auto（默认）：优先 DXGI Desktop Duplication（GPU 全屏不黑屏），
-        失败/全黑 → 回退 mss；
-      - dxgi：仅 DXGI（失败即报错，不回退）；
-      - mss：仅传统 mss（GPU 全屏可能黑屏，保守兼容）。
+      - dxgi（默认）：DXGI Desktop Duplication，捕获桌面合成器输出（含 GPU 全屏内容，不黑屏）；
+        失败或截到全黑即显式报错，不做任何降级 / 回退。
+      - mss：传统 mss（已知 GPU 全屏内容会黑屏，仅在 DXGI 不可用且明确需要时选用；
+        失败如实报错，同样无兜底）。
+    设计原则：选中方法失败即如实报错，杜绝「降级路径 / 兜底」。
     DXGI 同步阻塞（最长约 5s 等帧），用 asyncio.to_thread 包住不卡事件循环。
     """
-    method = str(getattr(Config, "PC_SCREENSHOT_METHOD", "auto")).lower()
-    if method in ("auto", "dxgi"):
-        data, err = await asyncio.to_thread(pc_mod.screenshot_dxgi)
-        if not err and data and not _is_blackish(data):
-            return data, ""
-        if method == "dxgi":
-            return None, (err or "DXGI 截到全黑图")
-        # auto：DXGI 失败或全黑 → 回退 mss（诚实，mss 在静态桌面通常成功）
-        if err:
-            log.info(jlog("pc_shot_dxgi_fallback", reason=err))
-    # mss 兜底（同步，快）
-    try:
-        data, err = await pc_mod.screenshot()
-        return data, err
-    except Exception as e:  # noqa: BLE001 — CLOSE-02
-        return None, "截图失败（%s）" % type(e).__name__
+    method = str(getattr(Config, "PC_SCREENSHOT_METHOD", "dxgi")).lower()
+    if method == "mss":
+        try:
+            data, err = await pc_mod.screenshot()
+            return data, err
+        except Exception as e:  # noqa: BLE001 — CLOSE-02
+            return None, "截图失败（%s）" % type(e).__name__
+    # 默认 / dxgi：仅 DXGI，失败即报错（无 mss 兜底）
+    data, err = await asyncio.to_thread(pc_mod.screenshot_dxgi)
+    if err:
+        return None, "DXGI 截图失败：%s" % err
+    if not data:
+        return None, "DXGI 截图失败：未返回图像数据"
+    if _is_blackish(data):
+        return None, "DXGI 截到全黑图（桌面可能尚未重绘或当前无交互式桌面会话），无法回退"
+    return data, ""
 
 
 async def _pc_send_shot(ctx: dict) -> None:

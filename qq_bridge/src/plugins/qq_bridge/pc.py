@@ -407,7 +407,7 @@ def screenshot_dxgi() -> tuple[bytes | None, str]:
     """
     try:
         from windows_capture import DxgiDuplicationSession
-    except Exception as e:  # noqa: BLE001 — 组件未装 → 诚实告知，交给上层回退 mss
+    except Exception as e:  # noqa: BLE001 — 组件未装 → 诚实报错，无 mss 兜底
         return None, "windows-capture 未装（DXGI 捕获不可用）：%s" % type(e).__name__
     import os
     import tempfile
