@@ -288,3 +288,21 @@ M1 记忆 ──┬─→ M2 工具总线 ──┬─→ M3 情感日程
 **confirm 级不在第一轮**：kill/电源/剪贴板写/删文件继续走 `/pc` 命令通道既有确认流；registry 遇 confirm 调用明确拒绝并指路。这是发布范围决策，两条通道能力全集不变。
 
 **验收**：`tests/test_tools_registry.py` + `test_tools_fc.py` + `test_reminders.py` 三件套 47 断言 + 与 `test_config_api`/`test_config_hot_reload` 组合 **73/73 全绿**。既有缺陷记录：全量 `pytest tests/` 时 hot_reload 必红 12 条（旧测试用 `src.plugins.qq_bridge.*` 限定名导致两份 Config 类，`config_api._find_config_class` 命中错的那份）——单文件/相关组合全绿，本轮只记录不修（见 AGENTS.md F12）。
+
+### 10.7 M7 下载媒体中心交付记录（2026-10-20 ✅）
+契约来源（2026-10-20 实读验证）：**DownloadBot**（iaman1998）Aria2.go——aria2 JSON-RPC 方法名（addUri/addTorrent/getFiles/changeOption/tellStatus/tellStopped/pause/unpause/remove/getGlobalStat）、BT「只选最大文件/按大小筛」范式、磁力 paused 添加等元数据再选文件时序；**StreamVault**（Lugic1993）README——yt-dlp 通用平台下载 + 下载完成 Webhook 通知 + 收藏夹/作品监控范式。
+
+**交付物**（`src/plugins/qq_bridge/download/` 五件套，不 import 主包，可裸单测）：
+| 文件 | 职责 |
+|---|---|
+| `aria2.py` | aria2 JSON-RPC over HTTP 客户端（httpx 裸协议，不引 aria2p）：token:secret 鉴权、addUri/addTorrent(base64)/tellStatus/getFiles/changeOption/tell*/pause/unpause/remove/getGlobalStat/getVersion/purge；CLOSE-05 15s 超时、REDUN-02 仅 ConnectError 退避重试封顶 3 次、连不上显式给出开启命令（**不内置拉起进程**——尊重机器主权） |
+| `btselect.py` | BT 智能选文件纯函数：largest（只选最大）/smart（≥平均×0.8）/all（显式全选）；元数据零字节时显式空让调用方告知，不静默全选 |
+| `ytdlp.py` | yt-dlp 封装：解析（元数据）/下载（默认 bv*+ba/b 合并）；同步 API 经 asyncio.to_thread；标题清洗防路径穿越；失败显式 YtDlpError |
+| `manager.py` | 下载编排：链接四分类（http/magnet/torrent/video）；磁力 paused 添加→元数据轮询（DL_BT_META_TIMEOUT 180s 超时显式失败）→选文件→unpause；tellStopped 轮询（DL_POLL_INTERVAL 5s）检测完成→on_complete 回调；bridge 侧登记 `data/downloads.json`（CLOSE-01 状态机、原子写、终态滚动清理 100 条） |
+| `subscribe.py` | 订阅监控（StreamVault 范式）：yt-dlp flat playlist 统一抽象（不为每平台写 API）→ 新条目判定（id 不在 last_ids）→ 自动下载 + on_new 通知；DL_SUB_INTERVAL 默认 1h、每 scope 上限 5 |
+
+**接线**：`config.py` 「下载媒体」配置组 15 项 + `config_api.py` 配置页同款；`tools/builtins.py` 注册 3 个 FC 工具（`download_add`/`download_list`/`download_cancel`——下载占主人资源，add/cancel 定 owner 级）；`__init__.py`：`_route` 挂 `/dl` 命令族（下载/列表/暂停/继续/取消/发我/订阅/退订/状态；下载与订阅仅主人，群聊静默同 /pc 口径）、`_on_startup` 起 download_manager（on_complete=_dl_notify：小文件 ≤PC_FILE_MAX_MB 直发、大文件报路径+取件命令）与 subscription_monitor（submit/on_new 注入）、`_on_shutdown` 停两者。
+
+**文件中转站**：`/dl 发我 <序号|编号|绝对路径>` 复用 M6 `_pc_send_file`（PC_DISK_ROOTS 白名单 + PC_FILE_MAX_MB 上限 + send_file）；删文件不在 M7 范围（高危留 M6 确认流）。
+
+**验收**：`tests/test_download_aria2.py`（MockTransport 打假服务测真实协议路径）+ `test_download_btselect.py` + `test_download_manager.py` + `test_download_subscribe.py` 共 55 断言，与 M2/config 组合 **128/128 全绿**；**真实链路抽样 OK**（aria2c 1.37.0 RPC 实测 getVersion→addUri→下载 22B 文件→complete 通知→listTasks，抽样后进程已关）。顺带修复 falsy 配置吞噬 bug（`getattr or default` 把合法 0 值吃掉，详见 AGENTS.md F13）。

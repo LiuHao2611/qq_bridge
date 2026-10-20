@@ -30,6 +30,9 @@ log = get_logger()
 #: deps 回调签名约定：
 #   pc_overview: async () -> str
 #   queue_status: async (ctx) -> str
+#   download_add: async (url, ctx) -> str
+#   download_list: async (ctx) -> str
+#   download_cancel: async (ref, ctx) -> str
 Deps = dict
 
 
@@ -126,6 +129,59 @@ def register_builtin_tools(registry: ToolRegistry, deps: Deps | None = None) -> 
             risk=RISK_OWNER,
         ))
         registered.append("pc_overview")
+
+    # ---- 下载媒体（M7，owner：占主人带宽/磁盘，限主人）----
+    if callable(deps.get("download_add")):
+        async def download_add(args: dict, ctx) -> str:
+            return await deps["download_add"](args.get("url", ""), ctx)
+
+        registry.register(_tool(
+            "download_add",
+            "把链接加入宿主机下载队列。支持 http/https/ftp 直链、magnet: 磁力"
+            "（自动智能选最大文件）、本地 .torrent 路径、B站/抖音/YouTube 等"
+            "视频页链接（yt-dlp 下载）。仅主人可用——下载会占用主人机器的带宽"
+            "与磁盘。用户说「下载这个」「帮我下 XXX」时使用。",
+            {
+                "url": {"type": "string",
+                        "description": "下载链接（http/ftp/magnet/.torrent 路径/视频页 URL）"},
+            },
+            ["url"],
+            download_add,
+            risk=RISK_OWNER,
+        ))
+        registered.append("download_add")
+
+    if callable(deps.get("download_list")):
+        async def download_list(args: dict, ctx) -> str:
+            return await deps["download_list"](ctx)
+
+        registry.register(_tool(
+            "download_list",
+            "查看当前会话的下载任务列表（进行中与最近完成的）。用户问「下的"
+            "怎么样了」「下载列表」「我的下载」时使用。",
+            {},
+            [],
+            download_list,
+        ))
+        registered.append("download_list")
+
+    if callable(deps.get("download_cancel")):
+        async def download_cancel(args: dict, ctx) -> str:
+            return await deps["download_cancel"](str(args.get("ref", "")), ctx)
+
+        registry.register(_tool(
+            "download_cancel",
+            "取消一个下载任务（传列表里的编号或序号）。用户说「不下了」「取消"
+            "下载」时使用。仅移除任务，不删已下好的文件。",
+            {
+                "ref": {"type": "string",
+                        "description": "任务编号（download_list 返回的）或序号"},
+            },
+            ["ref"],
+            download_cancel,
+            risk=RISK_OWNER,
+        ))
+        registered.append("download_cancel")
 
     log.info(jlog("builtin_tools_registered", tools=registered,
                   count=len(registered)))

@@ -40,7 +40,8 @@ class FCRunner:
         """
         if not self.registry.enabled_tools():
             return "", "tool_bus_empty"
-        max_rounds = max(1, int(getattr(Config, "AI_FC_MAX_ROUNDS", 8) or 8))
+        raw_rounds = getattr(Config, "AI_FC_MAX_ROUNDS", 8)
+        max_rounds = max(1, 8 if raw_rounds is None else int(raw_rounds))
         msgs = list(messages)
         tools_payload = self.registry.openai_payload()
         for round_no in range(1, max_rounds + 1):

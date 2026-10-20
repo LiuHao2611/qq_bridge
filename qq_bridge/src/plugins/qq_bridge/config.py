@@ -489,6 +489,39 @@ class Config:
     # 文件互传：QQ→宿主 落盘目录；空=项目 data/pc_inbox（始终落在项目内，不散到系统盘）
     PC_FILE_UPLOAD_DIR: str = os.environ.get("PC_FILE_UPLOAD_DIR") or ""
 
+    # ---- 下载媒体中心（2026-10-20 M7：/dl 命令族 + aria2/yt-dlp + 订阅监控）----
+    # 前置条件（roadmap §10.4）：本机需以 RPC 模式运行 aria2（已装 aria2c 1.37.0，
+    # 但 Bridge **不内置拉起进程**——未检测到 RPC 时显式告知开启命令，尊重机器主权）。
+    DL_ENABLE: bool = _as_bool(os.environ.get("DL_ENABLE"), True)
+    # aria2 JSON-RPC 端点（HTTP；DownloadBot 用 WS，本地桥接选 HTTP 更简单）
+    DL_ARIA2_RPC: str = os.environ.get("DL_ARIA2_RPC") or "http://127.0.0.1:6800/jsonrpc"
+    # aria2 rpc-secret（与启动参数 --rpc-secret 一致；空 = aria2 未设 secret）
+    DL_ARIA2_SECRET: str = os.environ.get("DL_ARIA2_SECRET") or ""
+    # aria2 RPC 调用超时（秒，CLOSE-05）
+    DL_ARIA2_TIMEOUT: float = _as_float(os.environ.get("DL_ARIA2_TIMEOUT"), 15.0)
+    # 下载目录（aria2 --dir 与 yt-dlp 输出共用；「/dl 发我」回传也从这里取）
+    DL_DIR: str = os.environ.get("DL_DIR") or r"D:\Downloads"
+    # BT 智能选文件策略：largest=只选最大文件｜smart=选≥平均×0.8｜all=全选（显式选择）
+    DL_BT_SELECT: str = os.environ.get("DL_BT_SELECT") or "largest"
+    # BT 磁力元数据等待上限（秒）；超时显式失败，禁无限等
+    DL_BT_META_TIMEOUT: float = _as_float(os.environ.get("DL_BT_META_TIMEOUT"), 180.0)
+    # yt-dlp 格式选择（默认最佳视频+最佳音轨合并，无音轨回落单文件）
+    DL_YTDLP_FORMAT: str = os.environ.get("DL_YTDLP_FORMAT") or "bv*+ba/b"
+    # yt-dlp socket 超时（秒，CLOSE-05）
+    DL_YTDLP_TIMEOUT: float = _as_float(os.environ.get("DL_YTDLP_TIMEOUT"), 120.0)
+    # aria2 完成检测轮询间隔（秒）：本地服务，5s 足够（不学 aria2 WS 长连接）
+    DL_POLL_INTERVAL: float = _as_float(os.environ.get("DL_POLL_INTERVAL"), 5.0)
+    # 下载完成自动通知（关=只登记不推送；限流非功能降级）
+    DL_NOTIFY: bool = _as_bool(os.environ.get("DL_NOTIFY"), True)
+    # 订阅监控总开关（StreamVault 范式：UP/收藏夹更新 → 自动下载 → 群通知）
+    DL_SUB_ENABLE: bool = _as_bool(os.environ.get("DL_SUB_ENABLE"), True)
+    # 订阅检查间隔（秒，默认 1h；yt-dlp 请求有成本，且部分平台频访会风控）
+    DL_SUB_INTERVAL: float = _as_float(os.environ.get("DL_SUB_INTERVAL"), 3600.0)
+    # 订阅更新自动下载（关=只在群里通知有新条目，不自动下）
+    DL_SUB_AUTO_DOWNLOAD: bool = _as_bool(os.environ.get("DL_SUB_AUTO_DOWNLOAD"), True)
+    # 每会话订阅上限（防刷屏）
+    DL_SUB_MAX_PER_SCOPE: int = _as_int(os.environ.get("DL_SUB_MAX_PER_SCOPE"), 5)
+
     @classmethod
     def official_configured(cls) -> bool:
         """官方通道是否配置完整（缺 AppID/Secret 时不启用，避免启动即报错）。"""

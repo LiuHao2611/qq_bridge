@@ -90,6 +90,11 @@ from .ai_proactive import compute_activity, proactive_engine, scope_of
 from .tools import (ReminderError, ReminderParser,  # noqa: F401
                     default_registry, register_builtin_tools,
                     reminder_scheduler, reminder_store)
+# M7 下载媒体中心（2026-10-20）：aria2 RPC 桥 + BT 智能选 + yt-dlp + 订阅监控。
+# download 包同样不 import 主包，通知/发送经回调注入（on_complete/on_new）。
+from .download import (Aria2Error, DownloadError, DownloadManager,  # noqa: F401
+                       SubscriptionError, YtDlpError, classify,
+                       download_manager, subscription_monitor, subscription_store)
 # 智能表情包（2026-10-19）：自动收集 + OCR/VLM 分类 + 人设语境选用
 from .stickers import (DEFAULT_PERSONA_MAP, STICKER_CATS,  # noqa: F401
                        collect_group_stickers, parse_persona_map, sticker_lib)
@@ -391,6 +396,20 @@ async def _on_startup() -> None:
     except Exception as e:  # noqa: BLE001
         log.error(jlog("reminder_scheduler_start_failed", error=type(e).__name__,
                        detail=str(e)[:200]))
+    # 下载媒体中心（2026-10-20 M7）：aria2 完成轮询 + 订阅监控。aria2 RPC 未开
+    # 不阻塞启动——用户下发 /dl 时会得到显式开启指引（探测在命令里做）。
+    try:
+        download_manager.on_complete = _dl_notify
+        await download_manager.start()
+        subscription_monitor.submit = _dl_sub_submit
+        subscription_monitor.on_new = _dl_sub_notify
+        if Config.DL_SUB_ENABLE:
+            await subscription_monitor.start()
+        log.info(jlog("download_manager_started",
+                      subs=len(subscription_store.list("")) ))
+    except Exception as e:  # noqa: BLE001
+        log.error(jlog("download_manager_start_failed", error=type(e).__name__,
+                       detail=str(e)[:200]))
 
 
 async def _on_shutdown() -> None:
@@ -407,6 +426,15 @@ async def _on_shutdown() -> None:
     except Exception as e:  # noqa: BLE001
         log.warning(jlog("reminder_scheduler_stop_failed", error=type(e).__name__,
                          detail=str(e)[:160]))
+    # 停下载轮询与订阅监控（M7）
+    for name, stopper in (("download_loop", download_manager.stop),
+                          ("subscription_monitor", subscription_monitor.stop)):
+        try:
+            await stopper()
+            log.info(jlog("%s_stopped" % name))
+        except Exception as e:  # noqa: BLE001
+            log.warning(jlog("%s_stop_failed" % name, error=type(e).__name__,
+                             detail=str(e)[:160]))
     # 停每日官方数据同步循环
     try:
         wf_sync.stop_sync_scheduler()
@@ -3246,9 +3274,46 @@ def _register_m2_tools() -> list[str]:
         # system_overview 是同步函数（M6 既有用法一致直接调）
         return pc_mod.system_overview()
 
+    async def _download_add(url: str, tctx) -> str:
+        item = await download_manager.submit(
+            url, scope=tctx.scope, user_id=tctx.user_id, group_id=tctx.group_id,
+            channel=getattr(tctx, "channel", "napcat"))
+        if item.get("status") == "complete":
+            return ("下好了：%s\n文件：%s（%.1f MB）\n"
+                    "「/dl 发我 %s」取文件" % (
+                        item.get("name") or "未命名",
+                        item.get("filepath") or "",
+                        float(item.get("size") or 0) / 1048576,
+                        item["id"]))
+        return ("已加入下载队列：%s\n编号 %s（aria2 gid %s）\n"
+                "下完会自动告诉你；「/dl 列表」看进度，「/dl 取消 %s」取消" % (
+                    item.get("url") or "", item["id"],
+                    item.get("gid") or "-", item["id"]))
+
+    async def _download_list(tctx) -> str:
+        items = download_manager.list(tctx.scope)
+        if not items:
+            return "当前会话没有进行中的下载"
+        lines = ["下载任务："]
+        for i, d in enumerate(items, 1):
+            lines.append("%d. [%s] %s" % (i, d["id"],
+                                          (d.get("name") or d.get("url") or "")[:50]))
+        return "\n".join(lines)
+
+    async def _download_cancel(ref: str, tctx) -> str:
+        item = download_manager.resolve_ref(tctx.scope, ref)
+        if item is None:
+            return "没找到编号/序号为 %s 的下载任务" % ref
+        await download_manager.cancel(item["id"], tctx.scope)
+        return "已取消下载 %s（只移除任务，已下的文件还在 %s）" % (
+            item["id"], item.get("filepath") or "下载目录")
+
     return register_builtin_tools(default_registry, {
         "queue_status": _queue_status,
         "pc_overview": _pc_overview,
+        "download_add": _download_add,
+        "download_list": _download_list,
+        "download_cancel": _download_cancel,
     })
 
 
@@ -3441,6 +3506,303 @@ def _remind_err_text(e: Exception) -> str:
     return msg
 
 
+# ==================== M7 下载媒体中心（2026-10-20）====================
+# download 包（aria2/btselect/ytdlp/manager/subscribe）不 import 主包；
+# 完成通知/发送/文件回传全部经本区块的回调与命令族落地。
+
+
+async def _dl_notify(item: dict) -> None:
+    """下载完成通知（download_manager.on_complete 注入，M7）。
+
+    小文件（≤ PC_FILE_MAX_MB）直接回传；大文件只报路径+取件命令
+    （NapCat WS 单帧 16MB，硬塞会炸——M6 文件互传同款取舍）。
+    """
+    did = item.get("id", "")
+    name = item.get("name") or "未命名文件"
+    path = item.get("filepath") or ""
+    size = int(item.get("size") or 0)
+    ctx = {"user_id": int(item.get("user_id") or 0),
+           "group_id": int(item.get("group_id") or 0),
+           "channel": item.get("channel") or "napcat"}
+    sess = None
+    max_mb = max(1, int(getattr(Config, "PC_FILE_MAX_MB", 100)))
+    if path and size and size <= max_mb * 1048576:
+        try:
+            await send_file(ctx, path)
+            log.info(jlog("dl_notify_file_sent", did=did, size=size))
+        except Exception as e:  # noqa: BLE001 — 直发失败回落文本指引（不静默）
+            log.warning(jlog("dl_notify_send_failed", did=did,
+                             error=type(e).__name__, detail=str(e)[:160]))
+            await _reply(ctx, sess,
+                         "「%s」下好了（%.1f MB），但直接回传失败（%s）。\n"
+                         "文件在：%s\n发「/dl 发我 %s」再试" % (
+                             name, size / 1048576, type(e).__name__, path, did),
+                         title="下载完成")
+            return
+        return
+    await _reply(ctx, sess,
+                 "「%s」下好了（%.1f MB，超过 %d MB 不回传）。\n"
+                 "文件在：%s\n发「/dl 发我 %s」取文件" % (
+                     name, size / 1048576, max_mb, path or "下载目录", did),
+                 title="下载完成")
+
+
+async def _dl_sub_notify(sub: dict, new_items: list) -> None:
+    """订阅更新通知（subscription_monitor.on_new 注入，M7）。"""
+    ctx = {"user_id": int(sub.get("user_id") or 0),
+           "group_id": int(sub.get("group_id") or 0),
+           "channel": sub.get("channel") or "napcat"}
+    titles = "、".join(i.get("title", "")[:30] for i in new_items[:5])
+    if len(new_items) > 5:
+        titles += " 等 %d 条" % len(new_items)
+    auto = "已在自动下载，下完告诉你" if Config.DL_SUB_AUTO_DOWNLOAD else \
+        "（自动下载关着，只通知——要下手动 /dl <链接>）"
+    await _reply(ctx, None,
+                 "订阅更新：%s\n%s\n%s" % (sub.get("title") or sub.get("url", ""),
+                                        titles, auto),
+                 title="订阅更新")
+
+
+async def _dl_sub_submit(url: str, scope: str, user_id: int = 0,
+                         group_id: int = 0, channel: str = "napcat"):
+    """订阅自动下载入口（subscription_monitor.submit 注入）。"""
+    return await download_manager.submit(url, scope=scope, user_id=user_id,
+                                         group_id=group_id, channel=channel)
+
+
+def _fmt_size(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return "%.1f %s" % (n, unit)
+        n /= 1024
+    return "%.1f PB" % n
+
+
+async def _handle_dl_command(ev, trace_id: str) -> None:
+    """/dl 命令族（M7 2026-10-20）：下载 / 列表 / 暂停 / 继续 / 取消 / 发我 /
+    订阅 / 退订 / 状态。
+
+    下载类（add/cancel）**仅主人**——占主人带宽与磁盘；列表/查询所有会话
+    可用（只看自己会话的任务）。「发我」的文件路径受 PC_DISK_ROOTS 白名单
+    约束（复用 M6 文件互传安全层）。
+    """
+    if not Config.DL_ENABLE:
+        return
+    ctx = _ctx(ev)
+    sess = session_store.get(ev.user_id)
+    scope = ev.scope_key
+    body = (ev.raw_text or "").strip()
+    parts = body.split(None, 2)
+    sub = parts[1].strip() if len(parts) > 1 else ""
+    rest = parts[2].strip() if len(parts) > 2 else ""
+    low = sub.lower()
+
+    def _owner_only() -> bool:
+        if ev.is_group or not _is_owner(ev.user_id):
+            return False
+        return True
+
+    # ---- 状态（aria2 RPC 探测；所有会话可查）----
+    if low in ("状态", "status", "咋样"):
+        ok, detail = await download_manager.aria2.check()
+        if not ok:
+            await _reply(ctx, sess, detail, title="下载中心·未就绪")
+            return
+        try:
+            stat = await download_manager.aria2.get_global_stat()
+            await _reply(ctx, sess,
+                         "下载中心在线（%s）\n下载 %s/s · 上传 %s/s · 活动任务 %s" % (
+                             detail, _fmt_size(float(stat.get("downloadSpeed") or 0)),
+                             _fmt_size(float(stat.get("uploadSpeed") or 0)),
+                             stat.get("numActive", "?")),
+                         title="下载中心")
+        except Aria2Error as e:
+            await _reply(ctx, sess, str(e), title="下载中心")
+        return
+
+    # ---- 列表 ----
+    if low in ("列表", "list", "ls", "所有", "进度"):
+        items = download_manager.list(scope)
+        if not items:
+            await _reply(ctx, sess, "这个会话没有进行中的下载喵。", title="下载列表")
+            return
+        lines = ["下载任务（编号 序号）："]
+        for i, d in enumerate(items, 1):
+            name = (d.get("name") or d.get("url") or "")[:40]
+            lines.append("%d. [%s] %s" % (i, d["id"], name))
+        await _reply(ctx, sess, "\n".join(lines), title="下载列表")
+        return
+
+    # ---- 订阅 ----
+    if low in ("订阅", "sub"):
+        if not _owner_only():
+            await _reply(ctx, sess, "订阅下载是主人的私享功能（会自动下片占机器）喵。",
+                         title="权限不足")
+            return
+        if not Config.DL_SUB_ENABLE:
+            await _reply(ctx, sess, "订阅监控关着（配置页「下载媒体 → "
+                                    "DL_SUB_ENABLE」打开）", title="订阅")
+            return
+        if not rest:
+            subs = subscription_store.list(scope)
+            usage = ("用法：/dl 订阅 <B站收藏夹/UP空间/抖音作品链接>\n"
+                     "例：/dl 订阅 https://space.bilibili.com/xxxx/favlist\n"
+                     "· /dl 订阅列表 · /dl 退订 <序号>")
+            if subs:
+                usage += "\n当前订阅：\n" + "\n".join(
+                    "%d. %s" % (i, s["url"][:60])
+                    for i, s in enumerate(subs, 1))
+            await _reply(ctx, sess, usage, title="订阅")
+            return
+        try:
+            sub_item = subscription_store.add(
+                rest, scope, user_id=ev.user_id, group_id=ev.group_id,
+                channel=getattr(ev, "channel", "napcat"))
+            await _reply(ctx, sess,
+                         "订阅好了：%s\n编号 %s（每 %d 分钟检查一次更新，"
+                         "有新片自动下）" % (
+                             sub_item["url"][:80], sub_item["id"],
+                             int(Config.DL_SUB_INTERVAL // 60)),
+                         title="订阅已添加")
+        except SubscriptionError as e:
+            await _reply(ctx, sess, str(e), title="订阅")
+        return
+
+    if low in ("订阅列表", "sublist"):
+        subs = subscription_store.list(scope)
+        if not subs:
+            await _reply(ctx, sess, "这个会话还没有订阅源。", title="订阅列表")
+            return
+        lines = ["订阅源："]
+        for i, s in enumerate(subs, 1):
+            lines.append("%d. [%s] %s（上次新增 %d）" % (
+                i, s["id"], s["url"][:60], int(s.get("last_new_count") or 0)))
+        await _reply(ctx, sess, "\n".join(lines), title="订阅列表")
+        return
+
+    if low in ("退订", "取消订阅", "unsub"):
+        if not _owner_only():
+            await _reply(ctx, sess, "退订也要主人来喵。", title="权限不足")
+            return
+        if not rest:
+            await _reply(ctx, sess, "用法：/dl 退订 <序号或编号>", title="退订")
+            return
+        ref = rest.split()[0]
+        subs = subscription_store.list(scope)
+        if ref.isdigit() and 1 <= int(ref) <= len(subs):
+            ref = subs[int(ref) - 1]["id"]
+        try:
+            s = subscription_store.remove(ref, scope)
+            await _reply(ctx, sess, "已退订：%s" % s["url"][:80], title="退订")
+        except SubscriptionError as e:
+            await _reply(ctx, sess, str(e), title="退订")
+        return
+
+    # ---- 发我（文件中转站：下载目录/白名单文件 → QQ）----
+    if low in ("发我", "发送", "send", "get"):
+        if not rest:
+            await _reply(ctx, sess,
+                         "用法：/dl 发我 <任务序号/编号> 或 <文件完整路径>\n"
+                         "例：/dl 发我 1 · /dl 发我 D:\\Downloads\\a.mkv",
+                         title="文件回传")
+            return
+        ref = rest.split()[0]
+        item = download_manager.resolve_ref(scope, ref)
+        path = (item or {}).get("filepath") or ref
+        await _pc_send_file(ctx, sess, path)
+        return
+
+    # ---- 暂停 / 继续 ----
+    if low in ("暂停", "pause", "停"):
+        item = download_manager.resolve_ref(scope, rest.split()[0] if rest else "")
+        if item is None:
+            await _reply(ctx, sess, "没找到那个任务（/dl 列表 看编号）", title="下载")
+            return
+        try:
+            await download_manager.pause(item["id"], scope)
+            await _reply(ctx, sess, "已暂停 %s" % item["id"], title="下载")
+        except (DownloadError, Aria2Error) as e:
+            await _reply(ctx, sess, str(e), title="下载")
+        return
+    if low in ("继续", "恢复", "resume", "unpause"):
+        item = download_manager.resolve_ref(scope, rest.split()[0] if rest else "")
+        if item is None:
+            await _reply(ctx, sess, "没找到那个任务（/dl 列表 看编号）", title="下载")
+            return
+        try:
+            await download_manager.unpause(item["id"], scope)
+            await _reply(ctx, sess, "已继续 %s" % item["id"], title="下载")
+        except (DownloadError, Aria2Error) as e:
+            await _reply(ctx, sess, str(e), title="下载")
+        return
+
+    # ---- 取消 ----
+    if low in ("取消", "删", "删除", "cancel", "del", "rm"):
+        if not _owner_only():
+            await _reply(ctx, sess, "取消下载也要主人确认喵（会占你机器资源）。",
+                         title="权限不足")
+            return
+        if not rest:
+            await _reply(ctx, sess, "用法：/dl 取消 <序号或编号>", title="取消下载")
+            return
+        item = download_manager.resolve_ref(scope, rest.split()[0])
+        if item is None:
+            await _reply(ctx, sess, "没找到那个任务", title="取消下载")
+            return
+        try:
+            await download_manager.cancel(item["id"], scope)
+            await _reply(ctx, sess,
+                         "已取消 %s（只移除任务；已下的文件还在下载目录）" % item["id"],
+                         title="取消下载")
+        except (DownloadError, Aria2Error) as e:
+            await _reply(ctx, sess, str(e), title="取消下载")
+        return
+
+    # ---- 下载（默认分支）----
+    if not _owner_only():
+        # 群聊/非主人：静默（不暴露功能存在，同 /pc 口径）或明确拒绝
+        if not ev.is_group:
+            await _reply(ctx, sess, "下载是主人的私享功能（会占你家机器资源）喵。",
+                         title="权限不足")
+        return
+    if not rest and not sub:
+        await _reply(ctx, sess,
+                     "用法：/dl <链接>\n"
+                     "· http/https/ftp 直链 → aria2\n"
+                     "· magnet: 磁力 → aria2 + 智能选最大文件\n"
+                     "· 本地 .torrent 路径 → aria2\n"
+                     "· B站/抖音/YouTube 等视频页 → yt-dlp\n"
+                     "· /dl 列表 · /dl 发我 N · /dl 取消 N · /dl 状态 · /dl 订阅 <链接>",
+                     title="下载中心")
+        return
+    url = (sub + (" " + rest if rest else "")).strip()
+    try:
+        item = await download_manager.submit(
+            url, scope=scope, user_id=ev.user_id, group_id=ev.group_id,
+            channel=getattr(ev, "channel", "napcat"))
+    except (DownloadError, Aria2Error, YtDlpError) as e:
+        log.warning(jlog("dl_submit_failed", scope=scope, user_id=ev.user_id,
+                         error=type(e).__name__, trace_id=trace_id))
+        await _reply(ctx, sess, str(e), title="下载失败")
+        return
+    if item.get("status") == "complete":
+        await _reply(ctx, sess,
+                     "下好了：%s\n文件：%s（%s）\n「/dl 发我 %s」取文件" % (
+                         item.get("name") or "未命名",
+                         item.get("filepath") or "",
+                         _fmt_size(float(item.get("size") or 0)), item["id"]),
+                     title="下载完成")
+        return
+    await _reply(ctx, sess,
+                 "已加入队列：%s\n编号 %s%s\n下完自动告诉你（大文件只报路径）" % (
+                     url[:80], item["id"],
+                     "（BT 智能选文件中，元数据到位即开始）"
+                     if item.get("kind") == "magnet" else ""),
+                 title="下载已提交")
+    log.info(jlog("dl_cmd_submitted", scope=scope, user_id=ev.user_id,
+                  did=item["id"], kind=item.get("kind"), trace_id=trace_id))
+
+
 async def _route(ev, trace_id: str) -> None:
     """归一化之后的**统一业务路由**（与协议无关）。
 
@@ -3504,6 +3866,11 @@ async def _route(ev, trace_id: str) -> None:
     # （两条命令族互不依赖）。以 / 开头，不会被关键词门禁误吞。
     if (ev.raw_text or "").strip().startswith("/提醒"):
         await _handle_remind_command(ev, trace_id)
+        return
+
+    # ---- M7 下载媒体命令族（2026-10-20）：/dl 下载/列表/取消/发我/订阅 ----
+    if (ev.raw_text or "").strip().startswith("/dl"):
+        await _handle_dl_command(ev, trace_id)
         return
 
     # ---- 宿主机管家（M6 2026-10-20）：/pc 命令族 + 自然语言直通车 ----
