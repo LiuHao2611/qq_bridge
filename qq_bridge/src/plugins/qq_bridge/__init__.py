@@ -85,6 +85,11 @@ from .ai_mode import (AI_GAMES, ai_chatter, ai_mode_store,  # noqa: F401
                       parse_sticker_marker, process_llm_response)
 # AI 主动发言（2026-10-19）：群里安静下来自己起话头/跟进话题 + 早午晚安
 from .ai_proactive import compute_activity, proactive_engine, scope_of
+# M2 工具总线（2026-10-20）：Function Calling（registry/llm/fc）+ 提醒定时任务
+# （scheduler）+ 首批工具（builtins）。tools 包不 import 主包，无循环 import 风险。
+from .tools import (ReminderError, ReminderParser,  # noqa: F401
+                    default_registry, register_builtin_tools,
+                    reminder_scheduler, reminder_store)
 # 智能表情包（2026-10-19）：自动收集 + OCR/VLM 分类 + 人设语境选用
 from .stickers import (DEFAULT_PERSONA_MAP, STICKER_CATS,  # noqa: F401
                        collect_group_stickers, parse_persona_map, sticker_lib)
@@ -183,6 +188,15 @@ def register() -> Matcher:
         _gt_register()
     except Exception as e:  # noqa: BLE001
         log.error(jlog("game_tools_register_failed", error=str(e)[:200]))
+
+    # M2 工具总线（2026-10-20）：注册首批 FC 工具（remind_*/queue_status/
+    # pc_overview）。失败只记日志——纯对话 AI 模式照常工作（注册失败 ≠ 假注册，
+    # FC 路径会因 enabled_tools() 为空而自动走纯对话路由，见 _handle_ai_chat）。
+    try:
+        _register_m2_tools()
+    except Exception as e:  # noqa: BLE001
+        log.error(jlog("m2_tools_register_failed", error=type(e).__name__,
+                       detail=str(e)[:200]))
 
     log.info(jlog("plugin_registered", channel=Config.IMAGE_CHANNEL, api_base=Config.MANJU_API_BASE))
     return msg_matcher
@@ -367,6 +381,16 @@ async def _on_startup() -> None:
         log.info(jlog("proactive_loop_spawned"))
     except Exception as e:  # noqa: BLE001 — 起不来不影响其它功能
         log.error(jlog("proactive_loop_spawn_failed", error=type(e).__name__))
+    # 提醒/定时任务调度器（2026-10-20 M2）：1s tick 扫到点提醒，经 _remind_fire
+    # 回传到原会话。失败只记日志——用户设的提醒仍在库里，重启后恢复扫描。
+    try:
+        reminder_scheduler.on_fire = _remind_fire
+        await reminder_scheduler.start()
+        log.info(jlog("reminder_scheduler_spawned",
+                      pending=reminder_store.pending_count("")))
+    except Exception as e:  # noqa: BLE001
+        log.error(jlog("reminder_scheduler_start_failed", error=type(e).__name__,
+                       detail=str(e)[:200]))
 
 
 async def _on_shutdown() -> None:
@@ -376,6 +400,12 @@ async def _on_shutdown() -> None:
         log.info(jlog("plan_scheduler_stopped"))
     except Exception as e:  # noqa: BLE001
         log.warning(jlog("plan_scheduler_stop_failed", error=type(e).__name__,
+                         detail=str(e)[:160]))
+    # 停提醒调度器（M2）：在跑的 tick 取消，库里的 pending 重启后恢复
+    try:
+        await reminder_scheduler.stop()
+    except Exception as e:  # noqa: BLE001
+        log.warning(jlog("reminder_scheduler_stop_failed", error=type(e).__name__,
                          detail=str(e)[:160]))
     # 停每日官方数据同步循环
     try:
@@ -2419,9 +2449,37 @@ async def _handle_ai_chat(ev, trace_id: str) -> None:
     _sticker_sys = _sticker_system_hint()
     if _sticker_sys:
         extra_system = (extra_system + "\n" + _sticker_sys) if extra_system else _sticker_sys
+    # ---- M2 工具总线（2026-10-20）：开关开且已有工具注册 → FC 多回合路径；
+    # 否则（关/无工具/注册失败）走原纯对话路径。这是路由选择不是兜底降级——
+    # 两条路径能力差异只在「能不能调工具」，纯对话行为零变化。
+    _fc_runner = None
+    if Config.AI_TOOLS_ENABLE:
+        try:
+            from .tools import fc as _tools_fc
+            _runner_cand = _tools_fc.get_runner()
+            if _runner_cand.registry.enabled_tools():
+                _fc_runner = _runner_cand
+        except Exception as e:  # noqa: BLE001 — 总线异常不拖垮聊天（CLOSE-02 记而不吞）
+            log.warning(jlog("ai_chat_tools_unavailable", scope=scope,
+                             error=type(e).__name__, detail=str(e)[:160],
+                             trace_id=trace_id))
     _t0 = time.perf_counter()
-    reply, err = await ai_chatter.chat(scope, text, ev.user_id,
-                                       extra_system=extra_system, note=note)
+    if _fc_runner is not None:
+        # 当前时间注入（模型把「N 分钟后」算成 fire_at 绝对时间戳用）
+        extra_system = ((extra_system + "\n" + _tools_time_hint())
+                        if extra_system else _tools_time_hint())
+        from .tools import ToolContext as _ToolCtx
+        _tctx = _ToolCtx(scope=scope, user_id=ev.user_id, group_id=ev.group_id,
+                         is_private=not ev.is_group,
+                         is_owner=_is_owner(ev.user_id),
+                         trace_id=trace_id,
+                         channel=getattr(ev, "channel", "napcat"))
+        reply, err = await ai_chatter.chat_tools(
+            scope, text, ev.user_id, extra_system=extra_system, note=note,
+            converse=_fc_runner.converse, tool_ctx=_tctx)
+    else:
+        reply, err = await ai_chatter.chat(scope, text, ev.user_id,
+                                           extra_system=extra_system, note=note)
     _ms = int((time.perf_counter() - _t0) * 1000)
     if err == "cooldown":
         log.info(jlog("ai_chat_cooldown", scope=scope, user_id=ev.user_id,
@@ -3137,6 +3195,252 @@ async def _try_pc_natural(ev, trace_id: str) -> bool:
     return False
 
 
+# ==================== M2 工具总线 / 提醒（2026-10-20）====================
+# 设计：tools/ 包（registry/llm/fc/scheduler/builtins）不 import 主包，
+# 宿主能力（队列/PC）经 deps 回调注入；提醒回传经 on_fire 注入。
+# 详见 tools/registry.py 与 tools/scheduler.py 模块 docstring。
+
+#: ReminderParser 单例（/提醒 命令族的 LLM 时间解析；LLMClient 懒构造）
+_remind_parser = ReminderParser()
+
+
+def _tools_time_hint() -> str:
+    """注入 FC 系统提示的当前时间注记（模型靠它把「N 分钟后」算成时间戳）。"""
+    now = time.time()
+    return ("（系统注记：当前 Unix 时间 %d，本地时间 %s。用户说「N 分钟后/明早/"
+            "下周一」等相对时间时，请用 remind_create 的 fire_at 参数传算好的"
+            "绝对 Unix 时间戳（秒）。）"
+            % (now, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))))
+
+
+def _register_m2_tools() -> list[str]:
+    """M2 首批 FC 工具注册（register() 调用）。
+
+    deps 注入宿主能力：tools 包保持零主包依赖（可裸单测、无循环 import）。
+    """
+    async def _queue_status(tctx) -> str:
+        snap = queue_mgr.snapshot()
+        lines = ["队列上限 %d · 排队 %d · 运行中 %d"
+                 % (snap["max"], snap["queued_count"], snap["running_count"])]
+        uid = int(getattr(tctx, "user_id", 0) or 0)
+        r = snap.get("running")
+        mine_running = bool(r) and int(r.get("user_id") or 0) == uid
+        if r:
+            lines.append("正在跑：#%s %s%s" % (
+                r.get("seq"), str(r.get("prompt") or "")[:30],
+                "（是你的）" if mine_running else ""))
+        q = snap.get("queued") or []
+        my_pos = next((i for i, j in enumerate(q, 1)
+                       if int(j.get("user_id") or 0) == uid), None)
+        if q:
+            lines.append("后面还排着 %d 条" % len(q))
+        if my_pos:
+            lines.append("你的任务排第 %d" % my_pos)
+        elif not mine_running:
+            lines.append("你当前没有在排的任务")
+        if not snap.get("consumer_alive"):
+            lines.append("⚠️ 队列消费者没在跑，任务不会被处理（bridge 可能刚重启）")
+        return "\n".join(lines)
+
+    async def _pc_overview() -> str:
+        # system_overview 是同步函数（M6 既有用法一致直接调）
+        return pc_mod.system_overview()
+
+    return register_builtin_tools(default_registry, {
+        "queue_status": _queue_status,
+        "pc_overview": _pc_overview,
+    })
+
+
+async def _remind_fire(item: dict) -> None:
+    """提醒到点回传（ReminderScheduler.on_fire 注入，M2）。
+
+    发送失败抛错——调度器记 failed + last_error，**不自动重试**
+    （ai-groupmate 纪律：重发会让用户收到重复提醒）。
+    """
+    rid = item.get("id", "")
+    text = (item.get("text") or "").strip()
+    if not text:
+        raise ReminderError("提醒内容为空（rid=%s）" % rid)
+    ctx = {"user_id": int(item.get("user_id") or 0),
+           "group_id": int(item.get("group_id") or 0),
+           "channel": item.get("channel") or "napcat"}
+    rep = "\n（每天这个时间都会再提醒你）" if item.get("repeat") == "daily" else ""
+    await send_text(ctx, "⏰ 提醒：%s%s" % (text, rep))
+    log.info(jlog("remind_fired", rid=rid, scope=item.get("scope", ""),
+                  group_id=ctx["group_id"], user_id=ctx["user_id"]))
+
+
+async def _handle_remind_command(ev, trace_id: str) -> None:
+    """/提醒 命令族（M2 2026-10-20）：创建 / 列表 / 取消 / 修改。
+
+    用法：
+      /提醒 20分钟后 喝水        创建（时间整句交给 LLM 解析，禁正则兜底）
+      /提醒 明早八点 叫我起床    创建
+      /提醒 列表                 本会话待触发提醒（序号即取消用的编号）
+      /提醒 取消 2               取消第 2 条（也接受编号，如 a1b2c3d4）
+      /提醒 改 2 明早八点        改第 2 条的触发时间（可顺带改内容）
+
+    时间解析只信 LLM（ReminderParser）：「半小时后/明早/下周一」这类说法
+    正则覆盖不全且错了很难看，解析失败显式告知换个说法，绝不兜底。
+    """
+    ctx = _ctx(ev)
+    sess = session_store.get(ev.user_id)
+    scope = ev.scope_key
+    body = (ev.raw_text or "").strip()
+    parts = body.split(None, 2)
+    sub = parts[1].strip() if len(parts) > 1 else ""
+    rest = parts[2].strip() if len(parts) > 2 else ""
+
+    # ---- 列表 ----
+    if sub in ("列表", "看看", "list", "ls", "所有"):
+        items = reminder_store.list(scope)
+        if not items:
+            await _reply(ctx, sess, "这个会话还没有待触发的提醒喵。", title="提醒列表")
+            return
+        lines = ["待触发的提醒："]
+        for i, r in enumerate(items, 1):
+            lines.append("%d. [%s] %s %s%s" % (
+                i, r["id"],
+                time.strftime("%m-%d %H:%M", time.localtime(r["fire_at"])),
+                r["text"][:40],
+                "（每天）" if r.get("repeat") == "daily" else ""))
+        lines.append("\n取消：/提醒 取消 <序号或编号>")
+        await _reply(ctx, sess, "\n".join(lines), title="提醒列表")
+        return
+
+    # ---- 取消 ----
+    if sub in ("取消", "删", "删除", "cancel", "del"):
+        if not rest:
+            await _reply(ctx, sess,
+                         "用法：/提醒 取消 <序号或编号>（序号看 /提醒 列表）",
+                         title="提醒")
+            return
+        rid = rest.split()[0]
+        if rid.isdigit():  # 序号 → 编号
+            items = reminder_store.list(scope)
+            idx = int(rid)
+            if not (1 <= idx <= len(items)):
+                await _reply(ctx, sess, "没有第 %d 条提醒（当前 %d 条）。"
+                                         % (idx, len(items)), title="提醒")
+                return
+            rid = items[idx - 1]["id"]
+        try:
+            item = reminder_store.cancel(rid, scope)
+        except ReminderError as e:
+            await _reply(ctx, sess, str(e), title="提醒")
+            return
+        await _reply(ctx, sess, "已取消：%s（编号 %s）" % (item["text"], rid),
+                     title="提醒")
+        return
+
+    # ---- 修改 ----
+    if sub in ("改", "修改", "modify", "mod"):
+        if not rest:
+            await _reply(ctx, sess,
+                         "用法：/提醒 改 <序号> <新时间> [新内容]\n"
+                         "例：/提醒 改 1 明早八点｜/提醒 改 1 八点 起床喝水",
+                         title="提醒")
+            return
+        head = rest.split(None, 1)
+        rid = head[0]
+        tail = head[1].strip() if len(head) > 1 else ""
+        items = reminder_store.list(scope)
+        if rid.isdigit():
+            idx = int(rid)
+            if not (1 <= idx <= len(items)):
+                await _reply(ctx, sess, "没有第 %d 条提醒。" % idx, title="提醒")
+                return
+            rid = items[idx - 1]["id"]
+        if not tail:
+            await _reply(ctx, sess, "要改成啥时候？例：/提醒 改 1 明早八点",
+                         title="提醒")
+            return
+        try:
+            plan = await _remind_parser.parse("帮我把一条提醒改到：%s" % tail)
+        except Exception as e:  # noqa: BLE001 — ReminderError/LLMError 都显式告知
+            await _reply(ctx, sess, _remind_err_text(e), title="提醒")
+            return
+        kw: dict = {"fire_at": plan["fire_at"]}
+        if plan.get("text"):
+            kw["text"] = plan["text"]
+        try:
+            item = reminder_store.modify(rid, scope, **kw)
+        except ReminderError as e:
+            await _reply(ctx, sess, str(e), title="提醒")
+            return
+        await _reply(ctx, sess, "改好了：%s（%s，编号 %s）" % (
+            item["text"],
+            time.strftime("%m-%d %H:%M", time.localtime(item["fire_at"])),
+            rid), title="提醒")
+        return
+
+    # ---- 创建（默认分支：整句交给 LLM 解析）----
+    if not rest and not sub:
+        await _reply(ctx, sess,
+                     "用法：/提醒 <时间> <内容>，例：\n"
+                     "· /提醒 20分钟后 喝水\n"
+                     "· /提醒 明早八点 叫我起床\n"
+                     "· /提醒 每周一 九点 周会（每天重复说「每天」即可）\n"
+                     "· /提醒 列表｜/提醒 取消 <序号>",
+                     title="提醒")
+        return
+    utterance = (sub + (" " + rest if rest else "")).strip()
+    try:
+        plan = await _remind_parser.parse(utterance)
+    except Exception as e:  # noqa: BLE001 — 显式告知，禁正则兜底
+        log.warning(jlog("remind_parse_failed", scope=scope, user_id=ev.user_id,
+                         error=type(e).__name__, trace_id=trace_id))
+        await _reply(ctx, sess, _remind_err_text(e), title="提醒")
+        return
+    # 用户用自然语言表达了查看/取消/修改意图（没打子命令）——按解析结果办
+    if plan["action"] == "list":
+        items = reminder_store.list(scope)
+        if not items:
+            await _reply(ctx, sess, "这个会话还没有待触发的提醒喵。", title="提醒列表")
+            return
+        lines = ["待触发的提醒："]
+        for i, r in enumerate(items, 1):
+            lines.append("%d. [%s] %s %s" % (
+                i, r["id"],
+                time.strftime("%m-%d %H:%M", time.localtime(r["fire_at"])),
+                r["text"][:40]))
+        await _reply(ctx, sess, "\n".join(lines), title="提醒列表")
+        return
+    if plan["action"] in ("cancel", "modify"):
+        await _reply(ctx, sess,
+                     "要%s的话用子命令更稳：/提醒 %s <序号>"
+                     % ("取消" if plan["action"] == "cancel" else "修改",
+                        "取消" if plan["action"] == "cancel" else "改"),
+                     title="提醒")
+        return
+    try:
+        item = reminder_store.create(
+            text=plan["text"], fire_at=plan["fire_at"], repeat=plan["repeat"],
+            scope=scope, user_id=ev.user_id, group_id=ev.group_id,
+            is_private=not ev.is_group,
+            channel=getattr(ev, "channel", "napcat"))
+    except ReminderError as e:
+        await _reply(ctx, sess, str(e), title="提醒")
+        return
+    await _reply(ctx, sess, "好，%s 提醒你：%s（编号 %s%s）" % (
+        time.strftime("%m-%d %H:%M", time.localtime(item["fire_at"])),
+        item["text"], item["id"],
+        "，每天这时间都提醒" if item["repeat"] == "daily" else ""),
+        title="提醒已设定")
+    log.info(jlog("remind_cmd_created", scope=scope, user_id=ev.user_id,
+                  rid=item["id"], trace_id=trace_id))
+
+
+def _remind_err_text(e: Exception) -> str:
+    """提醒解析失败的对外文案（no_key 转配置指引，其余显式透出）。"""
+    msg = str(e)
+    if "no_key" in msg:
+        return ("提醒解析要调大模型，但还没配 API Key 喵——去「机器人配置 → "
+                "常规·AI 模式」填上 base_url / key / 模型。")
+    return msg
+
+
 async def _route(ev, trace_id: str) -> None:
     """归一化之后的**统一业务路由**（与协议无关）。
 
@@ -3194,6 +3498,13 @@ async def _route(ev, trace_id: str) -> None:
             return
         log.info(jlog("ai_mode_cmd_passthrough", scope=ev.scope_key,
                       user_id=ev.user_id, trace_id=trace_id))
+
+    # ---- M2 提醒命令族（2026-10-20）：/提醒 创建/列表/取消/修改 ----
+    # 位置：AI 模式块之后（开启时 / 开头命令 passthrough 到这里）、/pc 块之前
+    # （两条命令族互不依赖）。以 / 开头，不会被关键词门禁误吞。
+    if (ev.raw_text or "").strip().startswith("/提醒"):
+        await _handle_remind_command(ev, trace_id)
+        return
 
     # ---- 宿主机管家（M6 2026-10-20）：/pc 命令族 + 自然语言直通车 ----
     # 位置说明：必须在关键词门禁**之前**——「电脑咋样」不是关键词，会被门禁静默

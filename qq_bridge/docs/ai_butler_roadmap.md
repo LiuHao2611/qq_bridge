@@ -79,7 +79,7 @@ ai-groupmate v2.5.15（Tool Calling / 明确记忆 / 定时任务）、personifi
 | 里程碑 | 域 | 内容 | 预估 |
 |---|---|---|---|
 | M1 | 人格 | 记忆系统（明确记忆三态+画像+群档案） | 2-3 天 |
-| M2 | 人格 | Function Calling 总线 + 定时任务/提醒 | 2-3 天 |
+| M2 | 人格 | Function Calling 总线 + 定时任务/提醒 | 2-3 天 | ✅ **已交付 2026-10-20**（见 §10.6） |
 | M3 | 人格 | 情感 + 日程 + 关系 | 2 天 |
 | M4 | 人格 | 多模态（图理解/历史图召回）+ 语音（主人私聊） | 2 天 |
 | M5 | 人格 | 心流升级 + 群风格学习 + 预算 | 2 天 |
@@ -122,7 +122,7 @@ M1-M5 相互有依赖；M6 起依赖 M2 的工具总线，但 M6 也可先以「
 #### 6.3 桌面控制（5 项）
 | 能力 | 说明 |
 |---|---|
-| 截屏 | **DXGI Desktop Duplication 优先**（GPU 全屏内容真修复：捕获桌面合成器输出，含游戏/视频/Electron 全屏；WGC 在本机 Win10 21H2 边框 API 不支持故不可用），auto 模式失败/黑屏回退 mss；支持「截当前窗口/全屏/区域」；截图送 vision 模型可「描述屏幕内容」 |
+| 截屏 | **DXGI Desktop Duplication**（GPU 全屏内容真修复：捕获桌面合成器输出，含游戏/视频/Electron 全屏；WGC 在本机 Win10 21H2 边框 API 不支持故不可用）；**不做任何降级/回退**：选中方法失败如实报错（默认即 DXGI，无 mss 兜底）；支持「截当前窗口/全屏/区域」；截图送 vision 模型可「描述屏幕内容」 |
 | 剪贴板读 | 「剪贴板里啥」→ 回传（脱敏：超 500 字截断） |
 | 剪贴板写 | 「把 xxx 复制到剪贴板」→ 主人确认（防恶意注入） |
 | 桌面通知 | 宿主机 toast 通知（「提醒我喝水」的本地通道） |
@@ -225,7 +225,7 @@ M1 记忆 ──┬─→ M2 工具总线 ──┬─→ M3 情感日程
 | LLM 误触高危操作 | 权限分层 + 二次确认 + 命令白名单 + safety 层关键词拦截 |
 | 截图/文件泄露 | 目录白名单；剪贴板回传脱敏；文件回传限大小 |
 | Token 费用 | 每群预算 + 判断类走便宜模型（AI_JUDGE_MODEL）+ 管家查询类**不走 LLM**（psutil 直接算） |
-| DXGI/WGC 黑屏/依赖缺失 | auto 模式 DXGI 优先 → 失败/黑屏 mss 回退 + 不支持时显式告知（本机 WGC 不可用，已切 DXGI） |
+| DXGI/WGC 黑屏/依赖缺失 | DXGI 失败如实报错、不做 mss 回退（本机 WGC 不可用，已切 DXGI 为唯一真修复；mss 仅作显式备选，非兜底） |
 | HA 不在线 | 连接探测 + 显式降级提示 |
 | 误关机 | 5 秒取消窗口 + 确认机制 |
 
@@ -254,7 +254,7 @@ M1 记忆 ──┬─→ M2 工具总线 ──┬─→ M3 情感日程
 | 电池 | psutil battery | 台式机无电池 → 探测不到时输出「台式机」而非报错 |
 | 文件回传大小 | <100MB 直发 | NapCat WS 单帧 16MB → base64 实传 ≤10MB → **≤50MB base64 直发，超过走 bridge 本地 HTTP 链接**（`PC_FILE_LINK_MAX_MB`） |
 | 删除文件 | 软删除回收站 | `send2trash`（已装）→ 进回收站，禁 `rm -rf` |
-| 截图 | mss/DXGI | 第一批用 **mss**（纯 Python 零依赖，GPU 全屏内容黑屏）；**DXGI Desktop Duplication 为 GPU 全屏黑屏真修复**（WGC 在本机 Win10 21H2 不可用），auto 模式 DXGI 优先失败/黑屏回退 mss；mss 失败显式报错 |
+| 截图 | mss/DXGI | 第一批用 **mss**（纯 Python 零依赖，GPU 全屏内容黑屏）；**DXGI Desktop Duplication 为 GPU 全屏黑屏真修复**（WGC 在本机 Win10 21H2 不可用），DXGI 失败如实报错、不回退 mss；mss 仅作显式备选（GPU 全屏会黑屏）；mss 失败亦显式报错 |
 | 运行环境假设 | 未写明 | **宿主机管家必须跑在交互式用户会话**（截图/键鼠需要桌面）；Windows 服务化部署时这些功能自动禁用并提示（探测 `os.name` + 会话隔离 flag） |
 
 ### 10.3 依赖清单（已安装并锁定）
@@ -270,3 +270,21 @@ M1 记忆 ──┬─→ M2 工具总线 ──┬─→ M3 情感日程
 1. 键鼠自动化（PyAutoGUI）的误触防护策略——拟引入「 dry-run 模式」：先回显将执行的动作，确认后才真做；
 2. 多显示器/多用户的截图命名规范；
 3. M7 aria2 的断点续传文件如何经 QQ 回传（分片 or 链接）。
+
+### 10.6 M2 工具总线交付记录（2026-10-20 ✅）
+契约来源：`yaowan233/nonebot-plugin-ai-groupmate v2.5.15`（2026-10-20 实读 README 验证：Tool 注册 + agent 循环、定时任务 10s–7 天、APScheduler 秒级扫库、原子领取、失败不自动重试、超时 5 分钟过期不补发、工具超时 30s、单轮 LLM 上限 8 次、工具结果截断 6000 字、有副作用工具串行）。本地化取舍：不引 langchain/APScheduler，OpenAI 兼容 tools 载荷 + 自有多回合循环 + asyncio tick。
+
+**交付物**（`src/plugins/qq_bridge/tools/` 五件套，不 import 主包、可裸单测）：
+| 文件 | 职责 |
+|---|---|
+| `registry.py` | 工具注册表 + 分发器：风险三级（safe/owner/confirm）、每 scope 每日预算（`AI_TOOL_DAILY_BUDGET`，0=不限）、REDUN-03 入参校验、CLOSE-05 30s 显式超时、结果 6000 字截断、全失败路径显式文本 |
+| `llm.py` | OpenAI 兼容客户端（tools 载荷 + `tool_choice=auto`）；模型不支持 tools 的 4xx **如实上抛**并提示关总线/换模型（禁止剥 tools 重试） |
+| `fc.py` | `FCRunner` 多回合循环：≤8 回合、串行分发、中间轮次不落用户历史、回合耗尽显式报错 |
+| `scheduler.py` | 提醒三件套：`ReminderStore`（`data/reminders.json` 原子写、10s~7 天、每 scope 20 条、claim 原子领取、超 5 分钟过期不补发、失败不自动重试）、`ReminderParser`（LLM-only 时间解析，**禁正则兜底**）、`ReminderScheduler`（1s tick + on_fire 注入） |
+| `builtins.py` | 首批 5 工具注册（deps 注入）：`remind_create/remind_list/remind_cancel`（safe）+ `queue_status`（safe）+ `pc_overview`（owner） |
+
+**接线**：`config.py` 新增「工具总线」配置组 8 项（`AI_TOOLS_ENABLE`/`AI_FC_MAX_ROUNDS=8`/`AI_TOOL_TIMEOUT=30`/`AI_TOOL_RESULT_MAX_CHARS=6000`/`AI_TOOL_DAILY_BUDGET`/`REMIND_TICK=1`/`REMIND_EXPIRE_SECONDS=300`/`REMIND_MAX_PER_SCOPE=20`）；`config_api.py` 配置页同款 8 条；`ai_mode.py` 新增 `chat_tools()`；`__init__.py`：`register()` 注册首批工具、`_on_startup/_on_shutdown` 起停提醒调度器（`_remind_fire` 回传原会话）、`_route` 挂 `/提醒` 命令族（创建/列表/取消/修改）、`_handle_ai_chat` 按「开关开且已有工具注册」路由到 FC 路径（否则纯对话——路由选择非兜底）。
+
+**confirm 级不在第一轮**：kill/电源/剪贴板写/删文件继续走 `/pc` 命令通道既有确认流；registry 遇 confirm 调用明确拒绝并指路。这是发布范围决策，两条通道能力全集不变。
+
+**验收**：`tests/test_tools_registry.py` + `test_tools_fc.py` + `test_reminders.py` 三件套 47 断言 + 与 `test_config_api`/`test_config_hot_reload` 组合 **73/73 全绿**。既有缺陷记录：全量 `pytest tests/` 时 hot_reload 必红 12 条（旧测试用 `src.plugins.qq_bridge.*` 限定名导致两份 Config 类，`config_api._find_config_class` 命中错的那份）——单文件/相关组合全绿，本轮只记录不修（见 AGENTS.md F12）。

@@ -448,6 +448,27 @@ class Config:
     # 早/午/晚问候（每日每段一次，仅 AI 模式开启的群）
     AI_PROACTIVE_GREET: bool = _as_bool(os.environ.get("AI_PROACTIVE_GREET"), True)
 
+    # ---- AI 工具总线（2026-10-20 M2：Function Calling，M6~M9 能力总开关）----
+    # 设计来源：yaowan233/nonebot-plugin-ai-groupmate v2.5.15（Agent Tools +
+    # 定时任务 + 权限分层），纪律逐条对齐（见 tools/registry.py docstring）。
+    # 关闭后 AI 模式退回纯文字对话（既有行为零变化），/pc 等命令通道不受影响。
+    AI_TOOLS_ENABLE: bool = _as_bool(os.environ.get("AI_TOOLS_ENABLE"), True)
+    # 单次对话最多 LLM 回合数（含工具调用回填后的续问；耗尽显式报错，禁止兜底）
+    AI_FC_MAX_ROUNDS: int = _as_int(os.environ.get("AI_FC_MAX_ROUNDS"), 8)
+    # 单个工具执行超时（秒，CLOSE-05 显式超时；超时即失败，不重试）
+    AI_TOOL_TIMEOUT: float = _as_float(os.environ.get("AI_TOOL_TIMEOUT"), 30.0)
+    # 单个工具结果写回上下文的字符上限（超长截断，防打爆上下文窗口）
+    AI_TOOL_RESULT_MAX_CHARS: int = _as_int(os.environ.get("AI_TOOL_RESULT_MAX_CHARS"), 6000)
+    # 每 scope（群/私聊）每日工具调用上限；0 = 不限（安全总则 #2：限流显式告知）
+    AI_TOOL_DAILY_BUDGET: int = _as_int(os.environ.get("AI_TOOL_DAILY_BUDGET"), 0)
+    # ---- 提醒/定时任务（2026-10-20 M2：/提醒 命令族 + FC remind_* 工具）----
+    # 调度 tick 间隔（秒）。1s 兼顾精度与空转开销（纯 asyncio，无 APScheduler）
+    REMIND_TICK: float = _as_float(os.environ.get("REMIND_TICK"), 1.0)
+    # 到点后超过该秒数未触发 → 过期不补发（对齐 ai-groupmate：5 分钟）
+    REMIND_EXPIRE_SECONDS: int = _as_int(os.environ.get("REMIND_EXPIRE_SECONDS"), 300)
+    # 每 scope 同时持有的 pending 提醒上限（防刷屏；超出显式告知）
+    REMIND_MAX_PER_SCOPE: int = _as_int(os.environ.get("REMIND_MAX_PER_SCOPE"), 20)
+
     # ---- 宿主机管家（2026-10-20 M6：/pc 命令族 + 自然语言直通车）----
     # 安全硬规则（roadmap 10.1）：**仅私聊 + 仅主人**——群聊调用泄露主人硬件配置。
     PC_ENABLE: bool = _as_bool(os.environ.get("PC_ENABLE"), True)
