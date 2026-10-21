@@ -591,6 +591,30 @@ class Config:
     EMOTION_SCHEDULE_KEEP_DAYS: float = _as_float(
         os.environ.get("EMOTION_SCHEDULE_KEEP_DAYS"), 30.0)
 
+    # ---- 多模态 + 语音（2026-10-20 M4：图理解 / 视频抽帧 / 历史图召回 / 语音）----
+    # 安全口径：**各能力独立配置，互不回落**——视觉模型不配就不能看图
+    # （文本模型看不了图，回落即降级）；ASR/TTS 不配就不能听/说（本机
+    # 未装 faster-whisper/edge-tts，硬凑就是次品路径）。
+    MM_ENABLE: bool = _as_bool(os.environ.get("MM_ENABLE"), True)
+    # 视觉模型（图理解/视频抽帧必配，如 gpt-4o-mini / qwen-vl-max 等支持图片的）
+    AI_VISION_MODEL: str = os.environ.get("AI_VISION_MODEL") or ""
+    # 视频理解抽帧数（1~6；ffmpeg 抽帧后逐帧送视觉模型）
+    AI_VISION_FRAMES: int = _as_int(os.environ.get("AI_VISION_FRAMES"), 3)
+    # 语音：收到图片/视频时自动看图（关=只在 /看图 时看）
+    MM_AUTO_LOOK: bool = _as_bool(os.environ.get("MM_AUTO_LOOK"), True)
+    # 语音识别模型（Whisper 兼容，如 whisper-1）
+    AI_ASR_MODEL: str = os.environ.get("AI_ASR_MODEL") or ""
+    AI_ASR_TIMEOUT: float = _as_float(os.environ.get("AI_ASR_TIMEOUT"), 60.0)
+    # 语音合成模型（OpenAI TTS 兼容，如 tts-1）
+    AI_TTS_MODEL: str = os.environ.get("AI_TTS_MODEL") or ""
+    # 音色（随服务商支持：alloy / nova / shimmer …）
+    AI_TTS_VOICE: str = os.environ.get("AI_TTS_VOICE") or "alloy"
+    AI_TTS_TIMEOUT: float = _as_float(os.environ.get("AI_TTS_TIMEOUT"), 60.0)
+    # 单次合成字数上限（防长文本烧钱）
+    AI_TTS_MAX_CHARS: int = _as_int(os.environ.get("AI_TTS_MAX_CHARS"), 500)
+    # 主人私聊语音：自动听写并当普通消息处理（关=忽略语音）
+    MM_ASR_PRIVATE: bool = _as_bool(os.environ.get("MM_ASR_PRIVATE"), True)
+
     @classmethod
     def official_configured(cls) -> bool:
         """官方通道是否配置完整（缺 AppID/Secret 时不启用，避免启动即报错）。"""

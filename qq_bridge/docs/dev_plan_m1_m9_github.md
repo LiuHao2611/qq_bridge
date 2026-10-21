@@ -2,7 +2,7 @@
 
 > 版本：v2.1 配套开发计划 ｜ 日期：2026-10-20 ｜ 配套路线图：`ai_butler_roadmap.md`
 > 链接核实：全部 GitHub 地址于 2026-10-20 经 Web 检索核实，使用 canonical `github.com` 地址。
-> 状态口径：M1/M2/M3/M6/M7/M9 已交付（M6：88/88 PASS，commit `ce8503b`+`8f46bcf`；M2：73 断言，commit `6029324`；M7：128 断言组合，commit `a5d1248`；M9：173 断言组合，commit `ef1a74d`；M1：206 断言组合，commit `7c06544`；M3：239 断言组合，2026-10-20）；M4/M5/M8 未开工（M5 有 ai_proactive 心流雏形；M8 因本机无 HA 实例按 §10.4 跳过，待用户具备 HA）。
+> 状态口径：M1/M2/M3/M4/M6/M7/M9 已交付（M6：88/88 PASS，commit `ce8503b`+`8f46bcf`；M2：73 断言，commit `6029324`；M7：128 断言组合，commit `a5d1248`；M9：173 断言组合，commit `ef1a74d`；M1：206 断言组合，commit `7c06544`；M3：239 断言组合，commit `655518d`；M4：32 断言（既有 269 passed），2026-10-20）；M5/M8 未开工（M5 有 ai_proactive 心流雏形；M8 因本机无 HA 实例按 §10.4 跳过，待用户具备 HA）。
 
 ---
 
@@ -26,7 +26,7 @@
 | **M1 记忆系统** | 明确记忆三态 + 画像 + 群档案 | 2–3 天 | **MaiBot** — A-Memorix 记忆引擎（向量检索 / 图谱关系 / 人物画像 / 记忆演化）<br>**ai-groupmate** — 明确记忆 ORM（按会话/用户/Bot/群隔离）<br>**personification** — 用户画像 / 关系图 / 结构化画像更正 | https://github.com/Mai-with-u/MaiBot<br>https://github.com/yaowan233/nonebot-plugin-ai-groupmate<br>https://github.com/luojisama/nonebot-plugin-personification | ✅ 已交付（2026-10-20）：memory 三件套 + /记忆 命令族 + 对话 recall/ingest；33 断言 + 组合 206/206 全绿；向量检索二期（详见 `ai_butler_roadmap.md` §10.9） |
 | **M2 Function Calling 总线** | 工具注册表 + 定时任务/提醒 | 2–3 天 | **ai-groupmate** — langchain agent 决策 + 自定义 Agent Tools + APScheduler 定时任务（自然语言创建/改/取消，10s–7天） | https://github.com/yaowan233/nonebot-plugin-ai-groupmate | ✅ 已交付（2026-10-20）：tools 五件套（registry/llm/fc/scheduler/builtins）+ 首批 5 工具 + `/提醒` 命令族，73 断言全绿；契约逐条对齐 ai-groupmate（详见 `ai_butler_roadmap.md` §10.6） |
 | **M3 情感 + 日程 + 关系** | 二维情感 / 日程 / 社交关系 | 2 天 | **personification** — 好感度 / inner state / 关系图 / 动态态度<br>**MaiBot** — 二维情感表达系统 | https://github.com/luojisama/nonebot-plugin-personification<br>https://github.com/Mai-with-u/MaiBot | ✅ 已交付（2026-10-20）：emotion 四件套 + /情感 命令族 + 到期关心；33 断言 + 组合 239/239 全绿；情感自动判定列二期（详见 `ai_butler_roadmap.md` §10.10） |
-| **M4 多模态 + 语音** | 图理解 / 历史图召回 + 主人私聊语音 | 2 天 | **personification** — 图片输入 / GIF 采样理解 / 视觉 fallback / 可选视频理解 / 语音 | https://github.com/luojisama/nonebot-plugin-personification | ⬜ 未开工 |
+| **M4 多模态 + 语音** | 图理解 / 历史图召回 + 主人私聊语音 | 2 天 | **personification** — 图片输入 / GIF 采样理解 / 视觉 fallback / 可选视频理解 / 语音 | https://github.com/luojisama/nonebot-plugin-personification | ✅ 已交付（2026-10-20）：新建 multimodal 包四件套 + /看图 命令族 + 图片/语音消息链路；32 断言全绿（详见 `ai_butler_roadmap.md` §10.11） |
 | **M5 心流 + 群风格 + 预算** | HeartFlow 升级 / 群风格学习 / 预算 | 2 天 | **MaiBot** — HeartFlow 心流（持续认知循环 / 发言时机）<br>**personification** — 群风格学习 / 预算 shadow·adaptive / 拟人发送 | https://github.com/Mai-with-u/MaiBot<br>https://github.com/luojisama/nonebot-plugin-personification | ⬜ 未开工 |
 
 > 人格面三项参考均为 **NoneBot2 生态 / 群聊陪伴 Agent** 先例，与本项目 `qq_bridge` 同栈（NoneBot2 + NapCat + OneBot v11），可直读源码对齐契约。

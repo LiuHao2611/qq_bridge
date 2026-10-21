@@ -374,3 +374,20 @@ M1 记忆 ──┬─→ M2 工具总线 ──┬─→ M3 情感日程
 **一期如实未做**：情感/好感度**不在每轮对话自动判定**（要模型判定需再调一次 LLM，成本高且易抖）——改由 `/情感` 命令与到期关心驱动，二期可接情绪判定模型打开（已在代码注释与本文档标注）。
 
 **验收**：`tests/test_emotion_mood.py`（边界钳制/象限文本/衰减半衰期与幂等/delta/情感名插值/好感度钳制/关系阈值/注入文本无硬编码语气）+ `test_emotion_store.py`（三表 CRUD/scope 隔离/到期窗口/幂等去重/gc/抽取校验/门面）共 33 断言，与 M1/M2/M7/M9/config 组合 **239/239 全绿**。顺带修 `mark_notified` 幂等语义与情感命名表-坐标表不自洽 bug（AGENTS.md F16）。
+
+### 10.11 M4 多模态 + 语音交付记录（2026-10-20 ✅）
+需求（dev_plan M4）：图理解 / 历史图召回 / 主人私聊语音。范式参考 personification（图片输入 / GIF 采样理解 / 视觉 fallback / 可选视频理解 / 语音）。
+
+**包结构决策（重要）**：新建独立包 `src/plugins/qq_bridge/multimodal/`，**不挂在既有 `media/` 下**——`media/` 是媒体**发送**层（`send_text/send_image/send_file`…），其 `__init__.py` import nonebot 与 connector；M4 是媒体**理解**层，必须保持「不 import 主包、可裸单测」的约定（与 tools/download/ops/memory/emotion 同款）。同域不同层，分家。
+
+**交付物**（`multimodal/` 四件套，零主包依赖，可裸单测）：
+| 文件 | 职责 |
+|---|---|
+| `vision.py` | 视觉理解：OpenAI 兼容多模态消息（text + `image_url` data URI）；http 直链免转 base64；本地文件转 data URI（8MB 上限、非图片后缀显式拒）；**视频理解** = ffmpeg 抽帧（1~6 帧，本机 ffmpeg 8.1.2 实测）→ 逐帧描述合并，单帧失败标注「看不了」不假装全看懂；**视觉模型未配 → 显式错误且不回落文本模型** |
+| `audio.py` | ASR：ffmpeg 转 mp3（16k 单声道）→ POST `/audio/transcriptions`；TTS：POST `/audio/speech`；临时文件 try/finally 释放（OPS-01）；**未配 ASR/TTS 模型 → 显式告知缺什么，不本地兜底**（本机无 faster-whisper/edge-tts，硬凑即次品路径） |
+| `album.py` | 会话媒体档案（收发的图/视频/语音 + 视觉描述回填），`data/media_album.json`；历史图召回（第 N 张：1=最新；与 `gallery.py` 的 t2i 相册分工不重叠）；gc 滚动清理 |
+| `manager.py` | 门面：look / look_video / listen / speak / recall / **capabilities**（能力探测诚实：没配就是没配） |
+
+**接线**：`config.py`「多模态语音」配置组 11 项 + `config_api.py` 配置页同款；`dispatcher/__init__.py` 新增 record（语音）段提取 + `QQEvent.voices` 字段（默认空列表，既有调用方零影响，改动前已 version_guard 备份）；`media/__init__.py` 新增 `send_record`（TTS 出口，官方通道不支持语音段时发文字提示不静默丢弃）；`tools/llm.py` 的 `chat()` 加 `model` 覆盖参数（视觉模型专用，不自动回落）；`__init__.py`：`_route` 开头接语音 ASR（主人私聊，转写文本写回 `ev.raw_text` 后走正常流程，零递归）与纯图片自动看图（MM_AUTO_LOOK，有文字时不抢流程）；`_route` 挂 `/看图` 命令族（看图/列表/序号/说/状态——TTS 仅主人）。
+
+**验收**：`tests/test_multimodal_vision.py` + `test_multimodal_audio.py` 共 32 断言全绿；与既有组合 269 passed。**既有红灯如实记录**：12 条 `test_config_hot_reload` + 3 条 `test_dispatcher` 失败均为改动前即存在的（`test_dispatcher` 已做 baseline 对照：改动前后均 3 failed/10 passed，未引入新失败），根因同 F12 的 Config 双份命名空间污染，本轮不修既有测试（避免回归风险）。

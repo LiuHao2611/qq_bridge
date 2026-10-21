@@ -64,7 +64,7 @@ from .intent import all_intents as _intents_all
 from .intent import all_intents as _intents_all
 from .intent import route as route_intent
 from .intent import validate_prompt, truncate_prompt
-from .media import (send_image, send_images, send_pic, send_text, send_video,
+from .media import (send_image, send_images, send_pic, send_record, send_text, send_video,
                      send_video_link, send_file)
 from .ratelimit import rate_limiter
 from .safety import safety
@@ -109,6 +109,10 @@ from .memory import (ExtractError, MemoryError, MemoryManager,  # noqa: F401
 # + 好感度/关系阶段 + 日程（到期关心）。emotion 包同款零主包依赖。
 from .emotion import (EmotionError, EmotionManager, EmotionStore,  # noqa: F401
                       ScheduleError, emotion_manager, emotion_store)
+# M4 多模态 + 语音（2026-10-20）：图理解/视频抽帧/历史图召回 + ASR/TTS。
+# 独立成包不挂 media/ 下（media 是发送层且 import nonebot）。
+from .multimodal import (AlbumError, AudioError, MediaManager,  # noqa: F401
+                         VisionError, media_album, media_manager)
 # 智能表情包（2026-10-19）：自动收集 + OCR/VLM 分类 + 人设语境选用
 from .stickers import (DEFAULT_PERSONA_MAP, STICKER_CATS,  # noqa: F401
                        collect_group_stickers, parse_persona_map, sticker_lib)
@@ -4485,6 +4489,222 @@ def _parse_when(when: str) -> float:
     raise ValueError("时间看不懂（%s）——用 30分钟 / 2小时 / 明天09:00 这种写法" % w)
 
 
+# ==================== M4 多模态 + 语音（2026-10-20）====================
+# multimodal 包（vision/audio/album/manager）不 import 主包；视觉/ASR/TTS
+# 各能力独立配置，没配哪项就哪项显式告知（不互相回落、不本地兜底）。
+
+
+async def _mm_image_path(img: str) -> str:
+    """图片引用 → 可被视觉模型吃的引用（本地路径 / http URL / base64 data）。
+
+    NapCat 给的可能是本地缓存路径或 http 直链；本地文件不存在时显式报错
+    （不静默跳过——看不了图要说清楚）。
+    """
+    s = str(img or "").strip()
+    if s.lower().startswith(("http://", "https://")):
+        return s
+    if s.startswith("base64://"):
+        return s[len("base64://"):]  # 交给 vision 转 data URI
+    p = Path(s)
+    if p.exists():
+        return str(p)
+    raise VisionError("图片取不到（%s）——既不是能访问的链接，本机也没这个文件"
+                      % s[:80])
+
+
+async def _handle_image_message(ev, trace_id: str) -> None:
+    """纯图片消息 → 视觉模型描述 + 入档案（MM_AUTO_LOOK）。"""
+    ctx = _ctx(ev)
+    sess = session_store.get(ev.user_id)
+    imgs = list(getattr(ev, "images") or [])
+    if not imgs:
+        return
+    try:
+        ref = await _mm_image_path(imgs[0])
+        desc = await media_manager.look(
+            ref, "用一句话描述这张图，像跟朋友吐槽一样自然",
+            scope=ev.scope_key, user_id=ev.user_id, ref=str(imgs[0]))
+    except (VisionError, AlbumError) as e:
+        log.info(jlog("mm_look_failed", scope=ev.scope_key,
+                      detail=str(e)[:160], trace_id=trace_id))
+        await _reply(ctx, sess, str(e), title="看图")
+        return
+    except Exception as e:  # noqa: BLE001 — 显式化，绝不静默
+        log.warning(jlog("mm_look_error", error=type(e).__name__,
+                         detail=str(e)[:160], trace_id=trace_id))
+        await _reply(ctx, sess, "看图时出岔子了（%s）" % type(e).__name__,
+                     title="看图")
+        return
+    await _reply(ctx, sess, desc, title="本喵看到了")
+    log.info(jlog("mm_image_described", scope=ev.scope_key,
+                  user_id=ev.user_id, trace_id=trace_id))
+
+
+async def _handle_voice_message(ev, trace_id: str) -> None:
+    """主人私聊语音 → ASR 转写 → 写回 ev.raw_text（后续流程当普通消息）。"""
+    ctx = _ctx(ev)
+    sess = session_store.get(ev.user_id)
+    voices = list(getattr(ev, "voices") or [])
+    if not voices:
+        return
+    ref = str(voices[0].get("url") or voices[0].get("file") or "").strip()
+    if not ref:
+        await _reply(ctx, sess, "收到语音但拿不到音频地址喵。", title="语音")
+        return
+    tmp = None
+    try:
+        if ref.lower().startswith(("http://", "https://")):
+            # OneBot 常给 http 直链 → 先落盘再转码
+            import httpx as _httpx
+            async with _httpx.AsyncClient(timeout=30.0) as cli:
+                resp = await cli.get(ref)
+            if resp.status_code != 200 or not resp.content:
+                raise AudioError("语音下载失败（HTTP %d）" % resp.status_code)
+            import tempfile as _tf
+            fd, tmp = _tf.mkstemp(suffix=".amr")
+            os.close(fd)
+            Path(tmp).write_bytes(resp.content)
+            text = await media_manager.listen(tmp)
+        else:
+            text = await media_manager.listen(ref)
+    except AudioError as e:
+        log.info(jlog("mm_asr_failed", detail=str(e)[:160], trace_id=trace_id))
+        await _reply(ctx, sess, str(e), title="语音")
+        return
+    except Exception as e:  # noqa: BLE001 — 显式化，绝不静默
+        log.warning(jlog("mm_asr_error", error=type(e).__name__,
+                         detail=str(e)[:160], trace_id=trace_id))
+        await _reply(ctx, sess, "听语音时出岔子了（%s）" % type(e).__name__,
+                     title="语音")
+        return
+    finally:
+        if tmp:
+            try:
+                Path(tmp).unlink(missing_ok=True)  # OPS-01 临时文件释放
+            except Exception:  # noqa: BLE001
+                pass
+    if not text:
+        return
+    # 转写文本当作用户打的字继续走后续流程（零递归：本分支只在路由最前跑一次）
+    ev.raw_text = text
+    log.info(jlog("mm_asr_done", user_id=ev.user_id, text_len=len(text),
+                  trace_id=trace_id))
+    await _reply(ctx, sess, "（听到）%s" % text[:200], title="语音转写")
+
+
+async def _handle_media_command(ev, trace_id: str) -> None:
+    """/看图 命令族（M4 2026-10-20）：看图 / 列表 / 看第N张 / 说 / 状态。
+
+    权限：看图与历史召回对所有人开放（看的是本会话的图）；`说`（TTS）
+    仅主人（会消耗合成额度）。
+    """
+    if not Config.MM_ENABLE:
+        return
+    ctx = _ctx(ev)
+    sess = session_store.get(ev.user_id)
+    scope = ev.scope_key
+    parts = (ev.raw_text or "").strip().split(None, 2)
+    sub = parts[1].strip() if len(parts) > 1 else ""
+    rest = parts[2].strip() if len(parts) > 2 else ""
+    low = sub.lower()
+
+    # ---- 状态：能力探测（诚实：没配就是没配）----
+    if low in ("状态", "status", "能力"):
+        caps = media_manager.capabilities()
+        lines = ["多模态能力：",
+                 "· 看图：%s" % ("可用" if caps["vision"] else "未配视觉模型"),
+                 "· 听语音：%s" % ("可用" if caps["asr"] else "未配 ASR 模型"),
+                 "· 说话：%s" % ("可用" if caps["tts"] else "未配 TTS 模型"),
+                 "· API Key：%s" % ("已配" if caps["api_key"] else "未配")]
+        if not caps["api_key"]:
+            lines.append("\n先去「机器人配置 → 常规·AI 模式」把 Key 和地址填上。")
+        await _reply(ctx, sess, "\n".join(lines), title="多模态状态")
+        return
+
+    # ---- 列表：历史图 ----
+    if low in ("列表", "ls", "历史", ""):
+        try:
+            text = media_manager.recall(scope)
+        except AlbumError as e:
+            await _reply(ctx, sess, str(e), title="看图")
+            return
+        await _reply(ctx, sess, text, title="图片档案")
+        return
+
+    # ---- 看第 N 张 ----
+    if low.isdigit() or (low.startswith("第") and low.rstrip("张个").isdigit()):
+        n = int(low.strip("第").rstrip("张个")) if low.startswith("第") else int(low)
+        try:
+            item = media_manager.recall(scope, n=n)
+        except AlbumError as e:
+            await _reply(ctx, sess, str(e), title="看图")
+            return
+        cap = item.get("caption") or "（当时没描述）"
+        await _reply(ctx, sess, "第 %d 张：%s" % (n, cap), title="历史图")
+        # 原图能发就发（本地路径/URL）
+        ref = str(item.get("ref") or "")
+        if ref and ref != "(inline)":
+            try:
+                await send_image(ctx, ref)
+            except Exception:  # noqa: BLE001 — 发图失败不影响文字回复
+                pass
+        return
+
+    # ---- 看图：对本条消息带的图片（或指定 URL/路径）理解 ----
+    if low in ("看图", "看", "描述", "look"):
+        imgs = list(getattr(ev, "images") or [])
+        target = rest.strip() or (imgs[0] if imgs else "")
+        if not target:
+            await _reply(ctx, sess,
+                         "用法：/看图 <图片URL或路径>（或连同图片一起发）\n"
+                         "· /看图 列表 —— 历史图\n· /看图 3 —— 看第 3 张",
+                         title="看图")
+            return
+        try:
+            ref = await _mm_image_path(target)
+            desc = await media_manager.look(
+                ref, rest.strip() and ("用户问：%s" % rest) or
+                "描述这张图里有什么", scope=scope, user_id=ev.user_id,
+                ref=str(target))
+        except (VisionError, AlbumError) as e:
+            await _reply(ctx, sess, str(e), title="看图")
+            return
+        await _reply(ctx, sess, desc, title="本喵看到了")
+        return
+
+    # ---- 说：TTS（仅主人）----
+    if low in ("说", "说话", "tts", "念"):
+        if not _is_owner(ev.user_id):
+            await _reply(ctx, sess, "语音合成是主人的权限喵（会花额度）。",
+                         title="权限不足")
+            return
+        if not rest:
+            await _reply(ctx, sess, "用法：/看图 说 <要念的话>", title="语音合成")
+            return
+        try:
+            data = await media_manager.speak(rest)
+        except AudioError as e:
+            await _reply(ctx, sess, str(e), title="语音合成")
+            return
+        try:
+            await send_record(ctx, data)
+            await _reply(ctx, sess, "说完了（%d 字节）" % len(data), title="语音合成")
+        except Exception as e:  # noqa: BLE001 — 发送失败显式告知
+            await _reply(ctx, sess, "语音合成好了但发不出去（%s）"
+                         % type(e).__name__, title="语音合成")
+        return
+
+    # ---- 帮助 ----
+    await _reply(ctx, sess,
+                 "多模态命令族：\n"
+                 "· /看图 —— 发图时一起发，或 /看图 <URL/路径>\n"
+                 "· /看图 列表 —— 本会话历史图\n"
+                 "· /看图 <序号> —— 看第 N 张（1=最新）\n"
+                 "· /看图 说 <话> —— 语音念出来（主人）\n"
+                 "· /看图 状态 —— 看哪些能力配好了",
+                 title="多模态")
+
+
 async def _route(ev, trace_id: str) -> None:
     """归一化之后的**统一业务路由**（与协议无关）。
 
@@ -4498,6 +4718,19 @@ async def _route(ev, trace_id: str) -> None:
     allowed, reason = allow(ev)
     if not allowed:
         return  # 黑名单/非白名单 → 静默，不回任何提示（§8）
+
+    # ---- M4 语音（2026-10-20）：主人私聊语音 → ASR 转写 → 当普通文字消息继续 ----
+    # 只改 ev.raw_text（dataclass 字段可写），后续命令/关键词/AI 流程零改动，
+    # 也不产生递归（本分支在路由最前，只跑一次）。
+    if Config.MM_ENABLE and Config.MM_ASR_PRIVATE and not ev.is_group \
+            and _is_owner(ev.user_id) and getattr(ev, "voices", None):
+        await _handle_voice_message(ev, trace_id)
+
+    # ---- M4 图片（2026-10-20）：纯图片无文字 → 自动看图（MM_AUTO_LOOK）----
+    # 有文字时不抢流程（文字可能是指令/提问），只在「光发图」时看图说话。
+    if Config.MM_ENABLE and Config.MM_AUTO_LOOK and getattr(ev, "images", None) \
+            and not (ev.raw_text or "").strip():
+        await _handle_image_message(ev, trace_id)
 
     # ---- 宿主机管家：接收 QQ 发来的文件（仅私聊主人，M6 文件互传）----
     # 位置说明：必须极靠前（在 AI 模式/关键词门禁之前）——文件消息 raw_text 为空，
@@ -4568,6 +4801,11 @@ async def _route(ev, trace_id: str) -> None:
     # ---- M3 情感命令族（2026-10-20）：/情感 我/日程/加日程/好感/心情 ----
     if (ev.raw_text or "").strip().startswith("/情感"):
         await _handle_emotion_command(ev, trace_id)
+        return
+
+    # ---- M4 多模态命令族（2026-10-20）：/看图 看图/列表/序号/说/状态 ----
+    if (ev.raw_text or "").strip().startswith("/看图"):
+        await _handle_media_command(ev, trace_id)
         return
 
     # ---- 宿主机管家（M6 2026-10-20）：/pc 命令族 + 自然语言直通车 ----

@@ -40,6 +40,9 @@ class QQEvent:
     force_t2i: bool = False       # 显式生图词命中，路由时优先生图（覆盖 /mode video）
     images: list = field(default_factory=list)   # 本条消息里的图片 url
     files: list = field(default_factory=list)    # 本条消息里的文件段（M6 文件互传：dict{file,name,size,url}）
+    # M4 语音（2026-10-20）：本条消息里的语音段 dict{file,url}（record 类型）。
+    # 默认空列表——不影响既有调用方；ASR 转写在 __init__.py 做。
+    voices: list = field(default_factory=list)
     self_id: str = ""
     trace_id: str = ""
     raw: Any = None
@@ -59,16 +62,19 @@ class QQEvent:
         return self.scope_key
 
 
-def _extract(segments) -> tuple[str, bool, list, str, list]:
-    """从消息段序列里提取 (纯文本, 是否@机器人, 图片url列表, self_id_at, 文件段列表)。
+def _extract(segments) -> tuple[str, bool, list, str, list, list]:
+    """提取 (纯文本, 是否@机器人, 图片url列表, self_id_at, 文件段列表, 语音段列表)。
 
     采用 duck typing 读取，便于单元测试直接喂假对象。
     文件段（OneBot v11 `file` 类型，NapCat 好友文件/群文件以消息段投递）提取为
     dict{file(文件id), name, size, url} —— 落盘与下载由 __init__.py 处理。
+    语音段（`record` 类型，M4 2026-10-20）提取为 dict{file,url} —— 转码与
+    ASR 由 __init__.py 处理（本模块只做提取，不碰 IO）。
     """
     texts: list = []
     images: list = []
     files: list = []
+    voices: list = []
     at_bot = False
     self_id_at = ""
     for seg in segments or []:
@@ -80,6 +86,11 @@ def _extract(segments) -> tuple[str, bool, list, str, list]:
             url = data.get("url") or data.get("file") or ""
             if url:
                 images.append(url)
+        elif seg_type == "record":  # M4：语音消息段
+            voices.append({
+                "file": str(data.get("file") or data.get("path") or ""),
+                "url": str(data.get("url") or ""),
+            })
         elif seg_type == "file":
             files.append({
                 "file": str(data.get("file") or data.get("file_id") or ""),
@@ -89,7 +100,7 @@ def _extract(segments) -> tuple[str, bool, list, str, list]:
             })
         elif seg_type == "at":
             self_id_at = str(data.get("qq") or "")
-    return "".join(texts).strip(), at_bot, images, self_id_at, files
+    return "".join(texts).strip(), at_bot, images, self_id_at, files, voices
 
 
 def normalize(event: Any, self_id: str = "", trace_id: str = "") -> QQEvent | None:
@@ -115,7 +126,7 @@ def normalize(event: Any, self_id: str = "", trace_id: str = "") -> QQEvent | No
     )
     self_id = self_id or str(getattr(event, "self_id", "") or "")
 
-    raw_text, _, images, at_qq, files = _extract(segments)
+    raw_text, _, images, at_qq, files, voices = _extract(segments)
     at_bot = bool(at_qq) and (at_qq == "all" or at_qq == self_id)
 
     if message_type == "group" and not at_bot:
@@ -160,6 +171,7 @@ def normalize(event: Any, self_id: str = "", trace_id: str = "") -> QQEvent | No
         at_bot=at_bot,
         images=images,
         files=files,
+        voices=voices,
         self_id=self_id,
         trace_id=trace_id,
         raw=event,

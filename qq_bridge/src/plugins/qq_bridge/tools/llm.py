@@ -48,17 +48,21 @@ class LLMClient:
     """chat/completions 客户端；tools 可选（M2 Function Calling 载荷）。"""
 
     async def chat(self, messages: list, tools: list | None = None,
-                   temperature: float | None = None) -> dict:
+                   temperature: float | None = None,
+                   model: str | None = None) -> dict:
         """一轮对话。成功返回 assistant message dict：
         ``{"role": "assistant", "content": str, "tool_calls": [...]}``
         （无工具调用时 tool_calls 为空列表——**保持键存在**，调用方统一判断）。
+
+        model：可覆盖默认模型（M4 视觉理解用 AI_VISION_MODEL；**不传就用
+        Config.AI_MODEL，不做任何自动回落**——视觉/文本模型各司其职）。
 
         失败抛 LLMError（显式，绝不返回假成功）。
         """
         if not Config.AI_API_KEY:
             raise LLMError("no_key")
         payload = {
-            "model": Config.AI_MODEL,
+            "model": (model or "").strip() or Config.AI_MODEL,
             "messages": messages,
             "temperature": (temperature if temperature is not None
                             else Config.AI_TEMPERATURE),
