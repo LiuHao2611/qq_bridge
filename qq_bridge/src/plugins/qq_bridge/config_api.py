@@ -277,7 +277,12 @@ SCHEMA: list[tuple] = [
      "预设：gpt-4o-mini（默认）｜ deepseek-chat ｜ moonshot-v1-8k ｜ qwen-plus ｜ glm-4.6，以所用服务商文档为准（热生效）",
      "gpt-4o-mini", "gpt-4o-mini", False),
     ("常规·AI 模式", "AI_SYSTEM_PROMPT", "AI 人设（系统提示词）", "textarea", None, False,
-     "留空 = 用内置「本喵」腹黑猫管家人设（热生效）", "", "", False),
+     "留空 = 用内置「本喵」腹黑猫管家人设（热生效）。本项仅在「当前人设 = custom」时作为"
+     "手搓人设生效；否则以人设库为准（/人设 列表看全部、/人设 用 <id> 切换）", "", "", False),
+    ("常规·AI 模式", "AI_PERSONA", "当前人设（人设库 id）", "text", None, False,
+     "人设库 id：benmiao=内置本喵｜custom=沿用上面手搓的系统提示词｜其余为导入的人设"
+     "（如 luna 露娜、michiyo 三千代）。发「/人设 列表」看全部可选；会话级切换用"
+     "「/人设 用 <id>」（热生效，不用重启）", "benmiao", "benmiao", False),
     ("常规·AI 模式", "AI_TEMPERATURE", "采样温度", "float", None, False,
      "0~2，越高越发散活泼；群聊陪聊推荐 0.7（热生效）", "0.7", "", False),
     ("常规·AI 模式", "AI_MAX_TOKENS", "单次最大 token", "int", None, False,

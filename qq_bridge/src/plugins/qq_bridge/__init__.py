@@ -133,6 +133,8 @@ from .stickers import (DEFAULT_PERSONA_MAP, STICKER_CATS,  # noqa: F401
                        collect_group_stickers, parse_persona_map, sticker_lib)
 # 宿主机管家（2026-10-20 M6）：/pc 命令族 + 高危确认流；**仅私聊+主人**（roadmap 10.1）
 from . import pc as pc_mod
+# 多人设库（2026-10-21）：/人设 列表/看/用/重置；人设只管人格，协议由程序追加
+from . import persona as persona_mod
 # 自绘图片（2026-09-07）：pic 包只依赖 Pillow，不 import nonebot，可在插件上下文安全加载
 from . import pic as pic_mod
 from .pic import PicRenderError  # noqa: F401  （对外暴露，便于调用方捕获降级）
@@ -2108,20 +2110,31 @@ def _persona_sticker_map() -> dict:
         return DEFAULT_PERSONA_MAP
 
 
-def _sticker_system_hint() -> str | None:
+def _sticker_system_hint(scope: str = "") -> str | None:
     """智能表情开启时注入系统提示的「自主发表情包」协议。
 
     参考 Funny1Potato/nonebot-plugin-aigf-master 的「AI 自主决定发表情包」：
     让模型自己在回复末尾打 [表情:分类] marker，程序只执行与兜底。
+
+    ★ 人设感知（2026-10-21）：末尾那句「人设一致性」原本硬编码成
+      「你是腹黑阴阳怪气的猫管家」——那只是**默认人设**，换人设后会自相矛盾
+      （露娜被要求当猫管家）。现在改为从人设库取当前人设自带的
+      sticker_hint，没有就用通用表述（不再指名道姓）。
     """
     if not Config.AI_STICKER_SMART:
         return None
     cats = "、".join(STICKER_CATS[:-1])  # 不含"通用"
+    try:
+        from .persona import resolve_hint
+        hint = resolve_hint(scope)
+    except Exception:  # noqa: BLE001 — 人设库异常不该拖垮表情协议
+        hint = ""
+    if not hint:
+        hint = "人设一致性：按你当前人设的真实反应选图，别发与性格相反的情绪图。"
     return (
         "表情包协议：如果此刻真想配一张表情包，在回复最末尾单独一行写 "
         "[表情:分类]（分类只能从这些选：%s）；不想发就不写，别勉强——"
-        "简短闲聊大部分时候不用发。人设一致性：你是腹黑阴阳怪气的猫管家，"
-        "生气时发「阴阳怪气」或「无语」，绝不会发怒图；开心才发「开心/搞笑」。" % cats
+        "简短闲聊大部分时候不用发。%s" % (cats, hint)
     )
 
 
@@ -2559,7 +2572,7 @@ async def _handle_ai_chat(ev, trace_id: str) -> None:
                     "不要提'系统'二字。）" % int(gs.timeout * gs.nudges))
             gs.nudges = 0
     # 智能表情协议注入（AI 自主决定发不发、发什么情绪；人设语气指导）
-    _sticker_sys = _sticker_system_hint()
+    _sticker_sys = _sticker_system_hint(scope)
     if _sticker_sys:
         extra_system = (extra_system + "\n" + _sticker_sys) if extra_system else _sticker_sys
     # ---- M1 记忆系统（2026-10-20）：对话前注入相关记忆（画像/长期事件/群档案）----
@@ -3164,6 +3177,115 @@ async def _pc_receive_files(ev, trace_id: str) -> None:
                       trace_id=trace_id))
     else:
         await _reply(ctx, sess, "这次没存成任何文件（都超限或取不到）。", title="文件互传")
+
+
+async def _handle_persona_command(ev, trace_id: str) -> None:
+    """/人设 命令族（2026-10-21）：列表 / 看 / 用 / 重置。
+
+    人设库把「人格」与「协议」分开：换人设只换人格正文，表情 marker、
+    记忆/情感注入、工具总线协议由程序追加，不受影响——所以切换是安全的。
+
+    权限：查看（列表/看/当前）所有人；**切换与重置仅主人**（防群友乱改人设）。
+    """
+    ctx = _ctx(ev)
+    sess = session_store.get(ev.user_id)
+    scope = ev.scope_key
+    store = persona_mod.get_store()
+    body = (ev.raw_text or "").strip()
+    parts = body.split(None, 2)
+    sub = parts[1].strip() if len(parts) > 1 else ""
+    rest = parts[2].strip() if len(parts) > 2 else ""
+    low = sub.lower()
+
+    def _usage() -> str:
+        return ("人设命令族：\n"
+                "· /人设 —— 看全部人设（★ = 本会话当前生效）\n"
+                "· /人设 当前 —— 看当前人设是谁\n"
+                "· /人设 看 <id> —— 看某个人设的提示词开头\n"
+                "· /人设 用 <id> —— 切换本会话人设（仅主人，立即生效）\n"
+                "· /人设 重置 —— 取消本会话覆盖，回到全局人设（仅主人）")
+
+    # ---- 列表 ----
+    if low in ("", "列表", "list", "ls", "所有", "看看", "帮助", "help", "？", "?"):
+        cur = store.current_id(scope)
+        lines = []
+        for p in store.all():
+            mark = "★ " if p.id == cur else "· "
+            lines.append("%s%s（id=%s）" % (mark, p.label(), p.id))
+        await _reply(ctx, sess,
+                     "人设库（共 %d 个）：\n%s\n\n%s"
+                     % (len(store.all()), "\n".join(lines), _usage()),
+                     title="人设库")
+        return
+
+    # ---- 当前 ----
+    if low in ("当前", "现在", "状态", "status", "who"):
+        p = store.current(scope)
+        await _reply(ctx, sess,
+                     "本会话当前人设：%s（id=%s）\n%s"
+                     % (p.label(), p.id, p.tagline or ""),
+                     title="当前人设")
+        return
+
+    # ---- 看 ----
+    if low in ("看", "view", "show"):
+        if not rest:
+            await _reply(ctx, sess, "用法：/人设 看 <id>", title="人设")
+            return
+        p = store.get(rest)
+        if p is None:
+            await _reply(ctx, sess,
+                         "没这个人设：%s。发「/人设」看全部可选 id。" % rest,
+                         title="人设")
+            return
+        txt = p.prompt if p.id != "custom" else (Config.AI_SYSTEM_PROMPT or "（空）")
+        if len(txt) > 600:
+            txt = txt[:600] + "……（完整 %d 字）" % len(p.prompt)
+        await _reply(ctx, sess,
+                     "%s\n%s\n\n提示词开头：\n%s"
+                     % (p.label(), ("来源：%s" % p.source) if p.source else "",
+                        txt),
+                     title="人设详情")
+        return
+
+    # ---- 切换 / 重置（仅主人）----
+    if low in ("用", "切换", "切", "换", "use", "switch", "set"):
+        if not _is_owner(ev.user_id):
+            await _reply(ctx, sess, "换人设是主人的权限喵（怕群友把本喵改得乱七八糟）。",
+                         title="权限不足")
+            return
+        pid = rest.strip()
+        if not pid:
+            await _reply(ctx, sess, "用法：/人设 用 <id>（发「/人设」看 id）",
+                         title="人设")
+            return
+        if not store.set_scope(scope, pid):
+            await _reply(ctx, sess,
+                         "没这个人设：%s。发「/人设」看全部可选 id。" % pid,
+                         title="人设")
+            return
+        p = store.get(pid)
+        await _reply(ctx, sess,
+                     "本会话已切成 %s，立刻生效（不用重启）。\n"
+                     "表情包、记忆、情感、工具总线这些协议不受影响，只是本喵换个性格说话。"
+                     % (p.label() if p else pid), title="人设已切换")
+        return
+
+    if low in ("重置", "reset", "默认"):
+        if not _is_owner(ev.user_id):
+            await _reply(ctx, sess, "重置人设是主人的权限喵。", title="权限不足")
+            return
+        if store.clear_scope(scope):
+            await _reply(ctx, sess,
+                         "已取消本会话的人设覆盖，回到全局人设：%s"
+                         % store.current(scope).label(), title="人设重置")
+        else:
+            await _reply(ctx, sess,
+                         "本会话本来就没单独设人设（用着的已经是全局人设：%s）。"
+                         % store.current(scope).label(), title="人设重置")
+        return
+
+    await _reply(ctx, sess, _usage(), title="人设")
 
 
 async def _handle_pc_command(ev, trace_id: str) -> None:
@@ -5504,6 +5626,11 @@ async def _route(ev, trace_id: str) -> None:
     # ---- M1 记忆命令族（2026-10-20）：/记忆 我/更正/忘记/事件/清理 ----
     if (ev.raw_text or "").strip().startswith("/记忆"):
         await _handle_memory_command(ev, trace_id)
+        return
+
+    # ---- 多人设库（2026-10-21）：/人设 列表/看/用/重置（切换仅主人）----
+    if (ev.raw_text or "").strip().startswith("/人设"):
+        await _handle_persona_command(ev, trace_id)
         return
 
     # ---- M3 情感命令族（2026-10-20）：/情感 我/日程/加日程/好感/心情 ----

@@ -411,9 +411,15 @@ class AIChatter:
         return "", last_err or "大模型调用失败"
 
     @staticmethod
-    def _sys_content(extra_system: str | None) -> str:
-        """系统提示词 = 人设 + （游戏规则等）追加注入。"""
-        base = Config.AI_SYSTEM_PROMPT
+    def _sys_content(extra_system: str | None, scope: str = "") -> str:
+        """系统提示词 = 人设（按会话解析） + （协议/游戏规则等）追加注入。
+
+        scope：会话 key（g:群号 / p:QQ）。人设从人设库解析（多人设切换，
+        2026-10-21）；协议部分（表情 marker、工具、时间注记）由调用方经
+        extra_system 追加，**不写进人设文本**——所以换人设不会冲掉协议。
+        """
+        from .persona import resolve_prompt
+        base = resolve_prompt(scope) or Config.AI_SYSTEM_PROMPT
         return (base + "\n" + extra_system) if extra_system else base
 
     def _record(self, scope: str, content: str, user_id=0) -> str:
@@ -450,7 +456,7 @@ class AIChatter:
         self.history.ttl_cleanup()
         user_content = text + (("\n" + note) if note else "")
         messages = [
-            {"role": "system", "content": self._sys_content(extra_system)},
+            {"role": "system", "content": self._sys_content(extra_system, scope)},
             *self.history.messages(scope),
             {"role": "user", "content": user_content},
         ]
@@ -484,7 +490,7 @@ class AIChatter:
 
         self.history.ttl_cleanup()
         messages = [
-            {"role": "system", "content": self._sys_content(extra_system)},
+            {"role": "system", "content": self._sys_content(extra_system, scope)},
             *self.history.messages(scope),
             {"role": "user", "content": text},
         ]
@@ -528,7 +534,7 @@ class AIChatter:
         self.history.ttl_cleanup()
         user_content = text + (("\n" + note) if note else "")
         messages = [
-            {"role": "system", "content": self._sys_content(extra_system)},
+            {"role": "system", "content": self._sys_content(extra_system, scope)},
             *self.history.messages(scope),
             {"role": "user", "content": user_content},
         ]

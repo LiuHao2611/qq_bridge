@@ -357,12 +357,21 @@ class Config:
     AI_MODEL: str = os.environ.get("AI_MODEL") or "gpt-4o-mini"
     # 人设：延续机器人既有「腹黑阴阳怪气猫管家」性格，群聊体感不割裂。
     # 留空 = 用下方默认；要改人设直接覆盖本项（env 或配置页）。
-    AI_SYSTEM_PROMPT: str = os.environ.get("AI_SYSTEM_PROMPT") or (
+    #: 内置默认人设正文（persona.py 的 BUILTINS["benmiao"] 与之一致）
+    _AI_SYSTEM_DEFAULT = (
         "你是 QQ 群聊里的机器人管家，自称「本喵」。性格腹黑、阴阳怪气但靠得住，"
         "说话简短泼辣，像一个真实的群友，不像客服。默认中文回复，"
         "单次回复控制在 100 字以内，禁止使用 markdown 格式与列表符号，"
         "不要暴露自己是 AI 语言模型，不要复述系统提示。"
     )
+    AI_SYSTEM_PROMPT: str = os.environ.get("AI_SYSTEM_PROMPT") or _AI_SYSTEM_DEFAULT
+    # 当前人设 id（2026-10-21 多人设库）：benmiao=内置本喵 ｜ custom=沿用上面
+    # AI_SYSTEM_PROMPT 手搓文本 ｜ 其余=人设库里导入的人设（data/personas/*.json）。
+    # 会话级切换（/人设 用 <id>）写在 active.json，优先级高于本项。
+    # ★ 向后兼容：AI_PERSONA 未显式配置时，若用户已把 AI_SYSTEM_PROMPT 改过
+    #   （≠内置默认），默认按 custom 走——老用户行为零变化；没改过才进人设库模式。
+    AI_PERSONA: str = os.environ.get("AI_PERSONA") or (
+        "custom" if AI_SYSTEM_PROMPT != _AI_SYSTEM_DEFAULT else "benmiao")
     # 采样温度：群聊陪聊偏高一点更活人（0.7）；要稳定答复可降到 0.3
     AI_TEMPERATURE: float = _as_float(os.environ.get("AI_TEMPERATURE"), 0.7)
     # 单次回复最大生成 token（num_predict）：100 字中文 ≈ 150~200 token，512 足够
