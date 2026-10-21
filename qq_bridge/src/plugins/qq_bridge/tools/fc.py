@@ -57,10 +57,22 @@ class FCRunner:
             if not tool_calls:
                 # 模型给出最终回复（可能 content 为空——理论上 llm.py 已挡）
                 return str(msg.get("content") or ""), ""
-            # assistant 消息（含 tool_calls）原样入列，再逐工具串行执行
+            # assistant 消息（含 tool_calls）入列，再逐工具串行执行。
+            # ★ 线格式回写（2026-10-21 修真 bug）：llm.chat 返回的是**内部归一化
+            #   扁平格式** {id,name,arguments}；直接塞回 messages，第 2 轮请求
+            #   的 assistant.tool_calls 就缺 OpenAI 协议要求的
+            #   {id, type:"function", function:{name,arguments}} 嵌套壳
+            #   → 服务端 400（真机实证：round=1 成功调 pc_overview、round=2 报
+            #   HTTP 400，被误诊为「模型不支持 FC」）。此处必须重新包装。
+            wire_calls = [{
+                "id": tc.get("id") or "",
+                "type": "function",
+                "function": {"name": tc.get("name") or "",
+                             "arguments": tc.get("arguments") or "{}"},
+            } for tc in tool_calls]
             msgs.append({"role": "assistant",
                          "content": msg.get("content") or "",
-                         "tool_calls": tool_calls})
+                         "tool_calls": wire_calls})
             for tc in tool_calls:
                 name = tc.get("name") or ""
                 raw_args = tc.get("arguments") or "{}"
@@ -75,7 +87,6 @@ class FCRunner:
                     msgs.append({
                         "role": "tool",
                         "tool_call_id": tc.get("id") or "",
-                        "name": name,
                         "content": "工具 %s 入参不是合法 JSON（%s），请重新按 schema 调用"
                                    % (name, str(raw_args)[:80]),
                     })
@@ -84,7 +95,6 @@ class FCRunner:
                 msgs.append({
                     "role": "tool",
                     "tool_call_id": tc.get("id") or "",
-                    "name": name,
                     "content": result,
                 })
             log.info(jlog("fc_round_done", scope=ctx.scope, round=round_no,

@@ -121,11 +121,21 @@ class LLMClient:
                 last_err = "大模型服务端故障（HTTP %d）" % sc
             else:
                 # 其它 4xx（含模型不支持 tools 的 400）：确定性失败，不重试、
-                # 不剥离 tools 重试（禁止兜底——如实告知用户去关工具总线或换模型）
+                # 不剥离 tools 重试（禁止兜底——如实告知用户去关工具总线或换模型）。
+                # ★ 2026-10-21：必须带上服务端原始错误体（截断），否则无法区分
+                #   「模型不支持 FC」与「请求载荷畸形」——真机曾因消息格式 bug 报
+                #   400 被误诊为不支持 FC（IMA 精确异常：错误要可定位）。
+                body = ""
+                try:
+                    body = (resp.text or "").strip().replace("\n", " ")[:200]
+                except Exception:  # noqa: BLE001
+                    pass
+                log.warning(jlog("llm_http_4xx", status=sc, body=body))
+                hint = ("当前模型可能不支持 Function Calling，可到配置页关闭"
+                        "「AI 工具总线」或换支持工具调用的模型")
                 raise LLMError(
-                    "大模型接口报错 HTTP %d（当前模型可能不支持 Function "
-                    "Calling，可到配置页关闭「AI 工具总线」或换支持工具调用的模型）"
-                    % sc)
+                    "大模型接口报错 HTTP %d（%s）| 服务端返回：%s"
+                    % (sc, hint, body or "（无响应体）"))
             if attempt < retries:
                 await asyncio.sleep((2 ** attempt) + random.uniform(0, 0.5))
         raise LLMError(last_err or "大模型调用失败")

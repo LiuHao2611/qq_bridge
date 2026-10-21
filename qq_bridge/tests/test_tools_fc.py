@@ -171,3 +171,36 @@ async def test_bad_json_args_explicit_in_loop():
     # 非 JSON 入参 → 显式错误回填（不进 dispatch，循环不崩）
     tool_msg = [m for m in client.seen[1] if m["role"] == "tool"][0]
     assert "不是合法 JSON" in tool_msg["content"]
+
+
+@pytest.mark.anyio
+async def test_wire_format_tool_calls_nested_in_subsequent_round():
+    """回归（2026-10-21）：第 2 轮请求的 assistant.tool_calls 必须是 OpenAI
+    嵌套线格式 {id, type:"function", function:{name, arguments}}。
+
+    真机实证：round=1 成功调 pc_overview、round=2 报 HTTP 400——根因是
+    fc.py 把 llm.chat 返回的**内部扁平格式** {id,name,arguments} 直接塞回
+    messages，第 2 轮请求的 assistant.tool_calls 缺嵌套壳 → 服务端 400，
+    曾被误诊为「模型不支持 FC」。本次修复后此处必须断言嵌套壳存在。
+    """
+    script = [
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "call_1", "name": "echo",
+                         "arguments": '{"x": "hi"}'}]},
+        {"role": "assistant", "content": "ok", "tool_calls": []},
+    ]
+    client = FakeClient(script)
+    runner = FCRunner(_reg_with_echo(), client)
+    await runner.converse(list(_BASE), _ctx())
+    second = client.seen[1]
+    ast = next(m for m in second if m["role"] == "assistant")
+    assert "tool_calls" in ast
+    tc = ast["tool_calls"][0]
+    # 嵌套壳：type 必须是 "function"，且 function 内含 name/arguments
+    assert tc.get("type") == "function"
+    assert isinstance(tc.get("function"), dict)
+    assert tc["function"]["name"] == "echo"
+    assert tc["function"]["arguments"] == '{"x": "hi"}'
+    assert tc["id"] == "call_1"
+    # 嵌套壳之外，扁平键不得残留（避免协议二义）
+    assert "name" not in tc or tc.get("name") == tc["function"]["name"]
