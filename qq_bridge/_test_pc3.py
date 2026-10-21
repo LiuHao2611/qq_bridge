@@ -82,7 +82,7 @@ async def test_pc3() -> None:
             self.data = data
     segs = [Seg("text", {"text": "hi"}),
             Seg("file", {"file": "fid123", "name": "note.txt", "size": 1024, "url": ""})]
-    text, at, imgs, atqq, files = _extract(segs)
+    text, at, imgs, atqq, files, voices = _extract(segs)
     check("extract 文本", text == "hi")
     check("extract file 段", len(files) == 1 and files[0]["file"] == "fid123"
           and files[0]["name"] == "note.txt" and files[0]["size"] == 1024, str(files))
