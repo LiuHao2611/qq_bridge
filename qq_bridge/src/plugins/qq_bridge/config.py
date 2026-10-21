@@ -587,9 +587,13 @@ class Config:
     EMO_SCHEDULE_EXTRACT: bool = _as_bool(os.environ.get("EMO_SCHEDULE_EXTRACT"), True)
     # 到期关心提前量（秒）：提前多久算「快到了」（默认 1 小时）
     EMO_SCHEDULE_WINDOW: float = _as_float(os.environ.get("EMO_SCHEDULE_WINDOW"), 3600.0)
-    # 日程保留天数（已完成/过期超此天数滚动清理）
     EMOTION_SCHEDULE_KEEP_DAYS: float = _as_float(
         os.environ.get("EMOTION_SCHEDULE_KEEP_DAYS"), 30.0)
+    # 情感自动判定开关（2026-10-21 M3 二期）：复用 AI 自表达的 [表情:分类]
+    # marker（免费信号——每轮 chat() 已剥离存入 ai_chatter.last_mood[scope]），
+    # 落到 per-scope 情感状态。不认识的分类 / None → 静默跳过（不伪造，禁止降级）。
+    # 零额外 LLM 调用，消解一期「再调一次模型成本高」的推迟理由。
+    EMO_AUTO_JUDGE: bool = _as_bool(os.environ.get("EMO_AUTO_JUDGE"), True)
 
     # ---- 多模态 + 语音（2026-10-20 M4：图理解 / 视频抽帧 / 历史图召回 / 语音）----
     # 安全口径：**各能力独立配置，互不回落**——视觉模型不配就不能看图

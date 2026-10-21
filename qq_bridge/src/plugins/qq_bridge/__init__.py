@@ -2637,15 +2637,23 @@ async def _handle_ai_chat(ev, trace_id: str) -> None:
         except Exception as e:  # noqa: BLE001
             log.warning(jlog("memory_ingest_spawn_failed", scope=scope,
                              error=type(e).__name__))
-    # ---- M3 情感/日程（2026-10-20）：对话后异步更新（不阻塞回复）----
-    # 后台跑日程抽取（对话里听到的未来安排）。情感/好感度变化不在本处自动判
-    # ——要模型判定得再调一次 LLM，成本高且易抖；改由 /情感 命令与到期关心
-    # 驱动，或后续接入情绪判定模型时再打开（如实记录：一期不自动判情感）。
+    # ---- M3 情感/日程（2026-10-20 一期 / 2026-10-21 二期）：对话后异步更新
+    # （不阻塞回复）----
+    # 后台跑日程抽取（对话里听到的未来安排）。
+    # 二期新增：情感自动判定复用 AI 自表达的 [表情:分类] marker（免费信号，
+    # chat() 已剥离进 last_mood[scope]）——零额外 LLM 调用，落到 per-scope
+    # 情感状态；不认识的分类 / None 静默跳过（禁止降级，不伪造）。
     if Config.EMO_ENABLE and Config.EMO_SCHEDULE_EXTRACT and not err:
         try:
             asyncio.ensure_future(_emotion_update_bg(scope, ev.user_id, text))
         except Exception as e:  # noqa: BLE001
             log.warning(jlog("emotion_update_spawn_failed", scope=scope,
+                             error=type(e).__name__))
+    if Config.EMO_ENABLE and getattr(Config, "EMO_AUTO_JUDGE", True) and not err:
+        try:
+            asyncio.ensure_future(_emotion_auto_judge_bg(scope, ev.user_id))
+        except Exception as e:  # noqa: BLE001
+            log.warning(jlog("emotion_auto_judge_spawn_failed", scope=scope,
                              error=type(e).__name__))
     # reply 已被 chat() 剥掉 [表情:分类] marker；mood 从 last_mood 取
     mood = ai_chatter.last_mood.get(scope)
@@ -4343,6 +4351,25 @@ async def _emotion_update_bg(scope: str, user_id: int, user_text: str) -> None:
                       detail=str(e)[:160]))
     except Exception as e:  # noqa: BLE001 — 显式化，绝不静默
         log.warning(jlog("emotion_update_failed", scope=scope, user_id=user_id,
+                         error=type(e).__name__, detail=str(e)[:160]))
+
+
+async def _emotion_auto_judge_bg(scope: str, user_id: int) -> None:
+    """后台情感自动判定（_handle_ai_chat 对话后 spawn）。
+
+    免费信号：AI 每轮回复已自表达情绪（[表情:分类] marker），由 chat()
+    剥离后存入 ai_chatter.last_mood[scope]。此处复用它落到 per-scope 情感
+    状态，零额外 LLM 调用。不认识的分类 / None → 静默跳过（不伪造）。
+    失败只在 task 内记日志，不影响用户已收到的回复。
+    """
+    try:
+        mood = ai_chatter.last_mood.get(scope)
+        emotion_manager.auto_judge(scope, mood)
+    except EmotionError as e:
+        log.info(jlog("emotion_auto_judge_skipped", scope=scope, user_id=user_id,
+                      detail=str(e)[:160]))
+    except Exception as e:  # noqa: BLE001 — 显式化，绝不静默
+        log.warning(jlog("emotion_auto_judge_failed", scope=scope, user_id=user_id,
                          error=type(e).__name__, detail=str(e)[:160]))
 
 

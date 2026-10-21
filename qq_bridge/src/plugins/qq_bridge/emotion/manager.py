@@ -22,7 +22,8 @@ from __future__ import annotations
 import time
 
 from ..config import Config, get_logger, jlog
-from .mood import MoodEngine, MoodState, EmotionError, mood_engine as _default_engine
+from .mood import (MoodEngine, MoodState, EmotionError, normalize_emotion,
+                   mood_engine as _default_engine)
 from .schedule import ScheduleError, ScheduleExtractor, schedule_extractor as _default_sched
 from .store import EmotionStore, emotion_store as _default_store
 
@@ -115,6 +116,38 @@ class EmotionManager:
                                           user_id=user_id, source="chat")
             out["schedules"].append(row)
         return out
+
+    # ---------------- 情感自动判定（M3 二期，2026-10-21）----------------
+    def auto_judge(self, scope: str, mood_name: str | None,
+                   intensity: float = 0.6, now: float | None = None) -> dict | None:
+        """每轮自动判定：复用 AI 自表达的 [表情:分类] marker 情绪（免费信号，
+        每轮 chat() 已剥离存入 ai_chatter.last_mood[scope]），落到 per-scope
+        情感状态。
+
+        契约（禁止降级）：
+          - mood_name 为 None / 空 → 返回 None，不动库（正常态，不报错）；
+          - 分类经 normalize_emotion 归一后不在 EMOTION_MAP → EmotionError，
+            捕获后返回 None，**不落库、不伪造**（诚实跳过，下轮还能再判）；
+          - 识別到的分类 → 按强度插值代入当前情绪并 save_mood。
+        不动好感度（情绪表达 ≠ 关系变化）。
+
+        返回 {"mood": MoodState.as_dict()} 或 None。
+        """
+        if not mood_name:
+            return None
+        now = time.time() if now is None else float(now)
+        name = normalize_emotion(mood_name)
+        st = self.store.get_mood(scope)
+        try:
+            self.engine.apply_emotion(st, name, intensity=intensity, now=now)
+        except EmotionError as e:
+            log.info(jlog("emotion_auto_judge_unknown", scope=scope,
+                          mood=mood_name, detail=str(e)[:120]))
+            return None
+        self.store.save_mood(scope, st)
+        log.info(jlog("emotion_auto_judged", scope=scope, mood=st.text,
+                      valence=round(st.valence, 2), arousal=round(st.arousal, 2)))
+        return {"mood": st.as_dict()}
 
     # ---------------- /情感 命令族服务 ----------------
     def status_text(self, scope: str, user_id: int) -> str:
