@@ -204,7 +204,15 @@ class ToolRegistry:
         if tool.risk == RISK_OWNER and not (ctx.is_private and ctx.is_owner):
             log.warning(jlog("tool_dispatch_denied", tool=name, scope=ctx.scope,
                              user_id=ctx.user_id, trace_id=ctx.trace_id))
-            return "工具 %s 仅限主人私聊使用" % name
+            # ★ 转述纪律（2026-10-21 真机实证）：拒绝原因必须可被模型**如实**
+            #   转述。此前文案只说「仅限主人私聊使用」，模型自由发挥成
+            #   「你又不是本喵主人」——把场景限制说成了身份否定（主人本人
+            #   在群里也被否认了主人的身份）。补明确指引：与身份无关，
+            #   不得否认主人身份。
+            return ("工具 %s 仅限主人私聊使用（群聊一律不开放，保护主人硬件"
+                    "隐私）。这是场景限制、与对方身份无关：即使说话的就是"
+                    "主人本人，也要如实转告「宿主机管家只在小喵私聊里用，"
+                    "主人私聊喊我就行」，**不得**说对方不是主人" % name)
         if tool.risk == RISK_CONFIRM:
             return ("工具 %s 需要二次确认，请让主人用 /pc 命令通道操作"
                     % name)
