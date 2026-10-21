@@ -109,6 +109,13 @@ from .memory import (ExtractError, MemoryError, MemoryManager,  # noqa: F401
 # + 好感度/关系阶段 + 日程（到期关心）。emotion 包同款零主包依赖。
 from .emotion import (EmotionError, EmotionManager, EmotionStore,  # noqa: F401
                       ScheduleError, emotion_manager, emotion_store)
+# M5 群风格 + 预算（2026-10-21）：群风格学习（学群梗/氛围，注入人设）+
+# AI 调用预算（影子·自适应，proactive/multimodal 硬闸门、reactive 永远放行）。
+# group_style / budget 包同款零主包依赖。
+from .group_style import (GroupStyleError,  # noqa: F401
+                          GroupStyleManager, group_style_manager)
+from .budget import (BudgetError, BudgetManager,  # noqa: F401
+                     budget_manager)
 # M4 多模态 + 语音（2026-10-20）：图理解/视频抽帧/历史图召回 + ASR/TTS。
 # 独立成包不挂 media/ 下（media 是发送层且 import nonebot）。
 from .multimodal import (AlbumError, AudioError, MediaManager,  # noqa: F401
@@ -2548,6 +2555,18 @@ async def _handle_ai_chat(ev, trace_id: str) -> None:
             log.warning(jlog("emotion_prompt_error", scope=scope,
                              error=type(e).__name__, detail=str(e)[:160],
                              trace_id=trace_id))
+    # ---- M5 群风格（2026-10-21）：注入「这个群的说话方式」让 AI 融入群语境。
+    # 只在群场景且有学到风格时有效；读库/无风格 → 返回 None 跳过（不假注入）。
+    if Config.GROUP_STYLE_ENABLE and ev.is_group:
+        try:
+            _gs_text = group_style_manager.prompt(scope)
+            if _gs_text:
+                extra_system = ((extra_system + "\n\n" + _gs_text)
+                                if extra_system else _gs_text)
+        except Exception as e:  # noqa: BLE001 — CLOSE-02 记而不吞
+            log.warning(jlog("group_style_prompt_error", scope=scope,
+                             error=type(e).__name__, detail=str(e)[:160],
+                             trace_id=trace_id))
     # ---- M2 工具总线（2026-10-20）：开关开且已有工具注册 → FC 多回合路径；
     # 否则（关/无工具/注册失败）走原纯对话路径。这是路由选择不是兜底降级——
     # 两条路径能力差异只在「能不能调工具」，纯对话行为零变化。
@@ -2601,6 +2620,14 @@ async def _handle_ai_chat(ev, trace_id: str) -> None:
     if gs:
         gs.turns += 1
         _arm_game_timer(ev)  # 每回一手 → 重布倒计时（旧任务取消，防叠加）
+    # ---- M5 AI 调用预算（2026-10-21）：一次真实 AI 调用完成 → 记账（reactive）。
+    # 仅 err 为 None（真调了模型）才记；cooldown/no_key 等没真调的不记。
+    if err is None and Config.BUDGET_ENABLE:
+        try:
+            budget_manager.record(scope, calls=1)
+        except Exception as e:  # noqa: BLE001 — 账目失败不阻断回复
+            log.warning(jlog("budget_record_skip", scope=scope,
+                             error=type(e).__name__))
     # ---- M1 记忆系统（2026-10-20）：对话后异步抽取（不阻塞回复）----
     # 后台 task 跑 ingest（LLM 抽取 facts/events）；失败只在 task 内记日志，
     # 不影响用户已收到的回复。抽取不到东西是正常态（静默）。
@@ -2788,6 +2815,56 @@ async def _proactive_speak(scope: str, act, kind: str) -> None:
                   idle_min=idle_min))
 
 
+# M5（2026-10-21）：群风格自动学习「每群每天至多一次」的去重记账（跨天重置）。
+_style_learned_today: dict[str, str] = {}
+
+
+def _style_learn_due(scope: str) -> bool:
+    d = time.strftime("%Y-%m-%d", time.localtime())
+    if _style_learned_today.get(scope) != d:
+        _style_learned_today[scope] = d
+        return True
+    return False
+
+
+async def _proactive_maybe_learn_style(scene: str, peer: int, scope: str,
+                                     msgs: list) -> None:
+    """proactive 循环里的群风格自动学习（每群每天一次，受预算闸约束）。
+
+    失败（LLM 不可用/抽取异常）→ 显式记日志不阻断循环、不伪造风格（禁止降级）。
+    """
+    if not (Config.GROUP_STYLE_ENABLE and Config.GROUP_STYLE_AUTO_LEARN):
+        return
+    if scene != "group":
+        return
+    if not _style_learn_due(scope):
+        return
+    # 预算闸：学习是非必需调用，耗尽则跳过（诚实，不硬学）
+    if Config.BUDGET_ENABLE and not Config.BUDGET_SHADOW:
+        bg = budget_manager.check(scope, "proactive")
+        if not bg["ok"]:
+            log.info(jlog("group_style_autolearn_skipped_budget", scope=scope,
+                          reason=bg["reason"]))
+            return
+    texts = [str(m.get("text") or "").strip()
+             for m in msgs if str(m.get("text") or "").strip()]
+    if len(texts) < 10:
+        return  # 样本太少不学（与 proactive too_quiet 同款保守）
+    try:
+        res = await group_style_manager.learn(
+            scope, texts[-40:],  # 取最近 40 条，控制 token
+            max_meme=int(Config.GROUP_STYLE_MAX_MEMES),
+            max_taboo=int(Config.GROUP_STYLE_MAX_TABOO))
+        if Config.BUDGET_ENABLE:
+            budget_manager.record(scope, calls=1)  # 学习是一次 AI 调用
+        log.info(jlog("group_style_autolearn_ok", scope=scope, **{
+            "added_memes": res["added_memes"], "added_taboo": res["added_taboo"],
+            "atmosphere": res["atmosphere"][:20]}))
+    except Exception as e:  # noqa: BLE001 — 学不到不致命
+        log.warning(jlog("group_style_autolearn_failed", scope=scope,
+                         error=type(e).__name__, detail=str(e)[:160]))
+
+
 async def _proactive_loop() -> None:
     """主动发言 tick 循环（60s 一拍；启动时由 _on_startup 拉起）。"""
     log.info(jlog("proactive_loop_started", interval=60))
@@ -2804,8 +2881,18 @@ async def _proactive_loop() -> None:
                 # 活跃度从 history 算（单一事实来源，重启不丢）
                 msgs = await asyncio.to_thread(
                     history.list_messages, scene, peer, 50)
+                # M5 群风格自动学习（每群每天一次，受预算闸；失败不致命）
+                await _proactive_maybe_learn_style(scene, peer, scope, msgs)
                 act = compute_activity(scene, peer, msgs)
                 act.greet_slot = None
+                # M5 预算闸：主动发言是非必需调用，预算耗尽则本拍跳过（诚实告知）
+                if Config.BUDGET_ENABLE and not Config.BUDGET_SHADOW:
+                    bg = budget_manager.check(scope, "proactive")
+                    if not bg["ok"]:
+                        log.info(jlog("proactive_skipped_budget", scope=scope,
+                                      reason=bg["reason"]))
+                        await asyncio.sleep(2)
+                        continue
                 # ① 到点问候（早/午/晚，每日每段一次）
                 slot = proactive_engine.greet_due(act)
                 if slot:
@@ -4705,6 +4792,198 @@ async def _handle_media_command(ev, trace_id: str) -> None:
                  title="多模态")
 
 
+# ===========================================================================
+# M5 群风格 + 预算（2026-10-21）：/风格 命令族 + /预算 命令族
+# ===========================================================================
+
+async def _handle_style_command(ev, trace_id: str) -> None:
+    """/风格 命令族（M5 2026-10-21）：看 / 学 / 加梗 / 删梗 / 加忌讳 / 删忌讳 / 重置。
+
+    安全口径：风格只关于「群公开语境」（梗/口头禅/氛围/忌讳），不抽个体隐私；
+    LLM 不可用 → 显式报错不伪造（禁止降级）。加/删/重置等**改写**操作仅主人。
+    """
+    if not Config.GROUP_STYLE_ENABLE:
+        return
+    ctx = _ctx(ev)
+    sess = session_store.get(ev.user_id)
+    scope = ev.scope_key
+    parts = (ev.raw_text or "").strip().split(None, 2)
+    sub = parts[1].strip() if len(parts) > 1 else ""
+    rest = parts[2].strip() if len(parts) > 2 else ""
+    low = sub.lower()
+
+    # ---- 学：手动触发学习（群内可用，消耗一次 AI 调用，受预算闸）----
+    if low in ("学", "learn", "更新"):
+        if not ev.is_group:
+            await _reply(ctx, sess, "群风格只能从群聊里学——进群发「/风格 学」吧",
+                         title="群风格")
+            return
+        if Config.BUDGET_ENABLE and not Config.BUDGET_SHADOW:
+            bg = budget_manager.check(scope, "proactive")
+            if not bg["ok"]:
+                await _reply(ctx, sess, "今天 AI 额度不够学风格了（预算耗尽），"
+                             "明天再来或去「机器人配置 → AI 调用预算」调高上限",
+                             title="群风格")
+                return
+        try:
+            msgs = await asyncio.to_thread(
+                history.list_messages, ev.scene, ev.peer_id, 40)
+        except Exception as e:  # noqa: BLE001
+            await _reply(ctx, sess, "读群消息失败：%s" % type(e).__name__,
+                         title="群风格")
+            return
+        texts = [str(m.get("text") or "").strip()
+                 for m in msgs if str(m.get("text") or "").strip()]
+        if len(texts) < 10:
+            await _reply(ctx, sess, "这个群最近消息太少（<10 条），学不出风格。"
+                                     "多聊几句再来", title="群风格")
+            return
+        try:
+            res = await group_style_manager.learn(
+                scope, texts[-40:],
+                max_meme=int(Config.GROUP_STYLE_MAX_MEMES),
+                max_taboo=int(Config.GROUP_STYLE_MAX_TABOO))
+            if Config.BUDGET_ENABLE:
+                budget_manager.record(scope, calls=1)
+        except Exception as e:  # noqa: BLE001 — 学不到显式告知
+            await _reply(ctx, sess, "学风格失败：%s（可能没配 AI Key 或网络问题）"
+                         % type(e).__name__, title="群风格")
+            return
+        s = group_style_manager.view(scope)
+        _atmo = res["atmosphere"] or "（没归纳出）"
+        _memes = "、".join(s.get("memes") or []) or "（空）"
+        _taboo = "、".join(s.get("taboo") or []) or "（空）"
+        _style_learn_msg = "学完啦～\n氛围：%s\n梗/口头禅：%s\n忌讳：%s" % (
+            _atmo, _memes, _taboo)
+        await _reply(ctx, sess, _style_learn_msg, title="群风格")
+        return
+
+    # ---- 看：展示当前风格 ----
+    if low in ("看", "view", "show", ""):
+        try:
+            s = group_style_manager.view(scope)
+        except GroupStyleError as e:
+            await _reply(ctx, sess, str(e), title="群风格")
+            return
+        if not (s.get("memes") or s.get("taboo") or s.get("atmosphere")):
+            await _reply(ctx, sess, "这个" + ("群" if ev.is_group else "会话")
+                         + "还没风格数据。发「/风格 学」让本喵从聊天里归纳"
+                           "（群聊里用）", title="群风格")
+            return
+        lines = ["【群风格·当前】" if ev.is_group else "【风格·当前】"]
+        if s.get("atmosphere"):
+            lines.append("氛围：%s" % s["atmosphere"])
+        lines.append("梗/口头禅(%d)：%s" % (len(s.get("memes") or []),
+                                            "、".join(s.get("memes") or []) or "（空）"))
+        lines.append("忌讳(%d)：%s" % (len(s.get("taboo") or []),
+                                       "、".join(s.get("taboo") or []) or "（空）"))
+        lines.append("（加/删梗、加/删忌讳、重置仅主人）")
+        await _reply(ctx, sess, "\n".join(lines), title="群风格")
+        return
+
+    # ---- 以下为改写操作：仅主人 ----
+    if not _is_owner(ev.user_id):
+        await _reply(ctx, sess, "加梗/删梗/加忌讳/删忌讳/重置只能主人操作～",
+                     title="群风格")
+        return
+    if low in ("加梗", "addmeme"):
+        if not rest:
+            await _reply(ctx, sess, "用法：/风格 加梗 <内容>", title="群风格")
+            return
+        try:
+            n = group_style_manager.add_meme(scope, rest)
+        except GroupStyleError as e:
+            await _reply(ctx, sess, str(e), title="群风格")
+            return
+        await _reply(ctx, sess, "已加梗，当前 %d 条" % n, title="群风格")
+        return
+    if low in ("删梗", "delmeme"):
+        if not rest:
+            await _reply(ctx, sess, "用法：/风格 删梗 <内容>", title="群风格")
+            return
+        try:
+            n = group_style_manager.remove_meme(scope, rest)
+        except GroupStyleError as e:
+            await _reply(ctx, sess, str(e), title="群风格")
+            return
+        await _reply(ctx, sess, "已删梗，当前 %d 条" % n, title="群风格")
+        return
+    if low in ("加忌讳", "addtaboo"):
+        if not rest:
+            await _reply(ctx, sess, "用法：/风格 加忌讳 <内容>", title="群风格")
+            return
+        try:
+            n = group_style_manager.add_taboo(scope, rest)
+        except GroupStyleError as e:
+            await _reply(ctx, sess, str(e), title="群风格")
+            return
+        await _reply(ctx, sess, "已加忌讳，当前 %d 条" % n, title="群风格")
+        return
+    if low in ("删忌讳", "deltaboo"):
+        if not rest:
+            await _reply(ctx, sess, "用法：/风格 删忌讳 <内容>", title="群风格")
+            return
+        try:
+            n = group_style_manager.remove_taboo(scope, rest)
+        except GroupStyleError as e:
+            await _reply(ctx, sess, str(e), title="群风格")
+            return
+        await _reply(ctx, sess, "已删忌讳，当前 %d 条" % n, title="群风格")
+        return
+    if low in ("重置", "reset", "清空"):
+        try:
+            group_style_manager.reset(scope)
+        except GroupStyleError as e:
+            await _reply(ctx, sess, str(e), title="群风格")
+            return
+        await _reply(ctx, sess, "已清空本" + ("群" if ev.is_group else "会话")
+                     + "风格数据", title="群风格")
+        return
+
+    # ---- 帮助 ----
+    await _reply(ctx, sess,
+                 "群风格命令族：\n"
+                 "· /风格 学 —— 从群聊最近消息归纳风格（群聊里用，耗一次 AI）\n"
+                 "· /风格 看 —— 看当前风格\n"
+                 "· /风格 加梗 <内容> / 删梗 <内容>（主人）\n"
+                 "· /风格 加忌讳 <内容> / 删忌讳 <内容>（主人）\n"
+                 "· /风格 重置（主人）",
+                 title="群风格")
+
+
+async def _handle_budget_command(ev, trace_id: str) -> None:
+    """/预算 命令族（M5 2026-10-21）：看 / 重置。
+
+    预算是全局资源，查看开放；重置（清空当日用量）仅主人。
+    """
+    ctx = _ctx(ev)
+    sess = session_store.get(ev.user_id)
+    scope = ev.scope_key
+    parts = (ev.raw_text or "").strip().split(None, 1)
+    sub = parts[1].strip() if len(parts) > 1 else ""
+    low = sub.lower()
+
+    if low in ("重置", "reset", "清空"):
+        if not _is_owner(ev.user_id):
+            await _reply(ctx, sess, "重置预算只能主人操作～", title="预算")
+            return
+        try:
+            budget_store.reset_scope(scope)
+        except BudgetError as e:
+            await _reply(ctx, sess, str(e), title="预算")
+            return
+        await _reply(ctx, sess, "已重置本会话当日预算用量", title="预算")
+        return
+
+    # ---- 看：状态 ----
+    try:
+        text = budget_manager.status_text(scope)
+    except BudgetError as e:
+        await _reply(ctx, sess, str(e), title="预算")
+        return
+    await _reply(ctx, sess, text, title="AI 调用预算")
+
+
 async def _route(ev, trace_id: str) -> None:
     """归一化之后的**统一业务路由**（与协议无关）。
 
@@ -4806,6 +5085,16 @@ async def _route(ev, trace_id: str) -> None:
     # ---- M4 多模态命令族（2026-10-20）：/看图 看图/列表/序号/说/状态 ----
     if (ev.raw_text or "").strip().startswith("/看图"):
         await _handle_media_command(ev, trace_id)
+        return
+
+    # ---- M5 群风格 + 预算（2026-10-21）：/风格 学/看/加梗/删梗/加忌讳/删忌讳/重置；
+    # /预算 看/重置 ----
+    _rt = (ev.raw_text or "").strip()
+    if _rt.startswith("/风格"):
+        await _handle_style_command(ev, trace_id)
+        return
+    if _rt.startswith("/预算"):
+        await _handle_budget_command(ev, trace_id)
         return
 
     # ---- 宿主机管家（M6 2026-10-20）：/pc 命令族 + 自然语言直通车 ----

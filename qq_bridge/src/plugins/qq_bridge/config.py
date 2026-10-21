@@ -615,6 +615,35 @@ class Config:
     # 主人私聊语音：自动听写并当普通消息处理（关=忽略语音）
     MM_ASR_PRIVATE: bool = _as_bool(os.environ.get("MM_ASR_PRIVATE"), True)
 
+    # ---- 群风格学习（2026-10-21 M5：学群梗/群用语/氛围，注入人设）----
+    # 安全口径：只学群**公开语境**的风格（梗/口头禅/氛围/忌讳），不抽个体隐私；
+    # LLM 不可用 → 显式报错不伪造风格（禁止降级）。
+    GROUP_STYLE_ENABLE: bool = _as_bool(os.environ.get("GROUP_STYLE_ENABLE"), True)
+    # 主动在群里自动学习（proactive 循环里每群每天至多一次，受预算闸约束）
+    GROUP_STYLE_AUTO_LEARN: bool = _as_bool(os.environ.get("GROUP_STYLE_AUTO_LEARN"), True)
+    # 单次学习抽取梗上限 / 忌讳上限
+    GROUP_STYLE_MAX_MEMES: int = _as_int(os.environ.get("GROUP_STYLE_MAX_MEMES"), 8)
+    GROUP_STYLE_MAX_TABOO: int = _as_int(os.environ.get("GROUP_STYLE_MAX_TABOO"), 5)
+    # 群风格库路径（默认 data/qq_group_style.db）
+    GROUP_STYLE_DB: str = os.environ.get("GROUP_STYLE_DB") or ""
+
+    # ---- AI 调用预算（2026-10-21 M5：影子·自适应预算，禁止降级）----
+    # 跟踪每 scope 与全局的每日 AI 调用次数；三级水位 ok/warn/exhausted。
+    # 语义：proactive/multimodal 类**非必需**调用受硬闸门（耗尽即拒）；
+    # reactive（用户主动发消息）永远放行（用户明确要回应），耗尽时只附诚实提示；
+    # shadow=True 只记账不限流（dry-run，观察用量）；关闭 shadow 才真正限流。
+    BUDGET_ENABLE: bool = _as_bool(os.environ.get("BUDGET_ENABLE"), False)
+    BUDGET_SHADOW: bool = _as_bool(os.environ.get("BUDGET_SHADOW"), True)
+    # 全局每日 AI 调用上限（0=不限）；per-scope 每日上限
+    BUDGET_GLOBAL_DAILY_CALLS: int = _as_int(os.environ.get("BUDGET_GLOBAL_DAILY_CALLS"), 300)
+    BUDGET_PER_SCOPE_DAILY_CALLS: int = _as_int(os.environ.get("BUDGET_PER_SCOPE_DAILY_CALLS"), 100)
+    # 预警水位比例（达到即 warn）
+    BUDGET_WARN_RATIO: float = _as_float(os.environ.get("BUDGET_WARN_RATIO"), 0.8)
+    # 单次调用估算 token（仅做账目，非精确计量）
+    BUDGET_EST_TOKEN_PER_CALL: int = _as_int(os.environ.get("BUDGET_EST_TOKEN_PER_CALL"), 800)
+    # 预算库路径（默认 data/qq_budget.db）
+    BUDGET_DB: str = os.environ.get("BUDGET_DB") or ""
+
     @classmethod
     def official_configured(cls) -> bool:
         """官方通道是否配置完整（缺 AppID/Secret 时不启用，避免启动即报错）。"""

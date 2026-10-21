@@ -82,7 +82,7 @@ ai-groupmate v2.5.15（Tool Calling / 明确记忆 / 定时任务）、personifi
 | M2 | 人格 | Function Calling 总线 + 定时任务/提醒 | 2-3 天 | ✅ **已交付 2026-10-20**（见 §10.6） |
 | M3 | 人格 | 情感 + 日程 + 关系 | 2 天 |
 | M4 | 人格 | 多模态（图理解/历史图召回）+ 语音（主人私聊） | 2 天 |
-| M5 | 人格 | 心流升级 + 群风格学习 + 预算 | 2 天 |
+| M5 | 人格 | 心流升级 + 群风格学习 + 预算 | 2 天 | ✅ **已交付 2026-10-21**（见 §10.12） |
 | **M6** | **管家** | **宿主机管家：监控/进程/窗口/截图/文件/剪贴板/应用/电源** | 3 天 |
 | **M7** | **管家** | **下载媒体中心：aria2 远程下载/BT 智能选/yt-dlp/完成推送/文件回传** | 2 天 |
 | **M8** | **管家** | **智能家居：HA 桥接/webhook 告警/摄像头/ASR 语音指令** | 2 天 |
@@ -391,3 +391,28 @@ M1 记忆 ──┬─→ M2 工具总线 ──┬─→ M3 情感日程
 **接线**：`config.py`「多模态语音」配置组 11 项 + `config_api.py` 配置页同款；`dispatcher/__init__.py` 新增 record（语音）段提取 + `QQEvent.voices` 字段（默认空列表，既有调用方零影响，改动前已 version_guard 备份）；`media/__init__.py` 新增 `send_record`（TTS 出口，官方通道不支持语音段时发文字提示不静默丢弃）；`tools/llm.py` 的 `chat()` 加 `model` 覆盖参数（视觉模型专用，不自动回落）；`__init__.py`：`_route` 开头接语音 ASR（主人私聊，转写文本写回 `ev.raw_text` 后走正常流程，零递归）与纯图片自动看图（MM_AUTO_LOOK，有文字时不抢流程）；`_route` 挂 `/看图` 命令族（看图/列表/序号/说/状态——TTS 仅主人）。
 
 **验收**：`tests/test_multimodal_vision.py` + `test_multimodal_audio.py` 共 32 断言全绿；与既有组合 269 passed。**既有红灯如实记录**：12 条 `test_config_hot_reload` + 3 条 `test_dispatcher` 失败均为改动前即存在的（`test_dispatcher` 已做 baseline 对照：改动前后均 3 failed/10 passed，未引入新失败），根因同 F12 的 Config 双份命名空间污染，本轮不修既有测试（避免回归风险）。
+
+### 10.12 M5 心流 + 群风格 + 预算交付记录（2026-10-21 ✅）
+需求（dev_plan M5）：心流升级 / 群风格学习 / 预算。范式参考 MaiBot HeartFlow 心流（持续认知循环 / 发言时机）+ personification（群风格学习 / 预算 shadow·adaptive / 拟人发送）。
+
+**交付物**：
+**群风格 `group_style/` 四件套**（零主包依赖，可裸单测）：
+| 文件 | 职责 |
+|---|---|
+| `store.py` | 群风格 SQLite 存储（`data/qq_group_style.db`）：`group_styles(scope PK, atmosphere, memes JSON, taboo JSON, sample_count, updated_at)`；load/save/add_item/remove_item/reset；GroupStyleError |
+| `learn.py` | `StyleLearner` + `LEARN_SYSTEM` 提示；`_validate` 结构校验（坏 JSON/非 dict/类型错→LearnError）；`_strip_fence` 剥 markdown 围栏；`learn()` async，延迟 import LLMClient；**LLM 失败显式上抛，不伪造风格** |
+| `manager.py` | `prompt(scope)` 生成注入文本（无风格返 None）；`learn()` 合并旧+新并截断上限（MAX_MEMES/MAX_TABOO）；add_meme/remove_meme/add_taboo/remove_taboo/reset/view；`_merge` 去重截断 |
+| `__init__.py` | 导出 GroupStyleManager 单例 `group_style_manager` 等 8 符号 |
+
+**预算 `budget/` 三件套**（零主包依赖，可裸单测）：
+| 文件 | 职责 |
+|---|---|
+| `store.py` | 预算 SQLite（`data/qq_budget.db`）：`usage(scope, day, calls, est_tokens) PK(scope,day)`；record/get_scope_day/reset_scope；BudgetError |
+| `manager.py` | `record/snapshot/check/status_text`；配置热生效透传（_enabled/_shadow/_global_cap/_scope_cap/_warn_ratio/_est_per_call）；三级水位 ok/warn/exhausted；**语义**：disabled/shadow→恒 ok（shadow 只记账不限流）；proactive/multimodal→硬闸门（耗尽 deny）；reactive→恒 ok 但 exhausted 透传 level 供 caller 附诚实提示（绝不静默拒用户） |
+| `__init__.py` | 导出 budget_manager 等 5 符号 |
+
+**心流 `ai_proactive.py`**（2026-10-19 已落地，本轮一并纳入版本控制）：社交能量系统 / 自适应沉默阈值 / 每日上限与时段窗 / LLM 最终判断（与内容生成融合一次调用）。
+
+**接线**：`config.py`「群风格学习」配置组 5 项（GROUP_STYLE_ENABLE/AUTO_LEARN/MAX_MEMES/MAX_TABOO/DB）+ `config_api.py` 配置页同款；`config.py`「AI 调用预算」配置组 7 项（BUDGET_ENABLE 默认 False/SHADOW 默认 True/GLOBAL_DAILY_CALLS/PER_SCOPE_DAILY_CALLS/WARN_RATIO/EST_TOKEN_PER_CALL/DB）+ `config_api.py` 配置页同款；`__init__.py`：情感注入块后接群风格注入（仅 `ev.is_group` 且 GROUP_STYLE_ENABLE：`group_style_manager.prompt(scope)` 拼 extra_system）；`_handle_ai_chat` 对话后（`err is None and Config.BUDGET_ENABLE`）`budget_manager.record(scope, calls=1)`；`_proactive_loop` 前新增每群每天一次自动学（`_style_learn_due`/`_proactive_maybe_learn_style`，受预算闸、失败不致命）；`_proactive_loop` 内预算闸（非 shadow 且耗尽则 continue）；`_route` 挂 `/风格`（学/看/加梗/删梗/加忌讳/删忌讳/重置，改写操作仅主人）与 `/预算`（看/重置，重置仅主人）命令族。
+
+**验收**：`tests/test_group_style.py` 16 断言（store 增删改查/校验/合并/learner 解析/manager 学习合并/prompt 空与非空）+ `tests/test_budget.py` 10 断言（store 记录/聚合/重置、check 各分支 disabled/shadow/gated/warn/reactive、status_text）；与 M1–M4/M7/M9/config 组合 **263 passed**。**既有红灯如实记录**：15 条失败 = 12 条 `test_config_hot_reload`（F12 双限定名污染）+ 3 条 `test_dispatcher`（baseline 对照改动前后均 3 failed/10 passed，未引入新失败），均与 M5 无关，本轮不修既有测试（避免回归风险）。
