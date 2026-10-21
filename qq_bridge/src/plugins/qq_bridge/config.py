@@ -556,6 +556,26 @@ class Config:
     # 同类事件冷却（秒）：5 分钟一条才是人话（防刷屏 + LLM 成本）
     OPS_NOTIFY_COOLDOWN: float = _as_float(os.environ.get("OPS_NOTIFY_COOLDOWN"), 300.0)
 
+    # ---- 智能家居中枢（2026-10-21 M8：HA 桥接/webhook 告警/摄像头）----
+    # HAQBot 同构先例；设备白名单双保险 + 高敏仅主人 + 禁止降级/兜底。
+    SMARTHOME_ENABLE: bool = _as_bool(os.environ.get("SMARTHOME_ENABLE"), False)
+    # HA 地址与长效访问令牌（HA 个人资料页 → Long-Lived Access Tokens）
+    SMARTHOME_HA_URL: str = os.environ.get("SMARTHOME_HA_URL") or ""
+    SMARTHOME_HA_TOKEN: str = os.environ.get("SMARTHOME_HA_TOKEN") or ""
+    # 对话代理（HA 侧配 Ollama 本地模型驱动；机器人不自带 LLM）
+    SMARTHOME_HA_AGENT_ID: str = os.environ.get("SMARTHOME_HA_AGENT_ID") or "conversation.home_assistant"
+    # 可控设备白名单（分号/逗号分隔 entity_id；空=全禁，防误控）
+    SMARTHOME_DEVICE_WHITELIST: str = os.environ.get("SMARTHOME_DEVICE_WHITELIST") or ""
+    # 高敏设备（门锁/摄像头/门禁）：仅主人（调用方判身份，本项只做标记）
+    SMARTHOME_SENSITIVE: str = os.environ.get("SMARTHOME_SENSITIVE") or ""
+    # 场景脚本映射（每行 `中文口语=script.entity_id`；命中即直接执行，不等 LLM）
+    SMARTHOME_SCENE_MAP: str = os.environ.get("SMARTHOME_SCENE_MAP") or ""
+    # Webhook 反向告警接收器（HA 自动化 rest_command 推来的端口/令牌）
+    SMARTHOME_WEBHOOK_PORT: int = _as_int(os.environ.get("SMARTHOME_WEBHOOK_PORT"), 8090)
+    SMARTHOME_WEBHOOK_TOKEN: str = os.environ.get("SMARTHOME_WEBHOOK_TOKEN") or ""
+    # HA REST 调用超时（秒，CLOSE-05）
+    SMARTHOME_HTTP_TIMEOUT: float = _as_float(os.environ.get("SMARTHOME_HTTP_TIMEOUT"), 10.0)
+
     # ---- 记忆系统（2026-10-20 M1：三态记忆 + 画像 + 群档案）----
     # 三态分工：短期=ai_mode 会话历史（既有）；长期=events（FTS+时间衰减）；
     # 核心=profiles 画像 + group_profiles 群档案。向量检索二期（在线 embedding）。

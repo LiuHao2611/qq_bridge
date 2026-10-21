@@ -120,6 +120,14 @@ from .budget import (BudgetError, BudgetManager,  # noqa: F401
 # 独立成包不挂 media/ 下（media 是发送层且 import nonebot）。
 from .multimodal import (AlbumError, AudioError, MediaManager,  # noqa: F401
                          VisionError, media_album, media_manager)
+# M8 智能家居中枢（2026-10-21，HAQBot 同构）：HA REST 桥接 + 设备白名单 +
+# 场景映射 + webhook 反向告警 + 摄像头。纯模块不 import nonebot，可裸单测；
+# 发送出口（QQ）由 _ha_webhook_send 在运行时注入。
+from .smarthome import (CameraError, CameraGrab, HAClient, HaError,  # noqa: F401
+                        SYSTEM_PROMPT as HA_SYSTEM_PROMPT, WebhookReceiver,
+                        create_app as create_ha_webhook_app, ha_client,
+                        format_event_text as _ha_format_event,
+                        parse_event as _ha_parse_event)
 # 智能表情包（2026-10-19）：自动收集 + OCR/VLM 分类 + 人设语境选用
 from .stickers import (DEFAULT_PERSONA_MAP, STICKER_CATS,  # noqa: F401
                        collect_group_stickers, parse_persona_map, sticker_lib)
@@ -4044,6 +4052,194 @@ def _fmt_uptime(_s: float) -> str:  # 保留占位（后续硬件面接入可放
     return ""
 
 
+# ---------------- M8 智能家居（2026-10-21，HAQBot 同构）----------------
+# webhook 反向告警：HA 自动化 → 本机接收器 → 推送目标群/人（运行时接线）
+_ha_receiver: "WebhookReceiver | None" = None
+
+
+async def _ha_webhook_send(ev) -> None:
+    """webhook 事件 → QQ 推送出口（注入 WebhookReceiver.on_event）。
+
+    推送目标取 OPS_NOTIFY_TARGET（复用 M9 通知中枢配置：QQ 号=私聊/群号=群）；
+    空目标只记日志（不假装发出）。摄像头事件附快照（camera_entity 非空时）。
+    """
+    text = _ha_format_event(ev)
+    target = (Config.OPS_NOTIFY_TARGET or "").strip()
+    if not target:
+        log.info(jlog("ha_webhook_no_target", event_type=ev.event_type))
+        return
+    ctx = {"user_id": 0, "group_id": int(target) if target.isdigit() else 0,
+           "message_type": "group"}
+    try:
+        if ev.camera_entity:
+            data = await CameraGrab(ha_client).snapshot(ev.camera_entity)
+            await send_pic(ctx, data)
+        await _reply(ctx, None, text, title="智能家居告警")
+    except (HaError, CameraError) as e:
+        # 附图失败不吞事件——文字照发，错误显式附上（禁止静默）
+        await _reply(ctx, None, text + "\n（附图失败：%s）" % e, title="智能家居告警")
+
+
+async def _handle_ha_command(ev, trace_id: str) -> None:
+    """/ha 命令族（M8 2026-10-21）：开/关/场景/状态/摄像头/说/webhook/帮助。
+
+    权限分层：
+      - 普通设备控制/查询：群聊与私聊均可（白名单内）；
+      - 高敏设备（SMARTHOME_SENSITIVE：门锁/摄像头）：**仅主人**；
+      - webhook 开关：仅主人（涉及本机起服务）。
+    """
+    if not Config.SMARTHOME_ENABLE:
+        return
+    ctx = _ctx(ev)
+    sess = session_store.get(ev.user_id)
+    body = (ev.raw_text or "").strip()
+    parts = body.split(None, 2)
+    sub = parts[1].strip() if len(parts) > 1 else ""
+    rest = parts[2].strip() if len(parts) > 2 else ""
+    low = sub.lower()
+
+    if low in ("", "help", "帮助", "？", "?"):
+        await _reply(ctx, sess, _HA_HELP, title="智能家居")
+        return
+
+    owner = _is_owner(ev.user_id)
+
+    # ---- webhook 告警接收器开关（仅主人）----
+    if low == "webhook":
+        global _ha_receiver
+        if not owner:
+            await _reply(ctx, sess, "告警接收器是主人的私享开关喵。", title="权限不足")
+            return
+        if rest.lower() in ("on", "开", "启动"):
+            if _ha_receiver is not None:
+                await _reply(ctx, sess, "告警接收器已在运行（端口 %d）。"
+                             % Config.SMARTHOME_WEBHOOK_PORT, title="智能家居")
+                return
+            _ha_receiver = WebhookReceiver(
+                port=Config.SMARTHOME_WEBHOOK_PORT,
+                token=Config.SMARTHOME_WEBHOOK_TOKEN,
+                on_event=_ha_webhook_send)
+            asyncio.ensure_future(_ha_receiver.start())
+            await _reply(ctx, sess, "告警接收器已启动（127.0.0.1:%d）——HA 自动化"
+                         "往这个端口 POST 就能推送到 QQ 喵。" % Config.SMARTHOME_WEBHOOK_PORT,
+                         title="智能家居")
+        elif rest.lower() in ("off", "关", "停止"):
+            if _ha_receiver is None:
+                await _reply(ctx, sess, "告警接收器没在运行。", title="智能家居")
+                return
+            await _ha_receiver.stop()
+            _ha_receiver = None
+            await _reply(ctx, sess, "告警接收器已停止。", title="智能家居")
+        else:
+            await _reply(ctx, sess, "用法：/ha webhook 开｜关", title="智能家居")
+        return
+
+    # ---- 场景脚本（本地映射，确定性快路径）----
+    if low in ("scene", "场景", "模式"):
+        ent = ha_client.match_scene(rest)
+        if not ent:
+            await _reply(ctx, sess, "没有「%s」这个场景（已配 %d 个：%s）。"
+                         % (rest, len(ha_client.scenes),
+                            "、".join(ha_client.scenes) or "无"), title="智能家居")
+            return
+        if ha_client.is_sensitive(ent) and not owner:
+            await _reply(ctx, sess, "这是高敏设备，只有主人能操控喵。", title="权限不足")
+            return
+        try:
+            await ha_client.run_scene(ent)
+        except HaError as e:
+            await _reply(ctx, sess, str(e), title="智能家居")
+            return
+        await _reply(ctx, sess, "「%s」已执行（%s）喵。" % (rest, ent), title="智能家居")
+        log.info(jlog("ha_scene_run", scene=rest[:40], entity=ent,
+                      user_id=ev.user_id, trace_id=trace_id))
+        return
+
+    # ---- 设备开关 ----
+    if low in ("on", "off", "开", "关", "toggle", "切换"):
+        service = "toggle" if low == "toggle" or low == "切换" else (
+            "turn_on" if low in ("on", "开") else "turn_off")
+        if not rest:
+            await _reply(ctx, sess, "用法：/ha %s <entity_id>（如 light.living_room）"
+                         % low, title="智能家居")
+            return
+        if ha_client.is_sensitive(rest) and not owner:
+            await _reply(ctx, sess, "门锁/摄像头这类高敏设备只有主人能操控喵。",
+                         title="权限不足")
+            return
+        try:
+            await ha_client.call_service(rest, service)
+        except HaError as e:
+            await _reply(ctx, sess, str(e), title="智能家居")
+            return
+        await _reply(ctx, sess, "%s 已%s喵。" % (rest,
+                     "打开" if service == "turn_on" else
+                     "关闭" if service == "turn_off" else "切换"), title="智能家居")
+        log.info(jlog("ha_service", entity=rest[:60], service=service,
+                      user_id=ev.user_id, trace_id=trace_id))
+        return
+
+    # ---- 查状态 ----
+    if low in ("state", "状态", "查"):
+        if not rest:
+            await _reply(ctx, sess, "用法：/ha state <entity_id>", title="智能家居")
+            return
+        try:
+            st = await ha_client.get_state(rest)
+        except HaError as e:
+            await _reply(ctx, sess, str(e), title="智能家居")
+            return
+        state = (st or {}).get("state", "?")
+        await _reply(ctx, sess, "%s 现在是：%s" % (rest, state), title="智能家居")
+        return
+
+    # ---- 摄像头（高敏：仅主人；群友要看得先过主人关）----
+    if low in ("cam", "camera", "摄像头", "看看"):
+        if not owner:
+            await _reply(ctx, sess, "摄像头画面只有主人能看喵。", title="权限不足")
+            return
+        if not rest:
+            await _reply(ctx, sess, "用法：/ha cam <camera entity_id>", title="智能家居")
+            return
+        try:
+            data = await CameraGrab(ha_client).snapshot(rest)
+        except (HaError, CameraError) as e:
+            await _reply(ctx, sess, str(e), title="智能家居")
+            return
+        await send_pic(ctx, data)
+        await _reply(ctx, sess, "%s 的当前画面" % rest, title="智能家居")
+        return
+
+    # ---- 自然语言（HA Conversation Agent）----
+    if low in ("say", "说", ""):
+        text = rest or sub
+        if not text:
+            await _reply(ctx, sess, _HA_HELP, title="智能家居")
+            return
+        try:
+            out = await ha_client.converse(text)
+        except HaError as e:
+            await _reply(ctx, sess, str(e), title="智能家居")
+            return
+        await _reply(ctx, sess, out["speech"], title="智能家居")
+        log.info(jlog("ha_converse", text=text[:60], user_id=ev.user_id,
+                      trace_id=trace_id))
+        return
+
+    await _reply(ctx, sess, _HA_HELP, title="智能家居")
+
+
+_HA_HELP = """智能家居（/ha）用法：
+· /ha 开 light.living_room —— 控设备（白名单内）
+· /ha 关 switch.fan｜/ha 切换 switch.fan
+· /ha 场景 洗澡模式 —— 场景脚本（本地映射，不等 LLM）
+· /ha 状态 light.living_room —— 查设备状态
+· /ha cam camera.living —— 摄像头当前画面（仅主人）
+· /ha 说 把客厅灯打开 —— 自然语言（HA 对话代理）
+· /ha webhook 开｜关 —— 告警接收器（仅主人）
+高敏设备（门锁/摄像头）仅主人；白名单外一律拒绝。"""
+
+
 async def _handle_ops_command(ev, trace_id: str) -> None:
     """/ops 命令族（M9 2026-10-20）：git / ssh / wol / frp / 通知。
 
@@ -5097,6 +5293,11 @@ async def _route(ev, trace_id: str) -> None:
     # ---- M9 运维面命令族（2026-10-20）：/ops git/ssh/wol/frp/通知 ----
     if (ev.raw_text or "").strip().startswith("/ops"):
         await _handle_ops_command(ev, trace_id)
+        return
+
+    # ---- M8 智能家居命令族（2026-10-21）：/ha 开/关/场景/状态/摄像头/说 ----
+    if (ev.raw_text or "").strip().startswith("/ha"):
+        await _handle_ha_command(ev, trace_id)
         return
 
     # ---- M1 记忆命令族（2026-10-20）：/记忆 我/更正/忘记/事件/清理 ----
