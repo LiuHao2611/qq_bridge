@@ -27,8 +27,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "plugins"))
 
 from qq_bridge.smarthome import (  # noqa: E402
-    SYSTEM_PROMPT, CameraError, HAClient, HaError, create_app,
-    format_event_text, parse_event, parse_scene_map, parse_whitelist,
+    SYSTEM_PROMPT, CameraError, HAClient, HaError, build_attr_payload,
+    create_app, format_event_text, parse_event, parse_scene_map,
+    parse_whitelist,
 )
 
 
@@ -314,6 +315,123 @@ def test_camera_clip_without_ffmpeg_is_explicit_no_fallback():
     finally:
         cam_mod.shutil.which = orig
     assert "ffmpeg" in str(ei.value)
+
+
+# ---------------- 7) 属性级控制（D2 2026-10-21） ----------------
+
+def test_build_attr_payload_int_and_pct():
+    # 亮度绝对值
+    assert build_attr_payload("light.living", "brightness=128") == (
+        "turn_on", {"brightness": 128})
+    # 百分比 → 换算成 0-255（40% → 102）
+    svc, data = build_attr_payload("light.living", "brightness_pct=40")
+    assert svc == "turn_on" and data["brightness_pct"] == 102
+    # 色温
+    assert build_attr_payload("light.living", "color_temp=370") == (
+        "turn_on", {"color_temp": 370})
+
+
+def test_build_attr_payload_float_and_enum_and_rgb():
+    assert build_attr_payload("climate.bed", "temperature=26.5") == (
+        "set_temperature", {"temperature": 26.5})
+    assert build_attr_payload("climate.bed", "hvac_mode=COOL") == (
+        "set_hvac_mode", {"hvac_mode": "cool"})
+    assert build_attr_payload("cover.curtain", "position=50") == (
+        "set_cover_position", {"position": 50})
+    assert build_attr_payload("light.living", "rgb_color=255,120,0") == (
+        "turn_on", {"rgb_color": [255, 120, 0]})
+
+
+@pytest.mark.parametrize("expr,needle", [
+    ("brightness=300", "超范围"),        # 越界：不夹取、不舍入
+    ("temperature=99", "超范围"),
+    ("brightness=abc", "要整数"),
+    ("temperature=abc", "要数字"),
+    ("rgb_color=255,0", "三个"),
+    ("rgb_color=1,2,300", "0-255"),
+    ("hvac_mode=烤肉", "只认这几个"),
+])
+def test_build_attr_payload_rejects_bad_values(expr, needle):
+    with pytest.raises(HaError) as ei:
+        build_attr_payload("light.living"
+                           if not expr.startswith(("temperature", "hvac"))
+                           else "climate.bed", expr)
+    assert needle in str(ei.value)
+
+
+def test_build_attr_payload_unsupported_attr_is_explicit():
+    # 不支持的组合 → 显式说不支持，不猜服务名（猜错就是 404）
+    with pytest.raises(HaError) as ei:
+        build_attr_payload("switch.fan", "brightness=1")
+    assert "不支持" in str(ei.value) and "light.brightness" in str(ei.value)
+
+
+@pytest.mark.parametrize("expr", ["brightness", "=128", "brightness=", "  "])
+def test_build_attr_payload_malformed_expr(expr):
+    with pytest.raises(HaError):
+        build_attr_payload("light.living", expr)
+
+
+def test_build_attr_payload_bad_entity():
+    with pytest.raises(HaError) as ei:
+        build_attr_payload("不是entity", "brightness=1")
+    assert "格式" in str(ei.value)
+
+
+def test_set_attribute_calls_domain_service():
+    seen = {}
+
+    def handler(request):
+        seen["path"] = request.url.path
+        seen["body"] = __import__("json").loads(request.content)
+        return httpx.Response(200, json=[])
+
+    import asyncio
+    asyncio.run(_client(handler).set_attribute("light.living", "brightness=64"))
+    assert seen["path"] == "/api/services/light/turn_on"
+    assert seen["body"] == {"entity_id": "light.living", "brightness": 64}
+
+
+def test_set_attribute_respects_whitelist():
+    import asyncio
+    c = _client(lambda r: httpx.Response(200, json=[]))
+    with pytest.raises(HaError) as ei:
+        asyncio.run(c.set_attribute("light.secret", "brightness=64"))
+    assert "白名单" in str(ei.value)
+
+
+# ---------------- 8) 设备清单（D1：list_states 真调用点） ----------------
+
+def test_list_states_returns_list():
+    import asyncio
+
+    def handler(request):
+        assert request.url.path == "/api/states"
+        return httpx.Response(200, json=[{"entity_id": "light.living",
+                                          "state": "on"}])
+    out = asyncio.run(_client(handler).list_states())
+    assert out == [{"entity_id": "light.living", "state": "on"}]
+
+
+def test_list_states_non_list_is_empty():
+    import asyncio
+    assert asyncio.run(_client(lambda r: httpx.Response(200, json={}))
+                       .list_states()) == []
+
+
+# ---------------- 9) webhook 监听地址（C2）与告警冷却配置 ----------------
+
+def test_webhook_receiver_host_injectable():
+    from qq_bridge.smarthome import WebhookReceiver
+    r = WebhookReceiver(host="0.0.0.0", port=8099, token="t")
+    assert (r.host, r.port, r.token) == ("0.0.0.0", 8099, "t")
+
+
+def test_smarthome_alert_config_defaults():
+    """C2/C4 新增配置的默认值（HA 常在局域网另一台机器 → 默认 0.0.0.0）。"""
+    from qq_bridge.config import Config
+    assert Config.SMARTHOME_WEBHOOK_HOST == "0.0.0.0"
+    assert Config.SMARTHOME_ALERT_COOLDOWN == 60.0
 
 
 def test_camera_clip_no_stream_source_explicit():

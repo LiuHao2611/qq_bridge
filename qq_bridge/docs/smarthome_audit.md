@@ -7,6 +7,31 @@
 
 ---
 
+## 〇、补齐结果（2026-10-21 第二轮，用户「补完再交付」）
+
+| 编号 | 问题 | 处理 | 证据 |
+|---|---|---|---|
+| C1 | 告警目标恒按群发（私聊发丢） | ✅ 抽出 `_notify_target_ctx`（纯数字=私聊 / `-`或`g`前缀=群），M8+M9 共用 | `__init__.py:_notify_target_ctx`；`tests/test_smarthome_alert.py` |
+| C2 | webhook 只绑 127.0.0.1（局域网 HA 连不上） | ✅ 新增 `SMARTHOME_WEBHOOK_HOST`（默认 `0.0.0.0`），自动启动与 `/ha webhook 开` 均传 host；监听非回环却没配令牌 → 启动告警 + 回复提示 | `config.py`/`config_api.py`/`__init__.py` 启动与 webhook 分支 |
+| C3 | 模块关闭时 `/ha` 完全静默 | ✅ 群聊保持静默（同 `/ops` 口径），**私聊明确提示**去开总开关+填 URL/令牌 | `_handle_ha_command` 开头 |
+| C4 | 告警无冷却去重 | ✅ 新增 `SMARTHOME_ALERT_COOLDOWN`（默认 60s）：同设备+同类型冷却期合并计数，到点带「共 N 次」补发；被压掉仍回 200（不让 HA 重试） | `_ha_webhook_send` + `_ha_alert_last` |
+| B1 | `CameraGrab.clip()` 空转 | ✅ 接线为 `/ha clip <entity> [秒]`（1-30s，仅主人，ffmpeg 缺失显式报错不降级，发完删临时文件 OPS-01） | `__init__.py` clip 分支 + `_HA_HELP` |
+| B2 | `HAClient.list_states()` 零调用 | ✅ 成为 `/ha 设备`（白名单内）与 `/ha 设备 全部`（仅主人）的数据源 | `__init__.py` devices 分支 |
+| B3 | `SYSTEM_PROMPT` 无引用 | ⏸ **保留不删**：是「搬 HAQBot 管家规范」的留档常量，且被 `test_system_prompt_contract` 锁住契约。HA 对话代理的人设实际在 HA 侧配，本项仅作规范文档 | `ha.py:38-44` |
+| B4 | `/ha/health` 没告知用户 | ✅ 写进对接手册的自测步骤 | `docs/smarthome_ha_setup.md` §二.3 |
+| D1 | 没有设备列表 | ✅ `/ha 设备` / `/ha 设备 全部`（权限分层，防群友枚举家里设备） | 同上 |
+| D2 | 属性级控制缺失 | ✅ `build_attr_payload`（纯函数，11 组属性，**越界显式报错不夹取**）+ `/ha set` + FC 工具 `ha_set` | `ha.py` + `builtins.py:ha_set` |
+| D3 | 短视频未接线 | ✅ 同 B1 | 同上 |
+| D4 | 没有 HA 侧对接样例 | ✅ 新增 `docs/smarthome_ha_setup.md`（rest_command/automation YAML、curl 三步自测、对话代理配置、摄像头流与 ffmpeg、排障表） | 新文档 |
+| D5 | 无状态轮询/订阅 | ⏸ **刻意不补**：HA 主动推（webhook）本就是省资源的正确分工，轮询会白烧 HA 与机器人两端；告警接不到时的排查路径已写进手册 §二.3 与排障表 | — |
+| D6 | 无场景/自动化 CRUD | ⏸ **刻意不补**：远程增删 HA 自动化属高危写操作（改错了家里设备乱触发），收益低风险高；场景增删请在 HA 侧做，机器人侧保持只读的 `SMARTHOME_SCENE_MAP` 静态映射 | — |
+
+测试：`tests/test_smarthome.py` **26 → 47 passed**（新增属性控制/设备清单/监听地址/配置默认值 21 条）；
+新增 `tests/test_smarthome_alert.py` **12 passed**（目标路由 + 冷却去重）。
+另顺手修了 M9 同族 bug：`_ops_notify_send` 修前一律按私聊发（负群号会被当负数 QQ 号发丢），现与 M8 共用 `_notify_target_ctx`。
+
+---
+
 ## 一、可直接用（配好 HA 就能真跑）
 
 前置：配置页开 `SMARTHOME_ENABLE` + 填 `SMARTHOME_HA_URL` / `SMARTHOME_HA_TOKEN` + 填 `SMARTHOME_DEVICE_WHITELIST`。
@@ -78,11 +103,16 @@ if not Config.SMARTHOME_ENABLE:
 
 ---
 
-## 五、结论一句话
+## 五、结论（2026-10-21 第二轮更新）
 
-**核心控制链路（开关 / 场景 / 状态 / 静帧 / 对话代理 / FC+语音闭环）是真实现、可直接用**；
-**反向告警链路有两处真漏洞（C1 私聊发丢、C2 只绑回环）**导致「配了 HA 也收不到告警」；
-**最该补的是 D1 设备列表与 D2 属性控制**，其次是 C1/C2 两个 bug。
+**核心控制链路**（开关 / 场景 / 状态 / 静帧 / 对话代理 / FC+语音闭环）本就是真实现；
+**第二轮已补齐**：告警链路两个真 bug（C1/C2）、静默提示（C3）、告警冷却（C4），
+以及三块最大短板——**设备列表（D1）、属性级控制（D2）、摄像头短视频接线（D3/B1/B2）**，
+并补上了此前完全没有的 **HA 侧对接手册（D4）**。
 
-> 边界说明：本审计基于源码静态分析。真链路（连真实 HA 实例）需你提供 HA 地址与令牌才能验证——
-> 与 M7 的 aria2 同，属「单测覆盖 + 真机待你环境」。
+刻意不补两项（已在 §〇 说明取舍）：D5 状态轮询（HA 主动推更省资源）、
+D6 场景/自动化远程 CRUD（高危写操作，收益低风险高）。
+
+> 边界说明：本审计基于源码静态分析 + 单测（59 条）。真链路（连真实 HA 实例）
+> 需你提供 HA 地址与令牌才能验证——与 M7 的 aria2 同，属「单测覆盖 + 真机待你环境」。
+> 对接按 `docs/smarthome_ha_setup.md` 走，里面给了 curl 三步自测，不用等真事件就能验链路。

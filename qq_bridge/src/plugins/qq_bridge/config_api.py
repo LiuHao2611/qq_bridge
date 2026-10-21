@@ -565,9 +565,16 @@ SCHEMA: list[tuple] = [
     ("智能家居", "SMARTHOME_WEBHOOK_TOKEN", "告警校验令牌", "secret", None, False,
      "HA 侧 webhook 调用须带相同 token（?token= 或 x-webhook-token 头）——防局域网扫描乱触发（热生效）",
      "", "", False),
+    ("智能家居", "SMARTHOME_WEBHOOK_HOST", "告警监听地址", "text", None, False,
+     "接收器监听地址：HA 在局域网另一台机器上必须 0.0.0.0（默认）；HA 与机器人同机可收紧到 127.0.0.1。"
+     "**监听 0.0.0.0 时务必配告警校验令牌**（重启生效）",
+     "0.0.0.0", "127.0.0.1", False),
     ("智能家居", "SMARTHOME_HTTP_TIMEOUT", "HA 调用超时(秒)", "float", None, False,
      "HA REST 调用显式超时（CLOSE-05）；超时=显式报错，不静默（热生效）",
      "10.0", "", False),
+    ("智能家居", "SMARTHOME_ALERT_COOLDOWN", "同类告警冷却(秒)", "float", None, False,
+     "同设备+同事件类型的告警冷却期内合并计数（人体感应/门磁会连发）——0=每条都推（热生效）",
+     "60.0", "", False),
     # ---- 记忆系统（2026-10-20 M1）----
     ("记忆系统", "MEMORY_ENABLE", "记忆系统总开关", "bool", None, False,
      "开=AI 对话前注入相关记忆（画像/长期事件/群档案）、对话后异步抽取记忆；关=纯对话零记忆（热生效）",

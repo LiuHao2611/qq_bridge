@@ -235,25 +235,91 @@
 
 ---
 
-## M8 智能家居（`/ha` 族）🔒 高敏/写操作（其他人可查状态）
+## M8 智能家居（`/ha` 族）—— 2026-10-21 补齐后**逐字实抓源码**版
 
-> ⚠️ 前置：`SMARTHOME_ENABLE` + `SMARTHOME_HA_URL` + `SMARTHOME_HA_TOKEN` + 设备白名单。**无 HA 实例时全部回「未配置/连不上」属预期**。高敏设备（门锁/摄像头）仅主人。
+> ⚠️ 前置：`SMARTHOME_ENABLE` + `SMARTHOME_HA_URL` + `SMARTHOME_HA_TOKEN` + `SMARTHOME_DEVICE_WHITELIST`。
+> **无 HA 实例时**：群聊发 `/ha` → **静默**（同 `/ops` 口径，不暴露功能）；私聊发 → 明确提示
+> 「智能家居没开（SMARTHOME_ENABLE=false）…去设置页打开总开关，再填 HA 地址与长效令牌」。
+> 权限标记：🔒=仅主人；👥=群聊/私聊均可（高敏设备除外，高敏一律 🔒）。
+> 参数一律是 **entity_id 英文全名**（`light.living_room`），**不接受中文名**。
 
+### 6.x 通用
 | 口令 | 别名（源码实抓） | 说明 | 权限 |
 |---|---|---|---|
-| `/ha` | `help` `帮助` `？` `?`（空=同） | 帮助 | 👥 |
-| `/ha 开 客厅灯` | `on` | 开设备（白名单双保险） | 高敏🔒 |
-| `/ha 关 空调` | `off` | 关设备 | 高敏🔒 |
-| `/ha 切换 风扇` | `toggle` | 切换开关 | 高敏🔒 |
-| `/ha 场景 回家` | `scene` `模式` | 触发场景（本地映射命中不等 LLM） | 🔒 |
-| `/ha 状态` | `state` `查` | 列白名单设备状态 | 👥 |
-| `/ha 摄像头 门口` | `cam` `camera` `看看` | 快照发图 | 🔒 |
-| `/ha 说 把客厅灯调暗` | `say`（空=同） | HA Conversation Agent 自然语言 | 🔒 |
-| `/ha webhook on` | `webhook` | 起 webhook 反向告警接收器 | 🔒 |
+| `/ha` | `help` `帮助` `？` `?`（空=同） | 帮助卡（含 clip/set/设备） | 👥 |
+| `/ha 帮助` | 同上 | 同上 | 👥 |
 
-**ASR 语音闭环**：发语音「关掉卧室灯」→ ASR 转写 → FC 工具 `ha_control` → 设备（M8 FC 工具已注册：`ha_control` `ha_scene` `ha_state`）。
+### 6.x 查询（👥）
+| 口令 | 别名 | 预期回复 | 权限 |
+|---|---|---|---|
+| `/ha 状态 light.living_room` | `state` `状态` `查` | 「light.living_room 现在是：on」 | 👥（白名单内） |
+| `/ha 设备` | `devices` `device` `list` `列表` `清单` | 「可控设备 N 个：」+ 每行「· 名称（entity）：state」 | 👥 |
+| `/ha 设备 全部` | 同上 + 参数 `all` `全部` `所有` | 「全量设备 N 个（白名单外的看得到控不了）」，非白名单行尾标「（白名单外·不可控）」 | 🔒 |
+| `/ha 状态` （缺参） | — | 「用法：/ha state <entity_id>」 | 👥 |
 
-**负面用例**：未配 HA 发 `/ha 状态` → 明确「未配置」，不假成功；白名单外设备 `/ha 开 任意灯` → 拒绝并提示。
+### 6.x 控制（👥，高敏除外）
+| 口令 | 别名 | 预期回复 | 权限 |
+|---|---|---|---|
+| `/ha 开 light.living_room` | `on` `开` | 「light.living_room 已打开喵。」 | 👥 |
+| `/ha 关 switch.fan` | `off` `关` | 「switch.fan 已关闭喵。」 | 👥 |
+| `/ha 切换 switch.fan` | `toggle` `切换` | 「switch.fan 已切换喵。」 | 👥 |
+| `/ha 场景 洗澡模式` | `scene` `模式` | 「「洗澡模式」已执行（script.bath_mode）喵。」 | 👥（命中场景属高敏时 🔒） |
+| `/ha set light.living_room brightness=128` | `set` `设` `设置` `调` | 「light.living_room 已设成 brightness=128 喵。」 | 👥（高敏 🔒） |
+| `/ha set climate.bed temperature=26` | — | 同上（→ `climate.set_temperature`） | 👥 |
+| `/ha set cover.curtain position=50` | — | 同上（→ `cover.set_cover_position`） | 👥 |
+| `/ha set climate.bed hvac_mode=cool` | — | 同上（→ `climate.set_hvac_mode`） | 👥 |
+| `/ha set light.living rgb_color=255,120,0` | — | 同上 | 👥 |
+
+`set` 支持的属性（**只做真验证过的，不猜服务名**）：
+`light.brightness(0-255)`、`light.brightness_pct(0-100)`、`light.color_temp`、`light.rgb_color`、
+`climate.temperature(5-35)`、`climate.hvac_mode(off/heat/cool/auto/dry/fan_only)`、
+`cover.position(0-100)`、`fan.percentage(0-100)`、`media_player.volume_level(0-1)`、
+`humidifier.humidity(0-100)`、`water_heater.temperature(20-80)`。
+
+### 6.x 摄像头（🔒 仅主人）
+| 口令 | 别名 | 预期 | 备注 |
+|---|---|---|---|
+| `/ha cam camera.living` | `camera` `摄像头` `看看` | 静帧图 + 「camera.living 的当前画面」 | 需实体在线 |
+| `/ha clip camera.living 5` | `clip` `video` `视频` `录像` `片段` | 5 秒短视频 + 「camera.living 最近 5 秒的画面」 | 需 HA 有 `stream_source` + 本机装 ffmpeg（1-30 秒，默认 5） |
+
+### 6.x 自然语言与告警（🔒/👥）
+| 口令 | 别名 | 预期 | 权限 |
+|---|---|---|---|
+| `/ha 说 把客厅灯打开` | `say` `说` | HA 对话代理回话原文 | 👥（源码未加主人闸；白名单只拦直连服务调用，对话代理走 HA 侧） |
+| `/ha webhook 开` | `on` `开` `启动` | 「告警接收器已启动（0.0.0.0:8090）——…」（未配令牌时附安全提醒） | 🔒 |
+| `/ha webhook 关` | `off` `关` `停止` | 「告警接收器已停止。」 | 🔒 |
+| `/ha webhook` （缺参） | — | 「用法：/ha webhook 开｜关」 | 🔒 |
+
+**ASR 语音闭环**：发语音「把卧室灯调暗一点」→ ASR 转写 → FC 工具 → 设备。
+M8 已注册 FC 工具：`ha_control`（开关）、`ha_scene`（场景）、`ha_state`（查状态）、**`ha_set`（属性，2026-10-21 新增）**。
+
+**负面用例（逐条可验）**
+| 输入 | 预期 |
+|---|---|
+| 群聊 `/ha` 且模块未开 | **无回复**（刻意静默，不暴露功能） |
+| 私聊 `/ha` 且模块未开 | 明确提示去开 `SMARTHOME_ENABLE` 并填 URL/令牌 |
+| `/ha 开 light.secret_room`（白名单外） | 「…不在可控白名单里（已授权 N 个）…」 |
+| `/ha 开 不是entity` | 「设备 ID 格式不对…（应形如 light.living_room）」 |
+| `/ha 开 lock.front_door`（高敏，非主人） | 「门锁/摄像头这类高敏设备只有主人能操控喵。」 |
+| `/ha 设备 全部`（非主人） | 「全量设备清单（含白名单外）只有主人能看喵。」 |
+| `/ha set light.living_room brightness=300` | 「「brightness」超范围：300 不在 0-255 …——不替你改数值」（**不夹取成 255**） |
+| `/ha set switch.fan brightness=1` | 「不支持对 switch 设「brightness」…目前支持的属性：…」 |
+| `/ha set light.living_room brightness`（缺 `=值`） | 「属性和值都得写全（如 brightness=128）」 |
+| `/ha clip camera.living`（无 ffmpeg） | 「本机没装 ffmpeg，拉不了视频流…」（**不会降级成静图**） |
+| `/ha clip camera.living`（无 stream_source） | 「摄像头 … 没有 stream_source 属性（HA 需配 stream/camera 集成…）」 |
+| `/ha 状态 xxx` 且 HA 不可达 | 「连不上 Home Assistant（ConnectError：…）——查 SMARTHOME_HA_URL 和网络」 |
+| `/ha 状态 xxx` 且令牌错 | 「Home Assistant 令牌无效或过期（HTTP 401）——重新生成长效访问令牌」 |
+
+**告警链路自测**（不用等真事件，见 `docs/smarthome_ha_setup.md`）：
+```bash
+curl http://127.0.0.1:8090/ha/health                       # → {"ok":true,...}
+curl -X POST "http://127.0.0.1:8090/ha/webhook?token=你的令牌" ^
+     -H "Content-Type: application/json" ^
+     -d "{\"event_type\":\"leak\",\"message\":\"测试告警\",\"level\":\"warn\"}"
+```
+- `OPS_NOTIFY_TARGET` 填纯数字 → **私聊**；填 `-987654` / `g987654` → **群**；
+- 同设备+同类型 60 秒内重复事件**只推一条**（`SMARTHOME_ALERT_COOLDOWN`），冷却过后续推会带「（这期间同类告警共 N 次）」；
+- 未配 `OPS_NOTIFY_TARGET` → 只记日志不发（不假装发出）。
 
 ---
 

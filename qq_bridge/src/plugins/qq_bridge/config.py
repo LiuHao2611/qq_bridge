@@ -582,8 +582,13 @@ class Config:
     # Webhook 反向告警接收器（HA 自动化 rest_command 推来的端口/令牌）
     SMARTHOME_WEBHOOK_PORT: int = _as_int(os.environ.get("SMARTHOME_WEBHOOK_PORT"), 8090)
     SMARTHOME_WEBHOOK_TOKEN: str = os.environ.get("SMARTHOME_WEBHOOK_TOKEN") or ""
+    # 监听地址：HA 与机器人在同一局域网但不同机器 → 必须 0.0.0.0；
+    # 仅本机回调（HA 与机器人同机）可收紧到 127.0.0.1（重启生效）
+    SMARTHOME_WEBHOOK_HOST: str = os.environ.get("SMARTHOME_WEBHOOK_HOST") or "0.0.0.0"
     # HA REST 调用超时（秒，CLOSE-05）
     SMARTHOME_HTTP_TIMEOUT: float = _as_float(os.environ.get("SMARTHOME_HTTP_TIMEOUT"), 10.0)
+    # 同类告警冷却（秒）：门磁/人体感应会连发，冷却期内合并计数，不刷屏
+    SMARTHOME_ALERT_COOLDOWN: float = _as_float(os.environ.get("SMARTHOME_ALERT_COOLDOWN"), 60.0)
 
     # ---- 记忆系统（2026-10-20 M1：三态记忆 + 画像 + 群档案）----
     # 三态分工：短期=ai_mode 会话历史（既有）；长期=events（FTS+时间衰减）；

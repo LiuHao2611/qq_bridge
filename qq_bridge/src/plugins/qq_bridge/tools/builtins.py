@@ -276,6 +276,31 @@ def register_builtin_tools(registry: ToolRegistry, deps: Deps | None = None) -> 
         ))
         registered.append("ha_state")
 
+    if callable(deps.get("ha_set")):
+        async def ha_set(args: dict, ctx) -> str:
+            return await deps["ha_set"](args.get("entity_id", ""),
+                                        args.get("expr", ""), ctx)
+
+        registry.register(_tool(
+            "ha_set",
+            "设置智能家居设备的**属性值**（不是开关）。当用户说「灯调暗点」「空调设 "
+            "26 度」「窗帘开一半」「音量 0.3」这类话时使用——开关请走 ha_control。"
+            "expr 形如 brightness=128 / temperature=26 / position=50 / "
+            "volume_level=0.3 / brightness_pct=40 / rgb_color=255,120,0 / "
+            "hvac_mode=cool。取值越界或属性不支持会如实报错，不要替用户改数字。",
+            {
+                "entity_id": {"type": "string",
+                              "description": "设备 ID，如 light.living_room"},
+                "expr": {"type": "string",
+                         "description": "属性=值，如 brightness=128；"
+                                        "brightness/color_temp 0-255 的灯用 "
+                                        "brightness_pct=40 更直观"},
+            },
+            ["entity_id", "expr"],
+            ha_set,
+        ))
+        registered.append("ha_set")
+
     log.info(jlog("builtin_tools_registered", tools=registered,
                   count=len(registered)))
     return registered

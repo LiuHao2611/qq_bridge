@@ -77,6 +77,112 @@ def parse_whitelist(raw: str) -> set[str]:
     return out
 
 
+#: 属性级控制规则（D2 2026-10-21）：(域, 属性) → (HA 服务名, 值类型, 说明)
+#: 值类型：int:lo-hi / float:lo-hi / pct:满量程 / rgb / enum:a,b,c
+#: 只列真验证过语义的常用组合——**不猜服务名**（猜出来的 /api/services/x/set_y
+#: 多半 404，那是降级兜底，宁可显式说不支持）。
+_ATTR_RULES: dict[tuple[str, str], tuple[str, str, str]] = {
+    ("light", "brightness"): ("turn_on", "int:0-255", "亮度 0-255"),
+    ("light", "brightness_pct"): ("turn_on", "pct:255", "亮度百分比 0-100（换算成 0-255）"),
+    ("light", "color_temp"): ("turn_on", "int:0-65535", "色温（mireds）"),
+    ("light", "rgb_color"): ("turn_on", "rgb", "RGB 三元组，如 255,120,0"),
+    ("climate", "temperature"): ("set_temperature", "float:5-35", "目标温度 ℃"),
+    ("climate", "hvac_mode"): ("set_hvac_mode",
+                               "enum:off,heat,cool,auto,dry,fan_only", "运行模式"),
+    ("cover", "position"): ("set_cover_position", "int:0-100", "开合位置（100=全开）"),
+    ("fan", "percentage"): ("set_percentage", "int:0-100", "风速百分比"),
+    ("media_player", "volume_level"): ("volume_set", "float:0-1", "音量 0.0-1.0"),
+    ("humidifier", "humidity"): ("set_humidity", "int:0-100", "目标湿度 %"),
+    ("water_heater", "temperature"): ("set_temperature", "float:20-80", "水温 ℃"),
+}
+
+
+def build_attr_payload(entity_id: str, expr: str) -> tuple[str, dict]:
+    """`brightness=128` → (HA 服务名, 负载 dict)。**纯函数，可裸单测**。
+
+    纪律：越界/类型不符一律**显式 HaError，不夹取不舍入**——用户说 300 就
+    得告诉他 300 不行，本喵不能偷偷改成 255 说"好了"（禁止降级/兜底）。
+    """
+    raw = (expr or "").strip()
+    if "=" not in raw:
+        raise HaError("用法：/ha set <entity> <属性=值>（如 brightness=128）")
+    attr, _, val = raw.partition("=")
+    attr, val = attr.strip(), val.strip()
+    if not attr or not val:
+        raise HaError("属性和值都得写全（如 brightness=128）")
+
+    e = (entity_id or "").strip()
+    if not _ENTITY_RE.match(e):
+        raise HaError("设备 ID 格式不对：%r（应形如 light.living_room）" % entity_id)
+    domain = e.split(".", 1)[0]
+    rule = _ATTR_RULES.get((domain, attr))
+    if rule is None:
+        supported = "、".join(sorted("%s.%s" % (d, a) for (d, a) in _ATTR_RULES))
+        raise HaError("不支持对 %s 设「%s」（不想猜服务名，猜错就是 404）。"
+                      "目前支持的属性：%s" % (domain, attr, supported))
+    service, kind, desc = rule
+
+    if kind.startswith("int:"):
+        lo_s, _, hi_s = kind[4:].partition("-")
+        lo, hi = int(lo_s), int(hi_s)
+        try:
+            iv = int(float(val))
+        except ValueError as ex:
+            raise HaError("「%s」要整数（%s），收到 %r" % (attr, desc, val)) from ex
+        if not lo <= iv <= hi:
+            raise HaError("「%s」超范围：%d 不在 %d-%d（%s）——不替你改数值，"
+                          "重新给个范围内的" % (attr, iv, lo, hi, desc))
+        return service, {attr: iv}
+
+    if kind.startswith("float:"):
+        lo_s, _, hi_s = kind[6:].partition("-")
+        lo, hi = float(lo_s), float(hi_s)
+        try:
+            fv = float(val)
+        except ValueError as ex:
+            raise HaError("「%s」要数字（%s），收到 %r" % (attr, desc, val)) from ex
+        if not lo <= fv <= hi:
+            raise HaError("「%s」超范围：%s 不在 %s-%s（%s）——不替你改数值"
+                          % (attr, fv, lo_s, hi_s, desc))
+        return service, {attr: fv}
+
+    if kind.startswith("pct:"):
+        full = int(kind[4:])
+        try:
+            pct = float(val)
+        except ValueError as ex:
+            raise HaError("「%s」要数字（%s），收到 %r" % (attr, desc, val)) from ex
+        if not 0.0 <= pct <= 100.0:
+            raise HaError("「%s」超范围：%s 不在 0-100（%s）" % (attr, pct, desc))
+        return service, {attr: int(round(pct / 100.0 * full))}
+
+    if kind == "rgb":
+        parts = [p for p in re.split(r"[,\s]+", val) if p]
+        if len(parts) != 3:
+            raise HaError("「%s」要三个 0-255 的数（如 255,120,0），收到 %r"
+                          % (attr, val))
+        rgb: list[int] = []
+        for p in parts:
+            try:
+                c = int(float(p))
+            except ValueError as ex:
+                raise HaError("「%s」里有非数字：%r" % (attr, p)) from ex
+            if not 0 <= c <= 255:
+                raise HaError("「%s」里 %d 不在 0-255" % (attr, c))
+            rgb.append(c)
+        return service, {attr: rgb}
+
+    if kind.startswith("enum:"):
+        opts = [o for o in kind[5:].split(",") if o]
+        low = val.lower()
+        if low not in opts:
+            raise HaError("「%s」只认这几个：%s（收到 %r）"
+                          % (attr, "/".join(opts), val))
+        return service, {attr: low}
+
+    raise HaError("内部错误：属性 %s 的值类型 %r 没实现处理分支" % (attr, kind))
+
+
 def parse_scene_map(raw: str) -> dict[str, str]:
     """解析 SMARTHOME_SCENE_MAP：每行一条 `中文口语=script.entity_id`。
 
@@ -193,6 +299,17 @@ class HAClient:
         e = self._check(script_entity)
         return await self._request("POST", "/api/services/script/turn_on",
                                    json={"entity_id": e})
+
+    async def set_attribute(self, entity_id: str, expr: str) -> dict:
+        """属性级控制（D2）：`brightness=128` / `temperature=26` / `position=50`。
+
+        先由 build_attr_payload 纯函数校验取值（越界显式报错不夹取），再调域服务。
+        """
+        e = self._check(entity_id)
+        service, data = build_attr_payload(e, expr)
+        attr = next(iter(data), "")
+        log.info(jlog("smarthome_set_attr", entity=e, service=service, attr=attr))
+        return await self.call_service(e, service, data=data)
 
     async def get_state(self, entity_id: str) -> dict:
         """查设备状态（不过白名单——只读查询允许看白名单外？不：同样校验，

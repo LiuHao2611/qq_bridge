@@ -21,8 +21,8 @@
 依赖方向：本包只依赖 ..config，不 import nonebot / 不 import 主包——
 发送出口（QQ）与 webhook 回调全部由 __init__.py 注入，可裸单测。
 """
-from .ha import (SYSTEM_PROMPT, HAClient, HaError, HaEvent, ha_client,
-                 parse_scene_map, parse_whitelist)
+from .ha import (SYSTEM_PROMPT, HAClient, HaError, HaEvent, build_attr_payload,
+                 ha_client, parse_scene_map, parse_whitelist)
 from .webhook import (EventCallback, WebhookReceiver, create_app,
                       format_event_text, parse_event)
 from .camera import CameraError, CameraGrab
@@ -30,7 +30,7 @@ from .camera import CameraError, CameraGrab
 __all__ = [
     # ha
     "HAClient", "ha_client", "HaError", "HaEvent", "parse_whitelist",
-    "parse_scene_map", "SYSTEM_PROMPT",
+    "parse_scene_map", "build_attr_payload", "SYSTEM_PROMPT",
     # webhook
     "create_app", "parse_event", "format_event_text", "WebhookReceiver",
     "EventCallback",
