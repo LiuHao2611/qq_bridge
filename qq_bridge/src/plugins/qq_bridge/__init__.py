@@ -466,6 +466,21 @@ async def _on_startup() -> None:
         except Exception as e:  # noqa: BLE001
             log.error(jlog("emotion_care_start_failed", error=type(e).__name__,
                            detail=str(e)[:200]))
+    # 智能家居 webhook 告警接收器（2026-10-21 M8）：HA 自动化 → 本机端口 → QQ 推送。
+    # 与 M7/M9 同口径：起不来只记日志不拖垮 bridge（用户仍可 /ha 手动控设备）。
+    if Config.SMARTHOME_ENABLE:
+        try:
+            global _ha_receiver
+            _ha_receiver = WebhookReceiver(
+                port=Config.SMARTHOME_WEBHOOK_PORT,
+                token=Config.SMARTHOME_WEBHOOK_TOKEN,
+                on_event=_ha_webhook_send)
+            asyncio.ensure_future(_ha_receiver.start())
+            log.info(jlog("smarthome_webhook_autostarted",
+                          port=Config.SMARTHOME_WEBHOOK_PORT))
+        except Exception as e:  # noqa: BLE001
+            log.error(jlog("smarthome_webhook_start_failed", error=type(e).__name__,
+                           detail=str(e)[:200]))
 
 
 async def _on_shutdown() -> None:
@@ -497,6 +512,14 @@ async def _on_shutdown() -> None:
     except Exception as e:  # noqa: BLE001
         log.warning(jlog("repo_watchdog_stop_failed", error=type(e).__name__,
                          detail=str(e)[:160]))
+    # 停智能家居 webhook 告警接收器（M8）
+    if _ha_receiver is not None:
+        try:
+            await _ha_receiver.stop()
+            log.info(jlog("smarthome_webhook_stopped"))
+        except Exception as e:  # noqa: BLE001
+            log.warning(jlog("smarthome_webhook_stop_failed",
+                             error=type(e).__name__, detail=str(e)[:160]))
     # 停每日官方数据同步循环
     try:
         wf_sync.stop_sync_scheduler()
@@ -3170,6 +3193,25 @@ async def _handle_pc_command(ev, trace_id: str) -> None:
             try:
                 if kind == "kill":
                     msg = pc_mod.kill_process(target)
+                elif kind == "fileop":
+                    # M6 文件写操作（2026-10-21）：target=(verb, args_txt)
+                    verb, args_txt = target
+                    if verb == "move":
+                        s, _, d = args_txt.partition(" ")
+                        msg = pc_mod.file_move(s.strip(), d.strip()) if s and d \
+                            else "用法：/pc move <源> <目标>"
+                    elif verb == "copy":
+                        s, _, d = args_txt.partition(" ")
+                        msg = pc_mod.file_copy(s.strip(), d.strip()) if s and d \
+                            else "用法：/pc copy <源> <目标>"
+                    elif verb == "rename":
+                        s, _, d = args_txt.partition(" ")
+                        msg = pc_mod.file_rename(s.strip(), d.strip()) if s and d \
+                            else "用法：/pc rename <路径> <新名>"
+                    elif verb == "del":
+                        msg = pc_mod.file_delete(args_txt)
+                    else:
+                        msg = "未知文件操作：%s" % verb
                 elif kind == "power":
                     # 关机/重启不可逆 → 5s 可取消倒计时（CLOSE-02 防误触）
                     await _reply(ctx, sess,
@@ -3330,6 +3372,105 @@ async def _handle_pc_command(ev, trace_id: str) -> None:
         await _reply(ctx, sess, ("屏幕上的文字：\n" + ocr_text) if ocr_text.strip()
                      else "屏幕上没识别到文字（可能是纯图像/黑屏）。", title="屏幕 OCR")
         return
+    # ---- M6 设计补全（2026-10-21）：监控缺项 / 窗口缺项 / 桌面缺项 / 文件缺项 / 键鼠缺项 ----
+    if low in ("core", "cpu", "分核", "每核"):
+        await _reply(ctx, sess, pc_mod.cpu_per_core(), title="分核 CPU")
+        return
+    if low in ("battery", "电池", "电量"):
+        await _reply(ctx, sess, pc_mod.battery_status(), title="电池状态")
+        return
+    if low in ("net", "网络", "网速", "流量"):
+        await _reply(ctx, sess, pc_mod.net_io(), title="网络流量")
+        return
+    if low.startswith("proc"):
+        target = sub[4:].strip()
+        if not target:
+            await _reply(ctx, sess, "用法：/pc proc <PID 或进程名>", title="进程详情")
+            return
+        await _reply(ctx, sess, pc_mod.process_detail(target), title="进程详情")
+        return
+    if low.startswith("arrange"):
+        tail = sub[7:].strip()
+        pos = "left"
+        title = tail
+        if tail.endswith(" 右") or tail.endswith(" right") or tail.endswith("右"):
+            pos, title = "right", tail[:-1].strip(" 右right").strip() or tail
+        elif tail.endswith(" 左") or tail.endswith(" left") or tail.endswith("左"):
+            title = tail[:-1].strip(" 左left").strip() or tail
+        if not title:
+            await _reply(ctx, sess, "用法：/pc arrange <窗口标题> [左|右]", title="排列窗口")
+            return
+        await _reply(ctx, sess, pc_mod.arrange_window(title, pos), title="排列窗口")
+        return
+    if low.startswith("max"):
+        title = sub[3:].strip()
+        if not title:
+            await _reply(ctx, sess, "用法：/pc max <窗口标题>", title="最大化")
+            return
+        await _reply(ctx, sess, pc_mod.maximize_window(title), title="最大化")
+        return
+    if low.startswith("restore"):
+        title = sub[7:].strip()
+        if not title:
+            await _reply(ctx, sess, "用法：/pc restore <窗口标题>", title="还原窗口")
+            return
+        await _reply(ctx, sess, pc_mod.restore_window(title), title="还原窗口")
+        return
+    if low in ("display", "显示器", "屏幕信息", "分辨率"):
+        await _reply(ctx, sess, pc_mod.display_info(), title="显示器信息")
+        return
+    if low.startswith("notify"):
+        text = sub[6:].strip()
+        if not text:
+            await _reply(ctx, sess, "用法：/pc notify <通知文字>", title="桌面通知")
+            return
+        await _reply(ctx, sess, pc_mod.desktop_notify("本喵管家", text), title="桌面通知")
+        return
+    if low.startswith("find"):
+        kw = sub[4:].strip()
+        if not kw:
+            await _reply(ctx, sess, "用法：/pc find <文件名关键词>", title="文件搜索")
+            return
+        await _reply(ctx, sess, pc_mod.search_files(kw), title="文件搜索")
+        return
+    if low.startswith("scroll"):
+        tail = sub[6:].strip()
+        try:
+            n = int(tail) if tail else -3
+        except ValueError:
+            n = -3
+        await _reply(ctx, sess, pc_mod.mouse_scroll(n), title="鼠标滚动")
+        return
+    if low.startswith("key"):
+        combo = sub[3:].strip()
+        if not combo:
+            await _reply(ctx, sess, "用法：/pc key <组合键，如 ctrl+c / alt+tab>", title="快捷键")
+            return
+        await _reply(ctx, sess, pc_mod.hotkey(combo), title="快捷键")
+        return
+    # 文件写操作四件套（高危：走确认流，同 kill/power 口径；路径须过目录白名单）
+    for verb, label in (("move", "移动"), ("copy", "复制"),
+                        ("rename", "重命名"), ("del", "删除")):
+        if low.startswith(verb):
+            args_txt = sub[len(verb):].strip()
+            if not args_txt:
+                usage = {"move": "/pc move <源> <目标>", "copy": "/pc copy <源> <目标>",
+                         "rename": "/pc rename <路径> <新名>", "del": "/pc del <路径>"}[verb]
+                await _reply(ctx, sess, "用法：%s" % usage, title="高危操作")
+                return
+            # 白名单前置校验（所有相关路径都必须在 PC_DISK_ROOTS 内）
+            paths = args_txt.split() if verb in ("move", "copy", "rename") else [args_txt]
+            bad = [p for p in paths if not _pc_disk_allowed(p)]
+            if bad:
+                await _reply(ctx, sess,
+                             "这些路径不在可操作目录白名单里：%s\n可操作的：%s"
+                             % ("、".join(bad), Config.PC_DISK_ROOTS), title="高危操作")
+                return
+            _pc_pending[ev.user_id] = ("fileop", (verb, args_txt), time.time() + _PC_CONFIRM_TTL)
+            await _reply(ctx, sess,
+                         "高危确认：%s %s？\n回复「确认」执行（30 秒内有效），"
+                         "发任何其它指令即取消。" % (label, args_txt), title="高危确认")
+            return
     # ---- 文件互传：PC→QQ（把宿主机文件发到 QQ）----
     # 注意：low 是「/pc 」之后的整串（含路径），必须按首 token 判定，
     # 不能 exact match——否则 /pc get D:\x.txt 的 low="get d:\x.txt" 永远匹配不到。
@@ -3354,13 +3495,15 @@ async def _handle_pc_command(ev, trace_id: str) -> None:
     await _reply(ctx, sess,
                  "宿主机管家用法：\n"
                  "· 体检 / 查询：/pc ｜ /pc top [N] ｜ /pc port <端口> ｜ /pc temp ｜ /pc shot ｜ /pc host\n"
-                 "· 窗口：/pc wins ｜ /pc focus <标题> ｜ /pc min <标题> ｜ /pc close <标题> ｜ /pc winshot <标题>\n"
+                 "· 监控补全：/pc core（分核CPU）｜ /pc battery（电池）｜ /pc net（网速）｜ /pc proc <PID|名>（进程详情）\n"
+                 "· 窗口：/pc wins ｜ /pc focus <标题> ｜ /pc min <标题> ｜ /pc max <标题> ｜ /pc restore <标题> ｜ /pc close <标题> ｜ /pc winshot <标题> ｜ /pc arrange <标题> [左|右]（半屏排列）\n"
                  "· 剪贴板：/pc clip ｜ /pc clipset <文字>\n"
+                 "· 桌面：/pc display（显示器信息）｜ /pc notify <文字>（桌面通知）\n"
                  "· 应用：/pc apps ｜ /pc startup ｜ /pc app <名|路径>\n"
-                 "· 键鼠/OCR：/pc type <文字> ｜ /pc click <x> <y> ｜ /pc ocr\n"
+                 "· 键鼠/OCR：/pc type <文字> ｜ /pc click <x> <y> ｜ /pc scroll [格数] ｜ /pc key <组合键> ｜ /pc ocr\n"
+                 "· 文件：/pc find <关键词>（搜索）｜ /pc disk [路径]（速览，限白名单）｜ /pc get <文件完整路径>（PC→QQ 发文件）\n"
+                 "· 高危（需确认）：/pc kill <PID|名> ｜ /pc move|copy|rename|del <路径>（限白名单，删除进回收站可恢复）\n"
                  "· 电源（高危）：/pc lock ｜ /pc sleep ｜ /pc power 关机 ｜ /pc power 重启（需确认+5s可取消）\n"
-                 "· 高危：/pc kill <PID|名>（需确认）\n"
-                 "· 文件：/pc disk [路径]（限白名单）｜ /pc get <文件完整路径>（PC→QQ 发文件）\n"
                  "· 传文件给本喵：直接在私聊里发文件，自动存到收件箱（限主人、超 %d MB 拒）\n"
                  "自然语言也能用：电脑咋样 / 截个图 / 硬件温度 / 谁占CPU / 剪贴板 / 锁屏 / 睡眠 / 屏幕上的字" % int(getattr(Config, "PC_FILE_MAX_MB", 100)),
                  title="宿主机管家")
@@ -3412,6 +3555,30 @@ async def _try_pc_natural(ev, trace_id: str) -> bool:
             return True
         await _reply(ctx, None, ("屏幕上的文字：\n" + ocr_text) if ocr_text.strip()
                      else "屏幕上没识别到文字（可能是纯图像/黑屏）。", title="屏幕 OCR")
+        return True
+    # ---- M6 补全（2026-10-21）：监控/桌面新能力自然语言入口 ----
+    if any(k in t for k in ("分核", "每个核心", "每核", "核心忙", "cpu 占用", "cpu占用")):
+        await _reply(ctx, None, pc_mod.cpu_per_core(), title="分核 CPU")
+        return True
+    if any(k in t for k in ("电量", "电池", "还剩多少电")):
+        await _reply(ctx, None, pc_mod.battery_status(), title="电池状态")
+        return True
+    if any(k in t for k in ("网速", "多少兆", "下载速度", "上传速度", "网络流量")):
+        await _reply(ctx, None, pc_mod.net_io(), title="网络流量")
+        return True
+    if any(k in t for k in ("显示器", "几块屏", "几台屏", "分辨率", "屏幕分辨率")):
+        await _reply(ctx, None, pc_mod.display_info(), title="显示器信息")
+        return True
+    if any(k in t for k in ("开了多少线程", "多少线程", "进程详情", "这进程")):
+        # 尝试从原句抓进程名（最后一个英文词），抓不到就给用法
+        import re as _re
+        _m = _re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}", t)
+        target = _m[-1] if _m else ""
+        if not target:
+            await _reply(ctx, None, "想看哪个进程？比如说「chrome 开了多少线程」",
+                         title="进程详情")
+            return True
+        await _reply(ctx, None, pc_mod.process_detail(target), title="进程详情")
         return True
     return False
 
@@ -3509,6 +3676,37 @@ def _register_m2_tools() -> list[str]:
         data = await frp_status.status()
         return frp_status.format_status(data)
 
+    # ---- M8 智能家居 FC 工具回调（2026-10-21：AI 对话自然语言控设备闭环）----
+    # 口径同 /ha 命令族：白名单由 HAClient._check 双保险；高敏设备（门锁/摄像头）
+    # 仅主人（ToolContext.is_owner 由 FCRunner 注入）。未开 SMARTHOME_ENABLE →
+    # 如实说没接，不假装控了（禁止静默失败）。
+    async def _ha_control(entity_id: str, action: str, tctx) -> str:
+        if not Config.SMARTHOME_ENABLE:
+            return "智能家居没开（SMARTHOME_ENABLE=false），控不了设备。"
+        if ha_client.is_sensitive(entity_id) and not tctx.is_owner:
+            return "门锁/摄像头这类高敏设备只有主人能操控。"
+        await ha_client.call_service(entity_id, action or "turn_on")
+        verb = {"turn_on": "打开", "turn_off": "关闭"}.get(action or "", "切换")
+        return "已经%s %s 了。" % (verb, entity_id)
+
+    async def _ha_scene(name: str, tctx) -> str:
+        if not Config.SMARTHOME_ENABLE:
+            return "智能家居没开（SMARTHOME_ENABLE=false），执行不了场景。"
+        ent = ha_client.match_scene(name)
+        if not ent:
+            return "没有「%s」这个场景（配置里映射了 %d 个）。" % (
+                name, len(ha_client.scenes))
+        if ha_client.is_sensitive(ent) and not tctx.is_owner:
+            return "这个场景含高敏设备，只有主人能执行。"
+        await ha_client.run_scene(ent)
+        return "「%s」执行完了（%s）。" % (name, ent)
+
+    async def _ha_state(entity_id: str, tctx) -> str:
+        if not Config.SMARTHOME_ENABLE:
+            return "智能家居没开（SMARTHOME_ENABLE=false），查不了状态。"
+        st = await ha_client.get_state(entity_id)
+        return "%s 现在是：%s。" % (entity_id, (st or {}).get("state", "?"))
+
     return register_builtin_tools(default_registry, {
         "queue_status": _queue_status,
         "pc_overview": _pc_overview,
@@ -3517,6 +3715,9 @@ def _register_m2_tools() -> list[str]:
         "download_cancel": _download_cancel,
         "ops_git_status": _ops_git_status,
         "ops_frp_status": _ops_frp_status,
+        "ha_control": _ha_control,
+        "ha_scene": _ha_scene,
+        "ha_state": _ha_state,
     })
 
 

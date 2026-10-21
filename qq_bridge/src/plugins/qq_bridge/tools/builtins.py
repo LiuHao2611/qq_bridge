@@ -217,6 +217,65 @@ def register_builtin_tools(registry: ToolRegistry, deps: Deps | None = None) -> 
         ))
         registered.append("ops_frp_status")
 
+    # ---- 智能家居（M8 2026-10-21：AI 对话自然语言控设备闭环）----
+    # 安全模型与 /ha 命令族同口径：白名单内设备可控（HAClient._check 双保险），
+    # 高敏设备（门锁/摄像头）的 owner 判定在 deps 回调内做（__init__.py 接线），
+    # 未接线（deps 缺）→ 不注册（未接线 ≠ 假注册）。
+    if callable(deps.get("ha_control")):
+        async def ha_control(args: dict, ctx) -> str:
+            return await deps["ha_control"](
+                args.get("entity_id", ""), args.get("action", "turn_on"), ctx)
+
+        registry.register(_tool(
+            "ha_control",
+            "控制智能家居设备开关。当用户说「把客厅灯打开」「关掉风扇」「切换开关」"
+            "这类话时使用。entity_id 形如 light.living_room；只能控制已授权白名单"
+            "内的设备（门锁/摄像头等高敏设备仅主人）。",
+            {
+                "entity_id": {"type": "string",
+                              "description": "设备 ID，如 light.living_room"},
+                "action": {"type": "string", "enum": ["turn_on", "turn_off", "toggle"],
+                           "description": "turn_on=打开；turn_off=关闭；toggle=切换"},
+            },
+            ["entity_id"],
+            ha_control,
+        ))
+        registered.append("ha_control")
+
+    if callable(deps.get("ha_scene")):
+        async def ha_scene(args: dict, ctx) -> str:
+            return await deps["ha_scene"](args.get("name", ""), ctx)
+
+        registry.register(_tool(
+            "ha_scene",
+            "执行智能家居场景脚本（如「洗澡模式」「睡眠模式」）。当用户说「开洗澡模式」"
+            "「我要睡了」这类话时使用。场景名用配置里映射的中文名。",
+            {
+                "name": {"type": "string",
+                         "description": "场景名（中文口语，如「洗澡模式」）"},
+            },
+            ["name"],
+            ha_scene,
+        ))
+        registered.append("ha_scene")
+
+    if callable(deps.get("ha_state")):
+        async def ha_state(args: dict, ctx) -> str:
+            return await deps["ha_state"](args.get("entity_id", ""), ctx)
+
+        registry.register(_tool(
+            "ha_state",
+            "查询智能家居设备当前状态（开/关/温度/亮度等）。当用户问「灯关了吗」"
+            "「客厅现在多少度」时使用。只读，不改变设备。",
+            {
+                "entity_id": {"type": "string",
+                              "description": "设备 ID，如 sensor.living_temp"},
+            },
+            ["entity_id"],
+            ha_state,
+        ))
+        registered.append("ha_state")
+
     log.info(jlog("builtin_tools_registered", tools=registered,
                   count=len(registered)))
     return registered

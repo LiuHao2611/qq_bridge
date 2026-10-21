@@ -1001,3 +1001,404 @@ def file_read_info(path: str) -> dict:
                 "name": os.path.basename(path)}
     except Exception as e:  # noqa: BLE001
         return {"exists": False, "error": "%s: %s" % (type(e).__name__, e)}
+
+
+# ---------------------------------------------------------------------------
+# M6 设计补全（2026-10-21）：§6.1 监控缺项 / §6.2 排列·最大化·还原 /
+# §6.3 桌面通知·显示器 / §6.4 搜索·移动·复制·重命名·删除 / §6.6 滚动·快捷键
+# 风格同前：ctypes 零新依赖（删文件用 send2trash，M6 二批已装）、
+# 失败显式报错禁静默、高危操作返回文本由调用方走确认流。
+# ---------------------------------------------------------------------------
+
+# ---- §6.1 监控缺项（psutil）----
+
+def cpu_per_core() -> str:
+    """分核 CPU 使用率（两次采样法，同 top_processes——单次采样恒 0）。"""
+    psutil.cpu_percent(percpu=True, interval=None)  # 预热基线
+    time.sleep(0.3)
+    percs = psutil.cpu_percent(percpu=True, interval=None)
+    if not percs:
+        return "取不到分核 CPU 数据"
+    lines = ["CPU %d 核：" % len(percs)]
+    for i, p in enumerate(percs):
+        bar = "#" * int(p / 10) + "." * (10 - int(p / 10))
+        lines.append("  核%02d %5.1f%% %s" % (i, p, bar))
+    avg = sum(percs) / len(percs)
+    lines.append("平均 %.1f%%" % avg)
+    return "\n".join(lines)
+
+
+def battery_status() -> str:
+    """电池状态（psutil sensors_battery；台式机无电池 → 如实说）。"""
+    b = psutil.sensors_battery()
+    if b is None:
+        return "这台机器没有电池（台式机或电池被识别不到）"
+    pct = b.percent
+    plug = "正在充电" if b.power_plugged else "在用电池"
+    left = ""
+    if b.secsleft and b.secsleft > 0 and b.secsleft != psutil.POWER_TIME_UNLIMITED:
+        left = "，预计还能撑 %s" % _fmt_uptime(b.secsleft)
+    elif b.power_plugged:
+        left = "（充满即停）"
+    return "电量 %.0f%%（%s%s）" % (pct, plug, left)
+
+
+def net_io() -> str:
+    """网络流量（两次采样算速率：总收发 + 当前 KB/s）。"""
+    a = psutil.net_io_counters()
+    time.sleep(0.5)
+    b = psutil.net_io_counters()
+    if not a or not b:
+        return "取不到网络计数器"
+    down = (b.bytes_recv - a.bytes_recv) / 0.5
+    up = (b.bytes_sent - a.bytes_sent) / 0.5
+    return ("累计：收 %s / 发 %s\n当前：接收 %s/s  发送 %s/s"
+            % (_fmt_bytes(b.bytes_recv), _fmt_bytes(b.bytes_sent),
+               _fmt_bytes(down), _fmt_bytes(up)))
+
+
+def process_detail(target: str) -> str:
+    """进程详情：连接数/线程数/IO/打开文件数/内存/创建时间。
+
+    target 接受 PID 或进程名（子串匹配取第一个）。找不到 → 显式说明。
+    """
+    procs: list = []
+    t = (target or "").strip()
+    if t.isdigit():
+        try:
+            procs = [psutil.Process(int(t))]
+        except psutil.NoSuchProcess:
+            return "没有 PID=%s 的进程" % t
+    else:
+        low = t.lower()
+        for p in psutil.process_iter(["name"]):
+            try:
+                if low in (p.info["name"] or "").lower():
+                    procs.append(p)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        if not procs:
+            return "没找到名字里带「%s」的进程" % t
+    p = procs[0]
+    try:
+        with p.oneshot():
+            name = p.name()
+            pid = p.pid
+            status = p.status()
+            mem = p.memory_info().rss
+            threads = p.num_threads()
+            create = time.strftime("%m-%d %H:%M", time.localtime(p.create_time()))
+            try:
+                conns = len(p.net_connections())
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                conns = -1  # 拒登：如实标
+            try:
+                io = p.io_counters()
+                io_s = "读 %s / 写 %s" % (_fmt_bytes(io.read_bytes), _fmt_bytes(io.write_bytes))
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                io_s = "读不到（拒登）"
+            try:
+                fds = len(p.open_files())
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                fds = -1
+    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+        return "读不到进程详情（%s）" % type(e).__name__
+    lines = [
+        "%s（PID %d）" % (name, pid),
+        "状态：%s ｜ 内存 %s ｜ 线程 %d ｜ 启动于 %s" % (status, _fmt_bytes(mem), threads, create),
+        "网络连接：%s ｜ 打开文件：%s ｜ 磁盘 IO：%s"
+        % ("%d 条" % conns if conns >= 0 else "读不到（拒登）",
+           "%d 个" % fds if fds >= 0 else "读不到（拒登）", io_s),
+    ]
+    return "\n".join(lines)
+
+
+# ---- §6.2 窗口缺项（ctypes）----
+
+_SW_MAXIMIZE = 3
+
+
+def _screen_size() -> tuple[int, int]:
+    """主屏分辨率（GetSystemMetrics）。"""
+    if not _win():
+        return (0, 0)
+    return (int(_u32.GetSystemMetrics(0)), int(_u32.GetSystemMetrics(1)))
+
+
+def arrange_window(title: str, position: str = "left") -> str:
+    """排列窗口到左/右半屏（SetWindowPos 精确坐标，roadmap §6.2）。
+
+    position: left=左半屏 / right=右半屏。
+    """
+    if not _win():
+        return "非 Windows 平台，排不了窗口"
+    hits = _find_hwnd(title)
+    if not hits:
+        return "没找到标题里带「%s」的窗口" % title
+    hwnd, t = hits[0]
+    w, h = _screen_size()
+    if not w:
+        return "取不到屏幕尺寸"
+    half = w // 2
+    x = 0 if position == "left" else half
+    _u32.SetWindowPos(hwnd, 0, x, 0, half, h, 0x0004)  # SWP_NOZORDER
+    return "「%s」已排到%s半屏" % (t, "左" if position == "left" else "右")
+
+
+def _show_window(title: str, cmd: int, verb: str) -> str:
+    """ShowWindow 统一封装（最大化/还原）。"""
+    if not _win():
+        return "非 Windows 平台"
+    hits = _find_hwnd(title)
+    if not hits:
+        return "没找到标题里带「%s」的窗口" % title
+    hwnd, t = hits[0]
+    _u32.ShowWindow(hwnd, cmd)
+    return "「%s」已%s" % (t, verb)
+
+
+def maximize_window(title: str) -> str:
+    """最大化窗口（SW_MAXIMIZE）。"""
+    return _show_window(title, _SW_MAXIMIZE, "最大化")
+
+
+def restore_window(title: str) -> str:
+    """还原窗口（SW_RESTORE：从最大化/最小化还原）。"""
+    return _show_window(title, _SW_RESTORE, "还原")
+
+
+# ---- §6.3 桌面缺项 ----
+
+def display_info() -> str:
+    """显示器信息：主屏分辨率 + DPI/缩放 + 多屏数量与名称（EnumDisplayDevicesW）。"""
+    if not _win():
+        return "非 Windows 平台"
+    w, h = _screen_size()
+    dpi = 96
+    try:
+        hdc = _u32.GetDC(0)
+        dpi = int(_u32.GetDeviceCaps(hdc, 88))  # LOGPIXELSX
+        _u32.ReleaseDC(0, hdc)
+    except Exception:  # noqa: BLE001
+        pass
+    lines = ["主屏：%dx%d（%d DPI，缩放 %d%%）" % (w, h, dpi, round(dpi / 96 * 100))]
+
+    class _DDEVW(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD),
+                    ("DeviceName", wintypes.WCHAR * 32),
+                    ("DeviceString", wintypes.WCHAR * 128),
+                    ("StateFlags", wintypes.DWORD),
+                    ("DeviceID", wintypes.WCHAR * 128),
+                    ("DeviceKey", wintypes.WCHAR * 128)]
+
+    _u32.EnumDisplayDevicesW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD,
+                                         ctypes.POINTER(_DDEVW), wintypes.DWORD]
+    try:
+        names: list[str] = []
+        i = 0
+        while i < 8:
+            dd = _DDEVW()
+            dd.cb = ctypes.sizeof(dd)
+            if not _u32.EnumDisplayDevicesW(None, i, ctypes.byref(dd), 0):
+                break
+            # 取该适配器当前挂的显示器名（第二级枚举）
+            dn = _DDEVW()
+            dn.cb = ctypes.sizeof(dn)
+            _u32.EnumDisplayDevicesW(dd.DeviceName, 0, ctypes.byref(dn), 0)
+            nm = (dn.DeviceString or dd.DeviceString or "").strip()
+            if nm and nm not in names:
+                names.append(nm)
+            i += 1
+        lines.append("显示器 %d 台：%s" % (len(names), "、".join(names) if names else "（枚举不到）"))
+    except Exception as e:  # noqa: BLE001
+        lines.append("多屏枚举失败（%s）——主屏信息仍可用" % type(e).__name__)
+    return "\n".join(lines)
+
+
+def desktop_notify(title: str, text: str) -> str:
+    """宿主机 toast 通知（PowerShell WinForms NotifyIcon，零新依赖）。
+
+    5 秒自动消失。失败显式报错——不静默（「提醒我喝水」的本地通道）。
+    """
+    import subprocess
+
+    ps = (
+        "Add-Type -AssemblyName System.Windows.Forms;"
+        "$n = New-Object System.Windows.Forms.NotifyIcon;"
+        "$n.Icon = [System.Drawing.SystemIcons]::Information;"
+        "$n.BalloonTipTitle = '%s';"
+        "$n.BalloonTipText = '%s';"
+        "$n.Visible = $true;"
+        "$n.ShowBalloonTip(5000);"
+        "Start-Sleep -Seconds 6; $n.Dispose()"
+        % (title.replace("'", "").replace('"', "")[:60],
+           text.replace("'", "").replace('"', "")[:200])
+    )
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                           capture_output=True, timeout=15,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception as e:  # noqa: BLE001
+        return "发不出桌面通知（%s）：%s" % (type(e).__name__, e)
+    if r.returncode != 0:
+        return "通知脚本失败（exit %d）：%s" % (
+            r.returncode, (r.stderr or b"")[-150:].decode("utf-8", "ignore"))
+    return "桌面通知已弹出：「%s」%s" % (title, text[:60])
+
+
+# ---- §6.4 文件缺项（shutil + send2trash）----
+
+def search_files(pattern: str, root: str = "", limit: int = 20) -> str:
+    """全局搜文件（rglob 子串匹配；上限 limit 条 + 3000 项扫描上限）。
+
+    同 disk_tree 的纪律：不无限递归（防 D 盘 AI 这种大树卡死几分钟）。
+    """
+    base = Path(root or os.path.expanduser("~"))
+    if not base.exists():
+        return "目录不存在：%s" % base
+    kw = (pattern or "").strip().lower()
+    if not kw:
+        return "给个关键词再搜"
+    hits: list[str] = []
+    scanned = 0
+    truncated = False
+    try:
+        for p in base.rglob("*"):
+            scanned += 1
+            if scanned > 3000 or len(hits) >= limit:
+                truncated = True
+                break
+            try:
+                if kw in p.name.lower():
+                    sz = "目录" if p.is_dir() else _fmt_bytes(p.stat().st_size)
+                    hits.append("%s（%s）" % (p, sz))
+            except (OSError, PermissionError):
+                continue
+    except (OSError, PermissionError) as e:
+        return "扫不了 %s（%s）" % (base, type(e).__name__)
+    if not hits:
+        return "在 %s 没找到名字带「%s」的（扫了 %d 项）" % (base, pattern, scanned)
+    more = "（可能还有更多，已截断）" if truncated else ""
+    return "找到 %d 个%s：\n%s" % (len(hits), more, "\n".join(hits))
+
+
+def _abs_path(path: str) -> Path:
+    """文件写操作前置校验：必须给绝对路径（白名单由调用方判）。"""
+    p = Path(path)
+    if not p.is_absolute():
+        raise ValueError("给绝对路径（像 D:/x/y.txt）")
+    return p
+
+
+def file_move(src: str, dst: str) -> str:
+    """移动文件/目录（shutil.move）。目标已存在 → 显式拒（防覆盖）。"""
+    try:
+        s, d = _abs_path(src), _abs_path(dst)
+        if not s.exists():
+            return "源不存在：%s" % s
+        if d.exists():
+            return "目标已存在：%s（不覆盖，要覆盖先删）" % d
+        d.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(s), str(d))
+        return "已移动：%s → %s" % (s, d)
+    except Exception as e:  # noqa: BLE001
+        return "移动失败（%s）：%s" % (type(e).__name__, e)
+
+
+def file_copy(src: str, dst: str) -> str:
+    """复制文件/目录。目标已存在 → 显式拒（防覆盖）。"""
+    try:
+        s, d = _abs_path(src), _abs_path(dst)
+        if not s.exists():
+            return "源不存在：%s" % s
+        if d.exists():
+            return "目标已存在：%s（不覆盖，要覆盖先删）" % d
+        d.parent.mkdir(parents=True, exist_ok=True)
+        if s.is_dir():
+            shutil.copytree(str(s), str(d))
+        else:
+            shutil.copy2(str(s), str(d))
+        return "已复制：%s → %s" % (s, d)
+    except Exception as e:  # noqa: BLE001
+        return "复制失败（%s）：%s" % (type(e).__name__, e)
+
+
+def file_rename(path: str, new_name: str) -> str:
+    """重命名（同目录换名；new_name 经 _safe_name 清洗防穿越）。"""
+    try:
+        p = _abs_path(path)
+        if not p.exists():
+            return "文件不存在：%s" % p
+        safe = _safe_name(new_name)
+        if not safe or safe in (".", ".."):
+            return "新名字不合法：%r" % new_name
+        dst = p.with_name(safe)
+        if dst.exists():
+            return "已存在同名文件：%s" % dst
+        p.rename(dst)
+        return "已重命名：%s → %s" % (p.name, dst.name)
+    except Exception as e:  # noqa: BLE001
+        return "重命名失败（%s）：%s" % (type(e).__name__, e)
+
+
+def file_delete(path: str) -> str:
+    """删除到回收站（send2trash 软删——roadmap §6.4：高危但可恢复）。
+
+    send2trash 未装/不可用 → **显式报错，不静默改永久删**（禁止降级）。
+    """
+    try:
+        p = _abs_path(path)
+        if not p.exists():
+            return "文件不存在：%s" % p
+    except ValueError as e:
+        return str(e)
+    try:
+        import send2trash
+    except Exception as e:  # noqa: BLE001
+        return ("删不了：send2trash 没装（%s）——永久删不在能力范围内，"
+                "要删先装 send2trash 或你手动删" % type(e).__name__)
+    try:
+        send2trash.send2trash(str(p))
+        return "已移到回收站：%s（可从回收站还原）" % p
+    except Exception as e:  # noqa: BLE001
+        return "移回收站失败（%s）：%s" % (type(e).__name__, e)
+
+
+# ---- §6.6 键鼠缺项 ----
+
+def mouse_scroll(clicks: int = -3) -> str:
+    """鼠标滚动（mouse_event MOUSEEVENTF_WHEEL；正数向上负数向下）。"""
+    if not _win():
+        return "非 Windows 平台"
+    n = max(-10, min(10, int(clicks)))
+    _u32.mouse_event(0x0800, 0, 0, n * 120, 0)  # WHEEL=0x0800，单位 120/格
+    return "滚了 %d 格（%s）" % (abs(n), "向上" if n > 0 else "向下")
+
+
+def hotkey(keys: str) -> str:
+    """组合快捷键（keybd_event；格式 "ctrl+c" / "alt+tab" / "win+d"）。"""
+    if not _win():
+        return "非 Windows 平台"
+    _VK = {
+        "ctrl": 0x11, "control": 0x11, "alt": 0x12, "shift": 0x10,
+        "win": 0x5B, "tab": 0x09, "enter": 0x0D, "esc": 0x1B, "space": 0x20,
+        "del": 0x2E, "delete": 0x2E, "f4": 0x73, "f5": 0x74,
+        "a": 0x41, "c": 0x43, "v": 0x56, "x": 0x58, "s": 0x53, "z": 0x5A,
+        "d": 0x44, "r": 0x52, "t": 0x54, "w": 0x57, "l": 0x4C, "q": 0x51,
+    }
+    parts = [k.strip().lower() for k in (keys or "").split("+") if k.strip()]
+    if not parts:
+        return "给组合键，如 ctrl+c / alt+tab"
+    vks: list[int] = []
+    for k in parts:
+        if k in _VK:
+            vks.append(_VK[k])
+        elif len(k) == 1 and k.isalnum():
+            vks.append(ord(k.upper()))
+        else:
+            return "不认识的键：%s（支持 %s）" % (k, "、".join(sorted(_VK)))
+    for vk in vks:  # 顺序按下
+        _u32.keybd_event(vk, 0, 0, 0)
+    for vk in reversed(vks):  # 逆序松开（防卡键）
+        _u32.keybd_event(vk, 0, 2, 0)  # KEYEVENTF_KEYUP
+    return "已按下 %s" % "+".join(parts)
