@@ -1063,4 +1063,5 @@ stars/boot`）；`fetch_part_art` 对这些部位**先取 WM `prime_*` subIcon�
 - **踩坑并修掉**：注入「模板忽略 `avatar_b64`」时测试**假通过** —— `render_panel` 命中了 pic 磁盘缓存里的旧 PNG。定位到真实缓存目录是 `<root>/src/data/pic_cache`（`cache.py::parents[3]`）。修法：`test_card.py` 两边都走 `render_sync` 绕开缓存；`test_e2e.py` 在人物断言前自己 `shutil.rmtree` 清缓存。修完再注入 → 模板不画头像 3 项 FAIL、接回 GIF 6 项 FAIL，还原后 75/75；额外用 `KEEP_PIC_CACHE=1` 验证「不清缓存、只靠 e2e 自清」也能拦住。
 - **部署**：最终干净 rebuild 镜像 `sha256:b5821684…`；宿主 / 镜像 / 运行容器 7 个受版本管理的改动文件 md5 全等；`docker diff` 在 `/app/src` 的 `.py` 覆盖数 0；容器 `Up (healthy)`、NapCat 重连 `online=1`、近期日志 0 异常；最终镜像上重跑 9 套测试全绿。`tests/` 不进镜像（Dockerfile 只 COPY src/tools），故 `tests/test_pic_templates.py` 只在宿主 `.venv` 跑。
 - **截图**：`tmp/prove_avatar_in_card.png`（四档人物卡 2×2 拼图 + 机器证据文字）、`tmp/final_lv{1,12,22,28}.png`（容器生产主题真实渲染），已逐张目视确认头像完整、无黑边、无重叠、无裁切。
-- **仍未改动 / 未验证**：`GROUP_ENABLED=false` 群聊双向总闸；未从真实 QQ 客户端截图；本轮改动尚未 commit / push（见交差 `代码：` 行）。
+- **代码上传**：本地 `commit 6c4cdf3`（23 个文件），已 `push` 到 `origin/qq-bridge-doupo-avatar`；`git ls-remote` 返回同一 SHA，`git status --short -- <本次文件>` 无输出。因本地 `master` 与远程 `main` 历史分叉，推的是**新分支**而非覆盖 `main`，需在 GitHub 上自行提 PR 合并。
+- **仍未改动 / 未验证**：`GROUP_ENABLED=false` 群聊双向总闸；未从真实 QQ 客户端截图；未把新分支合并进 `main`（需用户决定）。
