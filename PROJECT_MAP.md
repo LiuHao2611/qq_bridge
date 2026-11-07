@@ -383,3 +383,24 @@ docker compose -f docker-compose.bridge.yml down   # 停容器（宿主回退路
 - 已知既有红项（与本次无关）：`tests/test_pic_templates.py::test_riven_analysis_topright_*`
   2 条，HEAD 版 `_riven_data` 缺 `recs`，本次未碰该模板与用例。
 - 详见 `qq_bridge/AGENTS.md` §22:35 规则表与变更记录。
+
+## D:/AI/doupo / J2ME 人物打斗动作库（2026-11-07）
+
+- 独立解析目录，**不是 git 仓库、无 GitHub 远程**；与 `qq_bridge` 运行时代码无耦合，产物是游戏本体重绘的 GIF 素材。
+- 素材 `emu/game.jar`：`c/h0` 身体 / `c/s0` 阴影（出图剔除）/ `c/e0` 火焰 / `c/x0` 光刃 + `n/hero0.hy` 669 个 state。
+- `tools/extract_battle.py`：dx/dy 按 **signed byte** 读（旧 `render_hero.py` 按 u8 导致漂移 255px）；state 内「帧」是**同一时刻的纸娃娃图层**，连续 state 编号才是时间轴；全段共用 alpha 并集裁剪框，防人物随特效范围跳动。
+- `tools/build_battle_gifs.py`：9 套连贯招式 → `人物打斗动作库/gif/*.gif`（透明背景 / 无限循环 / 6–12 帧）+ `打斗动作总览.png` + `INDEX.md`。
+- `tools/verify_battle_gifs.py`：逐帧像素级验收 + `逐帧校验.png`。**两条防复发规则**：① GIF 的 `transparency`/`loop` 必须在 `seek()` 前从 `g.info` 取（首版在 9 套全好的产物上报了 9 条「缺透明索引」假红）；② 必须有 `n_frames == len(states)` 帧数断言（Pillow 会合并全同帧，`optimize=False` 也拦不住，静止段压成 1 帧时 `diffs=[]`、`all([])==True` 抓不到）。
+- 验收 `VERIFY_TOTAL=9 FAILED=0` exit 0；注入验证 8/8 PASS（每次只注入一个错误，再拿掉对应断言证明错误能溜过去）；总览 / 逐帧条带 / 单帧放大三张图已实际目视复核。
+- 规则与结论写进 `write_index()` 生成模板（`INDEX.md` 是自动生成的，手写会被下次 rebuild 覆盖）。
+
+## D:/AI/doupo / 第二辑全量普查 39 套（2026-11-07 23:xx）
+
+- 用户需求：「06_紫电异火，突破动画就用这个，再找找还有什么打斗动画或者技能动画也行，多找点，动态的拿出来给我」。
+- **突破动画**：`06_紫电异火`（S81–S87，7 帧）被指定，额外导出 `人物打斗动作库/突破动画.gif`（同名副本），`verify_battle_gifs.py` 新增「副本 == 源 06 字节一致」断言。**仅素材层，未接入 qq_bridge 的「突破」口令**（那是另一个仓的行为改动，待用户确认）。
+- **全量普查**：首轮只看了 S28–S231；本轮对 `n/hero0.hy` 全部 **669 state** 渲染 4 张普查缩略图 + 32 段候选放大预览（每段 4 帧），逐段目视定案，新增 30 套 → 全库 **39 套**（01–09 第一辑 / 10–39 第二辑）。剔除 `C12_紫弧剑气`（前后不连贯）、`C32_俯冲突进`（几乎静止）。`22_炎环连转` / `23_白炎柱` 是纯技能特效（无人物），其余含完整小人；35–38 是「赤袍形态」另一套角色。
+- **修解析器漏映射**：`imgIdx=5` = `c/y0`（橙蓝白冲击/残影），旧 `IMG_NAMES` 只有 0–4，渲染 S620+ 抛 `KeyError: 5`。依据：`c/` 的 0 系正好 6 个资源、`y0.hy` 有 13 个 composite 而 idx5 用 0–12、`y0.png` 实测是冲击爆散。补上后全量 669 state **零异常**（88 个空白帧另由 `_resolve()` 剔除）。
+- **有效帧清单唯一来源**：`build_battle_gifs.py::_resolve()` 把区间展开成过滤后的 state 列表，`ROUTINES` 生成端与 `verify_battle_gifs.py` 验收端共用；含空白帧的段（35/36/38）不闪空帧、帧数断言不假红。
+- **总览拼图改进**：每帧改按自身 bbox 放大（`_overview_bbox_compare.png` 对照确认原来「空白格」是统一裁剪框把小帧缩没了，GIF 帧本身不空白）；**GIF 成片仍必须共用统一裁剪框**，代码注释已写明两者用途不同防照抄改错。
+- 验收：`VERIFY_TOTAL=39 FAILED=0` exit 0；原 9 套 md5 全部未变；`tools/inject_verify_battle.py` **12/12 PASS**（A–D 旧四类断言 + E 突破动画副本 + F `IMG_NAMES[5]` + G 空白帧过滤），脚本已落盘可复跑；4 张总览 / 4 页逐帧条带 / 候选预览 / bbox 对照均已实际目视。
+- 全部防复发规则写进 `write_index()` 生成模板，重跑 build 不会丢。
