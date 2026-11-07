@@ -756,3 +756,20 @@ bridge 队列（`queue/__init__.py` 新 kind=upscale）→ 下载原图（`_down
 - 本硬墙依赖「仓库公开」。若把仓库改回 private 且未订阅 GitHub Pro，该 Ruleset 将无法启用（GitHub 会要求升级 Pro）——届时墙退化为「亮红灯但不拦截」的可见墙。
 - 本地已删除的 `.githooks/pre-commit` 不参与此门禁；唯一生效的是上述服务端 Ruleset。
 - 公开副作用：`msyh.ttc`（19.7MB）、`aria2c`（14MB）等大文件随之对全网可见。
+
+
+## 仓库地址与访问凭证
+
+- **仓库地址（public）**：https://github.com/LiuHao2611/qq_bridge
+- **克隆地址**：https://github.com/LiuHao2611/qq_bridge.git
+
+### 访问凭证（安全必读）
+
+> ⚠️ 本仓库为 **public**。**切勿把任何真实 Token / 密钥明文写进仓库（含本文件）**——会被全网爬取滥用。
+> 凭证只应存在于 **GitHub Actions Secrets** 或 **本地环境变量**，绝不明文落库。
+
+- 本地 CLI：`gh auth login` 登录，或 `export GH_TOKEN=<GITHUB_TOKEN>` 提供写权限；
+- CI 门禁：工作流通过 GitHub 自动注入的 `GITHUB_TOKEN` 运行，无需任何额外密钥；
+- 写权限 PAT：在 `Settings → Secrets and variables → Actions` 配置，引用时写 `${{ secrets.GH_TOKEN }}`，**明文禁止落库**。
+
+> 本项目使用过的 PAT 已在外部分享环境出现，建议立即到 GitHub `Settings → Developer settings → Personal access tokens` **撤销并重新生成**，旧令牌一律作废。
