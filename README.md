@@ -728,3 +728,31 @@ bridge 队列（`queue/__init__.py` 新 kind=upscale）→ 下载原图（`_down
 - NoneBot2 官方 session-control：每用户独立会话作用域
 本实现为贴合「每条消息独立 handler」事件驱动模型的轻量自实现（状态机见
 `src/plugins/qq_bridge/session/choice.py`），不引入重依赖、易单测。
+
+
+## 提交门禁（Commit Size Gate）· 2026-11-07
+
+> **生效时间：2026-11-07 17:35（北京时间）** · 维护者：qq_bridge 主题编辑器开发者
+
+仓库现为 **public**。原因：GitHub 把「强制状态检查（required status checks）」这类门禁能力在私有仓上划在 **GitHub Pro 付费档**，只有升 Pro 或把仓库转公开才解锁。为拿到免费的真·硬墙，本仓转为公开。
+
+### 门禁是什么
+
+- **Repository Ruleset** `block-oversized-code`（id `26752150`，enforcement `active`）：作用于 `main` 分支，强制要求 `gate` 状态检查通过，否则**禁止合入、禁止直推**。
+- 检查器是 GitHub Actions 工作流 `.github/workflows/code-size-gate.yml` + `scripts/code_size_gate.py`：每次 push / 开 PR 到 `main` 时运行，扫描代码文件，**>20KB 即拦截**；放行 lockfile（package-lock / yarn / pnpm / Cargo.lock / go.sum 等）与自动生成/打包产物（*.min.js、*.bundle.*、*.d.ts、*.map、vendor / node_modules / dist / build / __pycache__）。命中时提示「按功能拆分」。
+
+### 实测（prove-it · 2026-11-07）
+
+| 场景 | gate 结论 | 结果 |
+|---|---|---|
+| 违规 PR（>20KB `.py`） | failure | merge 返回 **HTTP 405** `Required status check "gate" is failing` → 被拦 |
+| 合规 PR（<20KB `.py`） | success | merge 返回 **HTTP 200** merged → 放行 |
+| 直推 `main`（>20KB `.py`） | — | ref 更新返回 **HTTP 422** `Required status check "gate" is expected` → 被拦 |
+
+结论：**无论走 PR 还是直推 `main`，超限代码都会被强制拦下**；合规的小文件正常通过。
+
+### 注意事项
+
+- 本硬墙依赖「仓库公开」。若把仓库改回 private 且未订阅 GitHub Pro，该 Ruleset 将无法启用（GitHub 会要求升级 Pro）——届时墙退化为「亮红灯但不拦截」的可见墙。
+- 本地已删除的 `.githooks/pre-commit` 不参与此门禁；唯一生效的是上述服务端 Ruleset。
+- 公开副作用：`msyh.ttc`（19.7MB）、`aria2c`（14MB）等大文件随之对全网可见。
