@@ -1,0 +1,36 @@
+name: code-size-gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Collect changed files
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            gh pr view "${{ github.event.pull_request.number }}" --json files --jq '.files[].path' > changed.txt
+          else
+            git diff --name-only "${{ github.event.before }}" "${{ github.event.after }}" > changed.txt
+          fi
+          echo "--- changed files ---"
+          cat changed.txt
+
+      - name: Run code-size gate (block code files > 20KB, skip lockfiles/generated)
+        run: python3 scripts/code_size_gate.py --files changed.txt --max-kb 20
