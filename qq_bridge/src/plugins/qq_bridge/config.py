@@ -21,7 +21,12 @@ from pathlib import Path
 
 # src/plugins/qq_bridge/config.py → parents[3] = qq_bridge/
 ROOT_DIR = Path(__file__).resolve().parents[3]
-LOG_DIR = ROOT_DIR / "logs"
+#: 日志目录。默认 <项目>/logs，可用环境变量 QQ_LOG_DIR 改道。
+#: 端到端脚本（src/plugins/*/test_e2e.py）必须把它指向临时目录 —— 那些脚本
+#: 自己 nonebot.init 且不加载 qq_bridge 插件，没有群聊闸门，会把伪造的群事件
+#: 写进生产 logs/qq_bridge.log（2026-11-05 实测踩过：15:56 与 16:37 各一批
+#: 假群消息混进生产日志，排查时差点误判成群聊总闸被绕过）。
+LOG_DIR = Path(os.environ.get("QQ_LOG_DIR") or (ROOT_DIR / "logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 def _as_int(raw, default: int) -> int:
@@ -543,6 +548,18 @@ class Config:
     # 巡检自检命令（分号分隔；必须只读/无副作用，如 pytest；退出码非零 → 告警）
     OPS_WATCH_CHECKS: str = os.environ.get("OPS_WATCH_CHECKS") or ""
     OPS_WATCH_CHECK_TIMEOUT: float = _as_float(os.environ.get("OPS_WATCH_CHECK_TIMEOUT"), 120.0)
+    # ---- 连接看门狗（2026-11-03）：账号态探测 + 状态变化告警 ----
+    # **只检测+告警，不含任何重启/重登动作**（bot.py 头 §3/§4 硬约束）。
+    # 默认开启：纯本地观测（调 NapCat 的 get_login_info），不触 QQ 服务端，
+    # 无风控风险，与「自动重启守护默认关闭」不是同一件事。
+    OPS_CONN_WATCH_ENABLE: bool = _as_bool(os.environ.get("OPS_CONN_WATCH_ENABLE"), True)
+    # 探测间隔（秒）：默认 60s。旧 health_loop 是 600s，事故窗口内探不到。
+    OPS_CONN_WATCH_INTERVAL: float = _as_float(os.environ.get("OPS_CONN_WATCH_INTERVAL"), 60.0)
+    # 连续失败几次才判定掉线（滤掉单次 get_login_info 超时抖动）
+    OPS_CONN_WATCH_FAILS: int = int(_as_float(os.environ.get("OPS_CONN_WATCH_FAILS"), 2.0))
+    # 每日告警上限（§4 要求；防 NapCat 反复抖动时刷屏）
+    OPS_CONN_WATCH_MAX_ALERTS: int = int(
+        _as_float(os.environ.get("OPS_CONN_WATCH_MAX_ALERTS"), 20.0))
     # SSH 主机白名单：`别名:user@host:port` 分号分隔（拒绝任意地址）
     OPS_SSH_HOSTS: str = os.environ.get("OPS_SSH_HOSTS") or ""
     # SSH 远程命令白名单（分号分隔前缀；空=默认只读运维表）
@@ -628,6 +645,18 @@ class Config:
     # 落到 per-scope 情感状态。不认识的分类 / None → 静默跳过（不伪造，禁止降级）。
     # 零额外 LLM 调用，消解一期「再调一次模型成本高」的推迟理由。
     EMO_AUTO_JUDGE: bool = _as_bool(os.environ.get("EMO_AUTO_JUDGE"), True)
+
+    # ---- 签到模块（2026-10-30）：每日签到 + 激励 + 排行榜 ----
+    # 游戏化签到：每日基础喵币 + 连签阶梯加成 + 累计里程碑奖励 + 补签 + 排行榜。
+    CHECKIN_ENABLE: bool = _as_bool(os.environ.get("CHECKIN_ENABLE"), True)
+    # 签到库路径（默认 data/qq_checkin.db，与 history 同目录）
+    CHECKIN_DB: str = os.environ.get("CHECKIN_DB") or ""
+    # 每日基础喵币
+    CHECKIN_DAILY_POINTS: int = _as_int(os.environ.get("CHECKIN_DAILY_POINTS"), 5)
+    # 连签阶梯加成：每 5 连签额外 +1 喵币
+    CHECKIN_STREAK_BONUS: int = _as_int(os.environ.get("CHECKIN_STREAK_BONUS"), 1)
+    # 补签消耗喵币（修复最近一次断签）
+    CHECKIN_MAKEUP_COST: int = _as_int(os.environ.get("CHECKIN_MAKEUP_COST"), 20)
 
     # ---- 多模态 + 语音（2026-10-20 M4：图理解 / 视频抽帧 / 历史图召回 / 语音）----
     # 安全口径：**各能力独立配置，互不回落**——视觉模型不配就不能看图

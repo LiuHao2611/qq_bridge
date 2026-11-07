@@ -9,6 +9,9 @@ node20.to-delete/
 # ===== 运行时数据 / 缓存 / 日志 =====
 data/
 logs/
+
+# ===== Docker 离线 wheel 缓存（由 tools/build_docker_wheels.py 重新生成，不入库） =====
+docker/wheels/
 .playwright-cli/
 .pytest_tmp/
 .pytest_cache/
@@ -33,3 +36,23 @@ _panel_*.png
 _e2e_*.png
 _probe_*.png
 *.to-delete.png
+
+# ===== 本地运行数据 / 第三方子仓库（含独立 .git，禁止入库） =====
+.research/
+tmp/
+vendor/
+# Windows 保留设备名文件（命令行 > NUL 误生成的垃圾，git 无法索引）
+NUL
+
+# ===== 调试 scratch（根目录 _ 前缀 + 抓取 dump，按本仓库约定不入仓） =====
+# 用 /_ 锚定 qq_bridge 根目录，避免误伤 src/ 内的 __init__.py
+/_*
+/.tmp_qqlogin/
+/probe.py
+/wf_wiki_*.html
+# 任意层级的带时间戳备份目录（如 src/plugins/qq_bridge/_backup_riven_recommend_*）
+_backup_*/
+
+# ===== 隐私 / 二进制运行时（绝不入库） =====
+*.exe
+*.qqxlog

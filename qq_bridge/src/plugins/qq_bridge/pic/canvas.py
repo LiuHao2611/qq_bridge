@@ -21,7 +21,7 @@ from functools import lru_cache
 from io import BytesIO
 from typing import Iterable, Sequence
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 from . import fonts
 from .theme import LAYOUT_FIELDS, rgb
@@ -258,6 +258,34 @@ class Canvas:
 
     def paste(self, img: Image.Image, pos: Point, mask: Image.Image | None = None) -> "Canvas":
         self.img.paste(img, (int(pos[0]), int(pos[1])), mask)
+        return self
+
+    def paste_alpha(
+        self, img: Image.Image, pos: Point, mask: Image.Image | None = None
+    ) -> "Canvas":
+        """真 alpha 混合贴图（保留图片自身半透明；mask 只削 alpha，不改 RGB）。
+
+        与 paste() 的差别：paste 走 ``Image.paste``，是按 mask 做**线性替换**，
+        源图透明区的 RGB（通常是被清零的黑）会被一起混进画布，
+        圆形/圆角边缘因此出现一圈暗描边。这里把 mask 乘进 alpha 通道后
+        再 ``alpha_composite``，让 RGB 保持直通（straight alpha），边缘不变暗。
+        """
+        src = img if img.mode == "RGBA" else img.convert("RGBA")
+        if mask is not None:
+            m = mask if mask.mode == "L" else mask.convert("L")
+            if m.size != src.size:
+                m = m.resize(src.size, Image.LANCZOS)
+            src = src.copy()
+            src.putalpha(ImageChops.multiply(src.getchannel("A"), m))
+        x, y = int(pos[0]), int(pos[1])
+        cw, ch = self.img.size
+        if x < 0 or y < 0 or x + src.width > cw or y + src.height > ch:
+            # 越界：先贴到整画布透明层（paste 会自动裁掉越界部分）再整体合成
+            layer = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+            layer.paste(src, (x, y))
+            self.img = Image.alpha_composite(self.img, layer)
+        else:
+            self.img.alpha_composite(src, (x, y))
         return self
 
     # ---------------- 文本 ----------------

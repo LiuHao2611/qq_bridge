@@ -8,6 +8,7 @@
   frp.py       frp/nps 内网穿透隧道状态查询（frpc admin API /api/status）
   notify.py    通知中枢（事件统一入口 + LLM 人格化转述 + 限流 + 目标路由）
   watchdog.py  开发机仓库巡检循环（脏改动/未推送/自检命令 → 通知中枢）
+  connwatch.py  连接看门狗（60s 探真实账号态 → 状态变化才告警；**只喊不动手**）
 
 安全总原则（比 dsh-qq-remote 的 /exec 更严，dev_plan §五：M9 远程 shell
 严格走「仅主人 + 二次确认 + 审计」）：
@@ -27,6 +28,8 @@ from .frp import FrpError, FrpStatus, frp_status
 from .notify import (LEVEL_ERROR, LEVEL_INFO, LEVEL_WARN, NotificationHub,
                      NotifyEvent, notify_hub)
 from .watchdog import RepoWatchdog, repo_watchdog
+from .connwatch import (STATE_ACCT_FAIL, STATE_OK, STATE_UNKNOWN, STATE_WS_DOWN,
+                        ConnWatchdog, conn_watchdog)
 
 __all__ = [
     "GitInfo", "GitInfoError", "git_info", "validate_git_args",
@@ -37,4 +40,6 @@ __all__ = [
     "NotificationHub", "NotifyEvent", "notify_hub",
     "LEVEL_INFO", "LEVEL_WARN", "LEVEL_ERROR",
     "RepoWatchdog", "repo_watchdog",
+    "ConnWatchdog", "conn_watchdog",
+    "STATE_OK", "STATE_WS_DOWN", "STATE_ACCT_FAIL", "STATE_UNKNOWN",
 ]

@@ -26,6 +26,7 @@
 | M9 运维 `/ops` | 9 | 45 | 真 ssh/WoL/frp 主机 | handler 未直测 |
 | 多人格 `/人设` | 5 | 7 | — | handler 未直测 |
 | AI 模式 `/ai` | 7 | 107（dispatch/intent/ratelimit） | — | ai_mode 切换无专测 |
+| 指令总览菜单 `AI模式菜单` | 1 | 0 | 双列加长图 1 张（覆盖 M1-M9 + 人设全部口令） | 🔌 新增，待真机验收 |
 
 ---
 
@@ -38,6 +39,7 @@
 | `/help` | ✅ e2e | `test_e2e_ws.py::test_help_returns_command_list`（回文生图等） |
 | 群消息未 @ | ✅ e2e | `test_group_message_without_at_is_ignored`（不回任何包） |
 | 群消息 @ | ✅ e2e | `test_group_at_bot_without_text_replies_help` |
+| `AI模式菜单`（触发词：AI模式菜单 / ai模式菜单 / /ai 菜单） | 🔌 真机 | 仅主人呼出；渲染**一张双列加长图**（5 分组：AI 模式 / 生活助手 / 宿主机查看 / 宿主机操控 / 下载·家居·运维·人设），双列网格=图标+口令+一句话说明；渲染失败整体回落纯文本 |
 | Token 错配 | ✅ e2e | `test_wrong_token_is_rejected`（403，不静默） |
 
 ### M1 记忆 `/记忆`  👥

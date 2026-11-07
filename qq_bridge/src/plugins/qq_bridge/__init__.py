@@ -15,6 +15,17 @@ from __future__ import annotations
 
 import os
 print(f"[qq_bridge] module loaded: __init__.py mtime={os.path.getmtime(__file__)}", flush=True)
+# 构建指纹：图片层两个关键文件（武器图源 / 紫卡模板）的 mtime。
+# 踩过两次「代码改了但容器没重建」→ 卡面照旧、日志无告警。启动时打出来，
+# 一条 `docker logs | grep pic_build` 就能确认跑的是不是新代码。
+try:
+    _pic_dir = os.path.join(os.path.dirname(__file__), "pic")
+    print("[qq_bridge] pic_build weapon_icons=%s riven_analysis=%s" % (
+        os.path.getmtime(os.path.join(_pic_dir, "weapon_icons.py")),
+        os.path.getmtime(os.path.join(_pic_dir, "templates", "riven_analysis.py")),
+    ), flush=True)
+except OSError:
+    pass
 
 import asyncio
 import base64
@@ -42,7 +53,7 @@ except Exception:  # pragma: no cover — 未安装适配器时的降级路径
     QQEvent = None  # type: ignore[assignment,misc]
 from nonebot.matcher import Matcher
 
-# 每日与官方同步 Warframe 静态数据（武器/战甲/倾向倍率），见 wf_sync.py。
+# 每日与官方同步 Warframe 静态数据（武器/战甲/紫卡导出），见 wf_sync.py。
 from . import wf_sync  # noqa: E402
 
 # 2026-09-07：Request **必须在模块顶层导入**。本文件顶部有
@@ -67,6 +78,8 @@ from .intent import validate_prompt, truncate_prompt
 from .media import (send_image, send_images, send_pic, send_record, send_text, send_video,
                      send_video_link, send_file)
 from .ratelimit import rate_limiter
+
+from src.group_switch import group_enabled
 from .safety import safety
 from .session import session_store, choice_sessions
 from .taskmgr import task_mgr
@@ -101,6 +114,15 @@ from .ops import (FrpError, GitInfo, GitInfoError,  # noqa: F401
                   NotificationHub, NotifyEvent, RepoWatchdog, SshError,
                   SshRunner, WolError, WolSender, frp_status, git_info,
                   notify_hub, repo_watchdog, ssh_runner, wol_sender)
+# 连接看门狗（2026-11-03）：60s 探真实账号态 → 状态变化才告警。
+# **只检测+告警，无重启/重登分支**（bot.py 头 §3/§4 硬约束）。
+from .ops import ConnWatchdog, conn_watchdog  # noqa: F401
+# 裂隙任务订阅（2026-11-05）：条件订阅 → 60s 轮询 → 新任务推单卡回原会话。
+# 同 download/ops 一样零主包依赖，推送出口经 on_match 回调注入。
+from .task_subscribe import (TaskSubscribeError,  # noqa: F401
+                             task_subscription_monitor, task_subscription_store)
+# 紫卡趋势 / 词条价差（2026-11-05 P2）：WFM 真实挂牌 + 本地定时采样快照
+from .game_tools.riven_trend import riven_trend_monitor  # noqa: F401
 # M1 记忆系统（2026-10-20）：三态记忆（长期 events/核心画像+群档案）+ LLM 抽取。
 # memory 包同款零主包依赖（仅延迟 import tools.llm）。
 from .memory import (ExtractError, MemoryError, MemoryManager,  # noqa: F401
@@ -116,6 +138,8 @@ from .group_style import (GroupStyleError,  # noqa: F401
                           GroupStyleManager, group_style_manager)
 from .budget import (BudgetError, BudgetManager,  # noqa: F401
                      budget_manager)
+# 签到模块（2026-10-30）：每日签到 + 激励 + 排行榜
+from .checkin import (CheckinError, checkin_manager, checkin_store)  # noqa: F401
 # M4 多模态 + 语音（2026-10-20）：图理解/视频抽帧/历史图召回 + ASR/TTS。
 # 独立成包不挂 media/ 下（media 是发送层且 import nonebot）。
 from .multimodal import (AlbumError, AudioError, MediaManager,  # noqa: F401
@@ -421,6 +445,14 @@ async def _on_startup() -> None:
         log.info(jlog("proactive_loop_spawned"))
     except Exception as e:  # noqa: BLE001 — 起不来不影响其它功能
         log.error(jlog("proactive_loop_spawn_failed", error=type(e).__name__))
+    # 连接健康心跳（2026-10-29）：10 分钟一条 ALIVE 写入 logs/qq_conn_events.log。
+    # 用于补上「WS 假死无 detach」的观测盲区，并与 ATTACH/DETACH 一起构成
+    # 在线时长曲线，凌晨被踢那类问题以后直接看这份文件即可。
+    try:
+        asyncio.ensure_future(connector.health_loop())
+        log.info(jlog("conn_health_loop_spawned", interval=600))
+    except Exception as e:  # noqa: BLE001 — 心跳起不来不影响连接
+        log.error(jlog("conn_health_loop_spawn_failed", error=type(e).__name__))
     # 提醒/定时任务调度器（2026-10-20 M2）：1s tick 扫到点提醒，经 _remind_fire
     # 回传到原会话。失败只记日志——用户设的提醒仍在库里，重启后恢复扫描。
     try:
@@ -459,6 +491,44 @@ async def _on_startup() -> None:
                       min_level=Config.OPS_NOTIFY_MIN_LEVEL))
     except Exception as e:  # noqa: BLE001
         log.error(jlog("ops_notify_start_failed", error=type(e).__name__,
+                       detail=str(e)[:200]))
+    # 裂隙任务订阅（2026-11-05）：条件订阅 → 新任务出现推单卡回原会话。
+    # 回调在 game_tools 里（那里已有 pic.render + send_pic 的出卡链路），
+    # 延迟 import 避免主包与 game_tools 顶层循环依赖。
+    try:
+        from .game_tools import _task_sub_notify
+        task_subscription_monitor.on_match = _task_sub_notify
+        await task_subscription_monitor.start()
+        log.info(jlog("task_sub_monitor_ready",
+                      subs=len(task_subscription_store.all_enabled())))
+    except Exception as e:  # noqa: BLE001 — 起不来不拖垮其它功能
+        log.error(jlog("task_sub_monitor_start_failed", error=type(e).__name__,
+                       detail=str(e)[:200]))
+    # 紫卡趋势采样器（2026-11-05 P2）：每 2h 采样已跟踪武器，落盘到 data/riven_trends.json
+    try:
+        await riven_trend_monitor.start()
+        log.info(jlog("riven_trend_monitor_ready"))
+    except Exception as e:  # noqa: BLE001 — 起不来不拖垮其它功能
+        log.error(jlog("riven_trend_monitor_start_failed", error=type(e).__name__,
+                       detail=str(e)[:200]))
+    # 连接看门狗（2026-11-03）：60s 探一次真实账号态，状态变化才告警。
+    # 补的是这个盲区：NapCat 被判离线后 **WS 并不断**，on_bot_disconnect 不触发，
+    # 旧 health_loop 600s 才写一条 info 级 ALIVE，用户只能事后翻日志才知道哑了。
+    # ⚠️ 只检测+告警。**没有任何重启/重连/重登分支**（bot.py 头 §3/§4 硬约束）。
+    try:
+        # ttl=0 强制每轮真探；ttl 默认 20s 在间隔调到 <20s 时会吃缓存
+        conn_watchdog.probe = lambda: connector.check_account_login(ttl=0)
+        conn_watchdog.on_event = notify_hub.push
+        if Config.OPS_CONN_WATCH_ENABLE:
+            await conn_watchdog.start()
+        log.info(jlog("conn_watch_ready",
+                      enable=Config.OPS_CONN_WATCH_ENABLE,
+                      interval=Config.OPS_CONN_WATCH_INTERVAL,
+                      fails=Config.OPS_CONN_WATCH_FAILS,
+                      max_alerts=Config.OPS_CONN_WATCH_MAX_ALERTS,
+                      mode="detect+alert_only"))
+    except Exception as e:  # noqa: BLE001 — 看门狗起不来不拖垮消息处理
+        log.error(jlog("conn_watch_start_failed", error=type(e).__name__,
                        detail=str(e)[:200]))
     # 情感到期关心循环（2026-10-20 M3）：日程到期 → 人设语气主动关心一句
     if Config.EMO_ENABLE and Config.EMO_SCHEDULE_EXTRACT:
@@ -510,7 +580,9 @@ async def _on_shutdown() -> None:
                          detail=str(e)[:160]))
     # 停下载轮询与订阅监控（M7）
     for name, stopper in (("download_loop", download_manager.stop),
-                          ("subscription_monitor", subscription_monitor.stop)):
+                          ("subscription_monitor", subscription_monitor.stop),
+                          ("task_subscription_monitor", task_subscription_monitor.stop),
+                          ("riven_trend_monitor", riven_trend_monitor.stop)):
         try:
             await stopper()
             log.info(jlog("%s_stopped" % name))
@@ -522,6 +594,11 @@ async def _on_shutdown() -> None:
         await repo_watchdog.stop()
     except Exception as e:  # noqa: BLE001
         log.warning(jlog("repo_watchdog_stop_failed", error=type(e).__name__,
+                         detail=str(e)[:160]))
+    try:
+        await conn_watchdog.stop()
+    except Exception as e:  # noqa: BLE001
+        log.warning(jlog("conn_watchdog_stop_failed", error=type(e).__name__,
                          detail=str(e)[:160]))
     # 停智能家居 webhook 告警接收器（M8）
     if _ha_receiver is not None:
@@ -1006,25 +1083,50 @@ def _register_config_routes() -> None:
         async def _status_get():
             st = connector.status()
             off = _official_status()
+            # 真实账号登录态：WS 连着 ≠ 账号能收发（KickedOffLine 后 WS 仍可能不断）
+            acct = await connector.check_account_login()
+            ws_online = bool(st.get("online"))
             return {
-                "online": bool(st.get("online")),
+                # online 现在 = WS 已连 且 账号真的登录可用，避免「假在线」误导前台
+                "online": ws_online and acct["ok"],
                 "self_id": (st["bots"][0] if st.get("bots") else None),
                 "bots": st.get("bots") or [],
                 "connect_count": st.get("connect_count", 0),
                 "last_connected_at": st.get("last_connected_at", 0.0),
                 "last_disconnected_at": st.get("last_disconnected_at", 0.0),
                 "pid": os.getpid(),
-                # 双轨并行（2026-09-12）：两条通道各自独立，前端可分开展示。
-                # online 沿用 NapCat 语义（向后兼容），官方通道见 official.online。
+                # channels.napcat 保留「纯传输层」存活态，供排查 WS 与账号两层分化
                 "channels": {
-                    "napcat": bool(st.get("online")),
+                    "napcat": ws_online,
                     "official": bool(off.get("online")),
                 },
+                # account 暴露真实账号态：ok=False 时 reason 说明为何
+                # （如 KickedOffLine 后 get_login_info 调用失败 / 超时）
+                "account": acct,
                 "official": off,
             }
 
         app.add_api_route("/api/qq/status", _status_get, methods=["GET"])
         log.info(jlog("status_routes_registered", path="/api/qq/status"))
+
+        # /api/qq/health 轻量存活判定（2026-11-03）：给连接看门狗的快照。
+        # 与 /status 的分工：/status 每次都会**真打一次 get_login_info**（慢，5s 超时），
+        # 适合人工排障；/health 纯读内存快照、零 API 调用，适合高频轮询/脚本守卫。
+        #
+        # 一句话用法（宿主机）：
+        #   curl -s localhost:8080/api/qq/health
+        # ok=false 时看 state / reason / last_ok_ago —— last_ok_ago 就是「已经哑了多久」。
+        #
+        # 刻意不把 HTTP 状态码做成 503：容器自己的 healthcheck 是 TCP 探活，
+        # 这里的 ok 只表示「账号能不能收发」，两者语义不同，混用会误判。
+        async def _health_get():
+            snap = conn_watchdog.snapshot()
+            snap["ws_online"] = bool(connector.status().get("online"))
+            snap["pid"] = os.getpid()
+            return snap
+
+        app.add_api_route("/api/qq/health", _health_get, methods=["GET"])
+        log.info(jlog("health_route_registered", path="/api/qq/health"))
 
         # /api/qq/templates 独立代理（2026-09-07 新增）：
         # 与 get_config_view 内联拉模板的实现同源（config_api.proxy_templates），
@@ -1132,6 +1234,11 @@ def _register_config_routes() -> None:
                  "group": "tennotools", "desc": "每日仲裁任务", "card_template": "guide",
                  "apis": [{"name": "Tenno.Tools worldstate", "method": "GET",
                            "url": wf.WORLDSTATE_URL, "timeout": wf._TIMEOUT, "ttl": wf._CACHE_TTL}]},
+                {"key": "arbitration_table", "name": "仲裁表", "cmd": "仲裁表",
+                 "group": "tennotools", "desc": "仲裁轮换时间表（逐时循环班次/生息效率/评级）",
+                 "card_template": "arbitration_table",
+                 "apis": [{"name": "api.warframe.com worldstate", "method": "GET",
+                           "url": wf.WORLDSTATE_URL, "timeout": wf._TIMEOUT, "ttl": wf._CACHE_TTL}]},
                 {"key": "nightwave", "name": "午夜电波", "cmd": "#wf 电波",
                  "group": "tennotools", "desc": "周挑战/每日挑战", "card_template": "guide",
                  "apis": [{"name": "Tenno.Tools worldstate", "method": "GET",
@@ -1148,6 +1255,10 @@ def _register_config_routes() -> None:
                  "group": "tennotools", "desc": "信条/赤毒武器轮换", "card_template": "guide",
                  "apis": [{"name": "Tenno.Tools worldstate", "method": "GET",
                            "url": wf.WORLDSTATE_URL, "timeout": wf._TIMEOUT, "ttl": wf._CACHE_TTL}]},
+                {"key": "coda", "name": "终幕信条武器", "cmd": "终幕 / coda",
+                 "group": "tennotools", "desc": "终幕(Coda)信条武器轮换 + 倒计时（埃莉诺售卖）", "card_template": "coda",
+                 "apis": [{"name": "worldstate.wf.wiki flight", "method": "GET",
+                           "url": "https://worldstate.wf.wiki/", "timeout": wf._TIMEOUT, "ttl": wf._WFWIKI_TTL}]},
                 {"key": "almanac", "name": "仓鼠黄历", "cmd": "#wf 黄历",
                  "group": "local", "desc": "今日运势+紫卡运势", "card_template": "guide",
                  "apis": []},
@@ -1392,6 +1503,18 @@ def _register_config_routes() -> None:
                     png = await _pic_mod.render("guide", theme_name=None,
                         card="星际战甲·仲裁", body=txt[:1200], title="星际战甲·仲裁")
                     steps["card"] = _png_data_uri(png)
+                elif name == "arbitration_table":
+                    steps["raw"] = {"source": "api.warframe.com worldstate (ArbitersSyndicate) + WFCD solNodes",
+                                    **_raw_preview(await wf._official_worldstate())}
+                    d = await wf.arbitration_table_data("")
+                    steps["extracted"] = {"kind": "table", "rows": len(d.get("rows", [])),
+                                          "title": d.get("title", ""), "footer": d.get("footer", ""),
+                                          "page": d.get("page", ""), "hint": d.get("hint", "")}
+                    png = await _pic_mod.render("arbitration_table", theme_name=None,
+                        card="星际战甲·仲裁时间表", title=d.get("title", "仲裁时间表"),
+                        rows=d.get("rows", []), footer=d.get("footer", ""),
+                        page=d.get("page", ""), hint=d.get("hint", ""))
+                    steps["card"] = _png_data_uri(png)
                 elif name == "nightwave":
                     steps["raw"] = {"source": "Tenno.Tools worldstate (fast)",
                                     **_raw_preview(await wf._worldstate(fast=True))}
@@ -1589,6 +1712,50 @@ def _register_history_routes() -> None:
             data = await asyncio.to_thread(history.list_conversations, 50)
             return {"ok": True, "conversations": data, "online": connector.online}
 
+        # --- 回补真实历史（2026-10-28）---
+        # 本地库只记「机器人在线期间收到的消息」，重启/掉线那段的聊天是空白，
+        # 页面看着就像「消息停在昨天」。这里回源 NapCat 的 get_*_msg_history，
+        # 按 message_id 去重后补进库，让对话页显示的内容跟手机 QQ 里一致。
+        async def _sync_history(req: Request):
+            if not connector.online:
+                return _offline_json()
+            q = req.query_params
+            scene = "private" if str(q.get("scene") or "group") == "private" else "group"
+            try:
+                peer_id = int(q.get("peer_id") or 0)
+                count = max(1, min(int(q.get("count") or 100), 200))
+            except (TypeError, ValueError):
+                return JSONResponse(status_code=400, content={"ok": False, "error": "peer_id/count 必须为整数"})
+            if not peer_id:
+                return JSONResponse(status_code=400, content={"ok": False, "error": "缺少 peer_id"})
+
+            if scene == "group":
+                action, params = "get_group_msg_history", {"group_id": peer_id, "count": count}
+            else:
+                action, params = "get_friend_msg_history", {"user_id": peer_id, "count": count}
+            try:
+                ret = await connector.call_action(action, params)
+            except Exception as e:  # noqa: BLE001 — NapCat 未实现/风控：如实回错，页面不动
+                log.warning(jlog("history_sync_failed", scene=scene, peer_id=peer_id,
+                                 error=type(e).__name__))
+                return {"ok": False, "error": "%s: %s" % (type(e).__name__, str(e)[:200]),
+                        "imported": 0, "fetched": 0}
+
+            raw = ret.get("messages") if isinstance(ret, dict) else ret
+            raw = raw if isinstance(raw, list) else []
+            try:
+                bots = connector.status().get("bots") or []
+                bot_id = str(bots[0]) if bots else ""
+            except Exception:  # noqa: BLE001
+                bot_id = ""
+            res = await asyncio.to_thread(
+                history.import_raw_messages, scene, peer_id, bot_id, raw
+            )
+            if res.get("imported"):
+                log.info(jlog("history_sync_imported", scene=scene, peer_id=peer_id,
+                              fetched=res.get("fetched"), imported=res.get("imported")))
+            return {"ok": True, **res}
+
         async def _history_list(req: Request):
             q = req.query_params
             scene = str(q.get("scene") or "group")
@@ -1779,6 +1946,7 @@ def _register_history_routes() -> None:
 
         app.add_api_route("/api/qq/conversations", _conversations, methods=["GET"])
         app.add_api_route("/api/qq/history", _history_list, methods=["GET"])
+        app.add_api_route("/api/qq/history/sync", _sync_history, methods=["GET", "POST"])
         app.add_api_route("/api/qq/groups", _groups, methods=["GET"])
         app.add_api_route("/api/qq/group_members", _members, methods=["GET"])
 
@@ -1953,6 +2121,13 @@ def _register_history_routes() -> None:
             if not message:
                 return JSONResponse(status_code=400, content={"ok": False, "error": "消息内容为空"})
             scene = str(b.get("scene") or "group")
+            # 群聊总闸：群关闭时明确拒绝，而不是让出站闸静默返回 message_id=0。
+            # 面板要看得懂「为什么没发出去」，不能显示成功。
+            if scene != "private" and not group_enabled():
+                return JSONResponse(
+                    status_code=403,
+                    content={"ok": False, "error": "群聊已关闭（GROUP_ENABLED=false），拒绝向群发送消息"},
+                )
             try:
                 if scene == "private":
                     uid = int(b.get("user_id") or 0)
@@ -1972,6 +2147,25 @@ def _register_history_routes() -> None:
                 ret = await connector.call_action(action, params)
                 msg_id = (ret or {}).get("message_id") if isinstance(ret, dict) else None
                 log.info(jlog("action_send_msg", scene=scene, action=action, message_len=len(message)))
+                # 2026-10-28：面板发出的消息也要落库。此前只调 send_*_msg 不写历史，
+                # 结果「刚发出去的那条」刷新一下就消失，对话页看着像没发成功。
+                # record_outgoing 内部会把 CQ 码拆段：文本留原文、图片/视频落盘成 /api/qq/file。
+                try:
+                    if scene == "private":
+                        ctx = {"user_id": int(params.get("user_id") or 0)}
+                    else:
+                        ctx = {"group_id": int(params.get("group_id") or 0)}
+                    bot_id = ""
+                    try:
+                        bots = connector.status().get("bots") or []
+                        bot_id = str(bots[0]) if bots else ""
+                    except Exception:  # noqa: BLE001
+                        bot_id = ""
+                    await asyncio.to_thread(
+                        history.record_outgoing, ctx, message, bot_id, int(msg_id or 0)
+                    )
+                except Exception as re_:  # noqa: BLE001
+                    log.warning(jlog("history_record_outgoing_failed", error=type(re_).__name__))
                 return {"ok": True, "message_id": msg_id}
             except Exception as e:  # noqa: BLE001
                 return {"ok": False, "error": "%s: %s" % (type(e).__name__, str(e)[:200])}
@@ -2262,6 +2456,8 @@ def _parse_ai_cmd(raw: str) -> str | None:
         return "sticker"
     if arg in ("proactive", "主动") or arg.startswith("proactive ") or arg.startswith("主动"):
         return "proactive"
+    if arg in ("菜单", "menu"):
+        return "menu"
     return "help"
 
 
@@ -2404,6 +2600,9 @@ async def _handle_ai_command(ev, action: str, trace_id: str) -> None:
     sess = session_store.get(ev.user_id)
     scope = ev.scope_key
     where = "群" if ev.is_group else "私聊"
+    if action == "menu":
+        await _send_ai_menu(ev, trace_id)
+        return
     if not Config.AI_MODE_ENABLE:
         await _reply(ctx, sess,
                      "AI 模式功能被总开关关掉了（AI_MODE_ENABLE=false），"
@@ -2464,6 +2663,104 @@ async def _handle_ai_command(ev, action: str, trace_id: str) -> None:
                      "/ai 清空 —— 清掉这个%s的聊天记忆\n"
                      "/ai game —— 文字游戏列表（成语接龙/数字炸弹/海龟汤…）\n"
                      "/ai —— 看当前状态" % (where, where), title="AI 模式·帮助")
+
+
+async def _send_ai_menu(ev, trace_id: str) -> None:
+    """指令总览菜单（仅主人）：覆盖 AI 模式 + M1-M9 + 人设全部命令族，渲染成**一张双列加长图**。
+
+    触发词：「AI模式菜单」/「ai模式菜单」/「/ai 菜单」—— 仅主人可呼出（非主人静默，§8）。
+    用 pic 的 aimenu 模板：分组标题 + 两列网格（图标 + 口令 + 一句话说明），一张图塞下全部口令，
+    不拆成多张碎图。pic 渲染失败则整体回落纯文本（CLOSE-02 禁止静默）。
+    """
+    ctx = _ctx(ev)
+    sess = session_store.get(ev.user_id)
+    scope = ev.scope_key
+    on = ai_mode_store.is_on(scope)
+    store = persona_mod.get_store()
+    cur_label = store.current(scope).label()
+
+    groups = _build_ai_menu_groups(on, cur_label)
+    theme_name = getattr(sess, "pic_theme", None) or None
+    try:
+        data = await pic_mod.render(
+            "aimenu", theme_name=theme_name,
+            groups=groups, title="指令菜单 · 全部口令",
+            subtitle="直接发口令即可 · 仅主人", owner=True,
+            footer="发「AI模式菜单」随时呼出（仅主人）",
+        )
+        await send_pic(ctx, data)
+    except Exception as e:  # noqa: BLE001 — CLOSE-02：记日志不吞异常
+        log.warning(jlog("ai_menu_render_failed", error=type(e).__name__, detail=str(e)[:160]))
+        await _say(ctx, _ai_menu_text_fallback(groups))
+
+
+def _build_ai_menu_groups(on: bool, cur_label: str) -> list:
+    """组装双列菜单的分组数据；每组 {name, items}，item = (icon, 口令, 一句话说明)。
+
+    icon 取 pic/icons.ICONS 中的名（非法名会被 aimenu 模板回退跳过）。
+    描述只写一句人话，目标是「没用过的人一眼知道这个口令干嘛」。
+    """
+    _ = on  # 当前状态已体现在 AI 模式分组的「人设切换」说明里，组名不重复带状态
+    return [
+        {"name": "AI 模式", "items": [
+            ("bolt", "/ai on｜off｜状态", "开/关 AI 陪聊，看现在是否开着"),
+            ("star", "人设切换", "换聊天性格：/人设 用 <id>（当前：%s）" % cur_label),
+            ("wand", "生图", "说「生图+描述」或「画一张xxx」直接出图"),
+            ("question", "/ai game", "文字小游戏：接龙/炸弹/海龟汤/卧底…"),
+            ("image", "/ai sticker", "发随机表情包（收集/分类/智能选用）"),
+            ("globe", "工具总线", "让 AI 联网查天气/资讯（配置开 FC）"),
+            ("book", "/记忆 我｜更正｜事件", "教本喵记住你的画像与长期偏好"),
+            ("tag", "/风格 学｜看｜加梗", "学群梗、管群忌讳，注入人设"),
+            ("arrow_right", "/ai proactive on｜off", "让本喵主动找你聊（冷场/早晚安）"),
+            ("cross", "/ai 清空", "清空当前会话的 AI 聊天记忆"),
+        ]},
+        {"name": "生活助手", "items": [
+            ("clock", "/提醒 创建｜列表｜取消", "设个定时提醒，到点私聊叫你"),
+            ("diamond", "/情感 我｜日程｜好感", "看心情、查安排、看好感度（主人）"),
+            ("image", "/看图 <图>", "发张图让它识别并描述画面内容"),
+            ("arrow_up", "/看图 说 <话>", "把文字念成语音发给你（主人）"),
+            ("cart", "/预算 看｜重置", "看本群 AI 花费、重置额度（主人）"),
+        ]},
+        {"name": "宿主机·查看（仅主人私聊）", "items": [
+            ("monitor", "/pc", "一键体检：CPU/内存/磁盘概览"),
+            ("image", "/pc shot", "看当前电脑屏幕截图（DXGI 不黑屏）"),
+            ("book", "/pc host", "看主机硬件型号与系统信息"),
+            ("arrow_up", "/pc top", "看进程 CPU/内存占用排名"),
+            ("triangle", "/pc temp｜core｜battery｜net", "温度 / 分核 / 电池 / 实时网速"),
+            ("check", "/pc port <端口>", "查某个端口被哪个程序占用"),
+            ("disk", "/pc disk [路径]", "看磁盘用量（限白名单目录）"),
+            ("arrow_down", "/pc get <路径>", "把电脑上的文件发到 QQ"),
+        ]},
+        {"name": "宿主机·操控（仅主人）", "items": [
+            ("question", "/pc find <词>", "搜电脑里的文件"),
+            ("window", "/pc wins｜focus｜max", "看窗口 / 聚焦 / 最大化窗口"),
+            ("clipboard", "/pc clip｜clipset", "读 / 写电脑剪贴板"),
+            ("bolt", "/pc type｜click｜key", "远程打字 / 点击 / 按快捷键"),
+            ("image", "/pc ocr", "识别屏幕上的文字"),
+            ("cross", "/pc lock｜power 关机", "锁屏 / 关机（高危，需确认）"),
+        ]},
+        {"name": "下载·家居·运维·人设（仅主人）", "items": [
+            ("arrow_down", "/dl <链接>", "下载视频（B站/抖音等）"),
+            ("list", "/dl 列表｜发我 N｜取消 N", "看进度 / 取文件 / 取消下载"),
+            ("arrow_up", "/dl 订阅 <链接>", "订阅 UP 主或收藏夹，自动下"),
+            ("bolt", "/ha 开｜关 <设备>", "开关灯 / 风扇等智能设备（主人）"),
+            ("scene", "/ha 场景 <名>", "一键场景（如洗澡模式）（主人）"),
+            ("image", "/ha cam <摄像头>", "看摄像头实时画面（主人）"),
+            ("globe", "/ops git｜ssh｜wol｜frp", "运维：仓库/远程/唤醒/穿透（主人）"),
+            ("star", "/人设 列表｜用 <id>", "切换聊天人设（仅主人）"),
+        ]},
+    ]
+
+
+def _ai_menu_text_fallback(groups: list) -> str:
+    """pic 渲染失败时的纯文本兜底（CLOSE-02）：把所有分组口令+说明压成一段可读文本。"""
+    lines = ["🐱 指令菜单（图片渲染失败，纯文本兜底）"]
+    for g in groups:
+        lines.append("\n【%s】" % g["name"])
+        for it in g["items"]:
+            lines.append("· %s —— %s" % (it[1], it[2]))
+    lines.append("\n发「AI模式菜单」可重新呼出卡片版（仅主人）")
+    return "\n".join(lines)
 
 
 async def _handle_ai_game_cmd(ev, trace_id: str) -> None:
@@ -2823,7 +3120,13 @@ def _proactive_candidates() -> list:
         log.warning(jlog("proactive_conv_list_failed", error=type(e).__name__))
         return []
     for cv in convs:
-        scope = scope_of(cv.get("scene") or "", int(cv.get("peer_id") or 0))
+        scene = cv.get("scene") or ""
+        # 群聊总闸：群关闭时把群会话从候选里剔掉。
+        # 不能在发送那一步才拦——_proactive_speak 会先花 token 让模型生成，
+        # 生成完再被出站闸丢掉就是纯亏钱，而且日志里全是「发了但没到」的假象。
+        if scene != "private" and not group_enabled():
+            continue
+        scope = scope_of(scene, int(cv.get("peer_id") or 0))
         if scope in on:
             out.append(cv)
     return out
@@ -5126,6 +5429,9 @@ async def _emotion_care_loop() -> None:
                 scope = item.get("scope") or ""
                 if not scope:
                     continue
+                # 群聊总闸：群关闭时不往群里推关心（scope 形如 g:<group_id>）
+                if scope.startswith("g:") and not group_enabled():
+                    continue
                 ctx = {"user_id": int(item.get("user_id") or 0), "group_id": 0,
                        "channel": "napcat"}
                 if scope.startswith("g:"):
@@ -5742,6 +6048,136 @@ async def _handle_budget_command(ev, trace_id: str) -> None:
     await _reply(ctx, sess, text, title="AI 调用预算")
 
 
+# ================= 签到模块（2026-10-30）：每日签到 + 激励 + 排行榜 =================
+CHECKIN_RULES = (
+    "· 每日签到：发送 /签到 领喵币（基础 5 + 连签每 5 天 +1）\n"
+    "· 连续签到：昨天签过今天续上 +1，断一天归零（可用补签救回）\n"
+    "· 累计里程碑：累计 3 / 7 / 15 / 30 天各送 30 / 80 / 200 / 500 喵币\n"
+    "· 补签：/签到 补 花 20 喵币修复最近一次断签\n"
+    "· 排行榜：/签到 榜 看本会话喵币前 10\n"
+    "· 喵币是虚拟积分（本喵发行），用于排名攀比与连续打卡成就，不计真实金额"
+)
+
+
+def _checkin_ym(date_str: str):
+    y, m, _ = (int(x) for x in date_str.split("-"))
+    return y, m
+
+
+def _checkin_name(ev) -> str:
+    """群名片优先，取不到回落『你』（名字解析失败不应阻断签到）。"""
+    try:
+        from . import history as _hist
+        peer = ev.group_id if ev.is_group else ev.user_id
+        profs = _hist.get_profiles(peer)
+        p = profs.get(int(ev.user_id)) or {}
+        return (p.get("card") or p.get("nickname") or "").strip() or "你"
+    except Exception:
+        return "你"
+
+
+def _checkin_text(name: str, res: dict, prof: dict) -> str:
+    streak = int(prof.get("streak") or 0)
+    total = int(prof.get("total_days") or 0)
+    points = int(prof.get("points") or 0)
+    if res.get("status") == "already":
+        return ("%s 今天已经签过啦～ 连续 %d 天 · 累计 %d 天 · %d 喵币，明天再来喵！"
+                % (name, streak, total, points))
+    gain = int(res.get("gain") or 0)
+    mhit = res.get("milestone_hit")
+    if mhit:
+        return ("%s 签到成功！累计 %d 天里程碑达成，今日 +%d 喵币（含里程碑 +%d）！\n"
+                "连续 %d 天 · 累计 %d 天 · 共 %d 喵币"
+                % (name, mhit, gain, int(res.get("milestone_bonus") or 0),
+                   streak, total, points))
+    return ("%s 签到成功！今日 +%d 喵币（基础 %d / 连签 +%d）\n"
+            "连续 %d 天 · 累计 %d 天 · 共 %d 喵币"
+            % (name, gain, int(res.get("daily") or 0),
+               int(res.get("streak_bonus") or 0), streak, total, points))
+
+
+async def _handle_checkin_command(ev, trace_id: str) -> None:
+    """/签到 命令族（2026-10-30）：签到 / 榜 / 补 / 规则。
+
+    游戏化签到：每日基础喵币 + 连签阶梯加成 + 累计里程碑 + 补签 + 排行榜。
+    卡片用 Pillow 强反馈渲染（连续/累计/喵币 + 里程碑进度 + 本月日历），失败回落纯文本。
+    """
+    ctx = _ctx(ev)
+    sess = session_store.get(ev.user_id)
+    scope = ev.scope_key
+    user_id = ev.user_id
+    parts = (ev.raw_text or "").strip().split(None, 1)
+    sub = (parts[1].strip() if len(parts) > 1 else "").lower()
+    name = _checkin_name(ev)
+
+    if not Config.CHECKIN_ENABLE:
+        await _reply(ctx, sess, "签到模块当前未开启（设置 CHECKIN_ENABLE=1 开启）。", title="签到")
+        return
+    try:
+        if sub in ("榜", "排行榜", "rank", "排行", "榜单"):
+            board = await checkin_manager.leaderboard(scope, 10)
+            try:
+                from . import history as _hist
+                peer = ev.group_id if ev.is_group else ev.user_id
+                profs = _hist.get_profiles(peer)
+                def _nm(uid):
+                    p = profs.get(int(uid)) or {}
+                    return (p.get("card") or p.get("nickname") or "").strip() or str(uid)
+            except Exception:
+                def _nm(uid):
+                    return str(uid)
+            if not board:
+                await _reply(ctx, sess, "还没有人签到，快来抢第一名喵～", title="签到排行榜")
+                return
+            lines = ["签到排行榜（喵币）:"]
+            for i, r in enumerate(board, 1):
+                lines.append("%d. %s —— %d 喵币（连签%d·累计%d）"
+                             % (i, _nm(r["user_id"]), r["points"], r["streak"], r["total_days"]))
+            await _reply(ctx, sess, "\n".join(lines), title="签到排行榜")
+            return
+        if sub in ("补", "补签", "makeup", "repair", "补救"):
+            res = await checkin_manager.make_up(scope, user_id)
+            if res.get("status") == "ok":
+                await _reply(ctx, sess,
+                             "补签成功！修复了 %s 的断签，消耗 %d 喵币，当前连签 %d 天、累计 %d 天、余 %d 喵币。"
+                             % (res.get("gap_day"), res.get("cost"), res.get("streak"),
+                                res.get("total_days"), res.get("points")),
+                             title="补签")
+            else:
+                await _reply(ctx, sess, res.get("msg") or "补签失败。", title="补签")
+            return
+        if sub in ("规则", "帮助", "help", "?", "规则说明"):
+            await _reply(ctx, sess, CHECKIN_RULES, title="签到规则")
+            return
+        # 默认：签到（未签则签，已签则展示）
+        res = await checkin_manager.do_checkin(scope, user_id)
+        prof = await checkin_manager.get_profile(scope, user_id)
+        rank = await checkin_manager.rank_of(scope, user_id)
+        y, m = _checkin_ym(prof["today"])
+        cal = await checkin_manager.month_calendar(scope, user_id, y, m)
+        ok = await _try_send_pic(ctx, "checkin", sess=sess, name=name, res=res,
+                                prof=prof, cal=cal, rank=rank, card="checkin")
+        if not ok:
+            await _reply(ctx, sess, _checkin_text(name, res, prof), title="每日签到")
+    except CheckinError as e:
+        await _reply(ctx, sess, "签到出了点小问题（%s），稍后再试喵～" % e, title="签到")
+
+
+def _is_game_cmd_bare(text: str) -> bool:
+    """AI 模式下判定裸词是否为「已识别的游戏指令」。
+
+    复用 game_tools.is_game_command（仅匹配 NATURAL_CMDS 显式词表，不含 WF
+    实体名兜底），避免把闲聊词误判成指令。game_tools 在 AI 开启时对本类词已
+    解除跳过，二者配合实现「开 AI 陪聊也能用游戏裸词口令」。
+    懒加载：game_tools 与主流程并行加载，避免顶层循环依赖。
+    """
+    try:
+        from .game_tools import is_game_command
+        return bool(is_game_command(text))
+    except Exception:  # noqa: BLE001 — game_tools 未就绪时按非游戏指令处理
+        return False
+
+
 async def _route(ev, trace_id: str) -> None:
     """归一化之后的**统一业务路由**（与协议无关）。
 
@@ -5803,7 +6239,25 @@ async def _route(ev, trace_id: str) -> None:
         await _handle_ai_command(ev, _ai_cmd, trace_id)
         return
     if ai_mode_store.is_on(ev.scope_key):
-        if not (ev.raw_text or "").strip().startswith(("/", "#")):
+        _ai_raw = (ev.raw_text or "").strip()
+        # 女仆暗号（自然语言指令，如「历史 / 图库 / 相册 / 我的图」）→ 翻译为内部
+        # 斜杠命令，走下方命令路由，不被 AI 陪聊当闲聊吞掉（2026-10-29 修复：AI 开启
+        # 时发「历史」会被 LLM 吃掉、画廊口令失效）。翻译后 raw_text 以 / 开头，自然
+        # 落到下方 cmd passthrough，复用既有路由，无重复代码、AI 关闭态不受影响。
+        _maid = _translate_maid(_ai_raw)
+        if _maid is not None:
+            log.info(jlog("ai_mode_maid_passthrough", scope=ev.scope_key,
+                          user_id=ev.user_id, trace_id=trace_id, maid=_maid))
+            ev.raw_text = _maid
+        elif not _ai_raw.startswith(("/", "#")):
+            # 已识别的游戏指令裸词（钢铁裂隙 / 灵化 / 紫卡 …）放行给 game_tools
+            # 独立 matcher 处理，避免被 AI 陪聊吞掉（2026-10-23 修复：AI 开启群里
+            # 发裸词口令只有 AI 陪聊回复、不出游戏卡片）。game_tools 在 AI 模式下
+            # 对本类词已解除跳过，这里直接 return 交由它渲染，杜绝双重回复。
+            if _is_game_cmd_bare(_ai_raw):
+                log.info(jlog("ai_mode_game_passthrough", scope=ev.scope_key,
+                              user_id=ev.user_id, trace_id=trace_id, text=_ai_raw))
+                return
             # 宿主机管家自然语言直通车优先级最高（仅私聊主人）：开着 AI 模式
             # 也能「电脑咋样」一步体检，不被聊天截走（M6 2026-10-20）。
             if Config.PC_ENABLE and await _try_pc_natural(ev, trace_id):
@@ -5863,6 +6317,21 @@ async def _route(ev, trace_id: str) -> None:
         return
     if _rt.startswith("/预算"):
         await _handle_budget_command(ev, trace_id)
+        return
+
+    # ---- 签到模块（2026-10-30）：/签到 每日签到 + 激励 + 排行榜 ----
+    # 修复（2026-10-30）：自然语言入口（签到 / 签到榜 / 补签 / 签到规则 …）原先只在
+    # AI 模式下经 _translate_maid 翻译后才命中；AI 关闭（默认）时裸「签到」不被翻译，
+    # 漏过本分支落入默认生图路径（已入队→开始生成）。此处先对原始文本做 maid 翻译，
+    # 命中 /签到 族则改写 raw_text 再派发；并对裸词（签到 / 签到 榜 等带空格变体）
+    # 做前缀兜底，使自然语言口令在 AI 开/关两种模式下都生效，避免再被当成生图提示词。
+    _ck = (ev.raw_text or "").strip()
+    _ck_trans = _translate_maid(_ck)
+    if _ck_trans is not None:
+        _ck = _ck_trans
+    if _ck.startswith("/签到") or _ck == "签到" or _ck.startswith("签到 "):
+        ev.raw_text = _ck
+        await _handle_checkin_command(ev, trace_id)
         return
 
     # ---- 宿主机管家（M6 2026-10-20）：/pc 命令族 + 自然语言直通车 ----

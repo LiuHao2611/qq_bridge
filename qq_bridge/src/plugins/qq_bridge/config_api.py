@@ -129,9 +129,12 @@ ENV_PATH = ROOT_DIR / ".env"
 # ---------------------------------------------------------------------------
 SCHEMA: list[tuple] = [
     # ---- 核心·身份与权限 ----
-    # 登录账号：NapCat 启动脚本(start_all.ps1)从这里读，改后需完全退出 QQ 再重启才生效
+    # 登录账号：真正的登录来源是容器环境变量 ACCOUNT（docker-compose.napcat.yml）。
+    # 2026-10-29 Docker 化后，start_all.ps1 已不再从这里读账号，改此项不会切换 NapCat 登录的号。
     ("核心·身份与权限", "BOT_UIN", "机器人登录 QQ 号", "text", None, True,
-     "NapCat 登录的 QQ 号。修改后需完全退出 QQ 再运行 start_all.ps1（脚本会从 .env 读此值）。账号安全铁律：禁止内置默认号（原默认值 3858741376 已于 2026-09-16 被封，已清空）",
+     "⚠️ 仅供参考：NapCat 实际登录的账号由 docker-compose.napcat.yml 的 ACCOUNT 环境变量决定，"
+     "改这里不会切换登录号（换号需改 compose 后重建容器并用新号扫码）。"
+     "账号安全铁律：禁止内置默认号（原默认值 3858741376 已于 2026-09-16 被封，已清空）",
      "", "", False),
     ("核心·身份与权限", "ONEBOT_V11_ACCESS_TOKEN", "OneBot 鉴权 Token", "text", None, True,
      "NapCat 客户端须与此一致；泄露等于他人可控制你的机器人", "", "8ebfc30d5a726914", True),
