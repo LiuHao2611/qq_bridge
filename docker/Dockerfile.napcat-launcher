@@ -1,0 +1,143 @@
+# ============================================================================
+# Dockerfile.napcat-launcher —— 用 LD_PRELOAD 取代磁盘静态篡改
+# ----------------------------------------------------------------------------
+# 【为什么要有这个文件】
+# 上游 mlikiowa/napcat-docker 的 Dockerfile 里有这么一段（2026-10-21 版）：
+#
+#     echo "(async () => {await import('file:///app/napcat/napcat.mjs');})();" \
+#         > /opt/QQ/resources/app/loadNapCat.js
+#     sed -i 's|"main": "[^"]*"|"main": "./loadNapCat.js"|' \
+#         /opt/QQ/resources/app/package.json
+#
+# 也就是说：镜像构建时就把 QQ 的 package.json 里 "main" 从腾讯原值
+#   "./application.asar/app_launcher/index.js"
+# 改写成了 "./loadNapCat.js"，并落盘。
+#
+# 后果：容器里 /opt/QQ/resources/app/package.json 是一个被改过的文件。
+# 任何「读自身 package.json 校验完整性」的逻辑，一眼就能看到 main 指向一个
+# 不属于腾讯发行包的 JS。这是磁盘级的静态特征，运行时 hook 再怎么做也盖不住。
+#
+# 本镜像换成 NapNeko/napcat-linux-launcher 的做法（即 NapCat 官方 installer
+# 在 Linux 本机安装时用的同一套方案）：
+#   · 磁盘上的 package.json 保持腾讯原值，一个字节都不动
+#   · 由 libnapcat_launcher.so 劫持 open64/fopen64
+#   · 当进程读取 resources/app/package.json 时，在内存中把 main 换成指向
+#     cwd 下的 loadNapCat.js（相对路径），用 memfd_create 造匿名 fd 返回
+#   · 磁盘上既没有 loadNapCat.js，也没有被改过的 package.json
+#
+# 【cwd 与 NAPCAT_BOOTMAIN —— 这里有两层坑，都已实测踩过】
+#
+# 第一层：预编译 .so 与仓库最新 launcher.cpp 不是同一版。
+#   二进制里注入 JS 的原文（strings 读出来的）是：
+#     const path = require('path');
+#     const CurrentPath = process.env.NAPCAT_BOOTMAIN || path.dirname(__filename);
+#     (async () => { await import('file://' + path.join(CurrentPath, './napcat.mjs')); })();
+#   注意 './napcat.mjs' 是 cwd 同级；仓库最新源码写的是 './napcat/napcat.mjs'。
+#
+# 第二层：/app/napcat/package.json 里有 "type": "module"。
+#   若 cwd = /app/napcat，注入的 loadNapCat.js 落在该目录下，会被 Node 按 ESM
+#   解析，而脚本第一行就是 require('path') → 实测报错：
+#     ReferenceError: require is not defined in ES module scope
+#     This file is being treated as an ES module because it has a '.js' file
+#     extension and '/app/napcat/package.json' contains "type": "module"
+#   NapCat 因此完全没加载，但 QQ 本身正常启动 —— 从日志上看极易误判成网络问题。
+#
+# 解法用源码里本来就预留的 NAPCAT_BOOTMAIN：
+#   · cwd 改成 /app（该目录没有 package.json，注入脚本按 CommonJS 解析，require 可用）
+#   · 同时设 NAPCAT_BOOTMAIN=/app/napcat，让 import 仍指向 /app/napcat/napcat.mjs
+#   · main 的替换串 "../../../../%s/loadNapCat.js" 里 %s 取 cwd 相对根 = "app"
+#     → /app/loadNapCat.js，正好是构造器写到 cwd 的那个文件
+#   三处路径因此闭合：/opt/QQ/resources/app → /app/loadNapCat.js → /app/napcat/napcat.mjs
+#
+# 【版本为什么钉在 v4.18.41（附：与社区说法的差异）】
+# 社区流传「不要用最新版，最新版一两天必掉」「4.15.0 的 docker 版怎么挂都不掉」。
+# 这些说法在实测里没有得到支持，而且没有对照组（换版本的人往往同时换了号或 IP）：
+#   · 本机 QQ 内核是 3.2.34-53644，NapCat 直到 v4.18.34 的 release note 才写明
+#     「新增 Linux QQ 3.2.34-53644（amd64/arm64）的 Packet、Napi2Native 和
+#     AppID 映射」。退到 4.15.0 等于让 hook 表覆盖不到当前 QQ 构建，风险更高。
+#   · 曾计划用 v4.18.37（上游 release note 明确写过「Docker 镜像
+#     mlikiowa/napcat-docker:v4.18.37 在测试设备上启动及配置、插件持久化检查通过」），
+#     但该镜像有两个大层在本机网络上反复卡死（直连与国内镜像源均试过），拉不下来。
+# 结论：钉版本的真实价值是**停止 :latest 的自动漂移**，而不是迷信某个版本号。
+# v4.18.41 与 latest 同 digest（sha256:b101b896…），钉住它即等于「不再自动更新」。
+# 若将来要换版本，改 compose 的 NAPCAT_VERSION 或下面的 ARG 即可，其余不用动。
+#
+# 构建：
+#   docker build -f docker/Dockerfile.napcat-launcher -t qq-bridge-napcat:launcher-v4.18.41 .
+# 验收：
+#   python scripts/verify_launcher.py
+# ============================================================================
+ARG NAPCAT_VERSION=v4.18.41
+FROM mlikiowa/napcat-docker:${NAPCAT_VERSION}
+
+# 预编译库，搬运自 NapNeko/napcat-linux-launcher
+# sha256 ea5312822bc8a5300521de96713c5f66ac24c4518b39c764b882a278f15f7577
+# 已核验内含常量：
+#   "main": "./application.asar/app_launcher/index.js"   ← 匹配目标
+#   "main": "../../../../%s/loadNapCat.js"               ← 替换格式
+#   ./napcat.mjs（cwd 同级，非 ./napcat/napcat.mjs）
+#   resources/app/package.json / memfd / NAPCAT_BOOTMAIN
+COPY libnapcat_launcher_amd64.so /app/launcher/libnapcat_launcher.so
+
+# 禁止自动重试登录（账号安全闸，见文件内长注释）。
+# 它改的是【运行时才解压出来的】/app/napcat/napcat.mjs，所以必须在 entrypoint 里
+# 解压之后执行，不能放进镜像层。脚本自带「找不到目标就拒绝启动」的失败策略。
+COPY qqbridge_no_autologin.py /app/qqbridge_no_autologin.py
+
+RUN set -eu; \
+    PKG=/opt/QQ/resources/app/package.json; \
+    EP=/app/entrypoint.sh; \
+    \
+    echo '[build] 1/8 还原腾讯原始 main'; \
+    sed -i 's|"main": "\./loadNapCat\.js"|"main": "./application.asar/app_launcher/index.js"|' "$PKG"; \
+    grep -q '"main": "./application.asar/app_launcher/index.js"' "$PKG" \
+        || { echo '[build][FAIL] package.json 还原失败，上游结构可能已变'; exit 1; }; \
+    \
+    echo '[build] 2/8 删除磁盘上的注入脚本'; \
+    rm -f /opt/QQ/resources/app/loadNapCat.js; \
+    \
+    echo '[build] 3/8 entrypoint: cwd 改为 /app（CommonJS 作用域）'; \
+    grep -q '^cd /app/napcat$' "$EP" \
+        || { echo '[build][FAIL] entrypoint 未找到 cd /app/napcat'; exit 1; }; \
+    sed -i 's|^cd /app/napcat$|cd /app|' "$EP"; \
+    grep -q '^cd /app$' "$EP" \
+        || { echo '[build][FAIL] entrypoint 的 cd 改写未生效'; exit 1; }; \
+    \
+    echo '[build] 4/8 entrypoint: 注入 LD_PRELOAD + NAPCAT_BOOTMAIN'; \
+    sed -i 's|gosu napcat /opt/QQ/qq|gosu napcat env LD_PRELOAD=/app/launcher/libnapcat_launcher.so NAPCAT_BOOTMAIN=/app/napcat /opt/QQ/qq|g' "$EP"; \
+    grep -q 'NAPCAT_BOOTMAIN=/app/napcat' "$EP" \
+        || { echo '[build][FAIL] entrypoint 未找到 gosu napcat /opt/QQ/qq'; exit 1; }; \
+    \
+    echo '[build] 5/8 交付前复核：磁盘不得残留任何 NapCat 痕迹'; \
+    test ! -e /opt/QQ/resources/app/loadNapCat.js \
+        || { echo '[build][FAIL] loadNapCat.js 仍存在'; exit 1; }; \
+    ! grep -q 'loadNapCat' "$PKG" \
+        || { echo '[build][FAIL] package.json 仍含 loadNapCat'; exit 1; }; \
+    \
+    echo '[build] 6/8 复核 cwd 与注入点的语义前提'; \
+    test ! -e /app/package.json \
+        || { echo '[build][FAIL] /app/package.json 出现，cwd 可能被当 ESM'; exit 1; }; \
+    test -f /app/NapCat.Shell.zip \
+        || { echo '[build][FAIL] /app/NapCat.Shell.zip 不存在，运行时解不出 napcat.mjs'; exit 1; }; \
+    \
+    echo '[build] 7/8 权限'; \
+    chmod 755 /app/launcher/libnapcat_launcher.so; \
+    \
+    echo '[build] 8/8 entrypoint: 注入「禁止自动重试登录」'; \
+    test -f /app/qqbridge_no_autologin.py \
+        || { echo '[build][FAIL] qqbridge_no_autologin.py 未复制进镜像'; exit 1; }; \
+    python3 -c 'import ast,sys; ast.parse(open("/app/qqbridge_no_autologin.py",encoding="utf-8").read())' \
+        || { echo '[build][FAIL] qqbridge_no_autologin.py 语法错误'; exit 1; }; \
+    grep -q '^gosu napcat Xvfb :1' "$EP" \
+        || { echo '[build][FAIL] entrypoint 未找到启动 Xvfb 的那行，无法确定注入点'; exit 1; }; \
+    sed -i 's#^gosu napcat Xvfb :1#python3 /app/qqbridge_no_autologin.py || exit 1\ngosu napcat Xvfb :1#' "$EP"; \
+    grep -q 'qqbridge_no_autologin.py' "$EP" \
+        || { echo '[build][FAIL] 自动重登闸未注入 entrypoint'; exit 1; }; \
+    echo '[build] OK'
+
+# 运行期自检：QQ 的 package.json 必须是腾讯原值、库必须在、注入脚本不得落盘
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s --retries=3 \
+    CMD grep -q '"main": "./application.asar/app_launcher/index.js"' /opt/QQ/resources/app/package.json \
+        && test -f /app/launcher/libnapcat_launcher.so \
+        && test ! -e /opt/QQ/resources/app/loadNapCat.js \
+        || exit 1

@@ -1,0 +1,37 @@
+# 构建上下文裁剪：只把运行时代码打进镜像，数据/日志/机密一律走 volume
+
+# 虚拟环境与缓存
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 机密（绝不入镜像）
+.env
+.env.*
+!.env.example
+
+# 运行时数据（compose 以 volume 挂载）
+data/
+logs/
+tmp/
+downloads/
+_env/
+
+# 体积大、运行时不需要
+tools/ocr_fixtures/
+docs/
+_preview/
+_preview-*.png
+*.log
+
+# 根目录调试/探针/打包产物（不进镜像；注意 src/ 下的 png 资源不受影响）
+_*.py
+_wf_*
+*.png
+*.ps1
+napcat_node/
+node20*
+node22*
+*.to-delete*
+downloads/

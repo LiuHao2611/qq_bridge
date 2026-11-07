@@ -1,0 +1,106 @@
+# ============================================================================
+# docker-compose.napcat.yml —— 「真正单独环境」的权威落地源码
+#
+# 对齐 mlikiowa/napcat-docker（官方 NapCat-Docker）的生产模式：
+#   - QQ 登录态持久化到宿主机 ./data/qq（= 容器内 /app/.config/QQ），重启不丢
+#   - NapCat 配置/插件持久化到 ./data/config、./data/plugins
+#   - 用 reverse_ws 主动连回【本机 Windows 上的 bridge:8080】，因此 bridge 代码零改动
+#
+# 容器内 /app/.config/QQ 与宿主 %APPDATA%\QQ 完全隔离，设备指纹天然独立。
+#
+# ★ 2026-10-28：固定「设备身份」四要素 ★
+# ----------------------------------------------------------------------------
+# 现象：手机 QQ 扫码确认时提示「登录 Windows 新设备 · 设备名称 f50dbb4fda9f」，
+#       明明当天登录过，下次还要当新设备确认。
+# 根因（已实测取证）：腾讯弹窗里的「设备名称」就是【容器 hostname】，
+#       而 Docker 默认把 hostname 设成容器 ID 短格式。
+#       每次 `docker compose up -d` 重建容器 → 新容器 ID → 新 hostname + 新 MAC
+#       + 新 /etc/machine-id + 新内网 IP → 腾讯侧四项全变 = 100% 判定「新设备」。
+# 因此把四要素全部钉死（缺一不可）：hostname / mac_address / machine-id / ipv4_address
+#
+# ★ 2026-10-29：改用自建镜像 + Launcher 注入 ★
+# ----------------------------------------------------------------------------
+# 1) image 从浮动标签 :latest 改为自建镜像，base 钉在 v4.18.41。
+#    理由见 docker/Dockerfile.napcat-launcher 顶部注释：
+#      · v4.18.34 才加入 Linux QQ 3.2.34-53644 的 hook 映射（我们正是这个内核）
+#      · v4.18.41 与 :latest 同 digest（sha256:b101b896…），是当前稳定发布点
+#      · 原计划钉 v4.18.37（上游明写「docker 镜像检查通过」），但其两个大层
+#        在本机网络上反复卡死，35 分钟拉不下来，改用 41
+#    浮动标签意味着某次 pull 就可能换掉内核，这是「版本不追新」这条经验
+#    唯一能工程化的落点。
+#
+# 2) 上游镜像在构建期用 sed 把磁盘上 QQ 的 package.json 的 "main" 改成了
+#    "./loadNapCat.js"。我们的镜像把它还原成腾讯原值，改由 LD_PRELOAD 在
+#    运行时用 memfd 伪造内容 —— 磁盘零篡改。
+#
+# 3) hostname 从 f50dbb4fda9f 改为 ubuntu-home。
+#    原因：f50dbb4fda9f 正好命中 NapCat 官方 entrypoint 里写的容器特征正则
+#    `^[a-f0-9]{12,}$`（作者本意是把这种名字改掉，只是容器缺 CAP_SYS_ADMIN
+#    导致那条 hostname 命令静默失败）。改成普通主机名后既保持稳定、又不再
+#    是 12 位十六进制这种一眼可见的容器指纹。
+#    ⚠️ 改名 = 换设备身份，新号首次登录必然被判新设备，这是预期内的。
+#
+# 使用：
+#   docker compose -f docker-compose.napcat.yml up -d --build
+#   ⚠️ 改 NapCat 配置尽量用 `docker exec` 写文件 + `docker restart`（不重建容器）；
+#      只有改本文件的环境变量/网络/挂载才需要 up -d（会重建，但设备身份已固定）。
+# ============================================================================
+services:
+  napcat:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.napcat-launcher
+      args:
+        # 要换 NapCat 版本只改这一处（或设环境变量 NAPCAT_VERSION=v4.18.41 覆盖）
+        NAPCAT_VERSION: ${NAPCAT_VERSION:-v4.18.41}
+    image: qq-bridge-napcat:launcher-${NAPCAT_VERSION:-v4.18.41}
+    container_name: qq-bridge-napcat
+    # ★ 必须是 "no"，不是 unless-stopped ★
+    # QQ 进程一退出，entrypoint 就结束、容器随之停止。若配 unless-stopped，
+    # Docker 会立刻把容器拉起来 → entrypoint 再跑一次 `qq -q $ACCOUNT`
+    # → 又发起一次登录。这就是一层隐藏的「自动重试登录」，而且发生在
+    # 被踢线/崩溃之后，正是最容易被判频繁重登的时刻（3858741376 的死因）。
+    # 配 "no" 之后：容器停了就停着，必须人工 `docker start` 才会再尝试登录一次。
+    restart: "no"
+    # 1) 固定设备名（腾讯「新设备」弹窗里显示的就是它）
+    #    必须是稳定值；不要用容器 ID 形态的 12 位十六进制
+    hostname: ubuntu-home
+    environment:
+      # reverse_ws：NapCat 主动连回本机 bridge（host.docker.internal = Windows 宿主）
+      # → bridge 的端口/代码完全不用改，只管在 8080 监听即可。
+      MODE: reverse_ws
+      # 本机 bridge 的实际反向 WS 端点（.env: HOST=0.0.0.0 PORT=8080，路径 /onebot/v11/ws）
+      # ⚠️ 必须是【单个纯 URL 字符串】，不能写成 JSON 数组 ["ws://..."] —— 上游入口会把
+      #    整个 ONEBOT_URL 原样塞进 onebot11.json 的 websocketClients[].url 字段，写成数组会变成
+      #    字面量 "[\"ws://...\"]" 导致 SyntaxError: Invalid URL。
+      ONEBOT_URL: 'ws://host.docker.internal:8080/onebot/v11/ws'
+      WEBUI_TOKEN: 1e2883288f7b034c53f6253fd487971f
+      ACCOUNT: 2503891418
+      # 快速登录票据失效时的密码回退（NapCat 4.18+ 支持；前端「快速登录密码」栏写入 data/compose.env）
+      #   只存 32 位 MD5，不存明文；由 `docker compose --env-file data/compose.env up -d --force-recreate` 注入
+      #   ⚠️ 铁律：严禁自动重登。此项留空即不启用；填写前先读 start_all.ps1 顶部的封号事故说明。
+      NAPCAT_QUICK_PASSWORD_MD5: ${NAPCAT_QUICK_PASSWORD_MD5:-}
+      # NAPCAT_UID/GID 仅初始化缺失配置；挂载目录需允许该用户读写
+      NAPCAT_UID: 1000
+      NAPCAT_GID: 1000
+    ports:
+      - "127.0.0.1:6099:6099"   # NapCat WebUI（仅本机访问）
+      - "127.0.0.1:3001:3001"   # 正向 WS（备用；reverse_ws 不依赖它）
+    volumes:
+      - ./data/qq:/app/.config/QQ            # QQ 登录态（持久化，防新设备复发的核心）
+      - ./data/config:/app/napcat/config     # NapCat 配置（onebot11 / webui）
+      - ./data/plugins:/app/napcat/plugins   # 插件
+      - ./data/machine-id:/etc/machine-id    # 3) 固定 machine-id（容器重建也不变）
+    # 2) 固定 MAC：仅在自定义网络下生效（默认 bridge 会忽略该字段）
+    mac_address: "92:47:5a:cd:29:6b"
+    networks:
+      napcat-net:
+        # 4) 固定内网 IP
+        ipv4_address: 172.28.0.2
+
+networks:
+  napcat-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24

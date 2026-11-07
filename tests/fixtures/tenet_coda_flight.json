@@ -1,0 +1,94 @@
+{
+  "timestamp": 1793898887000,
+  "tenet": [
+    {
+      "name": "信条·铁晶磁轨炮",
+      "icon": "https://content.warframe.com/PublicExport/Lotus/Interface/Icons/StoreIcons/Weapons/PrimaryWeapons/Weapons/TenetFerrox.png!00_6kgLdocOEOhDV5NYO+G9YQ",
+      "element": "火焰",
+      "elementKey": "Heat",
+      "bonus": 26.3
+    },
+    {
+      "name": "信条·格里高利",
+      "icon": "https://content.warframe.com/PublicExport/Lotus/Interface/Icons/StoreIcons/Weapons/MeleeWeapons/Weapons/CrpBriefcaseScythe.png!00_iSotI19vKPIUy1qhOWcULA",
+      "element": "火焰",
+      "elementKey": "Heat",
+      "bonus": 26.3
+    },
+    {
+      "name": "信条·莉薇娅",
+      "icon": "https://content.warframe.com/PublicExport/Lotus/Interface/Icons/StoreIcons/Weapons/MeleeWeapons/Weapons/CrpBriefcase2HKatana.png!00_mHssncC4cVN1iN8lEOaUIQ",
+      "element": "磁力",
+      "elementKey": "Magnetic",
+      "bonus": 34
+    },
+    {
+      "name": "信条·枢密",
+      "icon": "https://content.warframe.com/PublicExport/Lotus/Interface/Icons/StoreIcons/Weapons/MeleeWeapons/Weapons/CrpBigSlash.png!00_oNWg5mktO5T0-I-tYBSX-A",
+      "element": "冲击",
+      "elementKey": "Impact",
+      "bonus": 42.4
+    },
+    {
+      "name": "信条·集议",
+      "icon": "https://content.warframe.com/PublicExport/Lotus/Interface/Icons/StoreIcons/Weapons/MeleeWeapons/Weapons/CrpHammerShield.png!00_pWq497fdbpZky2rsFlvK3g",
+      "element": "毒素",
+      "elementKey": "Toxin",
+      "bonus": 41.9
+    }
+  ],
+  "tenet_expiry": 1794009600000,
+  "coda": [
+    {
+      "name": "终幕·低音爆囊",
+      "icon": "https://content.warframe.com/PublicExport/Lotus/Interface/Icons/StoreIcons/Weapons/PrimaryWeapons/Weapons/1999InfShotgunWeapon.png!00_aiAfVT3wbyf26HIY6qSgfg",
+      "element": "磁力",
+      "elementKey": "Magnetic",
+      "bonus": 33.1
+    },
+    {
+      "name": "终幕·横痃重炮",
+      "icon": "https://content.warframe.com/PublicExport/Lotus/Interface/Icons/StoreIcons/Weapons/PrimaryWeapons/Weapons/CodaBubonico.png!00_JMr5nMoNQjnVRUrIbIV-9Q",
+      "element": "电击",
+      "elementKey": "Electricity",
+      "bonus": 49
+    },
+    {
+      "name": "终幕·灼蚀变体镰",
+      "icon": "https://content.warframe.com/PublicExport/Lotus/Interface/Icons/StoreIcons/Weapons/MeleeWeapons/Weapons/CodaCaustacyst.png!00_tUWU1TvrXkH9ksDNiiFlqA",
+      "element": "磁力",
+      "elementKey": "Magnetic",
+      "bonus": 38.3
+    },
+    {
+      "name": "终幕·蚂蟥",
+      "icon": "https://content.warframe.com/PublicExport/Lotus/Interface/Icons/StoreIcons/Weapons/MeleeWeapons/Weapons/CodaHirudo.png!00_iuB+qxEmbTeGGG2ftRpO3Q",
+      "element": "磁力",
+      "elementKey": "Magnetic",
+      "bonus": 25.7
+    },
+    {
+      "name": "终幕·病囊飞刃",
+      "icon": "https://content.warframe.com/PublicExport/Lotus/Interface/Icons/StoreIcons/Weapons/MeleeWeapons/Weapons/CodaPathocyst.png!00_GW4LOLrQkWIcwOYtXnswfw",
+      "element": "毒素",
+      "elementKey": "Toxin",
+      "bonus": 25.6
+    },
+    {
+      "name": "终幕·突触生化枪",
+      "icon": "https://content.warframe.com/PublicExport/Lotus/Interface/Icons/StoreIcons/Weapons/PrimaryWeapons/Weapons/CodaSynapse.png!00_1UOby+sg4CMyC4R0E6QLEQ",
+      "element": "电击",
+      "elementKey": "Electricity",
+      "bonus": 27.7
+    },
+    {
+      "name": "终幕·啐沫者",
+      "icon": "https://content.warframe.com/PublicExport/Lotus/Interface/Icons/StoreIcons/Weapons/SecondaryWeapons/Weapons/CodaTysis.png!00_Rn55v2ygM7KCCAO5fWmpug",
+      "element": "火焰",
+      "elementKey": "Heat",
+      "bonus": 26.4
+    }
+  ],
+  "coda_expiry": 1794096000000,
+  "coda_batch": "B"
+}

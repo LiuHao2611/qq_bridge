@@ -1,0 +1,46 @@
+# ============================================================================
+# docker/Dockerfile.bridge —— qq_bridge 机器人本体（Linux 容器）
+#
+# 背景：
+#   * 原先机器人跑在 Windows 原生，OCR 用 winrt(Windows.Media.Ocr) → 无法进 Linux。
+#   * 现已切到 RapidOCR（PaddleOCR ONNX，纯 CPU，跨平台），本镜像可直接在 Linux 跑。
+#   * NapCat 仍在独立容器（docker-compose.napcat.yml），通过 reverse_ws 连回本容器
+#     的 8080（宿主映射端口），因此 **NapCat 侧零改动**。
+#
+# ★ 离线 wheel（重要）★
+#   本机 Docker 容器**出网受限**（apt 的 deb.debian.org 与 pip 均会卡死，宿主代理
+#   绑在 127.0.0.1:63040 容器够不着）。因此依赖不现场下载，而是由
+#   `tools/build_docker_wheels.py` 在宿主预拉 manylinux wheel 到 docker/wheels/，
+#   构建时 `--no-index` 纯离线安装。换机器/升级依赖后先重跑该脚本。
+#
+# 构建：docker build -f docker/Dockerfile.bridge -t qq-bridge:latest .
+# ============================================================================
+
+# ---------- 依赖层 ----------
+FROM python:3.13-slim AS deps
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+WORKDIR /app
+COPY requirements.txt ./requirements.txt
+COPY docker/wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links /wheels -r requirements.txt
+
+# ---------- 运行层 ----------
+FROM python:3.13-slim
+COPY --from=deps /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TZ=Asia/Shanghai
+WORKDIR /app
+# 只拷贝运行所需内容（不 COPY . ，否则 docker/wheels 的 171MB 也会进最终镜像）
+# data/ 与 .env 在 compose 里以 volume 挂载，不烘进镜像。
+COPY bot.py pyproject.toml requirements.txt ./
+COPY src ./src
+COPY tools ./tools
+# 静态 aria2c（下载中心 sidecar 用；容器内 apt/apk 出网被墙，故直接放静态二进制）
+COPY docker/bin/aria2c /usr/local/bin/aria2c
+RUN chmod +x /usr/local/bin/aria2c
+EXPOSE 8080
+# 机器人是 OneBot WS 服务端，重启不会触发 QQ 重登（登录由 NapCat 负责）
+CMD ["python", "bot.py"]

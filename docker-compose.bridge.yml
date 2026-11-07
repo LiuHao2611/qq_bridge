@@ -1,0 +1,126 @@
+# ============================================================================
+# docker-compose.bridge.yml —— 把机器人本体（qq_bridge / nonebot）跑进 Linux 容器
+#
+# 设计目标：**不碰 NapCat**。
+#   现网 NapCat 容器（docker-compose.napcat.yml）用 reverse_ws 连
+#   `ws://host.docker.internal:8080/onebot/v11/ws`，即连【Windows 宿主的 8080】。
+#   因此本 compose 只需把容器的 8080 发布到宿主 8080，NapCat 完全不用改配置、
+#   不用重建（也就不会动到那套钉死的设备身份）。
+#
+# 迁移步骤（二选一，不能同时跑）：
+#   1) 停掉 Windows 原生机器人：  powershell -File stop_bridge.ps1
+#   2) 启动容器：                  docker compose -f docker-compose.bridge.yml up -d --build
+#   回退：                        docker compose -f docker-compose.bridge.yml down
+#                                  powershell -File start_bridge.ps1
+#
+# 与主项目（7788 / 8099 / aria2 6800）的关系：容器内 localhost 不通宿主，
+# 故用 host.docker.internal 显式指向宿主机；这些地址也可在 .env / 本文件覆盖。
+# ============================================================================
+# 独立项目名：避免与 docker-compose.napcat.yml（默认项目名 qq_bridge）混在一起，
+# 否则 `up` 时可能把 NapCat 容器当 orphan 提示/误处理。
+name: qq_bridge_standalone
+
+services:
+  bridge:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.bridge
+    image: qq-bridge:latest
+    container_name: qq-bridge
+    # 机器人只是 OneBot WS 服务端，重启不会触发 QQ 重登（登录由 NapCat 负责），
+    # 与 NapCat 的 restart:"no" 不是一回事，可以安全自动重启。
+    restart: unless-stopped
+    ports:
+      # 必须发布到 0.0.0.0（NapCat 从 host.docker.internal / 网关 IP 连入，
+      # 绑 127.0.0.1 会连不上）。与原生运行的监听范围一致。
+      - "8080:8080"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8080"
+      # 主项目后端（容器内 localhost 是容器自己，必须指向宿主）
+      MANJU_API_BASE: "http://host.docker.internal:7788/api/v1"
+      TASK_MONITOR_BASE: "http://host.docker.internal:8099/api/v1"
+      # aria2 由本 compose 的 aria2 sidecar 提供（同一网络，服务名直连）
+      DL_ARIA2_RPC: "http://aria2:6800/jsonrpc"
+      # ⚠️ DL_ARIA2_SECRET 不在这里设：它由 ./.env 提供（load_dotenv 读 /app/.env），
+      #    宿主与容器共用同一份，避免两处手动同步。漏配时 aria2 会返 HTTP 400。
+      DL_DIR: "/downloads"
+      # 容器内没有 .git，仓库巡检必然告警 → 关闭
+      OPS_WATCH_ENABLE: "false"
+      # 每周 mod 卡图刷新：本地离线合成 WFCD 风格卡（tools/gen_mod_cards.py），
+      # 卡框/极性/字体随镜像内置（零外网），真实 DE 立绘经 browse.wf 缓存。
+      # 设为 "1" 可整段关闭。
+      WF_WIKI_MODCARDS_DISABLE: "0"
+      # 强制走跨平台 OCR（容器里没有 winrt）
+      WF_OCR_BACKEND: "rapid"
+      TZ: "Asia/Shanghai"
+    extra_hosts:
+      # Linux 宿主必需；Docker Desktop(Windows) 自带，重复声明无副作用
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./.env:/app/.env:ro          # 配置与凭据（只读，绝不入镜像）
+      - ./data:/app/data             # 紫卡数据/贴纸/签到/同步状态等（读写）
+      - ./logs:/app/logs             # 日志
+      - ./tmp:/app/tmp               # 临时文件
+      - ./downloads:/downloads       # aria2 下载目录（bridge 读，aria2 写）
+    # 开发热更新（docker compose watch 原生能力）：
+    #   说明：src/tools/bot.py 故意【不】写进上面 volumes——Docker Compose 不会对
+    #   同时被 bind-mount 的路径做 watch 监控（会报 "won't be monitored"）。
+    #   这里交给 watch 自己挂入并监控：常驻后，宿主改 ./src ./tools ./bot.py 任一文件
+    #   → 自动同步进容器并重启 bridge；requirements.txt / pyproject.toml 改动 → 自动 rebuild。
+    #   以后改代码完全不用 docker compose build，也不会再出现「重启还是旧卡片」。
+    #   用法：开一个终端常驻 `docker compose -f docker-compose.bridge.yml watch` 即可；
+    #   该进程必须在跑，自动同步才生效。停了就回到「改完需 up -d --build」的旧行为。
+    develop:
+      watch:
+        - action: sync+restart
+          path: ./src
+          target: /app/src
+        - action: sync+restart
+          path: ./tools
+          target: /app/tools
+        - action: sync+restart
+          path: ./bot.py
+          target: /app/bot.py
+        - action: rebuild
+          path: ./requirements.txt
+        - action: rebuild
+          path: ./pyproject.toml
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket;socket.create_connection(('127.0.0.1',8080),3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  # aria2 下载中心：复用同一镜像里的**静态 aria2c**（apt/apk 出网被墙，
+  # 故 Dockerfile 直接 COPY 静态二进制），独立容器跑 RPC。
+  aria2:
+    image: qq-bridge:latest
+    container_name: qq-bridge-aria2
+    restart: unless-stopped
+    # 覆盖镜像默认 CMD（python bot.py），直接跑 aria2c
+    command:
+      - aria2c
+      - --enable-rpc=true
+      - --rpc-listen-all=true
+      - --rpc-allow-origin-all=true
+      - --rpc-secret=466cb94c782cde17f805e6c93101c836
+      - --rpc-listen-port=6800
+      - --dir=/downloads
+      - --continue=true
+      - --file-allocation=none
+      - --max-concurrent-downloads=5
+      - --auto-file-renaming=false
+      - --seed-time=0
+    volumes:
+      - ./downloads:/downloads
+      - ./data/aria2:/aria2      # RPC 会话/统计持久化（可选）
+    ports:
+      - "127.0.0.1:6800:6800"    # 仅本机调试用；bridge 走内网 http://aria2:6800
+    healthcheck:
+      test: ["CMD", "aria2c", "--version"]
+      interval: 60s
+      timeout: 5s
+      retries: 2
+      start_period: 10s
