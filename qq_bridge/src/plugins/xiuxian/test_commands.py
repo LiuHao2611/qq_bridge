@@ -17,9 +17,14 @@ import random
 import asyncio
 import tempfile
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+# PLUGINS_DIR 供 `from xiuxian import ...`；REPO_ROOT 供插件 __init__.py 里的
+# `from src.group_switch import ...` / `from src.game_mode import ...`。
+# 裸跑脚本时 CWD 不保证是仓库根，两者缺一即 ModuleNotFoundError。
+PLUGINS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = os.path.dirname(os.path.dirname(PLUGINS_DIR))
+for _p in (REPO_ROOT, PLUGINS_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 
 def _stub_nonebot():

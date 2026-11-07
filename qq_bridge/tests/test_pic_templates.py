@@ -168,18 +168,49 @@ DOUPO_DATA = {
 
 
 def test_doupo_panel_png_and_layout():
-    """斗破人物卡正常渲染为 PNG，高度固定 644，关键色（朱红标题/暗金武器）落点正确。"""
+    """斗破人物卡正常渲染为 PNG，高度固定 712，关键色（朱红标题/暗金武器）落点正确。
+
+    2026-11-07：名字行改造成「左侧 96 头像 + 右侧信息」，H_HEADER=112
+    替代原 H_NAME=44，总高 644 → 712。
+    """
     t = theme.get(LIGHT)
     from src.plugins.qq_bridge.pic.templates import doupo
 
     c = doupo.build(t, data=DOUPO_DATA)
     data = c.to_bytes()
     assert data[:8] == b"\x89PNG\r\n\x1a\n"
-    assert c.height == 644, c.height  # 与 _measure 同步的版式高度
+    assert c.height == 712, c.height  # 与 _measure 同步的版式高度
     # 朱红（标题 + 境界 chip + 进度条末端）必须出现
     assert _color_count(data, "#8A1C1C", tol=60) > 200
     # 暗金武器图标必须出现
     assert _color_count(data, "#B8860B", tol=60) > 30
+
+
+def test_doupo_panel_avatar_is_drawn_inside_card():
+    """用户 2026-11-07：头像必须**画进卡片里**，不是发一张独立动图。
+
+    用纯色 96×96 假头像当探针：若模板没把 avatar_b64 画出来（或又被改成
+    单独发图），卡片上就不会出现这 9216 个深色像素，断言立刻红。
+    """
+    import base64
+    import io
+
+    from src.plugins.qq_bridge.pic.templates import doupo
+
+    buf = io.BytesIO()
+    Image.new("RGBA", (96, 96), (40, 40, 60, 255)).save(buf, format="PNG")
+    d = dict(DOUPO_DATA)
+    d["avatar_b64"] = base64.b64encode(buf.getvalue()).decode("ascii")
+    d["avatar_caption"] = "持剑少年"
+    d["lv"] = 1
+
+    with_avatar = doupo.build(theme.get(LIGHT), data=d).to_bytes()
+    without = doupo.build(theme.get(LIGHT), data=DOUPO_DATA).to_bytes()
+    n_with = _color_count(with_avatar, "#28283C", tol=0)
+    n_without = _color_count(without, "#28283C", tol=0)
+    assert n_with > 8000, f"头像没被画进卡片：深色像素仅 {n_with}"
+    assert n_without < 200, f"无头像时不应有头像像素：{n_without}"
+    assert with_avatar != without, "传不传头像卡片必须不一样"
 
 
 def test_doupo_panel_break_uses_warm_gold():

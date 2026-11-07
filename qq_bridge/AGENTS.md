@@ -3,12 +3,15 @@
 > 权威副本位于生产源码目录 `D:/AI/manju_agent/qq_bridge/AGENTS.md`。
 > 格式遵循 prove-it：**每条规则必须写清「由什么拦住」**。
 > 全局里程碑与约束见 `docs/dev_plan_m1_m9_github.md` §〇。
-> 最近一次更新：**2026-11-06 16:35**（市价卡 Prime 部件图标 + 底部价格统计优化：用户指出「武器部件有 Prime 的，你这个是普通的」。根因 `_PART_ART_MAP` 把 `prime_barrel/receiver/stock` 等 Prime 部位映射到普通 `Barrel/Receiver/Stock.png` → 新增 `_PRIME_WM_PREFER`，Prime 武器/近战部件优先取 WM `prime_*` subIcon（金饰，按原始比例 contain 不裁切），失败才回落通用图；底部「48时内/90天内 零级售价/收价」四行由纯文本改为结构化 `@mstat` 块（左标签 + 三等分 最低/最高/最新 胶囊，绿/红/主色 + 分隔线与行距，块底留白 16px 防与喊话文字粘连）；新增 2 条回归并注入验证能报错；rebuild 三层 md5 全等、容器内渲染与真实取图 PASS，见 §16:35；前序 14:30 信条卡排版重做：用户要求「信条排版要跟终幕一样」，把 `tenet.py` 从单列粉紫版式改写为与 `coda.py` 相同的两列网格版式——独立模块 / 独立 `kind="tenet"` / `width=800` 固定 / 真实武器·元素图标缺失即 raise / 加成带 `+`；门禁新增 `_skeleton_problems` 锁两口令网格常量一致、`REF_GEOM` 改为两口令共享骨架 + 按武器数推导 tail、`--selftest` 升级为 8 类注入；`tests/test_tenet.py` 15 用例；rebuild 三层 md5 全等、容器在线/夹具出图 PASS，见 §14:30；前序 13:48 用户发纯文本「信条」没回：词表漏登 ZERO_ARG_OK 导致 `_handle` 静默 return，补白名单 + 端到端回归 `tests/test_tenet_command_routing.py`，rebuild 后三层 md5 8/8、容器真实 worldstate 端到端出卡，见 §13:48；前序 12:10 用户纠正「信条和终幕是两个口令」：把误合并的两套版式拆开，`tenet.py` 恢复单列粉紫 Rabbit 版、`coda.py` 独立保留 800×998 参考图两列版，门禁/测试/文档全部反转，见 §12:10；前序 01:47 §01:45 信条门禁收尾：数据源改由 `--fixture` 显式指定，容器不挂 `tests/` 也能跑 `--selftest`，缺夹具明确报错不自动回退；新增 2 条回归用例，rebuild 后三层 md5 全等，见 §01:30 收尾；前序 01:30 信条口令按 800×998 参考卡全量对齐：真实 Wiki 伤害类型图标 14 种、两口令共用一套版式、缺图 raise、去掉静默文字卡回落，见文末 §01:30；前序 2026-11-06 00:20 灵化卡 9 组 × 11 周 = 99 组合全周验收，见 §00:20；2026-11-05 21:40 灵化卡按 800×1793 参考图全量对齐，见 §21:40；17:24 P0 运维：bridge 部署形态收口为容器一条路线，修 Windows `SO_REUSEADDR` 双绑、aria2 凭据错位、测试污染生产日志三个 bug；新增门禁 `tools/check_bridge_sanity.py`。更早：16:37 紫卡趋势/词条价差（P2）、15:20 紫卡倾向退役修复（P0）、02:45 洗卡推荐口径修正。详见文末变更记录 §17:24 / §16:37 / §15:20 / §02:45）。
+> 最近一次更新：**2026-11-07 22:35**（人物卡内嵌静态头像、取消独立动图，见文末 §22:35；前序 21:17 出图口令必须出图；以下为历史摘要）（市价卡 Prime 部件图标 + 底部价格统计优化：用户指出「武器部件有 Prime 的，你这个是普通的」。根因 `_PART_ART_MAP` 把 `prime_barrel/receiver/stock` 等 Prime 部位映射到普通 `Barrel/Receiver/Stock.png` → 新增 `_PRIME_WM_PREFER`，Prime 武器/近战部件优先取 WM `prime_*` subIcon（金饰，按原始比例 contain 不裁切），失败才回落通用图；底部「48时内/90天内 零级售价/收价」四行由纯文本改为结构化 `@mstat` 块（左标签 + 三等分 最低/最高/最新 胶囊，绿/红/主色 + 分隔线与行距，块底留白 16px 防与喊话文字粘连）；新增 2 条回归并注入验证能报错；rebuild 三层 md5 全等、容器内渲染与真实取图 PASS，见 §16:35；前序 14:30 信条卡排版重做：用户要求「信条排版要跟终幕一样」，把 `tenet.py` 从单列粉紫版式改写为与 `coda.py` 相同的两列网格版式——独立模块 / 独立 `kind="tenet"` / `width=800` 固定 / 真实武器·元素图标缺失即 raise / 加成带 `+`；门禁新增 `_skeleton_problems` 锁两口令网格常量一致、`REF_GEOM` 改为两口令共享骨架 + 按武器数推导 tail、`--selftest` 升级为 8 类注入；`tests/test_tenet.py` 15 用例；rebuild 三层 md5 全等、容器在线/夹具出图 PASS，见 §14:30；前序 13:48 用户发纯文本「信条」没回：词表漏登 ZERO_ARG_OK 导致 `_handle` 静默 return，补白名单 + 端到端回归 `tests/test_tenet_command_routing.py`，rebuild 后三层 md5 8/8、容器真实 worldstate 端到端出卡，见 §13:48；前序 12:10 用户纠正「信条和终幕是两个口令」：把误合并的两套版式拆开，`tenet.py` 恢复单列粉紫 Rabbit 版、`coda.py` 独立保留 800×998 参考图两列版，门禁/测试/文档全部反转，见 §12:10；前序 01:47 §01:45 信条门禁收尾：数据源改由 `--fixture` 显式指定，容器不挂 `tests/` 也能跑 `--selftest`，缺夹具明确报错不自动回退；新增 2 条回归用例，rebuild 后三层 md5 全等，见 §01:30 收尾；前序 01:30 信条口令按 800×998 参考卡全量对齐：真实 Wiki 伤害类型图标 14 种、两口令共用一套版式、缺图 raise、去掉静默文字卡回落，见文末 §01:30；前序 2026-11-06 00:20 灵化卡 9 组 × 11 周 = 99 组合全周验收，见 §00:20；2026-11-05 21:40 灵化卡按 800×1793 参考图全量对齐，见 §21:40；17:24 P0 运维：bridge 部署形态收口为容器一条路线，修 Windows `SO_REUSEADDR` 双绑、aria2 凭据错位、测试污染生产日志三个 bug；新增门禁 `tools/check_bridge_sanity.py`。更早：16:37 紫卡趋势/词条价差（P2）、15:20 紫卡倾向退役修复（P0）、02:45 洗卡推荐口径修正。详见文末变更记录 §17:24 / §16:37 / §15:20 / §02:45）。
 
 ## 规则表（规则｜由什么拦住）
 
 | 规则 | 由什么拦住 |
 |---|---|
+| **交差前代码必须上传 GitHub**：本次任务涉及的源码 / 配置等**受 git 管理**的文件必须 `commit` + `push` 到项目远程，不能只留在工作区或 Docker 镜像；无远程 / 历史分叉 / 门禁拦截 / 用户要求「只本地」时必须在交差中显式申报并确认 | `prove-it`「交差之前」第 4 条 + 交差格式新增 `代码：` 行（正本与 `.bak` 副本一致）；`manju-dev-guard` 收尾段；机器判定：`git status --short -- <本次文件>` 无输出且 `git ls-remote origin <branch>` 含该 commit |
+| **出图口令必须出图，禁止降级纯文字 / 禁止限流 / 禁止静默**（用户 2026-11-07 21:17 明确要求并说「记住了」）：斗破里凡是会出自绘卡片的口令，任何频率下都必须真的发 image 段；`_throttle.py` 已从链路移除，禁止重新接入 `Throttle.check()` 或任何冷却 / 降级 / 静默逻辑，也不许用无参数 `finish()` 掐断 handler；若担心账号风控只能先问用户 | `doupo/__init__.py` 完全不 import `_throttle`，8 个出图 handler 无条件 `if png:` 发图；`doupo/test_e2e.py` 末尾 7 条「建号 + 连续 6 条出图口令必须真的带 image 段」行为断言（全部落在旧 25s 冷却窗口内）；注入验证：把限流接回 → 6 条 FAIL；`_throttle.py` 顶部「已停用 · 禁止重新接入」 |
+| **人物卡头像必须画在卡片里，不许再单独发动态小人 GIF**（用户 2026-11-07 22:3x：「人物卡片里不用放动态人物小人了，截图一个头像就行，放在卡片里」）：`人物/属性/面板` 回包只能有 **1 个 image 段**，且必须是 PNG 卡片；头像用对应档位 GIF **首帧**裁 96×96 静态图，base64 经 `card.build_data()` 传给模板画进左侧圆角框；不得回退成「动图 + 卡片」两张图，也不得把头像从卡片里拿掉 | `doupo/__init__.py::panel` 只读 `card.render_panel(p)` 并无条件 `finish(MessageSegment.image(png))`，链路里没有 `avatar_for`；`avatar.py::HEADSHOT_BOXES` 四档裁剪 + `headshot_for()` 产出 base64 PNG；`pic/templates/doupo.py` 用 `paste_alpha(av, ..., rounded_mask(...))` 画头像，`H_HEADER=112` 与 `_measure()` 同步；`doupo/test_e2e.py` 连续 3 次「人物」断言「恰好 1 个 image 段 + PNG 魔数 + 无 GIF + 头像框深色像素 >1500」，且**自清 pic 磁盘缓存**防旧图假通过；`test_card.py` 用 `render_sync` 绕开缓存做有无头像的像素对比；`tests/test_pic_templates.py` 固定高度 712 + 纯色假头像 9216 像素探针；注入验证：接回 GIF → 6 项 FAIL、模板不画头像 → 3 项 FAIL，还原后 75/75 |
 | 禁止降级开发 / 禁止兜底：选中方法失败如实 `raise`/上抛，绝不回退次品路径、绝不假数据冒充成功 | 默认路径失败直接上抛；备选仅以「用户显式配置」存在，无自动兜底 |
 | 每次改动交差前跑项目测试；用户可见界面在真浏览器点一遍并截图，控制台报错即失败；按固定格式交差（做了什么/测试/截图/没验证到的） | prove-it skill |
 | 卡片/图片排版红线：文字数字不重叠、间距统一、对齐不漂移、不溢出不裁切；禁止空格凑间距、禁止按字符数估算宽度 | card-design skill；`python tools/check_riven_layout.py --check` 违规 `exit 1` |
@@ -39,6 +42,13 @@
 | 紫卡拍卖接口只认**武器家族** slug（`rubico_prime` / `glaive_prime` 均 400，`rubico` / `glaive` 200）；且只认 API 型 UA（Chrome UA 返回 200 但 `auctions: []`） | `riven_recommend._family_slug` 去 `prime/vandal/wraith/dex` 后缀；`riven_card._WFM_AUCTION_HEADERS`（curl UA + `Platform: pc`）；`_market_recs_cached` 的 `-`→`_` 规范化；本行规则 |
 | **bridge 部署形态唯一**：只允许容器 `qq-bridge` 一条路线。禁止宿主 python（`start_bridge.ps1`）与容器同时绑 8080 —— Windows 的 `SO_REUSEADDR` 会让两边**都 bind 成功**，流量归谁不确定，输了的那侧会永久 `ws_down` 却一直占着端口 | `tools/check_bridge_sanity.py` P1：发现「容器在跑 + 宿主 python 也在听」或「多个 python 实例听同一端口」即 `exit 1`；`start_all.ps1` 第 2 段只走 compose；`start_bridge.ps1` 检测到容器在跑拒绝启动（`exit 1`）；`--selftest` 注入双绑 / 重复实例反例 |
 | **测试不得污染生产日志**：任何伪造群事件的测试（pytest 用例、`src/plugins/*/test_e2e.py`）必须把 `QQ_LOG_DIR` 指向临时目录，且群号/用户号必须是**不可能出现在 `GROUP_WHITELIST` 里**的假值（9xxxxxxx） | `tools/check_bridge_sanity.py` P3：`tests/conftest.py` 未设 `QQ_LOG_DIR`、独立脚本未改道、`GID` 命中白名单 → `exit 1`；`--selftest` 注入「脚本借真群号」「conftest 未隔离」反例；`config.LOG_DIR` 是唯一收口点（import 时读 `QQ_LOG_DIR`） |
+
+| 斗破 / 修仙 只用**纯中文口令**，靠 `src/game_mode.py` 按 QQ 号记住当前游戏分流；**菜单是唯一切换口**（`斗破菜单` / `修仙菜单`），入口口令（`入道` / `我要修仙`）也必须 `set_mode`；禁止再靠 `dp` 前缀区分游戏 | `doupo/test_e2e.py` 62 项 + `xiuxian/test_e2e.py` 59 项真实 matcher 端到端（模式切换 / 互不抢答 / 无模式与错模式提示）；注入验证：删掉 `menu` 的 `set_mode` → **6 项 FAIL**，恢复 → 62/62 |
+| 新增口令必须**同时**登记 `register_keywords(game, [...])` 与 `MENU_GROUPS`：漏前者 `game_router` 认不出口令不给提示，漏后者「菜单条数 = matcher 数」会红 | `game_mode.looks_like_command`；`doupo/test_commands.py::菜单条数 = menu_total()`；`doupo/README.md` 文件表已写明 |
+| 测试脚本必须自己把**插件目录 + 仓库根**都加进 `sys.path`（裸跑时 CWD 不保证是根，缺后者 `No module named 'src'`）；路径禁止硬编码 Windows 盘符；`fire(expect_image=True)` 必须真的断言发出图片段，不得没图也判通过；两个 e2e 还要把 `GAME_MODE_PATH` 改道临时目录 | 9 套测试不带外部 `PYTHONPATH` 跑 `exit 0`；`doupo/test_e2e.py` 自举用例 `STATIC expect_image 会拒绝纯文本回复`；注入验证：把 `if not any(has_image(...))` 放宽成 `if False:` → 自举用例 **FAIL**，恢复 → 全绿 |
+
+| 去掉 `dp` 前缀后，**所有**用户可见文案（菜单文本 / 自绘卡片 tip / 游戏内错误提示 / 帮助）都不得残留旧前缀；禁止只检查 `cmd_menu()` 就宣布完成 | `doupo/test_commands.py::全模块用户可见文案无前缀残留`：用 `ast` 扫 8 个生产模块的全部字符串常量（含 docstring），有残留即 FAIL；注入验证：把 `card.py` 一条 tip 改回 `dp买` → 该用例 FAIL，恢复 → `CMD_TOTAL=79 FAILED=0` |
+| 测试不得靠随机结果赌通过（反例：「固定打 30 次赌 Boss 被击杀」）：夹具必须把随机量固定成确定性边界值，且仍走真实 handler 与真实结算 | `xiuxian/test_e2e.py` 讨伐 boss 夹具血量固定为 1，一次必杀；连跑 20 次失败 0；修复前实测 30 次后仍剩 44 血，2 项连带 FAIL |
 
 ---
 
@@ -953,3 +963,104 @@ stars/boot`）；`fetch_part_art` 对这些部位**先取 WM `prime_*` subIcon�
 - Prime 武器部件金饰图来自 WM `sub_icons/weapon/prime_*`（对各 Prime 武器是**通用部位图**，
   非逐武器专属渲染）；这是 WM 能提供的最接近 Prime 区分的资产，已显著区别普通图。
 
+---
+
+## §20:04 斗破 / 修仙 口令去掉 dp 前缀 —— 改为「按用户当前模式」分流
+
+**用户需求**：「都用一样的纯中文口令，突破就叫突破，只有菜单做区分；发修仙菜单后，这个人后面发的
+口令都是修仙的，不会触发别的游戏，反之斗破也一样」。用户选定：模式按**用户**维度记录、
+菜单是唯一切换口、旧 `dp` 前缀**彻底移除**。
+
+### 实现
+
+| 文件 | 改动 |
+|---|---|
+| `src/game_mode.py`（新） | 按 QQ 号存当前模式，落 `data/game_mode.json`（`GAME_MODE_PATH` 可改）；`get_mode` / `set_mode` / `register_keywords` / `all_keywords` / `looks_like_command`；`asyncio.Lock` + `tmp` + `os.replace` 原子写 |
+| `src/plugins/game_router/__init__.py`（新） | `priority=6 + block=True + rule=looks_like_command`：无模式 →「请先发送…」；错模式 →「当前为 X 模式…」；闲聊不误伤 |
+| `doupo/__init__.py` | 去 `dp` 前缀；除 3 个入口外 23 个 matcher 加 `rule=_mode_is("doupo")`；入口 handler `set_mode`；修 `_arg()` 仍剥 `dpXXX` 导致「买 血灵草」参数整串带口令词的真 bug；`帮助` 改纯中文 |
+| `xiuxian/__init__.py` | 同款：25 个 matcher 加 rule、4 个入口 `set_mode`、`帮助` 改纯中文并加 rule |
+| `doupo/commands.py` / `README.md` | 全量去掉面向用户的 `dp` 文案；README 改为模式隔离说明 |
+
+### 本轮抓到并修掉的真实错误（prove-it）
+
+1. **e2e 3 个前缀用例放错位置**：入道前发 `人物` 却期望入道成功文案 `玄重尺`。改为期望
+   `尚未踏入`（恰好证明带 `@机器人` / `#` / 空格 的口令确实命中斗破 matcher），并在入道后
+   补 3 个带前缀用例断言真出人物卡。
+2. **`fire(expect_image=True)` 是假通过**：`expect_kw=None` 时没出图也判 PASS。改为显式要求
+   图片段，并加自举用例 `STATIC expect_image 会拒绝纯文本回复` 守这个断言。
+3. **`_arg()` 仍剥 `dpXXX`**：用户打纯中文后剥不掉，`cmd_buy` 收到 `"买 血灵草 2"` 解析成货名「买」。
+4. **9 套测试依赖外部 `PYTHONPATH=/app`**：统一让脚本自己把插件目录 + 仓库根加进 `sys.path`。
+5. **`xiuxian/test_e2e.py` 硬编码 `D:\AI\...`** 且没隔离 `GAME_MODE_PATH`：改跨平台推导 +
+   临时目录，加载 `game_router` 并补「菜单是唯一切换口」用例。
+6. **只扫 `commands.py` 漏了 `card.py` / `core.py` 的 8 处用户可见文案**：自绘卡片上的
+   tip（菜单卡「斗破一律 dp 前缀」、斗技/异火/宝库/背包/排行卡用法）与游戏内错误提示
+   「请在「dp升级 技能名」时使用」全是旧前缀。全量 grep 后逐一清理；新增
+   `test_commands.py::全模块用户可见文案无前缀残留`：用 `ast` 扫 8 个生产模块的**所有字符串
+   常量**（含 docstring），任何残留前缀直接 FAIL，防止「只改菜单文本」的漏法再犯。
+7. **`xiuxian/test_e2e.py` 的「讨伐boss(击杀)」是 flaky 垃圾测试**：固定循环 30 次赌随机伤害
+   能打死 Boss；最终 rebuild 后实测 30 次仍剩 44 血，连带「讨伐boss(无Boss)」一起 FAIL。
+   改为夹具血量固定 1（仍走真实 handler 的「击杀 → 瓜分奖池 → 清空 Boss」链路），
+   连跑 20 次 0 失败。
+
+### 验收（容器 `qq-bridge`，rebuild 后）
+
+| 项 | 结果 |
+|---|---|
+| 9 套测试（不带外部 `PYTHONPATH`） | 31+79+8+8+10+62+22+61+59 = **340 项全通过，exit 0** |
+| 注入 A：删 `menu` 的 `set_mode` | `E2E_TOTAL=62 PASSED=56 FAILED=6`（全是模式隔离用例），恢复后 62/62 |
+| 注入 B：`fire()` 放宽成假通过 | `STATIC expect_image 会拒绝纯文本回复` FAIL，恢复后 62/62 |
+| 注入 C：把 `card.py` 一条 tip 改回 `dp买` | `全模块用户可见文案无前缀残留` FAIL（`card.py:266`），恢复后 `CMD_TOTAL=79 FAILED=0` |
+| xiuxian e2e 稳定性 | 连跑 20 次，失败 0（修复前单次即 2 项 FAIL） |
+| 镜像 | `docker compose -f docker-compose.bridge.yml build bridge` → `sha256:c555547b…`；`up -d --no-deps bridge` recreate |
+| 三层 md5 | 12 个关键文件 宿主 / 镜像层 / 运行容器全等（12/12）；`docker diff` 无 `/app/src` 覆盖 |
+| 容器 | `Up (healthy)`，近期日志无 traceback / ImportError |
+
+### 未验证 / 需用户决定
+
+- **未从真实 QQ 客户端发一条口令**：证据是容器内真实 nonebot matcher + 真实事件对象的端到端
+  （出站 API 被 `CapBot` 截断），非真上行链路。
+- **`GROUP_ENABLED=false` 仍是双向总闸**（`bot.py` 入站 `event_preprocessor` +
+  `group_switch.install_outbound_guard()` 出站）：群消息当前一条都进不来、也发不出去，
+  所以「群里发修仙菜单」在现配置下**不会有任何反应**。打开会同时恢复 LLM 在群里的自动回复，
+  属较大行为变更，本轮未擅自改，等用户确认。**私聊可正常玩**。
+- 改动尚未 commit（`src/game_mode.py`、`src/plugins/game_router/` 为 untracked）。
+
+
+## 2026-11-07 21:05 · 修复「发人物口令没反应」（出图限流静默掐断 handler）
+
+> ⚠️ **本节已被 §21:17 推翻**：「限流降级纯文本」是错误方向。用户明确要求出图口令必须出图。以下仅为排查过程存档，**禁止照抄**。
+
+- **用户实测反馈（第二次纠正）**：私聊发「斗破菜单」后 11 秒发「人物」零回复。日志 20:53:50 菜单出图成功，20:54:01 `人物` 命中 `doupo` matcher lineno=207 并 running complete，但无任何出站回包；同一时段纯文本口令「突破」有回复。
+- **根因**：`_throttle.USER_GAP=25.0`，`斗破菜单` 出图已记账；`人物` 是出图 handler，旧 `_heavy()` 被限流时执行无参数 `matcher.finish()` → 抛 `FinishedException` 掐断整个 handler，连纯文本兜底 `panel.finish(msg)` 都发不出去。
+- **为什么 340 项全绿却没发现**：`doupo/test_e2e.py` 把 `throttle.check` 换成永远放行的 lambda，正好顶掉了要守的限流行为（prove-it 定义的「假装测试」）。AGENTS.md §13:48 已记过 game_tools 同类「静默 return 导致发了没回」，这是第二次，故把规则提到结构层。
+- **修法（让它没地方犯）**：`_heavy()` → `_allow_image(event) -> bool`，不再持有 matcher、没有掐断能力；8 个出图 handler 统一改为「允许出图才发图，否则走已有纯文本兜底」。`_throttle.py` 里两段会诱导照抄的旧 docstring（「被限流时静默不回话」「finish() 直接掐断传播链」）一并改写。
+- **测试（让它一犯就报错）**：`test_e2e.py` 改用真实 `Throttle` 实例（只放宽参数、不 mock `check`）；末尾新增 7 条生产参数（25s USER_GAP）专项断言，覆盖 人物/斗技/宝库/背包/排行 在冷却内「必有回包 + 不出图 + 业务结果不丢」。E2E 62→69，全量 9 套 340→**347 全绿**。
+- **注入验证**：把 `return False` 改回 `raise FinishedException` → 6 FAIL（`out=[]` 精确复现「发了没反应」）；把 `if allow_img and png:` 改回 `if png:` → 1 FAIL；恢复 → 69/69；`INJECTION_ALL_OK=True` exit 0。
+- **真实链路重放**（运行容器，不 mock、生产参数）：`斗破菜单`→[图片]；`人物`→「你尚未踏入斗气大陆，发送「入道」开启征程。」；`突破`→同文本；`人物`→同文本，每条都有回包。
+- 规则表新增 1 条：任何限流/门禁都不许静默掐断用户口令；禁止把限流 mock 成永远放行；写明由 `_allow_image()` 结构 + 7 条断言 + 两次注入拦住。
+- **仍未验证 / 未改动**：未从真实 QQ 客户端再发一条（用户可自行复现）；`GROUP_ENABLED=false` 群聊双向总闸未动，群里发口令仍无反应（等用户确认）；改动未 commit。
+## 2026-11-07 21:17 · 定稿：出图口令必须出图，禁止降级纯文字（@skill:prove-it，用户第 3 次纠正）
+
+- **用户原话**：「我最后一次发人物口令，怎么输出纯文字了，原本能输出图片的口令，不要降级为纯文字，记住了。」
+- **日志实证**：21:15:50 发「人物」→ `pic_render bytes=51147` 出图；21:16:00 发「突破」→ 纯文本（正常）；21:16:08 再发「人物」→ `pic_render bytes=52095` **渲染了图却只发文字**。18 秒间隔命中 25s `USER_GAP`，上一轮 `_allow_image()` 的降级逻辑生效：卡片照渲染、发图条件被 `allow_img` 挡掉，走 `panel.finish(msg)` 纯文本兜底。
+- **上一轮方向错了**：把「静默掐断」改成「降级纯文本」只是从「没反应」变成「回文字」，仍然不是用户要的图。§21:05 已标注作废。
+- **修法（让它没地方犯）**：`_throttle.py` 从斗破链路**彻底移除** —— `doupo/__init__.py` 删掉 `import asyncio` / `from . import _throttle` / `throttle` 实例 / 整个 `_allow_image()`，8 处调用点删除，8 个发图条件恢复无条件 `if png:` / `if gif:` / `if png or gif:`。链路里已无任何可拦截出图的位置。`_throttle.py` 保留为独立工具类，docstring 整体改为「已停用 · 禁止重新接入」，并清掉所有会诱导照抄的旧说明。
+- **测试（让它一犯就报错）**：`doupo/test_e2e.py` 删掉限流注入与 7 条「降级纯文本」断言，改为 7 条**行为**断言：先建号，再在旧 25s 冷却窗口内连发 人物/斗技/宝库/背包/排行/异火，每条必须 `has_image == 1`。断言只看用户感受得到的「有没有图」，与内部实现无关。E2E 仍 69 项。
+- **注入验证**：把限流接回（`USER_GAP` + 被拒时降级纯文本）→ 上述 6 条断言必须 FAIL；恢复 → 全绿。
+- **规则表**：上一轮那条「限流只降级纯文本」规则改写为「出图口令必须出图 / 禁止限流 / 禁止降级 / 禁止静默」，写明由「链路里没有拦截点 + 7 条行为断言 + 注入验证」拦住。
+- **用户级记忆**：「出图口令不许降级」已写入 `user-.../MEMORY.md`，跨会话生效。
+- **风控提示**：移除冷却后连续出图不再有频率保护，账号风险由用户自行承担；如需限流必须先确认，不得擅自加回。
+- **仍未改动**：`GROUP_ENABLED=false` 群聊双向总闸（群里发口令仍无反应）；改动未 commit；未从真实 QQ 客户端截图。
+
+## 2026-11-07 22:35 · 人物卡内嵌静态头像，取消独立动态小人（@skill:prove-it）
+
+- **用户原话**：「人物卡片里不用放动态人物小人了，截图一个头像就行，放在卡片里。」
+- **改版前**：`人物/属性/面板` 回包是 2 个 image 段 ——「按境界分档的待机动图 GIF」+「自绘人物卡 PNG」，卡片本身没有角色形象。
+- **素材校准**：把 6 档 idle GIF 首帧导出并叠加 20px 坐标网格，逐格目视比对 3 轮候选裁剪；定案四档 `HEADSHOT_BOXES`（h0 80×80、w0 72×72、hd_h0 96×96、hd_n0 48×48×2），整数倍 `NEAREST` 放大、居中合成到 96×96 透明 PNG。第一版 hd_h0 把下巴裁掉，第一轮候选图目视发现后立即重校。
+- **实现**：`avatar.py` 新增「静态头像」分支（运行时从 GIF 首帧裁，不落新 PNG 素材 —— 本仓 `.gitignore` 忽略 `*.png`/`*.gif`，再塞二进制只会变成 clone 后没有的幽灵资源）；`card.build_data()` 把 pure base64 塞进 `data["avatar_b64"]`（**不能塞 PIL.Image**：pic 缓存 key 要 `json.dumps`，带内存地址会永久 miss）；`pic/templates/doupo.py` 把 44px 名字行改成 112px 的「左头像 + 右名字/境界/形象说明」，`H_HEADER` 与 `_measure()` 同步，总高 644 → 712；`doupo/__init__.py::panel` 删掉 `avatar_for()`，只发 1 张 PNG。资源缺失时模板画剑形占位，卡片照常出图。
+- **保留范围**：`入道` 建号时那张一次性欢迎动图未动（不属人物卡，且它是既有「出图口令」，删了会违反 21:17 规则）。如用户要求全链路去动图再改。
+- **机器验收**：容器 venv（`/opt/venv/bin/python`，注意 `/usr/local/bin/python` 缺 Pillow/nonebot）跑 **9 套**零依赖测试全绿：31+79+13+10+10+75+22+61+59 = 360 项；宿主 `.venv` 跑 `tests/test_pic_templates.py -k doupo` 5/5 全绿；全量 pytest 有 **2 条与本次无关的既有红项**（`riven_analysis_topright_*` 用 HEAD 版 `_riven_data` 缺 `recs`，本次未碰该模板/用例，已用 `git show HEAD` 核实）。
+- **踩坑并修掉**：注入「模板忽略 `avatar_b64`」时测试**假通过** —— `render_panel` 命中了 pic 磁盘缓存里的旧 PNG。定位到真实缓存目录是 `<root>/src/data/pic_cache`（`cache.py::parents[3]`）。修法：`test_card.py` 两边都走 `render_sync` 绕开缓存；`test_e2e.py` 在人物断言前自己 `shutil.rmtree` 清缓存。修完再注入 → 模板不画头像 3 项 FAIL、接回 GIF 6 项 FAIL，还原后 75/75；额外用 `KEEP_PIC_CACHE=1` 验证「不清缓存、只靠 e2e 自清」也能拦住。
+- **部署**：最终干净 rebuild 镜像 `sha256:b5821684…`；宿主 / 镜像 / 运行容器 7 个受版本管理的改动文件 md5 全等；`docker diff` 在 `/app/src` 的 `.py` 覆盖数 0；容器 `Up (healthy)`、NapCat 重连 `online=1`、近期日志 0 异常；最终镜像上重跑 9 套测试全绿。`tests/` 不进镜像（Dockerfile 只 COPY src/tools），故 `tests/test_pic_templates.py` 只在宿主 `.venv` 跑。
+- **截图**：`tmp/prove_avatar_in_card.png`（四档人物卡 2×2 拼图 + 机器证据文字）、`tmp/final_lv{1,12,22,28}.png`（容器生产主题真实渲染），已逐张目视确认头像完整、无黑边、无重叠、无裁切。
+- **仍未改动 / 未验证**：`GROUP_ENABLED=false` 群聊双向总闸；未从真实 QQ 客户端截图；本轮改动尚未 commit / push（见交差 `代码：` 行）。

@@ -50,6 +50,8 @@ _ad = types.ModuleType("nonebot.adapters")
 _ob = types.ModuleType("nonebot.adapters.onebot")
 _v11 = types.ModuleType("nonebot.adapters.onebot.v11")
 _v11.MessageEvent = object
+_v11.Message = object
+_v11.MessageSegment = types.SimpleNamespace(text=lambda *a, **k: None)
 sys.modules["nonebot.adapters"] = _ad
 sys.modules["nonebot.adapters.onebot"] = _ob
 sys.modules["nonebot.adapters.onebot.v11"] = _v11

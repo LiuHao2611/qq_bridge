@@ -13,12 +13,16 @@ import sys
 import tempfile
 import traceback
 
-ROOT = r"D:\AI\manju_agent\qq_bridge"
+# 跨平台推导仓库根：本文件位于 <root>/src/plugins/xiuxian/test_e2e.py，向上 4 级即 root。
+# Windows 宿主（D:\AI\...）与容器内（/app）通用，禁止硬编码盘符路径。
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 os.chdir(ROOT)
 sys.path.insert(0, ROOT)
 
-TMP = tempfile.mkdtemp(prefix="xixian_e2e_")
+TMP = tempfile.mkdtemp(prefix="xiuxian_e2e_")
 os.environ["XIUXIAN_DATA_PATH"] = os.path.join(TMP, "xiuxian.json")
+# 模式也必须隔离：xiuxian 入口会 set_mode，不改道会写进生产 data/game_mode.json。
+os.environ["GAME_MODE_PATH"] = os.path.join(TMP, "game_mode.json")
 # 日志改道到临时目录：本脚本自己 nonebot.init 且不加载 qq_bridge 插件，
 # 没有群聊闸门；若沿用生产 logs/ 会把伪造群事件写进线上 qq_bridge.log。
 os.environ["QQ_LOG_DIR"] = os.path.join(TMP, "logs")
@@ -36,6 +40,7 @@ driver.register_adapter(Adapter)
 adapter = next(iter(driver._adapters.values()))
 
 nonebot.load_plugin("src.plugins.xiuxian")
+nonebot.load_plugin("src.plugins.game_router")
 
 SENT = []
 
@@ -234,9 +239,10 @@ async def main():
     # --- 2b 菜单（口令索引）vs 玩法（规则细则）：两张卡，别名各归各的 ---
     await fire_img("修仙菜单", mk_group(A, "修仙菜单"))
     await fire_img("修仙口令(别名)", mk_group(99999, "修仙口令"))
-    await fire_img("修仙帮助", mk_group(A, "修仙帮助"))
-    await fire_img("修仙玩法(别名·@bot)", mk_group(A, "修仙玩法", prefix_at_bot=True))
-    await fire_img("修仙攻略(别名)", mk_group(A, "修仙攻略"))
+    # 帮助类口令已按「只有菜单做区分」改成纯中文，别名不再带「修仙」前缀
+    await fire_img("帮助", mk_group(A, "帮助"))
+    await fire_img("玩法(别名·@bot)", mk_group(A, "玩法", prefix_at_bot=True))
+    await fire_img("攻略(别名)", mk_group(A, "攻略"))
     # --- 3 闭关/出关 ---
     await fire("闭关", mk_group(A, "闭关"), "盘膝入定")
     await fire("闭关(重复)", mk_group(A, "闭关"), "已在闭关中")
@@ -290,20 +296,13 @@ async def main():
     core_mod = sys.modules["src.plugins.xiuxian.core"]
     world = await store.get_world(str(GID))
     world["boss"] = core_mod.spawn_boss(2)
+    # 夹具固定血量：旧写法「固定打 30 次赌随机伤害能击杀」是 flaky
+    # （2026-11-07 实测 30 次后 Boss 仍剩 44 血，连带下一条断言也跟着错）。
+    # 血量设 1 → 一次讨伐必走真实的「击杀 → 瓜分奖池 → 清空 Boss」链路，不赌随机数。
+    world["boss"]["hp"] = 1
     await store.set_world(str(GID), world)
     await fire("世界boss(有Boss)", mk_group(A, "世界boss"), "气血剩余")
-    hit_dead = None
-    for i in range(30):
-        SENT.clear()
-        await handle_event(BOT, mk_group(A, "讨伐boss"))
-        out = text_of(SENT[0]) if SENT else ""
-        if "伏诛" in out:
-            hit_dead = out
-            break
-    if hit_dead:
-        RESULTS.append((f"讨伐boss(击杀,{i + 1}次)", True, hit_dead[:110]))
-    else:
-        RESULTS.append(("讨伐boss(击杀)", False, f"30 次未击杀，最后={out!r}"))
+    await fire("讨伐boss(击杀→瓜分奖池)", mk_group(A, "讨伐boss"), "伏诛")
     await fire("讨伐boss(无Boss)", mk_group(A, "讨伐boss"), "暂无世界Boss")
     # --- 12 前缀兼容 ---
     await fire_img("# 前缀 #我要修仙", mk_group(B, "#我要修仙"))
@@ -311,7 +310,12 @@ async def main():
     await fire_img("@机器人 #我要修仙", mk_group(B, "#我要修仙", prefix_at_bot=True))
     # --- 13 私聊拒绝 ---
     await fire("私聊·我的修仙", mk_private(A, "我的修仙"), "群聊")
-    # --- 14 闲聊不劫持 ---
+    # --- 14 模式隔离：菜单是唯一切换口 ---
+    # 没选过模式的人打口令，兜底路由应提示先发菜单；发过「修仙菜单」后同一口令正常走修仙。
+    await fire("无模式打 排行榜 → 提示先选菜单", mk_group(77777, "排行榜"), "请先发送")
+    await fire_img("发 修仙菜单 设模式", mk_group(77777, "修仙菜单"))
+    await fire("设模式后 排行榜 正常走修仙", mk_group(77777, "排行榜"), "战力榜")
+    # --- 15 闲聊不劫持 ---
     await fire("闲聊(不应命中)", mk_group(A, "今天天气不错"), expect_count=0)
 
     # ---- 汇总 ----

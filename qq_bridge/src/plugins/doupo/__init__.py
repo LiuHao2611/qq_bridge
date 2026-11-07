@@ -11,14 +11,13 @@
 本插件全部 matcher 用 priority=5 + block=True —— 先于聊天处理器运行，
 且命中后阻断后续处理器，避免"口令被 LLM 抢答/双重回复"。
 
-⚠️ 命名：除「斗破菜单」外全部口令带 dp 前缀。
-   修仙插件已占用 商店 / 坊市 / 突破 / 排行榜 / 任务 / 炼丹，
-   同为 priority=5 的 matcher 会互相抢答，统一前缀是最干净的隔离方式。
+⚠️ 模式隔离：斗破 / 修仙 现在都用纯中文口令，靠「按用户记录的当前模式」分流。
+   谁发「斗破菜单」→ 他后续口令走斗破；发「修仙菜单」→ 走修仙（菜单是唯一切换口）。
+   没有模式或打错游戏的口令，由 game_router 兜底给友好提示，两游戏互不抢答。
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 
@@ -30,16 +29,21 @@ from . import card
 from . import avatar
 from . import core
 from . import store as store_mod
-from . import _throttle
 
 logger = logging.getLogger("qq_bridge.doupo")
 
 store = store_mod.Store()
 
-# 出图频率护栏（见 _throttle.py 顶部：为什么只拦出图、为什么静默丢弃）
-throttle = _throttle.Throttle()
 
 # priority=5（高于聊天处理器的 10） + block=True（命中即阻断 LLM 闲聊）
+from src.game_mode import get_mode, set_mode, register_keywords
+
+
+def _mode_is(game: str):
+    async def _r(event) -> bool:
+        return (await get_mode(str(event.user_id))) == game
+    return _r
+
 PRI = 5
 
 
@@ -47,7 +51,7 @@ def _pat(kw: str) -> str:
     """允许前导 CQ 码 / 空白任意交替 + 可选 # 前缀。
 
     ⚠️ nonebot 的 RegexRule 用 re.search(pattern, **str(event.get_message())**) 匹配，
-    即匹配对象是 CQ 码字符串（如 '[CQ:at,qq=10002]dp抢'），不是纯文本。
+    即匹配对象是 CQ 码字符串（如 '[CQ:at,qq=10002]抢'），不是纯文本。
     因此 ^ 之后必须先吃掉前置 CQ 码，否则所有「@某人 + 口令」的玩法全部失效。
     """
     return r"^(?:\[CQ:[^\]]*\]|\s)*#?\s*" + kw
@@ -115,26 +119,6 @@ async def _need_group(event: MessageEvent, matcher):
     return _scope(event)
 
 
-async def _heavy(event: MessageEvent, matcher):
-    """出图前必须过的闸口：超频则静默丢弃，放行则随机抖动后再渲染。
-
-    ⚠️ 为什么每个出图 handler 都必须在 `_need_group` 之后调用它：
-       `matcher.finish()` 不传参 = 不发任何消息 + 抛出 FinishedException 掐断
-       传播链。这样被限流时群里看不到任何回应，不会暴露「这个号在限流」。
-       反过来说，任何新增的出图指令如果漏了这一行，就等于给风控留了一个
-       可以无限刷的入口 —— 改代码时请一并检查。
-    """
-    gid = _gid(event)
-    ok, why = throttle.check(user=str(event.user_id), group=str(gid) if gid else None)
-    if not ok:
-        logger.debug(
-            "斗破出图限流 user=%s group=%s reason=%s", event.user_id, gid, why
-        )
-        await matcher.finish()
-    # 打散毫秒级规律：出图前随机等一小段，去掉「触发即回图」的机器节奏
-    await asyncio.sleep(throttle.jitter_delay())
-
-
 def _num(event: MessageEvent, default=None):
     m = re.search(r"(\d+)", _plain(event))
     return int(m.group(1)) if m else default
@@ -143,13 +127,13 @@ def _num(event: MessageEvent, default=None):
 # ---------------------------------------------------------------------------
 # 菜单 / 帮助
 # ---------------------------------------------------------------------------
-menu = on_regex(_pat(r"(?:斗破菜单|dp菜单|斗破口令)"), priority=PRI, block=True)
+menu = on_regex(_pat(r"(?:斗破菜单|斗破口令)"), priority=PRI, block=True)
 
 
 @menu.handle()
 async def _(event: MessageEvent):
+    await set_mode(str(event.user_id), "doupo")
     await _need_group(event, menu)
-    await _heavy(event, menu)
     # 纯文本兜底（commands.cmd_menu 即菜单唯一源，与图片同源）
     msg = commands.cmd_menu()
     # 优先发自绘菜单卡；任何异常都降级为上面的纯文本（绝不丢消息）
@@ -163,7 +147,7 @@ async def _(event: MessageEvent):
     await menu.finish(msg)
 
 
-helper = on_regex(_pat(r"dp(?:帮助|玩法|攻略|规则)"), priority=PRI, block=True)
+helper = on_regex(_pat(r"(?:帮助|玩法|攻略|规则)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @helper.handle()
@@ -175,15 +159,17 @@ async def _(event: MessageEvent):
 # ---------------------------------------------------------------------------
 # 入道 / 人物
 # ---------------------------------------------------------------------------
-enter = on_regex(_pat(r"dp(?:入道|开始|创建角色)"), priority=PRI, block=True)
+enter = on_regex(_pat(r"(?:入道|开始|创建角色)"), priority=PRI, block=True)
 
 
 @enter.handle()
 async def _(event: MessageEvent):
+    await set_mode(str(event.user_id), "doupo")
     gid = await _need_group(event, enter)
-    await _heavy(event, enter)
     msg = await commands.cmd_enter(store, str(event.user_id), _name(event), gid)
-    # 建号即展示角色动态形象（1 级 = 主角持剑站姿），失败不影响文字
+    # 建号欢迎动图（1 级 = 主角持剑站姿），失败不影响文字。
+    # 注：这是全流程里唯一剩下的动态形象；「人物 / 属性 / 面板」已按用户要求
+    # 改成只发一张内嵌静态头像的卡片，不再夹带动图（见下方 panel）。
     gif = None
     try:
         gif = avatar.avatar_bytes(1)
@@ -194,47 +180,34 @@ async def _(event: MessageEvent):
     await enter.finish(msg)
 
 
-panel = on_regex(_pat(r"dp(?:人物|属性|面板)"), priority=PRI, block=True)
+panel = on_regex(_pat(r"(?:人物|属性|面板)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @panel.handle()
 async def _(event: MessageEvent):
     await _need_group(event, panel)
-    await _heavy(event, panel)
     qq = str(event.user_id)
     # 纯文本兜底（commands.cmd_panel 内部已结算离线修为并存档）
     msg = await commands.cmd_panel(store, qq)
-    # 优先发「角色动态形象 + 自绘人物卡」；任何异常都降级为上面的纯文本（绝不丢消息）
-    p = None
+    # 2026-11-07 用户要求：人物卡里不再放动态小人，改为卡片内嵌静态头像。
+    # 因此这里**只发一张 PNG 卡片**，绝不额外拼 GIF 段；出图口令必须出图，
+    # 但也不许用「卡片 + 动图」两张图刷屏。渲染异常才回落到上面的纯文本。
     png = None
-    gif = None
     try:
         p = await store.get_player(qq)
         if p:
             png = await card.render_panel(p)
-            # 角色动态待机动图（按境界分档），失败不影响卡片
-            try:
-                gif = avatar.avatar_for(p)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("斗破角色动图读取异常，只发卡片：%s: %s", type(e).__name__, e)
     except Exception as e:  # noqa: BLE001
         logger.warning("斗破人物卡渲染异常，降级纯文本：%s: %s", type(e).__name__, e)
-    if png or gif:
-        segs = []
-        if gif:
-            segs.append(MessageSegment.image(gif))
-        if png:
-            segs.append(MessageSegment.image(png))
-        if len(segs) == 1:
-            await panel.finish(segs[0])
-        await panel.finish(Message(segs))
+    if png:
+        await panel.finish(MessageSegment.image(png))
     await panel.finish(msg)
 
 
 # ---------------------------------------------------------------------------
 # 修炼 / 突破 / 战斗
 # ---------------------------------------------------------------------------
-cult = on_regex(_pat(r"dp(?:修炼|静修|打坐)"), priority=PRI, block=True)
+cult = on_regex(_pat(r"(?:修炼|静修|打坐)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @cult.handle()
@@ -243,7 +216,7 @@ async def _(event: MessageEvent):
     await cult.finish(await commands.cmd_cultivate(store, str(event.user_id)))
 
 
-brk = on_regex(_pat(r"dp(?:突破|晋升|升星)"), priority=PRI, block=True)
+brk = on_regex(_pat(r"(?:突破|晋升|升星)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @brk.handle()
@@ -252,7 +225,7 @@ async def _(event: MessageEvent):
     await brk.finish(await commands.cmd_break(store, str(event.user_id)))
 
 
-fight = on_regex(_pat(r"dp(?:战斗|打怪|历练|出战)"), priority=PRI, block=True)
+fight = on_regex(_pat(r"(?:战斗|打怪|历练|出战)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @fight.handle()
@@ -264,7 +237,7 @@ async def _(event: MessageEvent):
 # ---------------------------------------------------------------------------
 # 强化 / 斗技 / 异火
 # ---------------------------------------------------------------------------
-enh = on_regex(_pat(r"dp强化"), priority=PRI, block=True)
+enh = on_regex(_pat(r"强化"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @enh.handle()
@@ -273,13 +246,12 @@ async def _(event: MessageEvent):
     await enh.finish(await commands.cmd_enhance(store, str(event.user_id)))
 
 
-skills = on_regex(_pat(r"dp(?:斗技|技能)"), priority=PRI, block=True)
+skills = on_regex(_pat(r"(?:斗技|技能)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @skills.handle()
 async def _(event: MessageEvent):
     await _need_group(event, skills)
-    await _heavy(event, skills)
     qq = str(event.user_id)
     # 纯文本兜底（commands.cmd_skills 即数据源，与图片同源）
     msg = await commands.cmd_skills(store, qq)
@@ -296,23 +268,22 @@ async def _(event: MessageEvent):
     await skills.finish(msg)
 
 
-sup = on_regex(_pat(r"dp(?:升级|升技)") + r"\s*(.*)", priority=PRI, block=True)
+sup = on_regex(_pat(r"(?:升级|升技)") + r"\s*(.*)", priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @sup.handle()
 async def _(event: MessageEvent):
     await _need_group(event, sup)
-    arg = _arg(event, "dp升级") if "dp升级" in _plain(event) else _arg(event, "dp升技")
+    arg = _arg(event, "升级") if "升级" in _plain(event) else _arg(event, "升技")
     await sup.finish(await commands.cmd_skill_up(store, str(event.user_id), arg))
 
 
-flames = on_regex(_pat(r"dp异火"), priority=PRI, block=True)
+flames = on_regex(_pat(r"异火"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @flames.handle()
 async def _(event: MessageEvent):
     await _need_group(event, flames)
-    await _heavy(event, flames)
     qq = str(event.user_id)
     # 纯文本兜底（与图片同源）
     msg = await commands.cmd_flames(store, qq)
@@ -328,26 +299,25 @@ async def _(event: MessageEvent):
     await flames.finish(msg)
 
 
-feed = on_regex(_pat(r"dp(?:养火|喂火)") + r"\s*(.*)", priority=PRI, block=True)
+feed = on_regex(_pat(r"(?:养火|喂火)") + r"\s*(.*)", priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @feed.handle()
 async def _(event: MessageEvent):
     await _need_group(event, feed)
-    arg = _arg(event, "dp养火") if "dp养火" in _plain(event) else _arg(event, "dp喂火")
+    arg = _arg(event, "养火") if "养火" in _plain(event) else _arg(event, "喂火")
     await feed.finish(await commands.cmd_feed(store, str(event.user_id), arg))
 
 
 # ---------------------------------------------------------------------------
 # 宝库 / 炼药 / 背包
 # ---------------------------------------------------------------------------
-shop = on_regex(_pat(r"dp(?:宝库|商店|坊市)"), priority=PRI, block=True)
+shop = on_regex(_pat(r"(?:宝库|商店|坊市)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @shop.handle()
 async def _(event: MessageEvent):
     await _need_group(event, shop)
-    await _heavy(event, shop)
     qq = str(event.user_id)
     # 纯文本兜底（与图片同源）
     msg = await commands.cmd_shop(store, qq)
@@ -363,17 +333,17 @@ async def _(event: MessageEvent):
     await shop.finish(msg)
 
 
-buy = on_regex(_pat(r"dp(?:买|购买)") + r"\s*(.*)", priority=PRI, block=True)
+buy = on_regex(_pat(r"(?:买|购买)") + r"\s*(.*)", priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @buy.handle()
 async def _(event: MessageEvent):
     await _need_group(event, buy)
-    arg = _arg(event, "dp购买") if "dp购买" in _plain(event) else _arg(event, "dp买")
+    arg = _arg(event, "购买") if "购买" in _plain(event) else _arg(event, "买")
     await buy.finish(await commands.cmd_buy(store, str(event.user_id), arg))
 
 
-recipes = on_regex(_pat(r"dp(?:炼药|丹方)"), priority=PRI, block=True)
+recipes = on_regex(_pat(r"(?:炼药|丹方)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @recipes.handle()
@@ -382,23 +352,22 @@ async def _(event: MessageEvent):
     await recipes.finish(await commands.cmd_recipes(store, str(event.user_id)))
 
 
-craft = on_regex(_pat(r"dp(?:炼制|炼丹)") + r"\s*(.*)", priority=PRI, block=True)
+craft = on_regex(_pat(r"(?:炼制|炼丹)") + r"\s*(.*)", priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @craft.handle()
 async def _(event: MessageEvent):
     await _need_group(event, craft)
-    arg = _arg(event, "dp炼制") if "dp炼制" in _plain(event) else _arg(event, "dp炼丹")
+    arg = _arg(event, "炼制") if "炼制" in _plain(event) else _arg(event, "炼丹")
     await craft.finish(await commands.cmd_craft(store, str(event.user_id), arg))
 
 
-bag = on_regex(_pat(r"dp(?:背包|包裹|行囊)"), priority=PRI, block=True)
+bag = on_regex(_pat(r"(?:背包|包裹|行囊)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @bag.handle()
 async def _(event: MessageEvent):
     await _need_group(event, bag)
-    await _heavy(event, bag)
     qq = str(event.user_id)
     # 纯文本兜底（与图片同源）
     msg = await commands.cmd_bag(store, qq)
@@ -414,21 +383,21 @@ async def _(event: MessageEvent):
     await bag.finish(msg)
 
 
-use = on_regex(_pat(r"dp(?:服丹|用丹|吃药)") + r"\s*(.*)", priority=PRI, block=True)
+use = on_regex(_pat(r"(?:服丹|用丹|吃药)") + r"\s*(.*)", priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @use.handle()
 async def _(event: MessageEvent):
     await _need_group(event, use)
     txt = _plain(event)
-    kw = "dp服丹" if "dp服丹" in txt else ("dp用丹" if "dp用丹" in txt else "dp吃药")
+    kw = "服丹" if "服丹" in txt else ("用丹" if "用丹" in txt else "吃药")
     await use.finish(await commands.cmd_use(store, str(event.user_id), _arg(event, kw)))
 
 
 # ---------------------------------------------------------------------------
 # 任务
 # ---------------------------------------------------------------------------
-tasks = on_regex(_pat(r"dp任务") + r"\s*$", priority=PRI, block=True)
+tasks = on_regex(_pat(r"任务") + r"\s*$", priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @tasks.handle()
@@ -437,7 +406,7 @@ async def _(event: MessageEvent):
     await tasks.finish(await commands.cmd_tasks(store, str(event.user_id)))
 
 
-taccept = on_regex(_pat(r"dp接任务"), priority=PRI, block=True)
+taccept = on_regex(_pat(r"接任务"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @taccept.handle()
@@ -446,7 +415,7 @@ async def _(event: MessageEvent):
     await taccept.finish(await commands.cmd_task_accept(store, str(event.user_id)))
 
 
-tsubmit = on_regex(_pat(r"dp交任务"), priority=PRI, block=True)
+tsubmit = on_regex(_pat(r"交任务"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @tsubmit.handle()
@@ -455,7 +424,7 @@ async def _(event: MessageEvent):
     await tsubmit.finish(await commands.cmd_task_submit(store, str(event.user_id)))
 
 
-msubmit = on_regex(_pat(r"dp(?:领主线|交主线)"), priority=PRI, block=True)
+msubmit = on_regex(_pat(r"(?:领主线|交主线)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @msubmit.handle()
@@ -467,13 +436,12 @@ async def _(event: MessageEvent):
 # ---------------------------------------------------------------------------
 # 排行 / 抢 / 送
 # ---------------------------------------------------------------------------
-rank = on_regex(_pat(r"dp(?:排行|排行榜|战力榜)"), priority=PRI, block=True)
+rank = on_regex(_pat(r"(?:排行|排行榜|战力榜)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @rank.handle()
 async def _(event: MessageEvent):
     gid = await _need_group(event, rank)
-    await _heavy(event, rank)
     # 纯文本兜底（与图片同源）
     msg = await commands.cmd_rank(store, gid)
     png = None
@@ -488,7 +456,7 @@ async def _(event: MessageEvent):
     await rank.finish(msg)
 
 
-rob = on_regex(_pat(r"dp(?:抢|抢夺|掠夺)"), priority=PRI, block=True)
+rob = on_regex(_pat(r"(?:抢|抢夺|掠夺)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @rob.handle()
@@ -497,7 +465,7 @@ async def _(event: MessageEvent):
     await rob.finish(await commands.cmd_rob(store, str(event.user_id), _extract_at(event)))
 
 
-give = on_regex(_pat(r"dp(?:送|赠送)"), priority=PRI, block=True)
+give = on_regex(_pat(r"(?:送|赠送)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
 @give.handle()
@@ -513,3 +481,66 @@ async def _(event: MessageEvent):
 @get_driver().on_startup
 async def _startup():
     await store.load()
+
+
+# 口令关键字登记（供 game_router 兜底探测）
+register_keywords("doupo", [
+    "斗破菜单",
+    "斗破口令",
+    "帮助",
+    "玩法",
+    "攻略",
+    "规则",
+    "入道",
+    "开始",
+    "创建角色",
+    "人物",
+    "属性",
+    "面板",
+    "修炼",
+    "静修",
+    "打坐",
+    "突破",
+    "晋升",
+    "升星",
+    "战斗",
+    "打怪",
+    "历练",
+    "出战",
+    "强化",
+    "斗技",
+    "技能",
+    "升级",
+    "升技",
+    "异火",
+    "养火",
+    "喂火",
+    "宝库",
+    "商店",
+    "坊市",
+    "买",
+    "购买",
+    "炼药",
+    "丹方",
+    "炼制",
+    "炼丹",
+    "背包",
+    "包裹",
+    "行囊",
+    "服丹",
+    "用丹",
+    "吃药",
+    "任务",
+    "接任务",
+    "交任务",
+    "领主线",
+    "交主线",
+    "排行",
+    "排行榜",
+    "战力榜",
+    "抢",
+    "抢夺",
+    "掠夺",
+    "送",
+    "赠送",
+])

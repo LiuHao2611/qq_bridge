@@ -40,6 +40,14 @@ from src.group_switch import group_enabled
 store = store_mod.Store()
 
 # priority=5（高于聊天处理器的 10） + block=True（命中即阻断 LLM 闲聊）
+from src.game_mode import get_mode, set_mode, register_keywords
+
+
+def _mode_is(game: str):
+    async def _r(event) -> bool:
+        return (await get_mode(str(event.user_id))) == game
+    return _r
+
 PRI = 5
 
 
@@ -140,6 +148,7 @@ reg = on_regex(_pat("我要修仙"), priority=PRI, block=True)
 
 @reg.handle()
 async def _(event: MessageEvent):
+    await set_mode(str(event.user_id), "xiuxian")
     gid = await _need_group(event, reg)
     qq = str(event.user_id)
     first = await store.get_player(qq) is None
@@ -152,6 +161,7 @@ status = on_regex(_pat("我的修仙"), priority=PRI, block=True)
 
 @status.handle()
 async def _(event: MessageEvent):
+    await set_mode(str(event.user_id), "xiuxian")
     await _need_group(event, status)
     msg = await commands.cmd_status(store, str(event.user_id))
     await _finish_status(status, event, msg)
@@ -177,11 +187,12 @@ menu = on_regex(_pat("修仙(?:菜单|口令)"), priority=PRI, block=True)
 
 @menu.handle()
 async def _(event: MessageEvent):
+    await set_mode(str(event.user_id), "xiuxian")
     await _need_group(event, menu)
     await _finish_card(menu, event, card.render_menu, commands.cmd_menu(), "修仙菜单卡")
 
 
-helper = on_regex(_pat("修仙(?:帮助|玩法|攻略)"), priority=PRI, block=True)
+helper = on_regex(_pat("(?:帮助|玩法|攻略|规则)"), priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @helper.handle()
@@ -193,7 +204,7 @@ async def _(event: MessageEvent):
 # ---------------------------------------------------------------------------
 # 闭关 / 出关 / 突破
 # ---------------------------------------------------------------------------
-secl = on_regex(_pat("闭关"), priority=PRI, block=True)
+secl = on_regex(_pat("闭关"), priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @secl.handle()
@@ -202,7 +213,7 @@ async def _(event: MessageEvent):
     await secl.finish(await commands.cmd_seclude(store, str(event.user_id)))
 
 
-unsecl = on_regex(_pat("出关"), priority=PRI, block=True)
+unsecl = on_regex(_pat("出关"), priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @unsecl.handle()
@@ -211,7 +222,7 @@ async def _(event: MessageEvent):
     await unsecl.finish(await commands.cmd_unseclude(store, str(event.user_id)))
 
 
-bt = on_regex(_pat("突破"), priority=PRI, block=True)
+bt = on_regex(_pat("突破"), priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @bt.handle()
@@ -223,7 +234,7 @@ async def _(event: MessageEvent):
 # ---------------------------------------------------------------------------
 # 机缘 / 秘境
 # ---------------------------------------------------------------------------
-claim = on_regex(_pat("领取机缘"), priority=PRI, block=True)
+claim = on_regex(_pat("领取机缘"), priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @claim.handle()
@@ -232,7 +243,7 @@ async def _(event: MessageEvent):
     await claim.finish(await commands.cmd_claim(store, str(event.user_id)))
 
 
-exp = on_regex(_pat("秘境"), priority=PRI, block=True)
+exp = on_regex(_pat("秘境"), priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @exp.handle()
@@ -242,7 +253,7 @@ async def _(event: MessageEvent):
 
 
 # 仅主人：立即开启一场限时秘境（复核在 commands.cmd_open_secret 内）
-openSec = on_regex(_pat("开启秘境") + r"\s*$", priority=PRI, block=True)
+openSec = on_regex(_pat("开启秘境") + r"\s*$", priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @openSec.handle()
@@ -254,7 +265,7 @@ async def _(event: MessageEvent):
 # ---------------------------------------------------------------------------
 # 悬赏：看榜 / 接取 / 结算（数据搬自开源 悬赏令.json，见 config_open）
 # ---------------------------------------------------------------------------
-bounty = on_regex(_pat("悬赏") + r"\s*$", priority=PRI, block=True)
+bounty = on_regex(_pat("悬赏") + r"\s*$", priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @bounty.handle()
@@ -263,7 +274,7 @@ async def _(event: MessageEvent):
     await bounty.finish(await commands.cmd_bounty(store, str(event.user_id)))
 
 
-takebounty = on_regex(_pat("接悬赏") + r"\s*(.*)", priority=PRI, block=True)
+takebounty = on_regex(_pat("接悬赏") + r"\s*(.*)", priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @takebounty.handle()
@@ -275,7 +286,7 @@ async def _(event: MessageEvent):
     await takebounty.finish(await commands.cmd_take_bounty(store, str(event.user_id), name))
 
 
-finbounty = on_regex(_pat("交悬赏") + r"\s*$", priority=PRI, block=True)
+finbounty = on_regex(_pat("交悬赏") + r"\s*$", priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @finbounty.handle()
@@ -287,7 +298,7 @@ async def _(event: MessageEvent):
 # ---------------------------------------------------------------------------
 # 商店 / 炼丹 / 用丹（数据搬自开源 炼丹丹药.json / 药材.json / 炼丹炉.json）
 # ---------------------------------------------------------------------------
-shop = on_regex(_pat("商店|坊市") + r"\s*$", priority=PRI, block=True)
+shop = on_regex(_pat("商店|坊市") + r"\s*$", priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @shop.handle()
@@ -296,7 +307,7 @@ async def _(event: MessageEvent):
     await shop.finish(await commands.cmd_shop(store, str(event.user_id)))
 
 
-buy = on_regex(_pat("买") + r"\s*(.+)", priority=PRI, block=True)
+buy = on_regex(_pat("买") + r"\s*(.+)", priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @buy.handle()
@@ -307,7 +318,7 @@ async def _(event: MessageEvent):
     await buy.finish(await commands.cmd_buy(store, str(event.user_id), key))
 
 
-mix = on_regex(_pat("炼丹") + r"\s*(.*)", priority=PRI, block=True)
+mix = on_regex(_pat("炼丹") + r"\s*(.*)", priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @mix.handle()
@@ -318,7 +329,7 @@ async def _(event: MessageEvent):
     await mix.finish(await commands.cmd_mix(store, str(event.user_id), name))
 
 
-collect = on_regex(_pat("收取丹药") + r"\s*$", priority=PRI, block=True)
+collect = on_regex(_pat("收取丹药") + r"\s*$", priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @collect.handle()
@@ -327,7 +338,7 @@ async def _(event: MessageEvent):
     await collect.finish(await commands.cmd_mix_collect(store, str(event.user_id)))
 
 
-useelixir = on_regex(_pat("用丹") + r"\s*(.*)", priority=PRI, block=True)
+useelixir = on_regex(_pat("用丹") + r"\s*(.*)", priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @useelixir.handle()
@@ -341,7 +352,7 @@ async def _(event: MessageEvent):
 # ---------------------------------------------------------------------------
 # 对抗：切磋 / 抢 / 偷 / 送
 # ---------------------------------------------------------------------------
-pk = on_regex(_pat("切磋"), priority=PRI, block=True)
+pk = on_regex(_pat("切磋"), priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @pk.handle()
@@ -350,7 +361,7 @@ async def _(event: MessageEvent):
     await pk.finish(await commands.cmd_pvp(store, str(event.user_id), _target(event)))
 
 
-rob = on_regex(_pat("抢灵石"), priority=PRI, block=True)
+rob = on_regex(_pat("抢灵石"), priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @rob.handle()
@@ -359,7 +370,7 @@ async def _(event: MessageEvent):
     await rob.finish(await commands.cmd_rob(store, str(event.user_id), _target(event)))
 
 
-steal = on_regex(_pat("偷灵石"), priority=PRI, block=True)
+steal = on_regex(_pat("偷灵石"), priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @steal.handle()
@@ -368,7 +379,7 @@ async def _(event: MessageEvent):
     await steal.finish(await commands.cmd_steal(store, str(event.user_id), _target(event)))
 
 
-give = on_regex(_pat("送灵石"), priority=PRI, block=True)
+give = on_regex(_pat("送灵石"), priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @give.handle()
@@ -382,7 +393,7 @@ async def _(event: MessageEvent):
 # ---------------------------------------------------------------------------
 # 排行榜
 # ---------------------------------------------------------------------------
-rank = on_regex(_pat("排行榜"), priority=PRI, block=True)
+rank = on_regex(_pat("排行榜"), priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @rank.handle()
@@ -394,7 +405,7 @@ async def _(event: MessageEvent):
 # ---------------------------------------------------------------------------
 # 宗门
 # ---------------------------------------------------------------------------
-mksect = on_regex(_pat("创建宗门") + r"\s*(.*)", priority=PRI, block=True)
+mksect = on_regex(_pat("创建宗门") + r"\s*(.*)", priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @mksect.handle()
@@ -403,7 +414,7 @@ async def _(event: MessageEvent):
     await mksect.finish(await commands.cmd_create_sect(store, str(event.user_id), _arg(event, "创建宗门")))
 
 
-joinsect = on_regex(_pat("加入宗门") + r"\s*(.*)", priority=PRI, block=True)
+joinsect = on_regex(_pat("加入宗门") + r"\s*(.*)", priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @joinsect.handle()
@@ -412,7 +423,7 @@ async def _(event: MessageEvent):
     await joinsect.finish(await commands.cmd_join_sect(store, str(event.user_id), _arg(event, "加入宗门")))
 
 
-secinfo = on_regex(_pat("宗门") + r"\s*$", priority=PRI, block=True)
+secinfo = on_regex(_pat("宗门") + r"\s*$", priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @secinfo.handle()
@@ -421,7 +432,7 @@ async def _(event: MessageEvent):
     await secinfo.finish(await commands.cmd_sect_info(store, str(event.user_id)))
 
 
-sectwar = on_regex(_pat("宗门战") + r"\s*(.*)", priority=PRI, block=True)
+sectwar = on_regex(_pat("宗门战") + r"\s*(.*)", priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @sectwar.handle()
@@ -433,7 +444,7 @@ async def _(event: MessageEvent):
 # ---------------------------------------------------------------------------
 # 世界Boss
 # ---------------------------------------------------------------------------
-wb = on_regex(_pat("世界[Bb]oss"), priority=PRI, block=True)
+wb = on_regex(_pat("世界[Bb]oss"), priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @wb.handle()
@@ -442,7 +453,7 @@ async def _(event: MessageEvent):
     await wb.finish(await commands.cmd_boss(store, gid))
 
 
-atk = on_regex(_pat("讨伐[Bb]oss"), priority=PRI, block=True)
+atk = on_regex(_pat("讨伐[Bb]oss"), priority=PRI, block=True, rule=_mode_is("xiuxian"))
 
 
 @atk.handle()
@@ -585,3 +596,42 @@ async def _startup():
     # 秘境巡检保留：它同时负责秘境到点关闭与收获结算，
     # 停了会让「开着但没人能进」的秘境永远关不掉。播报由 _broadcast 自己拦。
     asyncio.create_task(_secret_tick())
+
+
+# 口令关键字登记（供 game_router 兜底探测）
+register_keywords("xiuxian", [
+    "我要修仙",
+    "我的修仙",
+    "修仙菜单",
+    "修仙口令",
+    "帮助",
+    "玩法",
+    "攻略",
+    "规则",
+    "闭关",
+    "出关",
+    "突破",
+    "领取机缘",
+    "秘境",
+    "开启秘境",
+    "悬赏",
+    "接悬赏",
+    "交悬赏",
+    "商店",
+    "坊市",
+    "买",
+    "炼丹",
+    "收取丹药",
+    "用丹",
+    "切磋",
+    "抢灵石",
+    "偷灵石",
+    "送灵石",
+    "排行榜",
+    "创建宗门",
+    "加入宗门",
+    "宗门",
+    "宗门战",
+    "世界Boss",
+    "讨伐boss",
+])

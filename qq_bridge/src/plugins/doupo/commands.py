@@ -4,9 +4,8 @@
 每个 cmd_* 输入「store + 玩家/群标识 + 参数」，返回要回群的文字。
 __init__.py 的 matcher 只负责取参数 → 调 cmd_* → finish(文字)。
 
-⚠️ 命名约定：除「斗破菜单」外，全部口令带 dp 前缀。
-   原因：修仙插件已占用 商店 / 坊市 / 突破 / 排行榜 / 任务 / 炼丹，
-   同优先级 matcher 会互相抢答，故统一前缀彻底避开。
+⚠️ 命名约定：斗破 / 修仙 共用纯中文口令，靠「按用户记录的当前模式」分流；
+   菜单（斗破菜单 / 修仙菜单）是唯一切换口，其余口令两游戏完全一致（突破 / 闭关 / 商店…）。
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ import time
 from . import config as cfg
 from . import core
 
-NOT_ENTERED = "你尚未踏入斗气大陆，发送「dp入道」开启征程。"
+NOT_ENTERED = "你尚未踏入斗气大陆，发送「入道」开启征程。"
 
 
 async def _player(store, qq):
@@ -43,39 +42,39 @@ def _fmt(n) -> str:
 #: 菜单 = 唯一源，纯文本渲染直接从这里取
 MENU_GROUPS = (
     ("入门 · 建立角色", (
-        ("斗破菜单 / dp菜单", "就是这条，随时回来看全部口令"),
-        ("dp入道", "创建角色：一星斗者，赠 10000 金币 + 玄重尺 + 回灵丹×5"),
-        ("dp人物", "人物面板：境界星级 / 炼药师品阶 / 六维属性 / 装备"),
-        ("dp帮助", "玩法细则：伤害、强化、炼药、异火、斗帝，全部数值"),
+        ("斗破菜单", "就是这条，随时回来看全部口令"),
+        ("入道", "创建角色：一星斗者，赠 10000 金币 + 玄重尺 + 回灵丹×5"),
+        ("人物", "人物面板：境界星级 / 炼药师品阶 / 六维属性 / 装备"),
+        ("帮助", "玩法细则：伤害、强化、炼药、异火、斗帝，全部数值"),
     )),
     ("修炼 · 涨修为升境界", (
-        ("dp修炼", "结算离线修为（每分钟自动 +6，陨落心炎每级 +50%）"),
-        ("dp突破", "修为满时晋升一星；28 级冲斗帝看机缘"),
-        ("dp战斗", "随机遭遇一只同阶妖兽，回合制结算"),
+        ("修炼", "结算离线修为（每分钟自动 +6，陨落心炎每级 +50%）"),
+        ("突破", "修为满时晋升一星；28 级冲斗帝看机缘"),
+        ("战斗", "随机遭遇一只同阶妖兽，回合制结算"),
     )),
     ("养成 · 变强", (
-        ("dp强化", "强化玄重尺：十级蜕变为异火恒古尺（2000/2000/1000/1200）"),
-        ("dp斗技", "看 4 门斗技，快捷键 1/3/7/9"),
-        ("dp升级 龙吟碎", "用焚血散升斗技，每级伤害 +20%"),
-        ("dp异火", "看 5 种异火与进度"),
-        ("dp养火 青莲地心火", "用药渣喂养异火（炼药失败会出药渣）"),
+        ("强化", "强化玄重尺：十级蜕变为异火恒古尺（2000/2000/1000/1200）"),
+        ("斗技", "看 4 门斗技，快捷键 1/3/7/9"),
+        ("升级 龙吟碎", "用焚血散升斗技，每级伤害 +20%"),
+        ("异火", "看 5 种异火与进度"),
+        ("养火 青莲地心火", "用药渣喂养异火（炼药失败会出药渣）"),
     )),
     ("炼药 · 宝库", (
-        ("dp宝库", "随身商店：药材 + 炎星石，看价"),
-        ("dp买 血灵草 2", "买 2 份血灵草"),
-        ("dp炼药", "看丹方：帝品 / 五品 / 四品"),
-        ("dp炼制 回灵丹", "开炉炼丹，成功率看炼药师品阶，失败得药渣"),
-        ("dp服丹 回灵丹", "服用丹药"),
-        ("dp背包", "包裹（24 格）"),
+        ("宝库", "随身商店：药材 + 炎星石，看价"),
+        ("买 血灵草 2", "买 2 份血灵草"),
+        ("炼药", "看丹方：帝品 / 五品 / 四品"),
+        ("炼制 回灵丹", "开炉炼丹，成功率看炼药师品阶，失败得药渣"),
+        ("服丹 回灵丹", "服用丹药"),
+        ("背包", "包裹（24 格）"),
     )),
     ("任务 · 江湖", (
-        ("dp任务", "看主线进度与当前支线"),
-        ("dp接任务", "随机接一条支线"),
-        ("dp交任务", "支线达标后结算"),
-        ("dp领主线", "主线达标后结算，推进章节"),
-        ("dp排行", "本群战力榜前 10"),
-        ("dp抢 @某人", "掠夺对方 10% 金币（输了自己掉）"),
-        ("dp送 100 @某人", "赠金币"),
+        ("任务", "看主线进度与当前支线"),
+        ("接任务", "随机接一条支线"),
+        ("交任务", "支线达标后结算"),
+        ("领主线", "主线达标后结算，推进章节"),
+        ("排行", "本群战力榜前 10"),
+        ("抢 @某人", "掠夺对方 10% 金币（输了自己掉）"),
+        ("送 100 @某人", "赠金币"),
     )),
 )
 
@@ -85,14 +84,14 @@ def menu_total() -> int:
 
 
 def menu_text() -> str:
-    out = [f"📖 斗破菜单 · 共 {menu_total()} 条口令（除菜单外全部 dp 前缀）"]
+    out = [f"📖 斗破菜单 · 共 {menu_total()} 条口令（纯中文口令，菜单是唯一切换口）"]
     for group, rows in MENU_GROUPS:
         out.append("")
         out.append(f"【{group}】")
         for cmd, desc in rows:
             out.append(f"{cmd} —— {desc}")
     out.append("")
-    out.append("⚠️ 与「修仙」重名的 商店/突破/任务/排行榜/炼丹 已统一让出，斗破一律 dp 前缀。")
+    out.append("⚠️ 与「修仙」重名的 商店/突破/任务/排行榜/炼丹 现在靠「当前游戏模式」分流，无需前缀。")
     return "\n".join(out)
 
 
@@ -133,7 +132,7 @@ def cmd_help() -> str:
 async def cmd_enter(store, qq, name, gid) -> str:
     p = await _player(store, qq)
     if p:
-        return "你已踏入斗气大陆，发送「dp人物」查看面板。"
+        return "你已踏入斗气大陆，发送「人物」查看面板。"
     p = core.create_player(qq, name, gid)
     await store.put_player(p)
     # 私聊用 pv:<user_id> 虚拟作用域，不登记进「启用群」列表，避免污染群态
@@ -143,7 +142,7 @@ async def cmd_enter(store, qq, name, gid) -> str:
         "🔥 你自云岚山下睁眼，斗气绕体三周——\n"
         f"【{cfg.full_realm(1)}】\n"
         "手中握着那柄黑黝黝的巨尺「玄重尺」。\n\n"
-        "发送「dp人物」看面板，「dp战斗」试刀，「dp帮助」看全部规则。"
+        "发送「人物」看面板，「战斗」试刀，「帮助」看全部规则。"
     )
 
 
@@ -201,7 +200,7 @@ async def cmd_cultivate(store, qq) -> str:
     await store.put_player(p)
     lv = int(p["lv"])
     need = cfg.exp_need(lv)
-    tip = "，可发送「dp突破」晋升" if core.can_level(p) else ""
+    tip = "，可发送「突破」晋升" if core.can_level(p) else ""
     head = f"🧘 静修 {res['minutes']} 分钟，得修为 +{res['gain']}。" if res["gain"] else "🧘 你刚静修过，气机未动。"
     return (f"{head}\n修为 {_fmt(p['exp'])}/{_fmt(need) if need else '—'}{tip}\n"
             f"当前：{cfg.full_realm(lv)}")
@@ -218,7 +217,7 @@ async def cmd_break(store, qq) -> str:
         return "你已至斗帝之境，此界再无敌手。"
     if not core.can_level(p):
         need = cfg.exp_need(lv) - int(p["exp"])
-        return f"修为不足，距下一星还差 {_fmt(need)}。去「dp战斗」或「dp修炼」。"
+        return f"修为不足，距下一星还差 {_fmt(need)}。去「战斗」或「修炼」。"
     res = core.level_up(p)
     await store.put_player(p)
     if res.get("tiandi"):
@@ -281,7 +280,7 @@ async def cmd_fight(store, qq) -> str:
         lines.append(f"　你拖着重伤退走，气血剩 {p['hp']}")
     lv = int(p["lv"])
     if core.can_level(p):
-        lines.append(f"⬆️ 修为已满（{cfg.full_realm(lv)}），发送「dp突破」晋升")
+        lines.append(f"⬆️ 修为已满（{cfg.full_realm(lv)}），发送「突破」晋升")
     return "\n".join(lines)
 
 
@@ -309,7 +308,7 @@ async def cmd_enhance(store, qq) -> str:
     await store.put_player(p)
     if not res.get("ok"):
         head.append("❌ 炎星石不足，无法强化。")
-        head.append("　（打怪掉落 / 「dp买 炎星石」）")
+        head.append("　（打怪掉落 / 「买 炎星石」）")
         return "\n".join(head)
 
     head.append("✅ 强化成功！")
@@ -337,7 +336,7 @@ async def cmd_skills(store, qq) -> str:
     out.append("")
     out.append("　升一级伤害 +20%，消耗 " + cfg.SKILL_UP_ITEM)
     out.append(f"　现有 {cfg.SKILL_UP_ITEM} ×{core.count_item(p, cfg.SKILL_UP_ITEM)}")
-    out.append("　用法：dp升级 龙吟碎")
+    out.append("　用法：升级 龙吟碎")
     return "\n".join(out)
 
 
@@ -347,7 +346,7 @@ async def cmd_skill_up(store, qq, name) -> str:
         return NOT_ENTERED
     name = (name or "").strip()
     if not name:
-        return "用法：dp升级 龙吟碎（可选：" + "、".join(cfg.SKILL_NAMES) + "）"
+        return "用法：升级 龙吟碎（可选：" + "、".join(cfg.SKILL_NAMES) + "）"
     hit = next((n for n in cfg.SKILL_NAMES if name in n or n in name), None)
     if not hit:
         return "无此斗技。可选：" + "、".join(cfg.SKILL_NAMES)
@@ -357,7 +356,7 @@ async def cmd_skill_up(store, qq, name) -> str:
         if res.get("reason") == "max":
             return f"【{hit}】已至 {res['lv']} 级圆满。"
         return (f"❌ {res['item']}不足：需要 {res['need']} 份，你有 {res['have']}。\n"
-                f"　去「dp炼制 {cfg.SKILL_UP_ITEM}」自己炼。")
+                f"　去「炼制 {cfg.SKILL_UP_ITEM}」自己炼。")
     return f"✅【{hit}】升至 {res['lv']}/{res['max']} 级，技能伤害再进一层。"
 
 
@@ -380,7 +379,7 @@ async def cmd_flames(store, qq) -> str:
         out.append(f"　{f['icon']} {f['name']}　{lv}/{cfg.FLAME_MAX_LV} 级　"
                    f"下级需 {_fmt(need)} 药渣")
     out.append("")
-    out.append("　用法：dp养火 青莲地心火（一次喂光现有药渣）")
+    out.append("　用法：养火 青莲地心火（一次喂光现有药渣）")
     return "\n".join(out)
 
 
@@ -390,7 +389,7 @@ async def cmd_feed(store, qq, name) -> str:
         return NOT_ENTERED
     name = (name or "").strip()
     if not name:
-        return "用法：dp养火 青莲地心火（可选：" + "、".join(cfg.FLAME_NAMES) + "）"
+        return "用法：养火 青莲地心火（可选：" + "、".join(cfg.FLAME_NAMES) + "）"
     hit = next((n for n in cfg.FLAME_NAMES if name in n or n in name), None)
     if not hit:
         return "无此异火。可选：" + "、".join(cfg.FLAME_NAMES)
@@ -398,7 +397,7 @@ async def cmd_feed(store, qq, name) -> str:
     await store.put_player(p)
     if not res.get("ok"):
         if res.get("reason") == "nodross":
-            return "你没有药渣。炼药失败会产药渣——去「dp炼制」试试。"
+            return "你没有药渣。炼药失败会产药渣——去「炼制」试试。"
         if res.get("reason") == "diyan":
             return "帝炎不靠喂养，只认斗帝。"
         if res.get("reason") == "max":
@@ -422,7 +421,7 @@ async def cmd_shop(store, qq) -> str:
         out.append(f"　{it['name']}　{it['price']} 金")
         out.append(f"　　{it['desc']}")
     out.append("")
-    out.append("　用法：dp买 血灵草 2")
+    out.append("　用法：买 血灵草 2")
     return "\n".join(out)
 
 
@@ -432,14 +431,14 @@ async def cmd_buy(store, qq, args) -> str:
         return NOT_ENTERED
     args = (args or "").strip()
     if not args:
-        return "用法：dp买 血灵草 2（发「dp宝库」看货）"
+        return "用法：买 血灵草 2（发「宝库」看货）"
     parts = args.split()
     name = parts[0]
     n = 1
     if len(parts) > 1 and parts[1].isdigit():
         n = max(1, min(99, int(parts[1])))
     else:
-        # 支持「dp买 血灵草2」这种没空格的
+        # 支持「买 血灵草2」这种没空格的
         for it in core.shop_list():
             if args.startswith(it["name"]):
                 name = it["name"]
@@ -452,7 +451,7 @@ async def cmd_buy(store, qq, args) -> str:
     if not res.get("ok"):
         if res.get("reason") == "poor":
             return f"💰 金币不足：需要 {res['need']}，你有 {res['have']}。"
-        return f"没有【{name}】这样货。发「dp宝库」看全部。"
+        return f"没有【{name}】这样货。发「宝库」看全部。"
     return f"✅ 购入【{res['name']}】×{res['n']}，花费 {res['total']} 金，余 {p['gold']}。"
 
 
@@ -474,7 +473,7 @@ async def cmd_recipes(store, qq) -> str:
             out.append(f"　{mark}{r['name']}　（{mats}）")
             out.append(f"　　{r['desc']}")
     out.append("")
-    out.append("　用法：dp炼制 回灵丹")
+    out.append("　用法：炼制 回灵丹")
     return "\n".join(out)
 
 
@@ -484,10 +483,10 @@ async def cmd_craft(store, qq, name) -> str:
         return NOT_ENTERED
     name = (name or "").strip()
     if not name:
-        return "用法：dp炼制 回灵丹（发「dp炼药」看全部丹方）"
+        return "用法：炼制 回灵丹（发「炼药」看全部丹方）"
     hit = next((n for n in cfg.RECIPE_NAMES if name in n or n in name), None)
     if not hit:
-        return "无此丹方。发「dp炼药」看全部。"
+        return "无此丹方。发「炼药」看全部。"
     res = core.craft(p, hit)
     if res.get("reason") == "cd":
         await store.put_player(p)
@@ -495,10 +494,10 @@ async def cmd_craft(store, qq, name) -> str:
     await store.put_player(p)
     if not res.get("ok"):
         if res.get("reason") == "mat":
-            return "❌ 材料不足：" + "、".join(res["missing"]) + "\n　去「dp宝库」买药。"
+            return "❌ 材料不足：" + "、".join(res["missing"]) + "\n　去「宝库」买药。"
         if res.get("reason") in ("fail",):
             msg = (f"💨 炼制失败（成功率 {int(res['rate'] * 100)}%）——\n"
-                   f"　药渣 +{res['dross']}，可拿去「dp养火」。")
+                   f"　药渣 +{res['dross']}，可拿去「养火」。")
             if res.get("alch_up"):
                 msg += f"\n　炼药经验积累，晋为【{res['alch_up']}炼药师】！"
             return msg
@@ -524,7 +523,7 @@ async def cmd_bag(store, qq) -> str:
         if name in known:
             out.append(f"　　　{known[name]}")
     out.append("")
-    out.append("　用法：dp服丹 回灵丹")
+    out.append("　用法：服丹 回灵丹")
     return "\n".join(out)
 
 
@@ -534,7 +533,7 @@ async def cmd_use(store, qq, name) -> str:
         return NOT_ENTERED
     name = (name or "").strip()
     if not name:
-        return "用法：dp服丹 回灵丹"
+        return "用法：服丹 回灵丹"
     hit = next((n for n in cfg.RECIPE_NAMES if name in n or n in name), None)
     if not hit:
         return "无此丹药。"
@@ -542,7 +541,7 @@ async def cmd_use(store, qq, name) -> str:
     await store.put_player(p)
     if not res.get("ok"):
         if res.get("reason") == "none":
-            return f"你没有【{hit}】。去「dp炼制 {hit}」或「dp宝库」看看。"
+            return f"你没有【{hit}】。去「炼制 {hit}」或「宝库」看看。"
         return res.get("msg") or "无法服用。"
     return f"💊 服下【{hit}】，{res['msg']}"
 
@@ -570,7 +569,7 @@ async def cmd_tasks(store, qq) -> str:
         out.append(f"【支线·{t['name']}】{t['desc']}")
         out.append(f"　进度 {cur}/{t['target']}　{_bar(cur, t['target'])}")
     else:
-        out.append("【支线】无。发送「dp接任务」接一条。")
+        out.append("【支线】无。发送「接任务」接一条。")
     return "\n".join(out)
 
 
@@ -594,7 +593,7 @@ async def cmd_task_submit(store, qq) -> str:
     res = core.task_submit(p)
     if not res.get("ok"):
         if res.get("reason") == "none":
-            return "你没有在做的支线。发送「dp接任务」接一条。"
+            return "你没有在做的支线。发送「接任务」接一条。"
         t = res["task"]
         return f"尚未完成：{t['name']}（{t.get('progress', 0)}/{t['target']}）"
     rw = res["reward"]
@@ -628,7 +627,7 @@ async def cmd_main_submit(store, qq) -> str:
 async def cmd_rank(store, gid) -> str:
     ps = await store.all_players(str(gid))
     if not ps:
-        return "本群尚无人踏入斗气大陆，发送「dp入道」！"
+        return "本群尚无人踏入斗气大陆，发送「入道」！"
     ps = core.rank(ps)
     out = ["🏆 本群战力榜（前 10）"]
     for i, q in enumerate(ps[:10], 1):
@@ -641,7 +640,7 @@ async def cmd_rob(store, qq, target) -> str:
     if not p:
         return NOT_ENTERED
     if not target:
-        return "用法：dp抢 @某人"
+        return "用法：抢 @某人"
     vic = await store.get_player(str(target))
     if not vic:
         return "对方尚未入道。"
@@ -670,7 +669,7 @@ async def cmd_give(store, qq, target, amount) -> str:
     if not p:
         return NOT_ENTERED
     if not target or not amount:
-        return "用法：dp送 100 @某人"
+        return "用法：送 100 @某人"
     amt = int(amount)
     if amt <= 0:
         return "数量无效。"

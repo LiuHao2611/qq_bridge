@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """pic/templates/doupo.py —— 斗破苍穹·双帝之战 · 人物状态卡。
 
-用于群聊「dp人物 / dp属性 / dp面板」的卡片化回复，替代原先的多行纯文本消息。
+用于「人物 / 属性 / 面板」的卡片化回复，替代原先的多行纯文本消息。
 
 版式（浅色羊皮纸 + 赤金朱红玄幻观感，与 xiuxian.py 同一套 Rabbit 极简排版范式）：
   * 顶部居中标题「斗破大陆」+ sword 细描边图标 + 贯通分割线；
-  * 角色名（左）+ 境界 chip（右，如「一星斗者」）；
+  * 左侧 96×96 圆角**静态头像**（用户 2026-11-07 要求：不再单独发动态小人），
+    右侧角色名 + 境界 chip + 「LV.x · 形象」说明；资源缺失时画剑形占位；
   * 境界行（境界名 左 / 修为 x/y 右）+ 金→朱红渐变进度条；
     修为溢出（exp >= need，可突破）时：进度条转**暖金** + 右侧标注「· 可突破」；
   * 炼药师品阶 pill（药青，淡绿）；
@@ -21,6 +22,9 @@
 
 输入（build 的 params）：
   name       角色名
+  lv         等级（可选，头像下的 LV 标注）
+  avatar_b64 96×96 透明头像 PNG 的纯 base64（可选，缺省画占位头像）
+  avatar_caption 形象说明（可选，如「持剑少年」）
   realm      境界名（含星级，如「一星斗者」）
   exp / need 当前修为 / 升级所需
   realm_max  是否已至巅峰（True 时修为显示 x(已至巅峰)，进度条置满）
@@ -41,8 +45,14 @@
 """
 from __future__ import annotations
 
+import base64
+import io
+from functools import lru_cache
+
+from PIL import Image
+
 from .. import icons
-from ..canvas import Canvas
+from ..canvas import Canvas, rounded_mask
 from ..theme import Theme
 
 # ---- 固定配色（斗破：羊皮纸米 / 朱红 / 暗金 / 药青）——未配置专属覆盖时的默认值 ----
@@ -95,6 +105,10 @@ CELL_H = 80
 GAP = 12
 PILL_H = 36
 
+# 头像框（与 doupo/avatar.py::HEADSHOT_SIZE 必须一致）
+AVATAR_SIZE = 96
+AVATAR_GAP = 20
+
 ICON_STYLE = "line"
 
 
@@ -146,7 +160,8 @@ def _card_alpha(t: Theme) -> int:
 
 # ---- 区块高度（_measure 与 build 必须同步）----
 H_TITLE = FS_TITLE + 26          # 标题 + 分割线
-H_NAME = FS_NAME + 16            # 名字行（含 chip 行高）
+# 头像 + 名字行：96 头像上下各留 8px（2026-11-07 由 44px 的纯名字行改造而来）
+H_HEADER = AVATAR_SIZE + 16
 H_REALM = (FS_SMALL + 12) + (BAR_H + 18)   # 境界行 + 进度条
 H_ALCH = PILL_H + 12             # 炼药师 pill
 H_WEAPON = (FS_BODY + 12) + (FS_SMALL + 10)  # 武器名 + 武器四围
@@ -157,8 +172,22 @@ H_FOOT = FS_SMALL + 14           # 底部信息行
 
 
 def _measure(_data: dict | None = None) -> int:
-    return (PAD * 2 + H_TITLE + H_NAME + H_REALM + H_ALCH + H_WEAPON
+    return (PAD * 2 + H_TITLE + H_HEADER + H_REALM + H_ALCH + H_WEAPON
             + H_GRID + H_HP + H_MP + H_FOOT)
+
+
+@lru_cache(maxsize=8)
+def _headshot(b64: str):
+    """base64 → 96×96 RGBA 头像；空串 / 损坏 / 缺依赖一律返回 None（画占位）。"""
+    if not b64:
+        return None
+    try:
+        im = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGBA")
+        if im.size != (AVATAR_SIZE, AVATAR_SIZE):
+            im = im.resize((AVATAR_SIZE, AVATAR_SIZE), Image.LANCZOS)
+        return im
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _statcell(c: Canvas, x: int, y: int, w: int, p: dict[str, str],
@@ -223,22 +252,45 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
     c.line((x0, y, x0 + content_w, y), fill=p["line_color"], width=1)
     y += 18  # = H_TITLE - (FS_TITLE + 8) 余量
 
-    # ---- 角色名 + 境界 chip ----
+    # ---- 左侧静态头像 + 右侧角色名 / 境界 chip / 形象说明 ----
+    # 用户 2026-11-07：「人物卡片里不用放动态人物小人了，截图一个头像就行，放在卡片里」。
+    # 头像由 avatar.py 从对应档位 GIF 首帧裁出，base64 经 data 传入，不再发独立动图。
+    ax, ay = x0, y + 8
+    av = _headshot(str(data.get("avatar_b64") or ""))
+    c.rounded_rect((ax, ay, ax + AVATAR_SIZE, ay + AVATAR_SIZE), radius=16,
+                   fill=p["cell_bg"], outline=p["cell_line"], width=1)
+    if av is not None:
+        # paste_alpha（而非 paste）：把圆角 mask 乘进 alpha 再合成，
+        # 透明区不会带出黑边（见 canvas.py::paste_alpha 的说明）。
+        c.paste_alpha(av, (ax, ay), rounded_mask((AVATAR_SIZE, AVATAR_SIZE), 16))
+    else:
+        # 资源缺失也不留空框：画剑形占位，卡片照常出图
+        icons.draw(c, "sword", ax + AVATAR_SIZE // 2, ay + AVATAR_SIZE // 2,
+                   40, p["dim_color"], style=ICON_STYLE)
+    c.rounded_rect((ax, ay, ax + AVATAR_SIZE, ay + AVATAR_SIZE), radius=16,
+                   outline=p["cell_line"], width=1)
+
+    rx = ax + AVATAR_SIZE + AVATAR_GAP
+    cx1 = x0 + content_w
+    chip = str(data.get("realm") or "凡人")
+    ch = FS_TINY + 16
+    cw = _w(chip, FS_TINY, "regular") + 28
+    name_y = y + 34
     name = str(data.get("name") or "无名")
-    name_show = _fit(name, content_w - 176, FS_NAME, "regular")
-    c.text((x0, y + FS_NAME // 2), name_show, size=FS_NAME,
+    name_show = _fit(name, max(0, cx1 - cw - 16 - rx), FS_NAME, "regular")
+    c.text((rx, name_y), name_show, size=FS_NAME,
            color=p["text_color"], role="regular", anchor="lm")
-    realm = str(data.get("realm") or "凡人")
-    if realm:
-        chip = realm
-        cw = _w(chip, FS_TINY, "regular") + 28
-        ch = FS_TINY + 16
-        cx1 = x0 + content_w
-        c.rounded_rect((cx1 - cw, y + FS_NAME // 2 - ch // 2, cx1, y + FS_NAME // 2 + ch // 2),
-                       radius=ch // 2, fill=p["chip_bg"], outline=p["chip_line"], width=1)
-        c.text((cx1 - cw // 2, y + FS_NAME // 2), chip, size=FS_TINY,
-               color=p["chip_text"], anchor="mm")
-    y += H_NAME
+    c.rounded_rect((cx1 - cw, name_y - ch // 2, cx1, name_y + ch // 2),
+                   radius=ch // 2, fill=p["chip_bg"], outline=p["chip_line"], width=1)
+    c.text((cx1 - cw // 2, name_y), chip, size=FS_TINY,
+           color=p["chip_text"], anchor="mm")
+
+    lv = data.get("lv")
+    cap = str(data.get("avatar_caption") or "斗气修行者")
+    cap_txt = f"LV.{int(lv)} · {cap}" if str(lv or "").isdigit() else cap
+    c.text((rx, y + 76), _fit(cap_txt, cx1 - rx - 8, FS_SMALL),
+           size=FS_SMALL, color=p["dim_color"], anchor="lm")
+    y += H_HEADER
 
     # ---- 境界 + 修为 + 进度条 ----
     exp = int(data.get("exp") or 0)

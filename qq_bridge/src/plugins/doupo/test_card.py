@@ -14,10 +14,14 @@ import os
 import sys
 import types
 
-# ---- 让 doupo 包可被导入 ----
+# ---- 让 doupo 包与 src.* 都可被导入 ----
+# PLUGINS_DIR 供 `from doupo import ...`；REPO_ROOT 供插件 __init__.py 里的
+# `from src.game_mode import ...`。裸跑脚本时 CWD 不保证是仓库根，两者缺一即 ModuleNotFoundError。
 PLUGINS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if PLUGINS_DIR not in sys.path:
-    sys.path.insert(0, PLUGINS_DIR)
+REPO_ROOT = os.path.dirname(os.path.dirname(PLUGINS_DIR))
+for _p in (REPO_ROOT, PLUGINS_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 
 def _stub_nonebot():
@@ -107,7 +111,7 @@ def test_build_menu_data_maps_groups():
     assert len(d["groups"]) == len(commands.MENU_GROUPS)
     total = sum(len(g["rows"]) for g in d["groups"])
     assert total == commands.menu_total()
-    # 第一行分组第二条应为「dp入道」口令
+    # 第一行分组第二条应为「入道」口令
     assert commands.MENU_GROUPS[0][1][1][0] == d["groups"][0]["rows"][1][0]
 
 
@@ -160,6 +164,58 @@ def test_render_rank_empty_is_safe():
     """排行无玩家时也应优雅产出 PNG（空榜提示），不抛异常。"""
     png = asyncio.run(card.render_rank([]))
     assert png and png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 500
+
+
+# ---------------------------------------------------------------------------
+# 人物卡内嵌静态头像（2026-11-07 用户要求，禁止退回「另发一张动图」）
+# ---------------------------------------------------------------------------
+def _dark_pixels(png, box=(28, 96, 124, 192)):
+    """数出卡片头像框区域内的深色像素（头发/脸/武器），用于像素级机器验收。"""
+    import io
+    from PIL import Image
+
+    raw = Image.open(io.BytesIO(png)).convert("RGB").crop(box).tobytes()
+    return sum(1 for i in range(0, len(raw), 3)
+               if raw[i] < 120 and raw[i + 1] < 120 and raw[i + 2] < 140)
+
+
+def test_build_data_embeds_avatar():
+    """build_data 必须把头像 base64 交给模板（不能只发独立动图）。"""
+    d = card.build_data(_player(6))
+    import base64
+
+    assert d["lv"] == 6
+    assert d["avatar_b64"] and isinstance(d["avatar_b64"], str)
+    head = base64.b64decode(d["avatar_b64"])
+    assert head[:8] == b"\x89PNG\r\n\x1a\n", "头像必须是静态 PNG，不是 GIF 动图"
+    assert d["avatar_caption"] in ("持剑少年", "赤手斗者", "蓄力斗皇", "降魔斗帝")
+
+
+def test_render_panel_avatar_pixels_are_inside_card():
+    """人物卡 PNG 的头像框里必须真的有角色像素，且比无头像版本多得多。
+
+    ⚠️ 两边都走 render_sync（**绕开 pic 磁盘缓存**）。曾经只让 render_panel 走
+    缓存链路，结果注入「模板忽略 avatar_b64」时命中了旧缓存 PNG，测试假通过。
+    缓存只能证明「以前渲染过」，不能证明「当前代码画得出」。
+    """
+    p = _player(3)
+    png = asyncio.run(card.render_panel(p))
+    assert png and png[:8] == b"\x89PNG\r\n\x1a\n", "真实链路必须出 PNG 卡片"
+
+    pic = card._load_pic()
+    assert pic is not None
+    d = card.build_data(p)
+    assert d["avatar_b64"]
+    d_no = dict(d)
+    d_no["avatar_b64"] = ""
+    png_yes = pic.render_sync("doupo", "light", card.CARD_NAME,
+                              width=card.CARD_WIDTH, data=d)
+    png_no = pic.render_sync("doupo", "light", card.CARD_NAME,
+                             width=card.CARD_WIDTH, data=d_no)
+    n_with = _dark_pixels(png_yes)
+    n_without = _dark_pixels(png_no)
+    assert n_with > 1500, f"卡片里没看到头像：深色像素仅 {n_with}"
+    assert n_with > n_without + 1200, f"头像没画进卡片 with={n_with} without={n_without}"
 
 
 # ---------------------------------------------------------------------------

@@ -544,7 +544,7 @@ def use_item(p, name) -> dict:
         return {"ok": True, "msg": f"全属性 +{val}"}
     if eff == "skill":
         return {"ok": False, "reason": "notuse",
-                "msg": "焚血散不是口服之物，请在「dp升级 技能名」时使用"}
+                "msg": "焚血散不是口服之物，请在「升级 技能名」时使用"}
     return {"ok": False, "reason": "unknown"}
 
 

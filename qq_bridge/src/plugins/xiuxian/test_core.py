@@ -15,10 +15,15 @@ import random
 import asyncio
 import tempfile
 
-# ---- 让 xiuxian 包可被导入（仓库根加入 sys.path）----
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+# ---- 让 xiuxian 包与 src.* 都可被导入 ----
+# PLUGINS_DIR 供 `from xiuxian import ...`；REPO_ROOT 供插件 __init__.py 里的
+# `from src.group_switch import ...` / `from src.game_mode import ...`。
+# 裸跑脚本时 CWD 不保证是仓库根，两者缺一即 ModuleNotFoundError。
+PLUGINS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = os.path.dirname(os.path.dirname(PLUGINS_DIR))
+for _p in (REPO_ROOT, PLUGINS_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 
 # ---- 桩掉 nonebot，避免测试环境需安装/初始化 nonebot ----

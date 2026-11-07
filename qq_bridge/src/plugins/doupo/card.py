@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """斗破苍穹·双帝之战 · 人物卡渲染。
 
-把 player dict 渲染成「斗破大陆」图片卡片，供群聊「dp人物 / dp属性 / dp面板」使用。
+把 player dict 渲染成「斗破大陆」图片卡片，供群聊「人物 / 属性 / 面板」口令使用。
 **渲染失败必须降级为纯文本**（铁律：不允许因为图片挂了就丢消息或静默失败）。
 
 为什么用 importlib 独立加载 pic 包，而不是 `from ..qq_bridge import pic`
@@ -25,6 +25,7 @@ from pathlib import Path
 from . import config as cfg
 from . import core
 from . import commands
+from . import avatar
 
 log = logging.getLogger("qq_bridge.doupo.card")
 
@@ -107,6 +108,12 @@ def build_data(p: dict) -> dict:
 
     return {
         "name": p.get("name") or "无名",
+        "lv": lv,
+        # 静态头像：从对应档位 GIF 首帧裁出，base64 传给模板画进卡片左侧。
+        # 用户 2026-11-07 明确要求「不用放动态人物小人了，截图一个头像放进卡片里」。
+        # 资源缺失时给空串，模板会画占位头像，卡片照常出图。
+        "avatar_b64": avatar.headshot_for(p) or "",
+        "avatar_caption": avatar.headshot_caption(lv),
         "realm": cfg.full_realm(lv),
         "exp": exp, "need": need, "realm_max": realm_max,
         "can_break": bool(core.can_level(p)),
@@ -160,7 +167,7 @@ def build_menu_data() -> dict:
             {"name": name, "rows": [[cmd, desc] for cmd, desc in rows]}
             for name, rows in commands.MENU_GROUPS
         ],
-        "tip": f"共 {commands.menu_total()} 条口令 · 与「修仙」重名的已统一让出，斗破一律 dp 前缀",
+        "tip": f"共 {commands.menu_total()} 条口令 · 纯中文，菜单是唯一切换口",
     }
 
 
@@ -223,7 +230,7 @@ def build_skills_data(p: dict) -> dict:
         "icon": "bolt", "title": "斗技",
         "subtitle": "快捷键 1/3/7/9 · 升一级伤害 +20%",
         "rows": rows,
-        "tip": f"用法：dp升级 龙吟碎 · 现有 {item} ×{core.count_item(p, item)}",
+        "tip": f"用法：升级 龙吟碎 · 现有 {item} ×{core.count_item(p, item)}",
     }
 
 
@@ -250,7 +257,7 @@ def build_flames_data(p: dict) -> dict:
         "icon": "star", "title": "异火",
         "subtitle": f"药渣 ×{dross}",
         "rows": rows,
-        "tip": "用法：dp养火 青莲地心火（一次喂光现有药渣）",
+        "tip": "用法：养火 青莲地心火（一次喂光现有药渣）",
     }
 
 
@@ -263,7 +270,7 @@ def build_shop_data(p: dict) -> dict:
         "icon": "cart", "title": "随身商店",
         "subtitle": f"金币 {int(p.get('gold', 0))}",
         "rows": rows,
-        "tip": "用法：dp买 血灵草 2",
+        "tip": "用法：买 血灵草 2",
     }
 
 
@@ -279,7 +286,7 @@ def build_bag_data(p: dict) -> dict:
         "icon": "diamond", "title": "包裹",
         "subtitle": f"{len(items)}/24 格 · 金币 {int(p.get('gold', 0))}",
         "rows": rows,
-        "tip": "用法：dp服丹 回灵丹",
+        "tip": "用法：服丹 回灵丹",
     }
 
 
@@ -297,7 +304,7 @@ def build_rank_data(top: list) -> dict:
         "icon": "arrow_up", "title": "本群战力榜",
         "subtitle": f"前 {len(rows)} 名",
         "rows": rows,
-        "tip": "发 dp抢 @某人 掠夺 10% 金币",
+        "tip": "发 抢 @某人 掠夺 10% 金币",
     }
 
 
