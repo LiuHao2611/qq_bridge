@@ -1,55 +1,30 @@
 #!/usr/bin/env bash
-# pre-commit hook: block oversized *code* files (>20KB) from being committed.
-# Lockfiles and auto-generated / bundled artifacts are skipped (model won't read them).
-# On block, the error suggests splitting by feature (按功能拆分).
+# pre-commit —— 20KB 代码文件上限 + 数据库文件拦截（两道门合并于此）。
+#
+# 启用方式（必做，否则 Git 只会去找 .git/hooks/）：
+#   git config core.hooksPath .githooks
+# 仓库里放了 .git/hooks/pre-commit 转发脚本做双保险，即使 config 被清也拦得住。
+#
+# 被 --no-verify 绕过时，pre-push 会用同一份 lib/gate.sh 再判一次。
 set -euo pipefail
 
-MAX_BYTES=20480  # 20KB
-
-# Files always skipped: lockfiles + auto-generated / bundled output.
-SKIP='package-lock\.json$ yarn\.lock$ pnpm-lock\.yaml$ npm-shrinkwrap\.json$ poetry\.lock$ Pipfile\.lock$ composer\.lock$ Gemfile\.lock$ Cargo\.lock$ go\.sum$ bun\.lockb$ \.min\.(js|css)$ -min\.js$ \.bundle\.(js|css)$ \.generated\.[^/]+$ \.gen\.[^/]+$ \.pb\.(go|rb|py|java|cc|h)$ \.d\.ts$ \.map$ (^|/)vendor/ (^|/)node_modules/ (^|/)dist/ (^|/)build/ __pycache__/ \.pyc$'
-
-# Source-code extensions subject to the 20KB gate.
-CODE_EXTS='py js jsx ts tsx vue go rs java c cpp cc cxx h hpp cs rb php swift kt scala sh bash sql html htm css scss less yaml yml toml xml ini cfg lua r pl ex exs'
-
-is_skip() {
-  local p="$1"
-  for pat in $SKIP; do
-    if printf '%s' "$p" | grep -Eq "$pat"; then return 0; fi
-  done
-  return 1
-}
-
-has_code_ext() {
-  local p="$1" ext="${1##*.}"
-  ext=$(printf '%s' "$ext" | tr '[:upper:]' '[:lower:]')
-  for e in $CODE_EXTS; do
-    [ "$ext" = "$e" ] && return 0
-  done
-  return 1
-}
+GATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/gate.sh
+source "${GATE_DIR}/lib/gate.sh"
 
 fail=0
+# 只看「本次暂存」的文件：历史遗留的大文件不因为存在就被拦，
+# 但一旦有人改动并暂存它们，就必须先拆分。
 while IFS= read -r f; do
-  [ -z "$f" ] && continue
-  is_skip "$f" && continue
-  has_code_ext "$f" || continue
-  size=$(git cat-file -s ":${f}" 2>/dev/null || echo 0)
-  if [ "$size" -gt "$MAX_BYTES" ]; then
-    kb=$(( size / 1024 ))
-    echo "  BLOCKED: ${f}  (${kb} KB) 超过 20KB 代码文件上限"
-    fail=1
-  fi
-done <<< "$(git diff --cached --name-only --diff-filter=ACM)"
+    [ -z "$f" ] && continue
+    size=$(gate_blob_size ":${f}")
+    if ! gate_verdict "$f" "$size" "HEAD"; then
+        fail=1
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACM)
 
 if [ "$fail" -ne 0 ]; then
-  echo ""
-  echo "提交被拦截：检测到超过 20KB 的代码文件。"
-  echo "请按功能拆分（split by feature）："
-  echo "  - 把大文件拆成多个小模块，每个 < 20KB；"
-  echo "  - 纯数据 / 配置 / 生成产物请放到单独文件，会被上面的跳过规则自动放行；"
-  echo "  - lockfile 与构建产物已自动跳过。"
-  echo ""
-  echo "如需临时绕过（不推荐）：git commit --no-verify"
-  exit 1
+    gate_fail_message
+    exit 1
 fi
+exit 0

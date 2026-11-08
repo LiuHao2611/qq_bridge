@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# pre-push —— 堵住 `git commit --no-verify`。
+#
+# 只用 pre-commit 的话，任何人加 --no-verify 就能把 >20KB 的代码推上去，
+# 「必须生效」就成了一句空话。这里对**本次 push 引入的变更**用同一份
+# lib/gate.sh 再判一次：判定规则单一来源，不会两处漂移。
+#
+# stdin 行格式（Git 规定）：
+#   <local ref> <local sha> <remote ref> <remote sha>
+set -euo pipefail
+
+GATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/gate.sh
+source "${GATE_DIR}/lib/gate.sh"
+
+ZERO=0000000000000000000000000000000000000000
+fail=0
+checked=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -z "${local_sha:-}" ] && continue
+    [ "$local_sha" = "$ZERO" ] && continue   # 删除分支，无内容可查
+
+    if [ "$remote_sha" = "$ZERO" ]; then
+        # 新分支：优先与远程主干求 merge-base，退而求其父提交。
+        base=""
+        for trunk in origin/main origin/master; do
+            if git rev-parse --verify "$trunk" >/dev/null 2>&1; then
+                base=$(git merge-base "$trunk" "$local_sha" 2>/dev/null || true)
+                [ -n "$base" ] && break
+            fi
+        done
+        if [ -z "$base" ]; then
+            base=$(git rev-parse "${local_sha}^" 2>/dev/null || true)
+        fi
+        if [ -z "$base" ]; then
+            echo "[gate/pre-push] 提示：${local_ref} 是根提交且无可用基准，无法做增量判定，本轮跳过（非静默）"
+            continue
+        fi
+    else
+        base="$remote_sha"
+    fi
+
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        checked=$(( checked + 1 ))
+        size=$(gate_blob_size "${local_sha}:${f}")
+        if ! gate_verdict "$f" "$size" "$base"; then
+            fail=1
+        fi
+    done < <(git diff --name-only --diff-filter=ACM "$base" "$local_sha" 2>/dev/null || true)
+done
+
+if [ "$fail" -ne 0 ]; then
+    echo "[gate/pre-push] 已检查 ${checked} 个本次推送涉及的变更文件"
+    gate_fail_message
+    exit 1
+fi
+echo "[gate/pre-push] OK：${checked} 个变更文件通过 20KB / 用户数据门禁"
+exit 0
