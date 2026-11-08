@@ -453,3 +453,14 @@ docker compose -f docker-compose.bridge.yml down   # 停容器（宿主回退路
 - **20KB 门禁**：`bounty_layout.py` 加图标后涨到 19619B（余 861B），把 `_TYPE_ICON` / `type_icon()` 移入 `bounty_icons.py`、`gate_icons()` 移入 `bounty_atoms.py` 并 re-export；最终 6 个受管文件 1507 / 10155 / 8811 / 18759 / 11966 / 14666 B，全部 ≤20480B。
 - **验收**：`tests/test_bounty_card.py` **14/14 全绿**（16 项真实 PNG 尺寸断言、`missing_icons` 严格闸门、`test_missing_icon_gate_catches_the_old_shortcut()` 把 `BI.ensure` 打桩返回 None 复现旧错并断言必报错）；16/16 官方图标下载成功；两张截图 `problems=0 missing_icons=0`，放大逐项目视确认真实美术资产、无豆腐框/裁切/重叠。按 prove-it「被纠正之后」在 `qq_bridge/AGENTS.md` 规则表新增 1 条并写明「由什么拦住」。
 - **没验证到的**：真实 QQ 客户端发「赏金」口令出图（截图用同构样例）；`tier` / `objective` / `mission` 真实字段仍缺，补齐需先拆 280KB 的 `warframe.py` 否则门禁会拦；新分支未合并进 `main`。
+
+## qq_bridge / 部署链路修复：push 完没 rebuild（2026-11-08 续 18:23）
+
+- 用户：「看看日志，回复的还是旧的卡片，你没更新代码到正式环境」。日志实证 18:13:01 收到「赏金」、18:13:08 `pic_render template=bounty bytes=181225` 已发出，但容器 `Up 20 hours`、镜像 `b5821684…`（11-07 14:35 构建）；容器内 bounty 模板只有旧 `bounty.py` 19429B，新 4 个模块根本不存在 → **commit/push 不等于部署**。
+- 根因：`docker-compose.bridge.yml` volumes 不含 `src`，代码靠 `Dockerfile.bridge` 的 `COPY src ./src` 烘进镜像；`develop.watch` 需常驻进程，实测未跑。排除 pic 缓存嫌疑（TTL 300s、key 含实时 data、日志均 `cache=miss`）。
+- 修复：`docker compose -f docker-compose.bridge.yml up -d --build --force-recreate bridge`（只动 bridge，不动 NapCat / aria2；遵守 `bot.py` 无自动重登红线）；确认 8080 两监听均为 Docker 转发进程、宿主无原生 `bot.py`。
+- 顺带加固：① `qq_bridge/.dockerignore` 新增 `src/data/pic_cache/`（原根目录 `*.png` 匹配不到 src 子目录，41 张历史 PNG 被烘进镜像；`cache.py` 会自建目录，排除安全），重建后容器内缓存数 0；② 宿主侧全量预热 DE 官方图标 `131/131`、0 失败，容器 `stats()` 同步 `cached=131 missing=0`，避免轮换换物品回落几何方块。
+- 新增 `qq_bridge/tools/check_bridge_deploy.py`：P1 容器 Image ID == `qq-bridge:latest`；P2 宿主/镜像层/运行容器三层 md5 全等；P3 `docker diff` 无 `/app/src`、`/app/tools` 热贴；`--selftest` 3/3 注入反例全被拦；真实 `--all` 全量 `src/**/*.py` PASS。
+- 验收：容器内真实 `bounties_card_data()` → 两列 8 卡 800×1305、`layout_problems=0 missing_icons=0`；与 `_send_bounty` 同链路 `pic.render` → `bytes=160472`；截图 `tmp/verify_bounty_live.png` 目视确认真实图标、无重叠/裁切。NapCat 18:20:16 自动重连 `online=1`，`/api/qq/health` `state=ok ws_online=true`。
+- 观察未改：实时「金星赏金」任务名出现未翻译英文 `VenusPreservationJobResource` 等；当前轮换无 MOD/债券奖励故真实图只有 3 个物品图标。补中文映射需先拆 280KB `warframe.py`。
+- 待用户配合：再发一次「赏金」从 QQ 客户端确认；本轮未替用户发消息，也未合并 `main`。
