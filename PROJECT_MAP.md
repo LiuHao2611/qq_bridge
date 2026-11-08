@@ -464,3 +464,14 @@ docker compose -f docker-compose.bridge.yml down   # 停容器（宿主回退路
 - 验收：容器内真实 `bounties_card_data()` → 两列 8 卡 800×1305、`layout_problems=0 missing_icons=0`；与 `_send_bounty` 同链路 `pic.render` → `bytes=160472`；截图 `tmp/verify_bounty_live.png` 目视确认真实图标、无重叠/裁切。NapCat 18:20:16 自动重连 `online=1`，`/api/qq/health` `state=ok ws_online=true`。
 - 观察未改：实时「金星赏金」任务名出现未翻译英文 `VenusPreservationJobResource` 等；当前轮换无 MOD/债券奖励故真实图只有 3 个物品图标。补中文映射需先拆 280KB `warframe.py`。
 - 待用户配合：再发一次「赏金」从 QQ 客户端确认；本轮未替用户发消息，也未合并 `main`。
+
+## qq_bridge / 赏金卡数据源定案（2026-11-08 续 19:05，只读调研）
+
+- 用户：「奖励内容呢，而且任务内容和别人机器人的也不一样，你先搞清楚别人的数据来源再开始动手，认真点」+ 两张对比图。**本轮只做调研与防复发闸门，未改生产渲染/数据源实现，容器无需 rebuild**。
+- **结论：别人（Warframe Rabbit）与本项目同源** —— `worldstate.wf.wiki` 的 Next.js RSC payload（`bountyBoard` 三区 jobs[].rewards、`groups` 三组 node/mission/challenge/ally、`bounties` 轮换）+ WFA_Lexicon 同源中文词库（本地 `data/warframe_items/dict.zh.json` 36165 条）。DE 官方 `worldState.php` 只有 `jobType` 内部路径/等级/掉落表路径/Expiry，不含中文任务名与奖励物品。
+- **铁证**：正确 RSC 解码后喂现有 `_bounty_mods()`，输出 8 个 MOD 与别人卡**名称顺序完全一致**（收割螺旋…猎鹰俯击）；`_bounty_bonds()` 出 5 债券；`groups` 的至日广场/传承种收割/永视弧域/奥金工场与「目标：」challenge 文案逐条命中；`dict.zh.json` 含「找出遗失的器物」「虚空狂潮」「致命低语」等别人卡文案。
+- **四个根因**：① `warframe.py:1921` 用 `replace('\\"','"')` 反解 RSC 字符串（正确应按 JS 字符串字面量逐块 `json.loads('"'+b+'"')`），破坏转义 → `raw_decode` 抛错 → `:1931 except: pass` **静默吞异常** → `bountyBoard` 永远为空；② `:2065-2066` mods/bonds 依赖空 board → 奖励段整段消失；③ `:2123` 派系任务用硬编码 `_BOUNTY_GROUPS`(`:1698`) 旧快照，`groups` 解析出来却没用 → 任务名/目标行对不上；④ `:2107` 深矿硬编码「花园除草」、`:1646` 44 条手写 `_BOUNTY_NAMES` 替代 WFA 词库。
+- **深矿来源未定案**：「企业重组/花园除草/解放小动物」在 RSC 与官方 worldstate 都无中文，官方仅 `NightcapJournalSyndicate` 的 `Seed/Expiry`；不得继续硬编码，需单独查证。
+- **落地**：新增 `qq_bridge/tools/check_bounty_source.py`（10403B）：断言 `bountyBoard` 3 组/地球 MOD 卡图/金星 5 债券/`groups` 3 组含 node·mission·challenge/`bounties.rotRewards`；`--selftest` 注入「旧 replace 写法 / groups 丢失 / 地球 rewards 丢失」3/3 全拦，真实快照 PASS。闸门自身修过一次（样本带空格 JSON 触发 `lstrip` 误判，已兼容两种格式）。规则表新增 1 条写明「由什么拦住」。
+- **下一步（未动）**：`bounty_rsc.py` 承载正确解码+词库 → `warframe.py::_wfwiki_payload` 薄委托；`_bounty_card_data` 构造迁入 `bounty_source.py` 并删除硬编码常量使 280KB 文件净变小以过 20KB 棘轮；`bounty_model.py` 渲染 challenge 目标行；深矿单独查证；改完按 §18:23 rebuild + recreate + 三层 md5 闸门。
+- 探针与快照在 `tmp/`（`probe_bounty_sources.py` / `probe_bounty_payload2.py` / `probe_bounty_payload3.py` / `probe_wfwiki_live.html` / `probe_official_worldstate.json`），均被 `.gitignore` 忽略，不入库。
