@@ -49,6 +49,8 @@
 
 | 去掉 `dp` 前缀后，**所有**用户可见文案（菜单文本 / 自绘卡片 tip / 游戏内错误提示 / 帮助）都不得残留旧前缀；禁止只检查 `cmd_menu()` 就宣布完成 | `doupo/test_commands.py::全模块用户可见文案无前缀残留`：用 `ast` 扫 8 个生产模块的全部字符串常量（含 docstring），有残留即 FAIL；注入验证：把 `card.py` 一条 tip 改回 `dp买` → 该用例 FAIL，恢复 → `CMD_TOTAL=79 FAILED=0` |
 | 测试不得靠随机结果赌通过（反例：「固定打 30 次赌 Boss 被击杀」）：夹具必须把随机量固定成确定性边界值，且仍走真实 handler 与真实结算 | `xiuxian/test_e2e.py` 讨伐 boss 夹具血量固定为 1，一次必杀；连跑 20 次失败 0；修复前实测 30 次后仍剩 44 血，2 项连带 FAIL |
+| **`D:/AI/doupo` 资源解析：禁止按 imgIdx 整层过滤图层**。`c/s0` 是大范围斗技特效图集（火莲 / 电龙 / 远程雷波 / 放射爆焰 / 三玄变字幕），87 个 composite 里只有 C0 是脚下黑影；整层删掉会把用户要的「全屏 / 打出屏幕外」技能全抹掉。画布必须 720×480 装得下 dx 到 +329 的远程弹道 | `tools/extract_battle.py::keep_layer()` 是唯一丢弃入口，`_check_drop_img()` 遇 `drop_img=(1,)` 直接抛 `ValueError`；`verify_battle_gifs.py` 另有「大招最宽帧 ≥240px」「669 state 图层矩形不被画布裁切」两条断言；`inject_verify_battle.py` H1/H2/H3 注入：旧写法被拒、宽度塌掉报红、拿掉断言放行 |
+| **资源普查不能只抽样就下结论**：用户说「有全屏技能」时，旧结论来自只抽 S28–88 的 `_idx1_compare.png`（该段 s0 恰好全是阴影），得出「完整版只多一个黑球」的错误判断。必须把图集**全部 composite** 与动作表**全部 state** 铺开目视，再对候选段逐帧放大，并用原始像素尺寸标注纠正目视缩放错觉 | `tools/census_skill_effects.py`（全部 `c/*.hy` composite）+ `tools/census_fullscreen.py`（宽画布 669 state 4 页 + 26 段候选 2 页）+ `char_art/_verify_big_states.png`（逐帧标注真实宽高）；`全屏范围对照.png` 叠 240×320 屏幕边界给出「右侧超出 100px」实测 |
 
 ---
 
