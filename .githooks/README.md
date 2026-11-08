@@ -6,6 +6,21 @@
 
 `core.hooksPath` 存在 `.git/config`，**不会随仓库传播**，所以新 clone / 新工作树必须手动执行一次：
 
+**本机（有 22 个 worktree）必须用绝对路径**：
+
+```bash
+git config core.hooksPath "D:/AI/manju_agent/.githooks"
+```
+
+原因：`core.hooksPath` 是**所有 worktree 共享**的配置，而相对 `.githooks` 会按
+**各自 worktree 的根**解析。指向旧 commit 的 worktree（例如当前
+`master-e6caec37` → `06ec597`）里根本没有 `.githooks/` 目录，
+Git 找不到 hook 会**静默跳过**，门禁在那里等于不存在。
+绝对路径让全部 worktree 共用主仓 master 上的这一份，判定仍然是各 worktree
+自己的 index（Git 运行 hook 时会设好 `GIT_DIR`/`GIT_WORK_TREE`），不会串味。
+
+**其它机器 / 单一工作树的 clone** 用相对路径即可：
+
 ```bash
 git config core.hooksPath .githooks
 ```
@@ -13,11 +28,12 @@ git config core.hooksPath .githooks
 确认：
 
 ```bash
-git config --get core.hooksPath    # 应输出 .githooks
+git config --get core.hooksPath
 ```
 
-`D:/AI/manju_agent` 主仓已于 2026-11-08 配置。本机 `.git/hooks/` 另放了转发脚本作兜底：
-即使 `core.hooksPath` 被清掉，pre-commit / pre-push 仍会转到这里，**不会静默失效**。
+`D:/AI/manju_agent` 主仓已于 2026-11-08 配成绝对路径。本机 `.git/hooks/` 另放了
+转发脚本作兜底：即使 `core.hooksPath` 被清掉，pre-commit / pre-push 仍会转到这里，
+且对旧 commit 的 worktree 会回落到主仓绝对路径，**不会静默失效**。
 其它机器若没有这份兜底，未执行上面的 `git config` 就等于没有门禁。
 
 ## 两道门（判定逻辑单一来源：`lib/gate.sh`）

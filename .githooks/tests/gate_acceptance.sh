@@ -112,9 +112,26 @@ check "lockfile/min.js/-min.js/vendor/非代码扩展名 自动放行" "$([ $rc 
 check "跳过规则不产生 grep 'invalid max count' 报错" "$(echo "$out" | grep -q 'invalid max count' && echo 0 || echo 1)" "$out"
 clean_index >/dev/null 2>&1
 
-# ---------- 5. 指向主仓：hooksPath 真的配上了 ----------
+# ---------- 5. 指向主仓：hooksPath 必须是绝对路径 ----------
 hp=$(git -C "$ROOT" config --get core.hooksPath 2>/dev/null || echo "")
-check "主仓 core.hooksPath=.githooks" "$([ "$hp" = '.githooks' ] && echo 1 || echo 0)" "实际=$hp"
+check "主仓 core.hooksPath 是绝对路径（覆盖 22 个 worktree）" \
+    "$(echo "$hp" | grep -Eq '^[A-Za-z]:/' && echo 1 || echo 0)" "实际=$hp"
+
+# ---------- 5b. 旧 commit worktree：自身没有 .githooks，走主仓绝对路径仍有效 ----------
+# 相对路径会按各自 worktree 根解析，指向旧 commit 的工作树里没有这个目录，
+# Git 会静默跳过 hook —— 这是本机真实存在的漏洞场景，必须钉死。
+ABS=$(cygpath -w "$ROOT/.githooks" 2>/dev/null | tr '\\' '/' || echo "$ROOT/.githooks")
+mv .githooks .githooks.off
+git config core.hooksPath "$ABS"
+mkfile wt_big.py 21000
+git add wt_big.py
+out=$(git commit -m "worktree big" 2>&1); rc=$?
+check "无 .githooks 的工作树走主仓绝对路径仍拦截" "$([ $rc -ne 0 ] && echo 1 || echo 0)" "rc=$rc $out"
+check "判定的是本仓 index（BLOCKED 含 wt_big.py）" \
+    "$(echo "$out" | grep -q 'wt_big.py' && echo 1 || echo 0)" "$out"
+clean_index >/dev/null 2>&1
+mv .githooks.off .githooks
+git config core.hooksPath .githooks
 
 # ---------- 6. 兜底：config 被清后，.git/hooks 转发仍拦得住 ----------
 git config --unset core.hooksPath
