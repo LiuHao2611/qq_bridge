@@ -209,8 +209,23 @@ def check_boxes(bounds: Box, boxes: Iterable[tuple], min_gap: int = 2) -> list[s
 
 def gate(bounds: Box, boxes: Iterable[tuple], min_gap: int = 2,
          strict: bool = True) -> list[str]:
-    """交付闸门：违规且 strict 时 raise，绝不静默放行。"""
+    """交付闸门：排版违规且 strict 时 raise，绝不静默放行。"""
     problems = check_boxes(bounds, boxes, min_gap)
     if problems and strict:
         raise SystemExit("\n".join(["[card-design 自检未通过] 触线返工："] + problems[:20]))
     return problems
+
+
+def gate_icons(canvas, strict: bool = True) -> list[str]:
+    """交付闸门：任何物品没拿到**真实**图标就报错，禁止拿几何方块交差。
+
+    与 gate() 分开：图标缺失是资源/数据问题，不是排版违规，但同样触线。
+    渲染层把缺失项登记到 ``Canvas.missing_icons``，这里统一拦在交差前。
+    """
+    missing = list(getattr(canvas, "missing_icons", []))
+    if missing and strict:
+        raise SystemExit(
+            "[赏金卡图标自检未通过] 以下物品没有真实官方图标（几何方块不算交付）：\n  "
+            + "\n  ".join(missing[:20])
+            + f"\n共 {len(missing)} 项；请检查 bounty_icons.load_index() / 本地缓存")
+    return missing

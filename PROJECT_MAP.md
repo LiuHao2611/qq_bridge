@@ -443,3 +443,13 @@ docker compose -f docker-compose.bridge.yml down   # 停容器（宿主回退路
 - **验收（prove-it）**：`tests/test_bounty_card.py` **11/11 全绿**（含 20KB 门禁断言、8 卡齐全、vault 归属、deep 解析、tier 直读优先、自检能抓真实违规、参考图同款 + 生产契约两套数据严格 `gate` 溢出/重叠/间距 **0**、注册链 `render_sync("bounty")` 出 PNG、主题覆盖不泄漏）；`pytest` 回归 **120 passed / 11 failed**，11 个失败全部为既有失败且与本次 5 个文件无交集（失败用例不 import bounty，错误栈指向 `netracell._card_alpha` 缺失、cs1 主题 `bg_overrides` 为空、onebot 未连接、riven 解析数据差异），`test_warframe.py` 的赏金文本断言通过。
 - 截图：`qq_bridge/tests/_shot_bounty_reference.png`（参考图同款 800×1597）、`_shot_bounty_production.png`（生产字段 800×1495），均已目视核对：8 卡齐全、文字完整无省略、无豆腐框/重叠/裁切、页脚三行完整。
 - **没验证到的**：真实线上 worldstate/wf.wiki 数据下的出图（本机未发真实「赏金」口令，测试用的是与数据契约同构的样例）；`tier` / `objective` 的真实取值需数据源补字段后才能显示；参考图里的品牌文案「Warframe Rabbit」按「背景不抄」原则替换成项目真实数据源说明。
+
+## qq_bridge / 赏金卡真实物品图标补做（2026-11-08 续 18:03）
+
+- 用户纠正：「你又偷懒不去做物品的图标是吗，狍丝感染枪，预言 探求，债券，战甲机体，武器蓝图，重做，@skill:prove-it @skill:card-design」。第一版 8 卡结构对齐了参考图，但 MOD/债券/部件/蓝图/枪托全用几何方块占位，等于把参考图的真实物品图标整层丢掉；本轮只补这一层，不重做版式。
+- **新模块 `bounty_icons.py`（8811B）**：从 `worldstate.wf.wiki` 的 Next.js RSC payload 用只读正则抽 `"name":"中文名","icon":"https://…"` 对（226 对，参考图点名 16 项全命中），建「中文名 → DE 官方 CDN 图标 URL」索引，落 `data/warframe_icons/bounty_icon_index.json`（`data/` 被 `.gitignore` 忽略）。`ensure()` 下载+转存 PNG、`prewarm()` 批量预热、`stats()` 汇报命中。
+- **两个实证踩坑**：① `bountyBoard` 含 `$undefined` 与 `"name":"\"混乱\"残留物"` 转义引号，整体 JSON 解析报 `Expecting ',' delimiter` → 只能正则抽对；② `!00_<hash>` 是 DE CDN 必需路径戳，去掉后实测 404（首版 13 图下载失败还被记进负缓存）→ 下载保留原始 URL，仅 `cache_name()` 剥离戳算本地文件名；与 `warframe._bounty_download_icon` 同口径。`normalize()` 去掉 `2x ` 前缀并把 `债务债券` 归一为 `债券`。
+- **接线**：`bounty_model.py` 两个 items 构造函数都对每个 item 写 `image`（`_items_from_rewards` 优先数据源已有图，`_items_from_names` 走 `ensure`）；`bounty_layout.py` `ICON_W=26`，`_draw_row()` 优先 `A.item_image()`，失败登记 `Canvas.missing_icons` + `log.warning`；`bounty_atoms.gate_icons(strict=True)` 缺图直接 `SystemExit`。几何方块仅剩异常兜底，测试闸门保证它不会被拿来交差。
+- **20KB 门禁**：`bounty_layout.py` 加图标后涨到 19619B（余 861B），把 `_TYPE_ICON` / `type_icon()` 移入 `bounty_icons.py`、`gate_icons()` 移入 `bounty_atoms.py` 并 re-export；最终 6 个受管文件 1507 / 10155 / 8811 / 18759 / 11966 / 14666 B，全部 ≤20480B。
+- **验收**：`tests/test_bounty_card.py` **14/14 全绿**（16 项真实 PNG 尺寸断言、`missing_icons` 严格闸门、`test_missing_icon_gate_catches_the_old_shortcut()` 把 `BI.ensure` 打桩返回 None 复现旧错并断言必报错）；16/16 官方图标下载成功；两张截图 `problems=0 missing_icons=0`，放大逐项目视确认真实美术资产、无豆腐框/裁切/重叠。按 prove-it「被纠正之后」在 `qq_bridge/AGENTS.md` 规则表新增 1 条并写明「由什么拦住」。
+- **没验证到的**：真实 QQ 客户端发「赏金」口令出图（截图用同构样例）；`tier` / `objective` / `mission` 真实字段仍缺，补齐需先拆 280KB 的 `warframe.py` 否则门禁会拦；新分支未合并进 `main`。

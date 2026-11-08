@@ -24,6 +24,8 @@ import logging
 from .. import decor, icons
 from ..canvas import Canvas
 from . import bounty_atoms as A
+from . import bounty_icons as BI
+from .bounty_atoms import gate_icons  # noqa: F401 — 保持 L.gate_icons 契约
 from .bounty_model import build_model
 
 log = logging.getLogger("qq_bridge.pic.bounty")
@@ -76,7 +78,7 @@ ROW_GAP = 12              # 行间距
 CARD_PAD = 16             # 卡内边距
 GAP = 8                   # 元素/token 间距
 ICON_GAP = 8
-ICON_W = 20
+ICON_W = 26
 CARD_R = 14
 
 # ---------------- 字号与行高（对齐参考图 800px 宽的视觉比例）----------------
@@ -99,18 +101,7 @@ EMPTY_H = 28
 MORE_H = 16
 HEADER_H = 50
 
-_TYPE_ICON = {
-    "捕获": "window", "防御": "round_square", "歼灭": "cross",
-    "资源": "cart", "净化": "check", "中断": "clipboard",
-    "移动防御": "arrow_right", "虚空覆涌": "question", "刺杀": "sword",
-    "生存": "clock", "救援": "check", "回收": "cart",
-}
-
-
-def _type_icon(typ: str, fallback: str) -> str:
-    return _TYPE_ICON.get(typ) or (fallback if icons.exists(fallback) else "circle")
-
-
+# 任务类型 → 几何图标语义见 bounty_icons.type_icon（与真实物品图标同模块归口）。
 # ------------------------------------------------------------ 行计划 ----
 def _plan(card: dict) -> list[dict]:
     """行计划：measure 与 draw 共用同一份，杜绝高度漂移。"""
@@ -177,7 +168,7 @@ def _badge_lv(c: Canvas, x: int, y: int, text: str, fill: str,
 
 
 def _draw_row(c: Canvas, row: dict, x: int, y: int, cols: A.Columns,
-              label: str, boxes: list) -> None:
+              label: str, boxes: list, missing: list[str]) -> None:
     """按行计划绘制。所有 x 推进都来自 A.tw / bbox 实测值 + 显式 GAP。"""
     k, h, cy = row["k"], row["h"], y + row["h"] // 2
     right = cols.right
@@ -198,8 +189,14 @@ def _draw_row(c: Canvas, row: dict, x: int, y: int, cols: A.Columns,
         for ci, it in enumerate(row["pair"]):
             ix = x + ci * (col_w + GAP)
             icy = cy
-            if not A.item_image(c, it.get("image"), ix, icy - ICON_W // 2, ICON_W):
+            ok = A.item_image(c, it.get("image"), ix, icy - ICON_W // 2, ICON_W)
+            if not ok:
+                # 几何方块只作为**异常兜底**：必须显式登记 + 告警，测试里
+                # gate_icons(strict=True) 会直接拦下，禁止再拿它当默认交差。
+                missing.append(f"{label}:{it.get('text', '')}")
                 A.icon(c, "disk", ix + ICON_W // 2, icy, ICON_W - 2, C_PURPLE)
+            _add(boxes, label + f":icon{ci}",
+                 (ix, icy - ICON_W // 2, ix + ICON_W, icy + ICON_W // 2))
             tx = ix + ICON_W + ICON_GAP
             maxw = max(0, col_w - ICON_W - ICON_GAP)
             _add(boxes, label + f":item{ci}",
@@ -218,7 +215,7 @@ def _draw_row(c: Canvas, row: dict, x: int, y: int, cols: A.Columns,
         b1 = A.text_box(c, x, cy, "最终任务：", FS_JOB, C_DIM)
         _add(boxes, label + ":final_label", b1)
         ix = b1[2] + GAP
-        A.icon(c, _type_icon(row["final"], row["icon"]), ix + ICON_W // 2, cy,
+        A.icon(c, BI.type_icon(row["final"], row["icon"]), ix + ICON_W // 2, cy,
                ICON_W - 2, C_BLUE)
         _add(boxes, label + ":final",
              A.text_box(c, ix + ICON_W + GAP, cy,
@@ -241,7 +238,7 @@ def _draw_row(c: Canvas, row: dict, x: int, y: int, cols: A.Columns,
             w = _badge_lv(c, x, y + (h - BADGE_H) // 2, f"Lv{j['lvl']}",
                           j["lvl_color"], label + ":lv", boxes)
         ix = x + w + GAP if w else x
-        A.icon(c, _type_icon(j["type"], j["icon"]), ix + ICON_W // 2, cy,
+        A.icon(c, BI.type_icon(j["type"], j["icon"]), ix + ICON_W // 2, cy,
                ICON_W - 2, C_BLUE)
         tx = ix + ICON_W + GAP
         _add(boxes, label + ":type",
@@ -259,7 +256,7 @@ def _draw_row(c: Canvas, row: dict, x: int, y: int, cols: A.Columns,
                         FS_JOB, C_BLUE, "bold"))
     elif k == "triple2":
         j = row["job"]
-        A.icon(c, _type_icon(j["type"], j["icon"]), x + ICON_W // 2, cy,
+        A.icon(c, BI.type_icon(j["type"], j["icon"]), x + ICON_W // 2, cy,
                ICON_W - 2, C_BLUE)
         tx = x + ICON_W + GAP
         typ = j["type"]
@@ -290,18 +287,19 @@ def _draw_row(c: Canvas, row: dict, x: int, y: int, cols: A.Columns,
 
 
 def _draw_card(c: Canvas, card: dict, x0: int, y0: int, card_w: int,
-               card_h: int, label: str) -> list[tuple]:
+               card_h: int, label: str) -> tuple[list[tuple], list[str]]:
     c.rounded_rect((x0, y0, x0 + card_w, y0 + card_h), radius=CARD_R,
                    fill=C_CARD, outline=C_BORDER, width=1)
     left = x0 + CARD_PAD
     right = x0 + card_w - CARD_PAD
     cols = A.Columns(left, right, GAP)
     boxes: list[tuple] = []
+    missing: list[str] = []
     y = y0 + CARD_PAD
     for row in _plan(card):
-        _draw_row(c, row, left, y, cols, label, boxes)
+        _draw_row(c, row, left, y, cols, label, boxes, missing)
         y += row["h"] + GAP
-    return boxes
+    return boxes, missing
 
 
 # -------------------------------------------------------------- 页脚 ----
@@ -379,6 +377,7 @@ def build(t, data: dict | None = None, width: int | None = None,
 
     all_boxes: list[tuple] = []
     problems: list[str] = []
+    all_missing: list[str] = []
 
     # 主标题：居中（图标 + 文字，按实测总宽反推起点）+ 贯通分割线
     title = model["title"]
@@ -400,9 +399,10 @@ def build(t, data: dict | None = None, width: int | None = None,
         for ci in (0, 1):
             idx = ri * 2 + ci
             x0 = PAD + ci * (card_w + CARD_GAP)
-            cb = _draw_card(c, cards[idx], x0, y, card_w, row_h[ri],
-                            f"c{idx}")
+            cb, cm = _draw_card(c, cards[idx], x0, y, card_w, row_h[ri],
+                                f"c{idx}")
             all_boxes += cb
+            all_missing += cm
             safe = (x0 + CARD_PAD, y + CARD_PAD,
                     x0 + card_w - CARD_PAD, y + row_h[ri] - CARD_PAD)
             problems += A.check_boxes(safe, cb, min_gap=2)
@@ -419,7 +419,11 @@ def build(t, data: dict | None = None, width: int | None = None,
     # 禁止静默吞错：违规显式落日志 + 挂到 Canvas 供测试严格断言
     c.layout_problems = problems
     c.layout_boxes = all_boxes
+    c.missing_icons = all_missing
     if problems:
         log.warning("bounty_layout_check_failed count=%d first=%s",
                     len(problems), problems[:3])
+    if all_missing:
+        log.warning("bounty_missing_item_icons count=%d first=%s",
+                    len(all_missing), all_missing[:5])
     return c

@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import re
 
+from . import bounty_icons
+
 # 参考图 8 张卡的行式网格顺序：每两个一组 = 一行（左列, 右列）
 CARD_ORDER: tuple[tuple[str, str], ...] = (
     ("合一众赏金轮换", "rotation"),
@@ -97,18 +99,25 @@ def _lv_color(lvl: str) -> str:
 
 
 def _items_from_rewards(rewards: list) -> list[dict]:
+    """轮换奖励：优先用数据源已解析的本地图；缺失时按中文名解析 DE 官方图标。"""
     out = []
     for r in rewards or []:
         if not isinstance(r, dict):
             continue
         nm = str(r.get("name") or "").strip()
         if nm:
-            out.append({"text": nm, "image": r.get("image")})
+            out.append({"text": nm,
+                        "image": r.get("image") or bounty_icons.ensure(nm)})
     return out
 
 
 def _items_from_names(names: list) -> list[dict]:
-    return [{"text": str(n).strip(), "image": None}
+    """MOD / 债券：数据源只给中文名，图标由 bounty_icons 按官方 CDN 解析。
+
+    绝不回落几何方块 —— 解析失败会返回 None，渲染层必须显式登记 missing_icons
+    并告警，测试里用 ``gate_icons(strict=True)`` 拦在交差前。
+    """
+    return [{"text": str(n).strip(), "image": bounty_icons.ensure(str(n).strip())}
             for n in (names or []) if str(n).strip()]
 
 

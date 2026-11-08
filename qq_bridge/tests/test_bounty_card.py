@@ -17,18 +17,30 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from PIL import Image
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.plugins.qq_bridge.pic.theme import LIGHT_THEME  # noqa: E402
 from src.plugins.qq_bridge.pic.templates import bounty_atoms as A  # noqa: E402
+from src.plugins.qq_bridge.pic.templates import bounty_icons as BI  # noqa: E402
+from src.plugins.qq_bridge.pic.templates import bounty_layout as L  # noqa: E402
 from src.plugins.qq_bridge.pic.templates.bounty_layout import build as build_bounty  # noqa: E402
 from src.plugins.qq_bridge.pic.templates.bounty_model import CARD_ORDER, build_model  # noqa: E402
 
 OUT = Path(__file__).resolve().parent
 TPL = ROOT / "src" / "plugins" / "qq_bridge" / "pic" / "templates"
 SOURCE = "数据源：官方 worldstate / wf.wiki"
+
+#: 参考图里出现的全部 16 个物品（用户点名的 MOD / 债券 / 部件 / 蓝图 / 枪托）
+REF_ITEM_NAMES = [
+    "Caliban 机体 蓝图", "赤炎流星 蓝图", "孢丝感染枪 枪托",
+    "收割螺旋", "预言 探求", "角斗士 威猛", "私法 军备",
+    "预言 神密", "角斗士 决心", "私法 活力", "猎鹰俯击",
+    "2x 培训债券", "2x 庇护债券", "2x 医疗债券", "2x 预支债券", "2x 家族债券",
+]
 
 
 # ------------------------------------------------------------ 样例数据 ----
@@ -187,20 +199,68 @@ def test_check_boxes_catches_real_violations() -> None:
 
 
 def test_all_template_files_under_20kb() -> None:
-    for name in ("bounty.py", "bounty_model.py", "bounty_atoms.py", "bounty_layout.py"):
+    for name in ("bounty.py", "bounty_model.py", "bounty_atoms.py",
+                 "bounty_layout.py", "bounty_icons.py"):
         size = (TPL / name).stat().st_size
         assert size <= 20480, f"{name} 超出 20KB 硬门禁: {size}B"
 
 
+# ------------------------------------------------- 真实物品图标 ----------
+def test_icon_index_normalizes_and_covers_reference_items() -> None:
+    """「2x 培训债券」与 wf.wiki 的「培训债务债券」必须归一到同一 key。"""
+    assert BI.normalize("2x 培训债券") == "培训债券"
+    assert BI.normalize("培训债务债券") == "培训债券"
+    idx = BI.load_index()
+    assert len(idx) > 50, "图标索引异常为空，检查 wf.wiki 解析/磁盘索引"
+    for n in REF_ITEM_NAMES:
+        assert BI.normalize(n) in idx, f"索引缺 {n}"
+
+
+def test_every_reference_item_has_real_official_icon() -> None:
+    """每个物品都必须拿到 DE 官方图标文件，不是几何方块。"""
+    BI.prewarm(REF_ITEM_NAMES)
+    model = build_model(_ref_data())
+    items = [i for c in model["cards"] for i in c["items"]]
+    assert len(items) == len(REF_ITEM_NAMES), (len(items), len(REF_ITEM_NAMES))
+    for it in items:
+        p = it.get("image")
+        assert p and Path(p).is_file(), f"{it['text']} 没有真实图标（退回几何方块）"
+        with Image.open(p) as im:
+            assert im.format == "PNG"
+            assert im.width >= 128 and im.height >= 128, \
+                f"{it['text']} 图标分辨率过低: {im.size}"
+
+
+def test_missing_icon_gate_catches_the_old_shortcut() -> None:
+    """把这次真实犯过的错放回去（图标解析全失效），检查必须报错。"""
+    original = BI.ensure
+    BI.ensure = lambda *a, **k: None  # 模拟「又偷懒不去做图标」
+    try:
+        c = build_bounty(LIGHT_THEME, data=_ref_data(), width=800, source=SOURCE)
+    finally:
+        BI.ensure = original
+    assert c.missing_icons, "图标全丢时渲染层必须显式登记，不能静默画方块"
+    try:
+        L.gate_icons(c, strict=True)
+    except SystemExit as e:
+        assert "没有真实官方图标" in str(e)
+    else:
+        raise AssertionError("把错放回去，gate_icons 必须拦下")
+
+
 def _render(data: dict, out_name: str) -> tuple[list[str], int, int]:
+    # 先预取，保证渲染时图标已落盘（与项目 item_icons.ensure_alerts_icons 同款时序）
+    BI.prewarm(REF_ITEM_NAMES)
     c = build_bounty(LIGHT_THEME, data=data, width=800, source=SOURCE)
     problems = list(getattr(c, "layout_problems", []))
-    # 严格闸门：违规直接 SystemExit(1)，拦在交差前
+    # 严格闸门：排版违规 / 图标缺失任一不过都直接 SystemExit(1)，拦在交差前
     A.gate((16, 0, c.width - 16, c.height), getattr(c, "layout_boxes", []),
            min_gap=2, strict=True)
+    L.gate_icons(c, strict=True)
     path = OUT / out_name
     c.save(str(path))
-    print(f"[shot] {path}  {c.width}x{c.height}  problems={len(problems)}")
+    print(f"[shot] {path}  {c.width}x{c.height}  "
+          f"problems={len(problems)} missing_icons={len(c.missing_icons)}")
     return problems, c.width, c.height
 
 
