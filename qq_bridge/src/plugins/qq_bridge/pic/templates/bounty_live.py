@@ -8,22 +8,22 @@ RSC 字符串，破坏转义后 ``except: pass`` 静默吞掉 ``JSONDecodeError`
 ``_bounty_card_data`` 却改用硬编码 ``_BOUNTY_GROUPS`` + 44 条手写 ``_BOUNTY_NAMES``
 → 任务名、目标行与别人机器人对不上。
 
-本模块不改任何数据源文件，只读两个已在请求内就绪的进程缓存：
-  * ``warframe._wfwiki_cache["html"]``  —— ``bounties_card_data()`` 刚抓的页面
-  * ``warframe._official_cache["data"]`` —— 官方 worldstate（jobType / 等级）
-再按 **JS 字符串字面量** 正确解码 RSC，补出：
+不改数据源文件，只读 ``warframe`` 已就绪的两个进程缓存（wf.wiki HTML /
+官方 worldstate），按 **JS 字符串字面量** 正确解码 RSC 后补出：
   * ``worlds[地球].label/items``   ← bountyBoard.CetusSyndicate rewards（8 MOD）
   * ``worlds[金星].label/items``   ← bountyBoard.SolarisSyndicate（5 债券）
   * ``worlds[].jobs``              ← bountyBoard 最后 2 个非隔离库 job（等级 /
                                       类型 / 合一众）+ WFA 词库中文任务名
   * ``factions[]``                 ← groups 的 node / mission / challenge / ally
                                       （第二行挑战名走词库，第三行「目标：」）
-  * ``deep``                      ← 移除不可验证的硬编码轮换名与最终任务
+  * ``deep``                      ← bounty_deep.patch_deep() 从官方 Expiry 按
+                                     2.5h 周期推导轮换名与最终任务（整行不删）
+  * 所有 job 的 ``tier``          ← bounty_deep.tier(idx)，即 jobs 数组索引+1
 
 任务名 / 挑战名一律取自 WFA_Lexicon 同源中文词库 ``dict.zh.json``，本模块只做
-**键构造与同族词干匹配**，不手写任何中文任务名。查不到就保留原值 + 显式告警，
-绝不编造。深矿具体轮换名在 RSC / 官方 worldstate / 词库里都无对应字段，故只留
-可验证的「[钢铁之路] / 等级 130-140 / 5阶段」。
+**键构造与同族词干匹配**，不手写任何中文任务名；词库旧译由 ``bounty_deep`` 校正。
+查不到就保留原值 + 显式告警，绝不编造。绿色「赏金N」编号一律由 jobs 数组索引
+推导，禁止写死任何快照编号表（上一轮 ``_TIER_FALLBACK`` 就是这么错的）。
 """
 from __future__ import annotations
 
@@ -32,6 +32,8 @@ import json
 import logging
 import re
 from pathlib import Path
+
+from . import bounty_deep as BD
 
 log = logging.getLogger("qq_bridge")
 
@@ -50,10 +52,13 @@ _WORLD_META = {
     "金星赏金": ("diamond", "#FF9800"),
     "火卫二赏金": ("triangle", "#9C27B0"),
 }
+#: 派系卡展示的赏金等级（= groups jobs 数组索引+1）。来自 18:50 别人卡 880f；
+#: 六人组 (5,7) 另有 16:50 f8650 第二个时刻实证，不是单一快照特例。
+#: 禁止再用 ``[-take:]`` 切片：那会把六人组 idx5「歼灭：科腐者」错当成赏金5。
 _FACTION_BY_TAG = {
-    "ZarimanSyndicate": ("扎里曼赏金", 3, ("star", "#FFC107")),
-    "EntratiLabSyndicate": ("圣所赏金", 2, ("round_square", "#00BCD4")),
-    "HexSyndicate": ("六人组赏金", 2, ("square", "#607D8B")),
+    "ZarimanSyndicate": ("扎里曼赏金", (3, 4, 5), ("star", "#FFC107")),
+    "EntratiLabSyndicate": ("圣所赏金", (4, 5), ("round_square", "#00BCD4")),
+    "HexSyndicate": ("六人组赏金", (5, 7), ("square", "#607D8B")),
 }
 
 #: jobType 词干 → 任务类型词（长词干在前，避免 Ass 抢在 Assassinate 前面）。
@@ -74,7 +79,7 @@ _LEAF: dict[str, str] | None = None
 _DEIMOS: dict[str, str] | None = None
 _NARMER: dict[str, str] | None = None
 _NARV: dict[str, str] | None = None
-_CH_TPLS: list[tuple[int, re.Pattern, str]] | None = None
+_CH_TPLS: list[tuple[int, re.Pattern, str, str]] | None = None
 
 
 # ------------------------------------------------------------ RSC 解码 ----
@@ -172,7 +177,11 @@ def _families() -> tuple[dict, dict, dict]:
 
 
 def job_name(leaf: str, narmer: bool = False) -> str:
-    """官方 jobType 尾段 → WFA 中文任务名；查不到返回空串（调用方显式告警）。"""
+    """官方 jobType 尾段 → WFA 中文任务名 + 词库旧译校正；查不到返回空串。"""
+    return BD.correct_job_name(_job_name_raw(leaf, narmer))
+
+
+def _job_name_raw(leaf: str, narmer: bool) -> str:
     if not leaf:
         return ""
     d = _lexicon()
@@ -188,6 +197,10 @@ def job_name(leaf: str, narmer: bool = False) -> str:
             nm = _best_stem(stem, narmer_pool)
         if nm:
             return nm.replace("（合一众）", "").strip()
+        # 词族没命中时去掉 Narmer 前缀再走通用键：例如
+        # NarmerVenusCullJobExterminate → CullJobExterminateTitle（猎人杀手）。
+        if leaf.startswith("Narmer"):
+            leaf = leaf[len("Narmer"):]
     for key in (leaf + "Title", leaf + "Name"):
         if key in d and len(d[key]) <= 30 and "|" not in d[key]:
             return d[key]
@@ -218,13 +231,20 @@ def challenge_name(desc: str) -> str:
     global _CH_TPLS
     if _CH_TPLS is None:
         leaf = _lexicon()
-        tpls: list[tuple[int, re.Pattern, str]] = []
+        tpls: list[tuple[int, re.Pattern, str, str]] = []
         for k, v in leaf.items():
             if not (k.startswith("Challenge_") and k.endswith("_Desc")):
                 continue
             nm = leaf.get(k[:-5] + "_Name")
             if not nm or "|" in nm:
                 continue
+            # Desc 首行的 |OPEN_COLOR|…|CLOSE_COLOR| 是任务横幅：ally 缺失时
+            # 别人卡会显示「天降正义 · 杀毒赏金任务」；含 |ALLY| 的由调用方按
+            # 实际 ally 拼「·埃莉诺的赏金」，这里不重复。
+            bm = re.search(r"\|OPEN_COLOR\|([^|]+)\|CLOSE_COLOR\|", v)
+            banner = ""
+            if bm and "|ALLY|" not in bm.group(1):
+                banner = re.sub(r"\s+", "", bm.group(1))
             for line in re.split(r"[\r\n]+", v):
                 raw = re.sub(r"\|(?!COUNT)[A-Z_]+\|", "", line).strip()
                 raw = re.sub(r"\s+", "", raw)
@@ -232,13 +252,13 @@ def challenge_name(desc: str) -> str:
                     continue
                 pat = re.escape(raw).replace(re.escape("|COUNT|"), r"\d+")
                 try:
-                    tpls.append((len(raw), re.compile(pat), nm))
+                    tpls.append((len(raw), re.compile(pat), nm, banner))
                 except re.error:
                     continue
         tpls.sort(key=lambda x: -x[0])
         _CH_TPLS = tpls
     compact = re.sub(r"\s+", "", str(desc or ""))
-    for _, rx, nm in _CH_TPLS:
+    for _, rx, nm, _banner in _CH_TPLS:
         if rx.search(compact):
             return nm
     return ""
@@ -268,13 +288,15 @@ def _match_job(jobs: list[dict], lo, hi) -> dict:
     return {}
 
 
-def _board_top(board: dict) -> list[dict]:
-    """bountyBoard 最后 2 个非隔离库 job —— 与别人卡的展示顺序一致。
+def _board_top(board: dict) -> list[tuple[int, dict]]:
+    """bountyBoard 最后 2 个非隔离库 job，连同 1-based 赏金编号。
 
     RSC 里 ``isVault`` 为 ``True`` 才是隔离库；``$undefined`` 是普通任务。
+    必须先编号再过滤：过滤后重排会让「赏金6/7」变成「赏金1/2」。
     """
-    jobs = [j for j in (board.get("jobs") or []) if isinstance(j, dict)]
-    return [j for j in jobs if j.get("isVault") is not True][-2:]
+    indexed = [(i + 1, j) for i, j in enumerate(board.get("jobs") or [])
+               if isinstance(j, dict)]
+    return [x for x in indexed if x[1].get("isVault") is not True][-2:]
 
 
 def _clean(v) -> str:
@@ -309,7 +331,7 @@ def _patch_worlds(worlds: list[dict], pl: dict, official: dict | None) -> None:
         off = _official_jobs(official, tag)
         icon, color = _WORLD_META[zh]
         jobs = []
-        for bj in top:
+        for num, bj in top:
             lo, hi = bj.get("minLevel"), bj.get("maxLevel")
             oj = _match_job(off, lo, hi)
             jt = str((oj or {}).get("jobType") or "")
@@ -322,6 +344,7 @@ def _patch_worlds(worlds: list[dict], pl: dict, official: dict | None) -> None:
                 nm = _clean(bj.get("objective"))
             typ = mission_type(leaf) or _clean(bj.get("objective"))
             jobs.append({
+                "tier": BD.tier(num - 1),
                 "lvl": "%s-%s" % (lo, hi), "type": typ, "name": nm,
                 "narmer": narmer, "icon": icon, "color": color,
                 "mission": "", "objective": "",
@@ -335,12 +358,13 @@ def _patch_factions(factions: list[dict], pl: dict) -> list[dict]:
 
     第二行 = mission（类型词）+ 词库挑战名 [·ALLY的赏金]；
     第三行「目标：」= challenge 原文。全部来自 RSC + 词库，无硬编码清单。
+    绿色编号 = groups jobs 数组索引+1（BD.tier），不再用 ``[-take:]`` 切片。
     """
     groups = {g.get("tag"): g for g in (pl.get("groups") or [])
               if isinstance(g, dict)}
     old = {str(f.get("name") or ""): f for f in factions if isinstance(f, dict)}
     out: list[dict] = []
-    for tag, (zh, take, meta) in _FACTION_BY_TAG.items():
+    for tag, (zh, tiers, meta) in _FACTION_BY_TAG.items():
         g = groups.get(tag)
         if not g or not g.get("jobs"):
             log.warning("bounty_groups_missing tag=%s", tag)
@@ -348,10 +372,8 @@ def _patch_factions(factions: list[dict], pl: dict) -> list[dict]:
             continue
         prev = old.get(zh) or {}
         icon, color = prev.get("icon") or meta[0], prev.get("color") or meta[1]
-        picked = [j for j in g["jobs"] if isinstance(j, dict)
-                  and _clean(j.get("challenge"))][-take:]
         jobs = []
-        for j in picked:
+        for num, j in BD.select_by_tier(g["jobs"], tiers, tag):
             ch = _clean(j.get("challenge"))
             ally = _clean(j.get("ally"))
             cname = challenge_name(ch)
@@ -362,7 +384,12 @@ def _patch_factions(factions: list[dict], pl: dict) -> list[dict]:
             if ally and cname:
                 # 词库 Challenge_*_Desc 的首行模板即「|ALLY|的赏金任务」。
                 mission = "%s·%s的赏金" % (cname, ally)
+            elif cname:
+                banner = BD.banner_from_templates(ch, _CH_TPLS)
+                if banner:
+                    mission = "%s·%s" % (cname, banner)
             jobs.append({
+                "tier": BD.tier(num - 1),
                 "lvl": None, "name": _clean(j.get("node")),
                 "type": _clean(j.get("mission")),
                 "mission": mission, "target": ch, "objective": ch,
@@ -372,13 +399,9 @@ def _patch_factions(factions: list[dict], pl: dict) -> list[dict]:
     return out
 
 
-def _patch_deep(deep: dict) -> dict:
-    """移除硬编码的深矿轮换名 / 最终任务（无可验证数据源，绝不编造）。"""
-    d = dict(deep or {})
-    d.pop("title", None)
-    d["tag"] = "[钢铁之路]"
-    d["detail"] = "等级 130-140 · 5阶段"
-    return d
+def _patch_deep(deep: dict, official: dict | None, payload: dict) -> dict:
+    """深矿轮换名 / 最终任务由官方 Expiry 现算，绝不删行、绝不编造。"""
+    return BD.patch_deep(deep, official, payload)
 
 
 # -------------------------------------------------------------- 入口 ----
@@ -422,7 +445,7 @@ def enrich(data: dict | None, html: str | None = None,
         log.warning("bounty_live_patch_failed err=%s:%s", type(e).__name__, e)
         return copy.deepcopy(data or {})
     if out.get("deep"):
-        out["deep"] = _patch_deep(out["deep"])
+        out["deep"] = _patch_deep(out["deep"], official, payload)
     # rotation 的 rot/vault 奖励由 _bounty_card_data 从解析成功的 bounties
     # 直接生成且已带真实图标，这里绝不覆盖，避免把 image 打成空串。
     return out

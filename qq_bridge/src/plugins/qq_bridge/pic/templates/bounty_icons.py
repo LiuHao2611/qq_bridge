@@ -84,6 +84,15 @@ def normalize(name: str) -> str:
     return s.strip()
 
 
+#: DE 官方通用部件图（本地已缓存）→ 历史轮换中文名。值写**缓存文件名**而非 URL：
+#: ``ensure()`` 会先查本地缓存文件，命中即返回，不会拿它去联网下载。
+#: 只登记用户参考图点名过、且 wf.wiki 当前轮换已不再列出的条目；
+#: 真实 URL 一旦重新出现会优先于别名（见 ``load_index`` 的合并顺序）。
+_LOCAL_ICON_ALIAS: dict[str, str] = {
+    "孢丝感染枪 枪托": "GenericGunStock.png",
+}
+
+
 def index_from_html(html: str) -> dict[str, str]:
     """RSC payload → {归一化中文名: 官方图标 URL}（去重保留首次）。"""
     if not html:
@@ -144,27 +153,38 @@ def _disk_index() -> dict[str, str]:
 
 
 def load_index(force: bool = False) -> dict[str, str]:
-    """返回图标索引；优先级：进程内 → warframe 缓存 html → 磁盘 → 抓一次 wf.wiki。"""
+    """返回图标索引；优先级：进程内 → warframe 缓存 html → 磁盘 → 抓一次 wf.wiki。
+
+    **累积合并，不整体覆盖**：wf.wiki 每 2.5h 轮换只列当前奖励，上一版直接把
+    新索引整个赋给 ``_INDEX``，会把旧轮换的「孢丝感染枪 枪托」抹掉，渲染随即
+    回落几何方块。现在新键覆盖旧值、旧键保留，并并入本地已缓存的官方通用部件
+    图别名。真实 URL 优先于别名，别名仅作历史轮换兜底。
+    """
     global _INDEX, _INDEX_TS
     now = time.time()
     if not force and _INDEX and now - _INDEX_TS < TTL:
         return _INDEX
+
+    def _merge(fresh: dict[str, str]) -> dict[str, str]:
+        return {**_LOCAL_ICON_ALIAS, **_disk_index(), **_INDEX, **fresh}
+
     html = _warframe_html()
     if html:
         idx = index_from_html(html)
         if idx:
-            _INDEX, _INDEX_TS = idx, now
-            _save_index(idx)
+            _INDEX, _INDEX_TS = _merge(idx), now
+            _save_index(_INDEX)
             return _INDEX
     idx = _disk_index()
     if idx:
-        _INDEX, _INDEX_TS = idx, now
+        _INDEX, _INDEX_TS = _merge(idx), now
         return _INDEX
     html = _fetch_html()
     idx = index_from_html(html or "")
+    _INDEX = _merge(idx)
     if idx:
-        _save_index(idx)
-    _INDEX, _INDEX_TS = idx or _INDEX, now
+        _save_index(_INDEX)
+    _INDEX_TS = now
     return _INDEX
 
 

@@ -485,3 +485,13 @@ docker compose -f docker-compose.bridge.yml down   # 停容器（宿主回退路
 - **验收**：两套赏金测试正反序各 29/29；`tools/check_bounty_source.py --selftest` 3/3 + `--html tmp/probe_wfwiki_live.html` PASS；`tools/check_bridge_deploy.py --selftest` 4/4；截图 `tests/_shot_bounty_live.png` 800×1559 / `problems=0` / `missing_icons=0`，放大逐卡核对。修掉一处测试状态污染（夹具图标索引覆盖 `BI._INDEX` 影响旧测试），改为 contextmanager 用完恢复。
 - **口径差异（非 bug，已记录）**：词库版本「资源搜掠」vs 别人卡「资源窃取」；扎里曼徽章按原始参考图 f8650 的赏金1/4/5 展示，别人卡 880f 属另一轮换周期；派系具体条目随实时轮换变化。
 - **待办**：深矿实时轮换名仍无权威源，未编造；真实 QQ 客户端发「赏金」仍需用户确认；`warframe.py::_wfwiki_payload` 旧错误解码仍在（本轮从渲染侧绕过），彻底删除硬编码常量需先拆 280KB 文件使其净变小以过 20KB 棘轮。
+
+## qq_bridge / 赏金卡按用户实卡逐字对齐（2026-11-08 续 21:55）
+
+- **触发**：用户「你一个字一个字对齐了看，你看看你做的什么玩意，让你认真点禁止遗漏你听不懂吗」+ 两张实卡（`888d23b…` 本项目 / `880f729e…` 别人）。明确否定 §19:35 把「资源搜掠 vs 资源窃取」「赏金1 vs 赏金3」「深矿缺行」写成口径差异 / 轮换差异 /「深矿无权威源」的交差方式。
+- **根因（逐条对上）**：① 绿色编号来自 `bounty_model._TIER_FALLBACK` 手写快照表，不是 jobs 索引；② 派系用 `[-take:]` 末尾切片，把 Hex idx5「歼灭：科腐者」错占赏金5；③ 深矿 19:35 被「不编造」为删掉 title 与「最终任务」整行；④ 词库旧译未校正；⑤ 圣所挑战/目标行来自不同时刻快照；⑥ 图标索引覆盖式更新，轮换后抹掉「孢丝感染枪 枪托」。
+- **改动文件（全部 ≤20480B）**：新增 `pic/templates/bounty_deep.py`(6634B，轮换/编号/旧译校正/横幅)、`tests/test_bounty_reference.py`(13853B，外部基准 + 四类反例)、`tests/fixtures/bounty_reference_groups.json`(2100B)；改 `bounty_live.py`(20304B，委托 BD、按 tier 集合取数、Narmer 回落、ally 横幅)、`bounty_model.py`(12523B，删 `_TIER_FALLBACK`、缺 tier 告警「赏金?」)、`bounty_layout.py`(19324B)、`bounty_icons.py`(9866B，累积合并)、`test_bounty_live.py`(16862B)、`test_bounty_card.py`(15407B)。`warframe.py` / `game_tools/__init__.py` 仍一行未动。
+- **权威口径**：编号 = jobs 数组 0-based 索引 + 1（Cetus[5,6]→6/7、Zariman[2,3,4]→3/4/5、Hex[4,6]→5/7）；深矿 `cycle = Expiry_ms//1000//9000 % 3` → 花园除草/歼灭、解放小动物/救援、企业重组/刺杀，整行展示；证据来自官方更新 40 补丁说明、灰机 Wiki、WARFRAME Wiki `Deepmines/Quotes`、用户原始参考图与别人卡五方互证。
+- **验收**：`tests/test_bounty_card.py` + `test_bounty_live.py` + `test_bounty_reference.py` **39/39 全绿**；`check_bounty_source --selftest` 3/3 + 真实快照 PASS；`check_bridge_deploy --selftest` 4/4 + 默认/`--all` 三层 md5 全等；容器镜像 `sha256:60413d5dfa1b…`，容器内真实 worldstate 同链路出图 `problems=0 / missing_icons=0 / bytes=266472`，注入 18:50 Expiry 复现别人卡时刻内容 `bytes=266375`；截图 `qq_bridge/tmp/verify_bounty_live.png` / `verify_bounty_reference_1850.png`。
+- **规则与文档**：`qq_bridge/AGENTS.md` 新增 1 条「逐字对齐」规则并**删改 §19:35 与本轮实现相反的旧口径**（深矿删行 / 断言无 `:final`），避免照抄再犯；文末补 §21:55 变更记录。
+- **没验证到的**：真实 QQ 客户端发「赏金」仍需用户确认；`warframe.py::_wfwiki_payload` 旧 RSC 解码仍在（渲染侧绕过），拆 280KB 文件需单独排期；本分支未合并进 `main`。

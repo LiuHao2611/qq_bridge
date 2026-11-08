@@ -120,7 +120,7 @@ def _ref_data() -> dict:
 
 
 def _prod_data() -> dict:
-    """warframe.py 当前真实字段：无 tier / mission / objective。
+    """反例夹具：模拟数据源没给 tier / mission / objective 的断链情形。
 
     只剥离这三个字段，卡片与任务内容保持各自的真实数据，不替换成同一份表
     （早期版本误把三派系 jobs 全换成扎里曼数据，截图中圣所/六人组显示错乱）。
@@ -169,14 +169,23 @@ def test_deep_hero_parsed() -> None:
     assert hero["final"] == "救援"
 
 
-def test_tier_direct_read_wins_over_fallback() -> None:
+def test_tier_comes_from_data_source_only() -> None:
+    """反例闸门：手写快照编号表已删，缺 tier 必须告警、不得静默回填。"""
+    from src.plugins.qq_bridge.pic.templates import bounty_model as M
     m = build_model(_ref_data())
     earth = next(c for c in m["cards"] if c["title"] == "地球赏金")
     assert [j["tier"] for j in earth["jobs"]] == ["赏金6", "赏金7"]
-    p = build_model(_prod_data())
+    events: list[str] = []
+    orig = M.log.warning
+    M.log.warning = lambda *a, **k: events.append(str(a[0]) if a else "")
+    try:
+        p = build_model(_prod_data())
+    finally:
+        M.log.warning = orig
     pe = next(c for c in p["cards"] if c["title"] == "地球赏金")
-    assert [j["tier"] for j in pe["jobs"]] == ["赏金6", "赏金7"], \
-        "缺省时按参考图口径展示，绿色赏金徽章不得缺失"
+    assert [j["tier"] for j in pe["jobs"]] == ["赏金?", "赏金?"], \
+        "缺 tier 时不得再用手写快照编号，必须显式可见"
+    assert any("bounty_tier_missing" in e for e in events), events
     assert all(not j.get("objective") for j in
                next(c for c in p["cards"] if c["title"] == "扎里曼赏金")["jobs"]), \
         "目标行数据缺失时不得编造文案"

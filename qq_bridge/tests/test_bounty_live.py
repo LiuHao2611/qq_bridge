@@ -170,7 +170,7 @@ def test_world_jobs_match_other_bot_reference_card() -> None:
         ("50-70", "防御", "带他们回家", True)]
     assert [(j["lvl"], j["type"], j["name"], j["narmer"])
             for j in w["金星赏金"]["jobs"]] == [
-        ("100-100", "挖掘", "资源搜掠", False),
+        ("100-100", "挖掘", "资源窃取", False),
         ("50-70", "挖掘", "掘地三尺", True)]
     assert [(j["lvl"], j["type"], j["name"])
             for j in w["火卫二赏金"]["jobs"]] == [
@@ -200,13 +200,22 @@ def test_factions_come_from_groups_with_challenge_and_target_lines() -> None:
         "六人组 ally 字段必须体现在第二行（词库 |ALLY|的赏金任务 模板）"
 
 
-def test_deep_drops_unverifiable_hardcoded_rotation() -> None:
+def test_deep_rotation_and_final_task_come_from_official_expiry() -> None:
+    """用户纠正：深矿轮换名与「最终任务」必须整行保留，不许删、不许硬编码。"""
+    from src.plugins.qq_bridge.pic.templates import bounty_deep as BD
     d = _enriched()
     deep = d["deep"]
-    assert "title" not in deep
-    assert "花园除草" not in json.dumps(deep, ensure_ascii=False)
-    assert "最终" not in deep["detail"]
-    assert deep["tag"] == "[钢铁之路]" and "5阶段" in deep["detail"]
+    assert deep["tag"] == "[钢铁之路]"
+    assert deep["title"] == "企业重组", "当前 Expiry 应为企业重组（别人卡 880f）"
+    assert deep["detail"] == "等级 130-140 · 5阶段 · 最终：刺杀"
+    hero = next(c for c in build_model(d)["cards"]
+                if c["title"] == "深矿赏金")["hero"]
+    assert hero["section"] == "[钢铁之路]企业重组"
+    assert hero["final"] == "刺杀", "最终任务行禁止遗漏"
+    # 上一轮次 16:50 用户原始参考图 f8650：解放小动物 / 救援
+    exp = BD.official_expiry(OFFICIAL, PL)
+    assert BD.ROTATIONS[BD.rotation_index(exp - 9000 * 1000)] == \
+        ("解放小动物", "救援")
 
 
 def test_rotation_images_are_not_overwritten() -> None:
@@ -293,8 +302,9 @@ def test_registered_bounty_build_calls_enrich() -> None:
 
 # ------------------------------------------------------ 渲染 / 截图 ----
 def test_all_bounty_template_files_under_20kb() -> None:
-    for name in ("bounty.py", "bounty_live.py", "bounty_model.py",
-                 "bounty_atoms.py", "bounty_layout.py", "bounty_icons.py"):
+    for name in ("bounty.py", "bounty_live.py", "bounty_deep.py",
+                 "bounty_model.py", "bounty_atoms.py",
+                 "bounty_layout.py", "bounty_icons.py"):
         size = (TPL / name).stat().st_size
         assert size <= 20480, f"{name} 超出 20KB 硬门禁: {size}B"
     assert __file__ and Path(__file__).stat().st_size <= 20480
@@ -313,8 +323,8 @@ def test_render_real_fixture_strict() -> None:
         L.gate_icons(c, strict=True)
         assert not problems, problems[:5]
         assert c.missing_icons == []
-        assert not any(b[0].endswith(":final") for b in c.layout_boxes), \
-            "深矿最终任务无数据时不得把 detail 原文重复画成「最终任务」"
+        finals = [b for b in c.layout_boxes if b[0].endswith(":final")]
+        assert finals, "深矿「最终任务：」整行必须画出来，禁止删行"
         assert c.width == 800 and c.height > 1200
         path = OUT / "_shot_bounty_live.png"
         c.save(str(path))

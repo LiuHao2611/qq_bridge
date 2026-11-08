@@ -123,8 +123,8 @@ def _plan(card: dict) -> list[dict]:
         if hero["lvl"] or hero["stages"]:
             rows.append({"k": "hero_badge", "h": BADGE_H + 2,
                          "lvl": hero["lvl"], "stages": hero["stages"]})
-        # 深矿「最终任务」无可验证数据源时绝不回落 detail 原文：那会把
-        # 「等级 130-140 · 5阶段」当成任务名，与上方 Lv/阶段徽章重复两遍。
+        # 深矿「最终任务」由 bounty_deep 从官方 Expiry 推导，必须整行展示；
+        # 无数据时 final 为空自然省略，绝不把 detail 原文重复画成任务名。
         if hero["final"]:
             rows.append({"k": "hero_final", "h": ITEM_H,
                          "final": hero["final"], "icon": hero["icon"]})

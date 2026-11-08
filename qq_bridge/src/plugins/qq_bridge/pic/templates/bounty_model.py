@@ -23,17 +23,20 @@
     圣所/扎里曼/六人组 ← factions 三条，三行式（赏金徽章 / 类型+任务 / 目标）
 
 两条**显式预留**，不编造数据：
-  * ``job["tier"]``     —— 数据源给出真实赏金阶段编号时优先使用；缺省时按
-                           ``_TIER_FALLBACK``（参考图口径的展示序号）呈现，保证
-                           绿色「赏金N」徽章这一内容层级不缺失。
+  * ``job["tier"]``     —— 唯一来源是 ``bounty_live`` / ``bounty_deep.tier(idx)``，
+                           即 jobs 数组索引+1。禁止手写快照编号表；缺省时显式
+                           告警并显示「赏金?」，让人一眼看见数据链路断了。
   * ``job["objective"]``/``job["mission"]`` —— 目标行 / 任务名。数据源补齐后
                            自动直读，无需改渲染层；缺省时目标行省略，不编文案。
 """
 from __future__ import annotations
 
+import logging
 import re
 
 from . import bounty_icons
+
+log = logging.getLogger("qq_bridge")
 
 # 参考图 8 张卡的行式网格顺序：每两个一组 = 一行（左列, 右列）
 CARD_ORDER: tuple[tuple[str, str], ...] = (
@@ -47,16 +50,10 @@ CARD_ORDER: tuple[tuple[str, str], ...] = (
     ("六人组赏金", "faction:六人组赏金"),
 )
 
-# 展示口径的赏金阶段序号（参考图同款）。仅作 tier 缺省值：
-# 数据源一旦给出 job["tier"]，这里立刻让位，不参与任何业务判断。
-_TIER_FALLBACK: dict[str, tuple[str, ...]] = {
-    "地球赏金": ("赏金6", "赏金7"),
-    "金星赏金": ("赏金6", "赏金7"),
-    "火卫二赏金": ("赏金5", "赏金6"),
-    "圣所赏金": ("赏金4", "赏金5"),
-    "扎里曼赏金": ("赏金1", "赏金4", "赏金5"),
-    "六人组赏金": ("赏金5", "赏金7"),
-}
+#: 绿色赏金编号没有、也不允许有本地回退表。唯一权威口径是
+#: ``bounty_deep.tier(idx)`` = jobs 数组 0-based 索引 + 1，由 ``bounty_live``
+#: 在 enrich 时写入每个 job。上一轮把 16:50 快照的「赏金1/4/5」写死在
+#: ``_TIER_FALLBACK``，18:50 应为「赏金3/4/5」，正是用户逐字比对抓到的错。
 
 #: 轮换周期（秒），只用于底部进度条的**视觉比例**，不参与任何数据判断。
 #: 参考图「剩余 1小时48分」时左侧已消逝段约占 1/5，反推周期约 2h15m。
@@ -75,8 +72,9 @@ def _tier(card_title: str, idx: int, job: dict) -> str:
     t = str(job.get("tier") or "").strip()
     if t:
         return t
-    seq = _TIER_FALLBACK.get(card_title, ())
-    return seq[idx] if idx < len(seq) else f"赏金{idx + 1}"
+    log.warning("bounty_tier_missing card=%s idx=%d — 编号只能来自 bounty_deep.tier()",
+                card_title, idx)
+    return "赏金?"
 
 
 def _norm_lvl(lvl) -> str:
@@ -123,11 +121,11 @@ def _items_from_names(names: list) -> list[dict]:
 
 
 def _deep_hero(deep: dict) -> dict | None:
-    """解析 deep.detail「等级 130-140 · 5阶段 · 最终：歼灭」→ 三个展示字段。
+    """解析 deep.detail「等级 130-140 · 5阶段 · 最终：刺杀」→ 展示字段。
 
-    ``detail`` 只作数据保留：深矿具体轮换 / 最终任务在 RSC、官方 worldstate、
-    WFA 词库里都查不到，``bounty_live._patch_deep()`` 已移除硬编码，此时
-    ``final`` 为空，渲染层不得把 detail 原文回落到「最终任务：」行。
+    ``tag + title`` 由 ``bounty_deep.patch_deep()`` 从官方 Expiry 按 2.5h 轮换
+    现算；``detail`` 末尾「最终：xxx」是同一轮换绑定的固定最终阶段，必须完整
+    画成「最终任务：」整行，禁止删行或把 detail 原文重复当任务名。
     """
     if not deep:
         return None
