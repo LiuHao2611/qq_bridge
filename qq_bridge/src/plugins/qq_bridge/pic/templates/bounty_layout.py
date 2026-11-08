@@ -123,10 +123,11 @@ def _plan(card: dict) -> list[dict]:
         if hero["lvl"] or hero["stages"]:
             rows.append({"k": "hero_badge", "h": BADGE_H + 2,
                          "lvl": hero["lvl"], "stages": hero["stages"]})
-        if hero["final"] or hero["detail"]:
+        # 深矿「最终任务」无可验证数据源时绝不回落 detail 原文：那会把
+        # 「等级 130-140 · 5阶段」当成任务名，与上方 Lv/阶段徽章重复两遍。
+        if hero["final"]:
             rows.append({"k": "hero_final", "h": ITEM_H,
-                         "final": hero["final"] or hero["detail"],
-                         "icon": hero["icon"]})
+                         "final": hero["final"], "icon": hero["icon"]})
     for j in card["jobs"] or []:
         if j["layout"] == "pair":
             rows.append({"k": "pair1", "h": BADGE_H, "job": j})

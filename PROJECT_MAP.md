@@ -475,3 +475,13 @@ docker compose -f docker-compose.bridge.yml down   # 停容器（宿主回退路
 - **落地**：新增 `qq_bridge/tools/check_bounty_source.py`（10403B）：断言 `bountyBoard` 3 组/地球 MOD 卡图/金星 5 债券/`groups` 3 组含 node·mission·challenge/`bounties.rotRewards`；`--selftest` 注入「旧 replace 写法 / groups 丢失 / 地球 rewards 丢失」3/3 全拦，真实快照 PASS。闸门自身修过一次（样本带空格 JSON 触发 `lstrip` 误判，已兼容两种格式）。规则表新增 1 条写明「由什么拦住」。
 - **下一步（未动）**：`bounty_rsc.py` 承载正确解码+词库 → `warframe.py::_wfwiki_payload` 薄委托；`_bounty_card_data` 构造迁入 `bounty_source.py` 并删除硬编码常量使 280KB 文件净变小以过 20KB 棘轮；`bounty_model.py` 渲染 challenge 目标行；深矿单独查证；改完按 §18:23 rebuild + recreate + 三层 md5 闸门。
 - 探针与快照在 `tmp/`（`probe_bounty_sources.py` / `probe_bounty_payload2.py` / `probe_bounty_payload3.py` / `probe_wfwiki_live.html` / `probe_official_worldstate.json`），均被 `.gitignore` 忽略，不入库。
+
+## qq_bridge / 赏金卡生产内容修复（2026-11-08 续 19:35）
+
+- **触发**：用户「你是不是又忘记更新生产环境代码了」附 `a6e8e53d…png`。核对 18:50 / 19:06 两张本项目截图逐字相同（仅倒计时变化），确认容器是最新镜像但 §19:05 只做调研未改生产实现 → 本轮真正把内容修进渲染链路。
+- **新增/改动文件**（全部 ≤20480B）：`pic/templates/bounty_live.py`（18222B，新建，正确 RSC 解码 + WFA 词库查名 + `Challenge_*_Desc` 反查 + `groups` 重建 + 深矿去硬编码）、`pic/templates/bounty.py`（2601B，薄壳改为先 `enrich()` 再渲染）、`pic/templates/bounty_layout.py`（18895B，`hero_final` 不再回落 `detail`）、`pic/templates/bounty_model.py`（12274B，文档字符串同步）、`tests/test_bounty_live.py`（15357B，15 用例）、`tests/fixtures/bounty_rsc_payload.json`（44693B 真实 RSC 载荷）/ `bounty_official.json`（2715B 官方 worldstate，`.json` 不在 20KB 门禁扩展名表）。`game_tools/warframe.py`（280KB）与 `game_tools/__init__.py`（134KB）**一行未动**。
+- **补齐结果（真实快照逐字）**：地球「MOD奖励轮换」8 MOD、金星「债券轮换」5 债券；地球 `100-100 缓存 找出遗失的器物` / `50-70 防御 带他们回家 合一众`；金星 `100-100 挖掘 资源搜掠` / `50-70 挖掘 掘地三尺 合一众`；火卫二 `40-60 挖掘 核心样本` / `100-100 生存 蛮暴之力`；扎里曼「哈拉科防线 / 歼灭 / 唤醒与驱逐 / 目标：唤醒一个休眠的天使并击败它」等三组；深矿只留 `[钢铁之路] / Lv130-140 / 5阶段`。
+- **通用化而非补丁**：任务名走 `dict.zh.json` 键构造 + 同族词干最长公共前缀（20/20）；挑战名走 `Challenge_*_Desc` 模板按行反查（17/17）；任务类型词由 jobType 词干推导（6/6）；`bountyBoard` 最后 2 个非 vault job 天然给出别人卡顺序。无 44 条手写任务名，无按派系硬编码清单。
+- **验收**：两套赏金测试正反序各 29/29；`tools/check_bounty_source.py --selftest` 3/3 + `--html tmp/probe_wfwiki_live.html` PASS；`tools/check_bridge_deploy.py --selftest` 4/4；截图 `tests/_shot_bounty_live.png` 800×1559 / `problems=0` / `missing_icons=0`，放大逐卡核对。修掉一处测试状态污染（夹具图标索引覆盖 `BI._INDEX` 影响旧测试），改为 contextmanager 用完恢复。
+- **口径差异（非 bug，已记录）**：词库版本「资源搜掠」vs 别人卡「资源窃取」；扎里曼徽章按原始参考图 f8650 的赏金1/4/5 展示，别人卡 880f 属另一轮换周期；派系具体条目随实时轮换变化。
+- **待办**：深矿实时轮换名仍无权威源，未编造；真实 QQ 客户端发「赏金」仍需用户确认；`warframe.py::_wfwiki_payload` 旧错误解码仍在（本轮从渲染侧绕过），彻底删除硬编码常量需先拆 280KB 文件使其净变小以过 20KB 棘轮。

@@ -6,7 +6,8 @@
 两列奖励物品 / 绿色「赏金N」徽章 / Lv 徽章 / 任务类型词 / 目标行 / 底部剩余时间 /
 脚注 / 平台与来源。具体数值与任务名一律来自实时数据，不把参考图快照写死。
 
-数据源契约（warframe.py::_bounty_card_data，本轮不改该文件）：
+数据源契约（warframe.py::_bounty_card_data；warframe.py 280KB 受 20KB 门禁约束，
+故由 ``bounty_live.enrich()`` 在渲染入口补齐被解析丢失的真实数据）：
     title / remain / rotation{rot,rot_rewards,vault,vault_rewards}
     worlds[{name,label,items,jobs[{lvl,type,name,narmer,icon,color}]}]
     deep{name,tag,title,detail,icon,color}
@@ -124,7 +125,9 @@ def _items_from_names(names: list) -> list[dict]:
 def _deep_hero(deep: dict) -> dict | None:
     """解析 deep.detail「等级 130-140 · 5阶段 · 最终：歼灭」→ 三个展示字段。
 
-    解析不出来时保留原始 detail 作为弱信息，绝不丢内容。
+    ``detail`` 只作数据保留：深矿具体轮换 / 最终任务在 RSC、官方 worldstate、
+    WFA 词库里都查不到，``bounty_live._patch_deep()`` 已移除硬编码，此时
+    ``final`` 为空，渲染层不得把 detail 原文回落到「最终任务：」行。
     """
     if not deep:
         return None
