@@ -33,7 +33,10 @@ EOF
 gate_is_skip() {
     local p="$1" pat
     for pat in "${GATE_SKIP_PATTERNS[@]}"; do
-        if printf '%s' "$p" | grep -Eq "$pat"; then return 0; fi
+        # 必须用 -e 显式声明模式：跳过表里含 `-min\.js$`，不加 -e 的话
+        # grep 会把开头的 `-m` 当 max-count 选项，报 "invalid max count"，
+        # 该条跳过规则随之失效（原版 hook 就有这个坑）。
+        if printf '%s' "$p" | grep -Eq -e "$pat"; then return 0; fi
     done
     return 1
 }

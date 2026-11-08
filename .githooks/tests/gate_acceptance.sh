@@ -102,12 +102,14 @@ clean_index >/dev/null 2>&1
 # ---------- 4. 跳过规则：lockfile / min.js / vendor / 非代码扩展名 ----------
 mkfile package-lock.json 30000
 mkfile app.min.js 30000
+mkfile app-min.js 30000   # 守「跳过表以 - 开头被 grep 当选项」的坑
 mkdir -p vendor
 mkfile vendor/huge.js 30000
 mkfile blob.dat 30000
-git add package-lock.json app.min.js vendor/huge.js blob.dat
+git add package-lock.json app.min.js app-min.js vendor/huge.js blob.dat
 out=$(git commit -m "skips" 2>&1); rc=$?
-check "lockfile/min.js/vendor/非代码扩展名 自动放行" "$([ $rc -eq 0 ] && echo 1 || echo 0)" "$out"
+check "lockfile/min.js/-min.js/vendor/非代码扩展名 自动放行" "$([ $rc -eq 0 ] && echo 1 || echo 0)" "$out"
+check "跳过规则不产生 grep 'invalid max count' 报错" "$(echo "$out" | grep -q 'invalid max count' && echo 0 || echo 1)" "$out"
 clean_index >/dev/null 2>&1
 
 # ---------- 5. 指向主仓：hooksPath 真的配上了 ----------
