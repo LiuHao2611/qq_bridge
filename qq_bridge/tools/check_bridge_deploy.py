@@ -122,8 +122,19 @@ def problems(image_container: str, image_latest: str,
             out.append("P2 三层 md5 不一致 %s：host=%s image=%s container=%s"
                        % (rel, h[:8], (i or "<缺失>")[:8], (c or "<缺失>")[:8]))
     for ln in diff:
-        if "/app/src" in ln or "/app/tools" in ln:
-            out.append("P3 运行容器有源码热贴覆盖（docker diff）：%s" % ln.strip())
+        parts = ln.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        path = parts[1].strip()
+        if not (path.startswith("/app/src/") or path.startswith("/app/tools/")):
+            continue
+        # 运行时产物，不是源码热贴：pic_cache 由 cache.py 自建；目录 mtime 变更
+        # 也会出现在 docker diff 里，无后缀即目录，必须跳过。
+        if path.startswith("/app/src/data/") or "/pic_cache/" in path:
+            continue
+        if not Path(path).suffix:
+            continue
+        out.append("P3 运行容器有源码热贴覆盖（docker diff）：%s" % ln.strip())
     return out
 
 
@@ -144,7 +155,16 @@ def selftest() -> int:
             print("SELFTEST FAIL：注入「%s」没有被拦住" % name)
             return 1
         print("SELFTEST OK：注入「%s」→ %s" % (name, p[0][:90]))
-    print("SELFTEST PASS (3/3 注入全部被拦下)")
+    # 反例：运行时自建 pic_cache / 目录 mtime 变更不得被当成源码热贴
+    legal = ["C /app/src", "C /app/src/data", "A /app/src/data/pic_cache",
+             "A /app/src/data/pic_cache/5e1e5aa7.png",
+             "A /app/src/data/pic_cache/index.json"]
+    legal_problems = problems(*(good[:5] + (legal,)))
+    if legal_problems:
+        print("SELFTEST FAIL：运行时 pic_cache 产物被误判为热贴：%s" % legal_problems[0])
+        return 1
+    print("SELFTEST OK：运行时 pic_cache / 目录变更 → 不报 P3")
+    print("SELFTEST PASS (3/3 注入被拦下 + 1 项运行时产物不误报)")
     return 0
 
 

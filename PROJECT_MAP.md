@@ -460,7 +460,7 @@ docker compose -f docker-compose.bridge.yml down   # 停容器（宿主回退路
 - 根因：`docker-compose.bridge.yml` volumes 不含 `src`，代码靠 `Dockerfile.bridge` 的 `COPY src ./src` 烘进镜像；`develop.watch` 需常驻进程，实测未跑。排除 pic 缓存嫌疑（TTL 300s、key 含实时 data、日志均 `cache=miss`）。
 - 修复：`docker compose -f docker-compose.bridge.yml up -d --build --force-recreate bridge`（只动 bridge，不动 NapCat / aria2；遵守 `bot.py` 无自动重登红线）；确认 8080 两监听均为 Docker 转发进程、宿主无原生 `bot.py`。
 - 顺带加固：① `qq_bridge/.dockerignore` 新增 `src/data/pic_cache/`（原根目录 `*.png` 匹配不到 src 子目录，41 张历史 PNG 被烘进镜像；`cache.py` 会自建目录，排除安全），重建后容器内缓存数 0；② 宿主侧全量预热 DE 官方图标 `131/131`、0 失败，容器 `stats()` 同步 `cached=131 missing=0`，避免轮换换物品回落几何方块。
-- 新增 `qq_bridge/tools/check_bridge_deploy.py`：P1 容器 Image ID == `qq-bridge:latest`；P2 宿主/镜像层/运行容器三层 md5 全等；P3 `docker diff` 无 `/app/src`、`/app/tools` 热贴；`--selftest` 3/3 注入反例全被拦；真实 `--all` 全量 `src/**/*.py` PASS。
+- 新增 `qq_bridge/tools/check_bridge_deploy.py`：P1 容器 Image ID == `qq-bridge:latest`；P2 宿主/镜像层/运行容器三层 md5 全等；P3 `docker diff` 无 `/app/src`、`/app/tools` 热贴；`--selftest` 3 类注入反例全被拦 + 运行时 `src/data/pic_cache` 不误报（4/4，初版 P3 曾把运行时缓存误判成热贴，已收紧为只认带扩展名且非 `src/data/` 的文件）；真实默认模式与 `--all` 全量 `src/**/*.py` 均 PASS。
 - 验收：容器内真实 `bounties_card_data()` → 两列 8 卡 800×1305、`layout_problems=0 missing_icons=0`；与 `_send_bounty` 同链路 `pic.render` → `bytes=160472`；截图 `tmp/verify_bounty_live.png` 目视确认真实图标、无重叠/裁切。NapCat 18:20:16 自动重连 `online=1`，`/api/qq/health` `state=ok ws_online=true`。
 - 观察未改：实时「金星赏金」任务名出现未翻译英文 `VenusPreservationJobResource` 等；当前轮换无 MOD/债券奖励故真实图只有 3 个物品图标。补中文映射需先拆 280KB `warframe.py`。
 - 待用户配合：再发一次「赏金」从 QQ 客户端确认；本轮未替用户发消息，也未合并 `main`。
