@@ -11,6 +11,7 @@
 import asyncio
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -55,16 +56,31 @@ def test_data_discipline(dm):
     txt = dm.full_text(r)
     check("text_fallback_mentions_need_shot", "需紫卡截图" in txt)
 
-    # WFM 真实中位 → 价格框填真实数字；词条价差用挂牌中位作「模型代理估值」，
-    # 恒标「模型预估 谨慎参考」，绝不冒充实盘价差（2026-11-04 market 口径）。
-    r2 = dm.riven_full_data(
-        weapon="绝路",
-        market={"status": "ok", "n": 7, "med": 400.0, "lo": 360.0, "hi": 1000.0})
-    check("wfm_real_median_filled", r2["price_left"]["sub_val"] == "400P")
+    # 真实市场快照 → 匹配样本分层估价（2026-11-10 对齐 Rabbit 参考卡）：
+    # 有 7 条同等级样本，左盒 big 必须是真实价格而不是写死的「暂无匹配样本」；
+    # 零洗中位价只取 market.zero（rank0），右盒是「同等级中位 + 词条溢价」的
+    # 独立模型估值，两框不得是同一个数；置信度由 n 推导，不自造「样本 n=」。
+    mkt = {"status": "ok", "n": 7, "med": 400.0, "lo": 360.0, "hi": 1000.0,
+           "zero": 369.0, "match_tier": "同负词条",
+           "rec_neg": {"delta": 17.0}, "exact": {"status": "few", "n": 1},
+           "ts": time.strftime("%Y-%m-%d %H:%M")}
+    r2 = dm.riven_full_data(weapon="绝路", market=mkt)
+    check("zero_median_from_rank0", r2["price_left"]["sub_val"] == "369P")
+    check("matched_sample_gives_price",
+          r2["price_left"]["big"] == "400P" and "匹配层级" in r2["price_left"]["foot"])
     check("wfm_model_proxy_labeled",
-          r2["price_right"]["big"] == "400P"
-          and "模型预估" in r2["price_right"]["foot"]
-          and "n=7" in r2["price_right"]["sub"])
+          r2["price_right"]["big"] == "417P"
+          and r2["price_right"]["sub"] == "来源：wm市场|置信度35%"
+          and "模型预估" in r2["price_right"]["foot"])
+    check("two_boxes_are_different_buckets",
+          r2["price_left"]["sub_val"] != r2["price_right"]["big"])
+    check("observed_is_relative", "小时内" in r2["observed"])
+    check("exact_match_wins_tier", dm.riven_full_data(
+        weapon="绝路", market=dict(mkt, exact={"status": "ok", "n": 9, "median": 520.0})
+    )["price_left"]["big"] == "520P")
+    check("no_sample_stays_honest", dm.riven_full_data(
+        weapon="绝路", market={"status": "error", "error": "样本不足"}
+    )["price_left"]["big"] == "暂无匹配样本")
 
     # 回归（2026-11-06 用户实卡「阿利乌双枪」）：三条词条全是触发/弹匣/装填时，
     # 旧模型（纯面板 DPS）三者贡献全 0 → 伤害分 0.0 / 综合 0.0 / 击杀效率

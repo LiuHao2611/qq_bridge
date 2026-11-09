@@ -12,11 +12,12 @@
     回归测试与 ``#紫卡全面 样例`` 显式预览；卡片脚注会明确标注「版式样例·非实时数据」，
     绝不冒充真实查询结果。
   * WFM 拍卖不暴露 fuse 字段；「词条价差预估」是模型估算，脚注恒标「模型预估 谨慎参考」。
+  * 价格两盒由 ``riven_price`` 按真实匹配样本分层估价（2026-11-10 对齐 Rabbit 参考卡），
+    不再把「暂无匹配样本」写死；「最近观测」用参考卡的相对时间口径。
 """
 from __future__ import annotations
 
 import logging
-import time
 from pathlib import Path
 
 logger = logging.getLogger("qq_bridge")
@@ -113,40 +114,14 @@ def _gain_parts(gain: float, gain_max: float) -> list[tuple[str, str]]:
 
 
 def _price_boxes(market: dict | None) -> tuple[dict, dict]:
-    """市场价格预计 / 词条价差预估。
+    """价格两盒统一交给 ``riven_price``（真实匹配样本分层估价）。
 
-    真实价格只来自 ``market`` 快照（``fetch_market_for_card`` 返回的挂牌中位
-    ``med`` / 样本 ``n``）；WFM 不暴露 fuse、也无词条成交价，**不能硬算价差**，
-    故「词条价差预估」用挂牌中位作**模型代理估值**，脚注恒标「模型预估 谨慎参考」，
-    绝不冒充实盘价差。左盒与参考卡一致：big 恒标「暂无匹配样本」，真实中位只进 sub。
+    2026-11-10 之前这里把左盒 big/foot 写死「暂无匹配样本」、左右两盒填同一个
+    ``med``，与 Rabbit 参考卡「匹配样本估价 / 零洗基准 / 词条价差模型」三套语义
+    都不符。旧实现已删除，唯一实现见 ``riven_price.price_boxes``。
     """
-    m = market or {}
-    ok = m.get("status") == "ok" and (m.get("n") or 0) >= 3 and m.get("med") is not None
-    if ok:
-        med = int(round(float(m["med"])))
-        n = int(m["n"])
-        left = {
-            "title": "市场价格预计",
-            "big": "暂无匹配样本",
-            "sub": "零洗中位价：", "sub_val": "%dP" % med,
-            "foot": "暂无匹配样本",
-        }
-        right = {
-            "title": "词条价差预估",
-            "big": "%dP" % med,
-            "sub": "来源：wm市场|样本 n=%d|置信度80%%" % n,
-            "foot": "模型预估 谨慎参考",
-        }
-    else:
-        left = {
-            "title": "市场价格预计", "big": "暂无匹配样本",
-            "sub": "零洗中位价：", "sub_val": "暂无", "foot": "暂无匹配样本",
-        }
-        right = {
-            "title": "词条价差预估", "big": "暂无实盘样本",
-            "sub": "来源：wm市场|窗口样本不足", "foot": "模型预估 谨慎参考",
-        }
-    return left, right
+    from . import riven_price
+    return riven_price.price_boxes(market)
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +142,8 @@ def riven_full_data(weapon: str | None = None, parsed: dict | None = None,
         缺省时退回可见失败态，不让卡面静默假装无数据。
     :param mods: 真实配卡 MOD 列表（[{name,image}]）；缺省用参考卡像素裁切资产。
     """
-    now = time.strftime("%Y-%m-%d %H:%M")
+    from . import riven_price
+    observed = riven_price.observed_text((market or {}).get("ts"))
     base: dict = {
         "status": "ok",
         "sample": False,
@@ -185,7 +161,7 @@ def riven_full_data(weapon: str | None = None, parsed: dict | None = None,
             {"label": "市场分", "value": "—", "label_color": "gray"},
             {"label": "综合评分", "value": "—", "label_color": "red"},
         ],
-        "observed": "最近观测：%s" % now,
+        "observed": observed,
         "build_title": "基于击杀效率配卡",
         "mods": mods if mods is not None else _mod_assets(),
         "kill_line": [],

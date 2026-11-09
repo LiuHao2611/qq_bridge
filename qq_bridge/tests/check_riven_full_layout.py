@@ -8,6 +8,7 @@
 """
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -38,11 +39,21 @@ def main():
         return 1
 
     sample = dm.reference_sample()
+    ts = time.strftime("%Y-%m-%d %H:%M")
+    # 2026-11-10：左盒 big 现在有两态（价格数字 / 中文「暂无匹配样本」），
+    # 两态都必须过版式门禁；旧夹具传的 `wfm=` 参数早已不存在，会直接 TypeError。
+    matched = {"status": "ok", "n": 27, "med": 380.0, "lo": 330.0, "hi": 400.0,
+               "zero": 369.0, "match_tier": "同负词条",
+               "rec_neg": {"delta": 17.0}, "exact": {"status": "few", "n": 1},
+               "ts": ts}
+    exact = dict(matched, exact={"status": "ok", "n": 9, "median": 520.0})
+    few = dict(matched, status="error", error="样本不足")
     samples = {
         "reference_sample": sample,
         "no_screenshot": dm.riven_full_data(weapon="绝路"),
-        "wfm_real_median": dm.riven_full_data(
-            weapon="绝路", wfm={"n": 7, "med": 400.0, "lo": 360.0, "hi": 1000.0}),
+        "wfm_real_median": dm.riven_full_data(weapon="绝路", market=matched),
+        "price_big_exact_match": dm.riven_full_data(weapon="绝路", market=exact),
+        "price_big_no_match": dm.riven_full_data(weapon="绝路", market=few),
         "long_weapon": dm.riven_full_data(weapon="一个非常非常非常长的武器中文名称测试溢出"),
         "ocr_real": dm.riven_full_data(parsed={
             "weapon": "rubico", "weapon_zh": "绝路", "riven_name": "Acri-igniata",

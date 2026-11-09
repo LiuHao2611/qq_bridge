@@ -63,6 +63,7 @@ def setup():
     L("pic.fonts", "pic/fonts.py")
     L("pic.canvas", "pic/canvas.py")
     rc = L("game_tools.riven_card", "game_tools/riven_card.py")
+    L("game_tools.riven_price", "game_tools/riven_price.py")  # riven_full 的相对导入依赖
     # 数据目录：生产布局在插件根上一级（rc 默认 _DATA_DIR 已正确），worktree 布局在
     # 仓库根。部署仓库里可能还残留一份陈旧的 REPO/data 影子目录（实测 2026-11-06：
     # D:\AI\manju_agent\data 是 9-30 的旧快照，缺 riven_disp.json），因此**优先选真正

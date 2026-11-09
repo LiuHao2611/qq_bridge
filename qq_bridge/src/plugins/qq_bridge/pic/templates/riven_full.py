@@ -174,12 +174,10 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
         return c.text_width(str(text), size * S, role) / S
 
     def fit(text, target_w, role="bold", lo=9, hi=32) -> int:
-        """按参考卡**实测墨迹宽度**反推字号（度量优先、字体无关）。
+        """按参考卡实测墨迹宽度反推字号（度量优先、字体无关）。
 
-        参考卡字体比本机微软雅黑窄，若直接写死字号，同一列会整体变宽并互相挤压。
-        target_w 是参考卡该类文本的实测步进宽（墨迹 + 少量 side bearing）。
-        ``hi`` 是该位置的字号上限：占位符「—」只有一个字符，若不给上限会被
-        反推成超大字号并压到相邻行（真实踩过的坑，故每个位置显式给 cap）。
+        target_w 为参考卡实测步进宽；``hi`` 是字号上限，防止「—」这类短占位符
+        被反推成超大字号压到相邻行（真实踩过的坑）。
         """
         best = lo
         orig_hi = hi
@@ -497,7 +495,9 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
         c.line((P(bx0 + 14), P(1082), P(bx1 - 14), P(1082)),
                fill=C_RULE, width=max(1, P(1)))
         big = str(p.get("big") or "暂无")
-        target = W_PRICE_BIG if i == 0 else W_PRICE_BIG_R
+        # 短价格串沿用 166 会被 fit() 反推成巨字压相邻行（真实踩过的坑）
+        is_price = big.endswith("P") and big[:-1].isdigit()
+        target = W_PRICE_BIG_R if (i or is_price) else W_PRICE_BIG
         fs_big = min(fit(big, target), fit(big, bx1 - bx0 - 40))
         T(ctr, 1128, big, fs_big, C_ORANGE, "bold", "ms")
         if i == 0:
