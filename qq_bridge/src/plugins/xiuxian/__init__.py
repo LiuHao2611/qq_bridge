@@ -19,10 +19,7 @@
 
 from __future__ import annotations
 
-import asyncio
-import random
 import re
-import time
 
 import nonebot
 from nonebot import on_regex, get_driver
@@ -33,11 +30,13 @@ from . import card
 from . import config as cfg
 from . import commands
 from . import core
+from . import broadcast
 from . import store as store_mod
 
 from src.group_switch import group_enabled
 
 store = store_mod.Store()
+
 
 # priority=5（高于聊天处理器的 10） + block=True（命中即阻断 LLM 闲聊）
 from src.game_mode import get_mode, set_mode, register_keywords
@@ -462,140 +461,6 @@ async def _(event: MessageEvent):
     await atk.finish(await commands.cmd_hit_boss(store, str(event.user_id), gid))
 
 
-# ---------------------------------------------------------------------------
-# 后台随机事件循环（群活跃引擎）
-# ---------------------------------------------------------------------------
-# 全局广播频率护栏：防止后台循环（秘境/奇遇/Boss）向同一群刷屏，
-# 触发腾讯社交风控。宁可静默丢弃一条非关键广播，也绝不灌屏。
-_BC_GAP_SEC = 8          # 同一群两条广播的最小间隔（秒）
-_BC_MAX_PER_MIN = 6      # 同一群每分钟最多广播条数（安全网）
-_bc_log: dict[str, list[float]] = {}   # gid -> 近 60s 内的发送时间戳
-
-
-def _bc_allowed(gid: str) -> bool:
-    now = time.time()
-    hist = _bc_log.get(gid)
-    if not hist:
-        return True
-    if now - hist[-1] < _BC_GAP_SEC:          # 间隔太密
-        return False
-    recent = [t for t in hist if now - t < 60]
-    if len(recent) >= _BC_MAX_PER_MIN:        # 每分钟超限
-        return False
-    return True
-
-
-async def _broadcast(gid: str, msg: str):
-    # 群聊总闸（GROUP_ENABLED=false）下的第一道关。
-    # 这里必须拦，因为这是**出站**：入站闸只让群消息进不来，拦不住我们主动发。
-    # 2026-10-29 就是漏了这里，世界 Boss / 秘境 / 奇遇 照样往两个群里广播。
-    if not group_enabled():
-        logger.debug(f"[xiuxian] 群聊已关闭，广播丢弃 gid={gid}")
-        return
-    try:
-        if not _bc_allowed(gid):
-            # 命中护栏：静默丢弃，避免刷屏触发风控
-            logger.debug(f"[xiuxian] 广播被频率护栏丢弃 gid={gid}")
-            return
-        bots = list(get_driver().bots.values())
-        if bots:
-            await bots[0].send_group_msg(group_id=int(gid), message=msg)
-            now = time.time()
-            hist = _bc_log.setdefault(gid, [])
-            hist.append(now)
-            _bc_log[gid] = [t for t in hist if now - t < 60]  # 仅保留 60s 内
-    except Exception:  # noqa: BLE001 — 广播失败不该拖垮循环
-        pass
-
-
-async def _event_loop():
-    await asyncio.sleep(8)
-    while True:
-        await asyncio.sleep(random.randint(cfg.EVENT_INTERVAL_MIN, cfg.EVENT_INTERVAL_MAX))
-        try:
-            groups = await store.enabled_groups()
-            if not groups:
-                continue
-            g = random.choice(groups)
-            ev = core.roll_world_event()
-            world = await store.get_world(g)
-            if ev == "boss":
-                players = await store.all_players(g)
-                world["boss"] = core.spawn_boss(max(1, len(players)))
-                msg = (f"⚠️【世界Boss 降临】气血 {world['boss']['max_hp']}！"
-                       f"发送「讨伐boss」出力，击杀瓜分 {cfg.BOSS_REWARD_POOL} 灵石！")
-            elif ev == "secret":
-                cur = world.get("secret")
-                if cur and core.secret_is_open(cur):
-                    continue  # 已有开启中的限时秘境，不重复开
-                world["secret"] = core.secret_new()
-                mm = cfg.SECRET_DURATION_SEC // 60
-                msg = (f"🌟【限时秘境开启】限时 {mm} 分钟！\n"
-                       "发送一次「秘境」即可入内、自动探索；途中机缘按倒计时自动触发，"
-                       "结束自动播报总览。")
-            else:
-                msg = "🍀【奇遇】" + random.choice(cfg.QIYU_POOL) + " 速去「闭关」领悟！"
-            await store.set_world(g, world)
-            await _broadcast(g, msg)
-        except Exception:  # noqa: BLE001 — 单次事件异常重启循环
-            pass
-
-
-async def _secret_tick():
-    """限时秘境自动探索引擎：按倒计时触发随机事件；到时关闭并播报总览。
-
-    这是"报名后自动探索"的核心——玩家无需再发口令，事件由本循环驱动：
-      * 每个已报名探索者按 next_event_at 到点触发一次随机事件（真实加灵石/修为/道具）；
-      * 秘境 ends_at 到点 → 置 open=False，向群里播报 secret_summary_text 总览。
-    """
-    await asyncio.sleep(6)
-    while True:
-        await asyncio.sleep(cfg.SECRET_TICK_SEC)
-        try:
-            now_ts = time.time()
-            for g in await store.enabled_groups():
-                world = await store.get_world(g)
-                secret = world.get("secret")
-                if not secret or not secret.get("open"):
-                    continue
-                try:
-                    ends_at = float(secret.get("ends_at", 0) or 0)
-                except (TypeError, ValueError):
-                    ends_at = 0.0
-                changed = False
-                for qq, part in list((secret.get("participants") or {}).items()):
-                    guard = 0
-                    while part.get("next_event_at", 0) <= now_ts and now_ts < ends_at and guard < 30:
-                        pl = await store.get_player(qq)
-                        if not pl:
-                            break
-                        core.secret_roll_event(pl, part, now_ts)
-                        await store.put_player(pl)
-                        changed = True
-                        guard += 1
-                if now_ts >= ends_at:
-                    secret["open"] = False
-                    await store.set_world(g, world)
-                    await _broadcast(g, core.secret_summary_text(secret))
-                elif changed:
-                    await store.set_world(g, world)
-        except Exception:  # noqa: BLE001 — 巡检异常不得拖垮循环
-            pass
-
-
-@get_driver().on_startup
-async def _startup():
-    await store.load()
-    # 世界事件循环的唯一职责就是「往群里炸一条」，群聊关了它就没有存在意义，
-    # 直接不启动（不是启动了再丢弃）：少一条循环就少一份误发风险，
-    # 也省得它继续改 world 状态、留下半截开启中的秘境。
-    if group_enabled():
-        asyncio.create_task(_event_loop())
-    else:
-        logger.info("[xiuxian] 群聊已关闭（GROUP_ENABLED=false），世界事件循环不启动")
-    # 秘境巡检保留：它同时负责秘境到点关闭与收获结算，
-    # 停了会让「开着但没人能进」的秘境永远关不掉。播报由 _broadcast 自己拦。
-    asyncio.create_task(_secret_tick())
 
 
 # 口令关键字登记（供 game_router 兜底探测）
