@@ -56,3 +56,8 @@ _backup_*/
 # ===== 隐私 / 二进制运行时（绝不入库） =====
 *.exe
 *.qqxlog
+
+# ===== Warframe 市价卡货币图标：必需的**源码资产**，随代码交付 =====
+# 主项目根 .gitignore 有全局 `*.png`（针对生成物/截图），这里按子目录规则精确放行
+# 这三张是 DE 官方游戏内图标 / 按官方造型重绘的等价物，不是调试截图，也不进 data/。
+!src/plugins/qq_bridge/pic/templates/assets/wf_currency/*.png

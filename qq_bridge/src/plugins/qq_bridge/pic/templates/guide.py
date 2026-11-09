@@ -190,6 +190,7 @@ def build(
     item_icon: bytes | None = None,
     boxes: list | None = None,   # card-design 自检：非空时登记 disp 块真实包围盒
 ) -> Canvas:
+    from . import market_currency  # 惰性导入：避免 pic/__init__.py 半初始化期间的循环导入
     body = str(body or "").strip()
     width = int(width or getattr(t, "width", 800) or 800)
     pad = int(getattr(t, "pad", 24) or 24)
@@ -763,29 +764,11 @@ def build(
             y = _iy + _ih + 14
             c.line((pad_in, y, pad_in + content_w, y), fill=t.divider, width=1)
             y += 14
-            # ③ 统计条：杜卡德 / 交易税 / 在售卖家（小号双语标签 + 大号数值）
-            _lab_fs, _val_fs = t.fs(15), t.fs(30)
-            _groups = [
-                ("杜卡德", "DUCATS", _ducats, ""),
-                ("交易税", "TRADE TAX", _tax, ""),
-                ("在售卖家", "SELLERS", _sellers, f"在线 {_online}" if _online else ""),
-            ]
-            _gw = content_w / 3
-            for gi, (lab_zh, lab_en, val, sub) in enumerate(_groups):
-                _gx = pad_in + gi * _gw
-                c.text((_gx, y), lab_zh, size=_lab_fs, color=t.text_sub, anchor="lm")
-                _lw = Canvas.text_width(lab_zh, _lab_fs, "regular")
-                c.text((_gx + _lw + 6, y), lab_en, size=t.fs(12), color=t.text_sub, anchor="lm")
-                _vy = y + _lab_fs + 6
-                c.text((_gx, _vy), str(val), size=_val_fs, color=t.text, role="bold", anchor="lm")
-                if sub:
-                    _vw = Canvas.text_width(str(val), _val_fs, "bold")
-                    c.text((_gx + _vw + 10, _vy + _val_fs // 3), sub,
-                           size=t.fs(15), color=t.text_sub, anchor="lm")
-                if gi < 2:
-                    c.line((_gx + _gw - 12, y - 4, _gx + _gw - 12, y + _val_fs + _lab_fs + 6),
-                           fill=_tint(t.accent, 0.18, base), width=1)
-            y += _lab_fs + 6 + _val_fs + 12
+            # ③ 统计条：杜卡德 / 交易税 / 在售卖家（小号双语标签 + 大号数值 + 游戏内货币图标）
+            # 货币图标绘制抽到 market_currency.draw_stats_strip（按功能拆分，避免本文件继续膨胀）
+            y = market_currency.draw_stats_strip(
+                c, t, pad_in, y, content_w, boxes, base, _tint,
+                _ducats, _tax, _sellers, _online)
             c.line((pad_in, y, pad_in + content_w, y), fill=t.divider, width=1)
             y += 14
             # ④ 玩家卖单 区块标题（右：在线优先 / ONLINE FIRST）
@@ -863,8 +846,9 @@ def build(
                         _hfs = t.fs(18)   # 表头小一号，避免「声望/数量/白金价格」挤在一起
                         if _col_roles[ci] == "price":
                             _hx = (col_x[ci] + col_x[ci + 1]) // 2
-                            c.text((_hx, ry + row_h // 2), cell, size=_hfs,
-                                   color=t.text_sub, role="bold", anchor="mm")
+                            # 价格列表头前置白金图标（market_currency 绘制）
+                            market_currency.draw_price_header(
+                                c, t, _hx, ry, row_h, _hfs, cell, boxes)
                         else:
                             c.text((col_x[ci] + 14, ry + row_h // 2), cell, size=_hfs,
                                    color=t.text_sub, role="bold", anchor="lm")

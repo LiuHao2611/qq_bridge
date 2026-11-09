@@ -28,6 +28,7 @@ from . import icons as _icons  # noqa: F401
 from . import widgets as _widgets  # noqa: F401
 from . import fonts as _fonts  # noqa: F401
 from . import theme as _theme_pkg  # noqa: F401
+from . import card_binds  # 卡片主题内置默认绑定（配置优先，随代码交付）
 from .cache import PicCache, make_key, pic_cache
 from .canvas import Canvas
 from .templates import (menu as _menu, progress as _progress, quota as _quota, text as _text, guide as _guide, hw as _hw, riven as _riven, riven_analysis as _riven_analysis, riven_recommend as _riven_recommend, netracell as _netracell, fissure as _fissure, bounty as _bounty, tenet as _tenet, coda as _coda, incarnon as _incarnon, arbitration_table as _arbitration_table, xiuxian as _xiuxian, xiuxian_menu as _xiuxian_menu, xiuxian_help as _xiuxian_help, doupo as _doupo, doupo_menu as _doupo_menu, doupo_list as _doupo_list, aimenu as _aimenu, checkin as _checkin, plain as _plain, alerts as _alerts, task_alert as _task_alert, archon as _archon, riven_trend as _riven_trend, riven_fusion as _riven_fusion, riven_full as _riven_full)  # noqa: F401
@@ -46,6 +47,15 @@ class PicRenderError(Exception):
 
 
 _log = logging.getLogger("qq_bridge.pic")
+
+
+def _resolve_card_theme_name(theme_name, card):
+    """计算最终 theme_name：显式 > 配置绑定 > 内置默认（card_binds）> 原值。
+
+    内置默认绑定随代码交付（绕过 ``data/`` 被 gitignore 导致的不交付问题）；
+    配置（``theme.card_theme``）优先，用户可随时改回深色。
+    """
+    return card_binds.resolve_card_theme(theme_name, card, _theme_pkg.card_theme)
 
 
 #: 模板注册表：新增模板请在此登记
@@ -155,7 +165,7 @@ def render_sync(template: str, theme_name: str | None = None, card: str | None =
         raise PicRenderError("未知模板：%s（可用：%s）" % (template, ", ".join(list_templates())))
     cfg = _config()
     # 同 render()：传 None 让 resolve() 走完整链路（卡片绑定 > PIC_CUSTOM_THEME > PIC_THEME > 内置）
-    t = resolve_theme(theme_name or None, card)
+    t = resolve_theme(_resolve_card_theme_name(theme_name, card), card)
     params.setdefault("width", cfg["width"])
     try:
         c = fn(t, **params)
@@ -201,7 +211,8 @@ async def render(template: str, theme_name: str | None = None, card: str | None 
     # 关键：theme_name 为空时必须传 None（而非 cfg["theme"]），让 resolve() 走完整链路：
     #   卡片绑定 > PIC_CUSTOM_THEME（编辑器「应用」激活的自定义主题）> PIC_THEME > 内置
     # 若传 cfg["theme"] 会短路自定义主题（2026-09-07 修复）。
-    t_obj = resolve_theme(theme_name or None, card)
+    # 内置默认绑定（card_binds）在「未显式指定 + 配置未绑定」时兜底（如市价卡浅色版）。
+    t_obj = resolve_theme(_resolve_card_theme_name(theme_name, card), card)
     resolved = t_obj.name
     try:
         import hashlib, json as _json
