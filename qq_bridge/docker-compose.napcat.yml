@@ -75,7 +75,7 @@ services:
       #    字面量 "[\"ws://...\"]" 导致 SyntaxError: Invalid URL。
       ONEBOT_URL: 'ws://host.docker.internal:8080/onebot/v11/ws'
       WEBUI_TOKEN: 1e2883288f7b034c53f6253fd487971f
-      ACCOUNT: 2503891418
+      ACCOUNT: 2149466287
       # 快速登录票据失效时的密码回退（NapCat 4.18+ 支持；前端「快速登录密码」栏写入 data/compose.env）
       #   只存 32 位 MD5，不存明文；由 `docker compose --env-file data/compose.env up -d --force-recreate` 注入
       #   ⚠️ 铁律：严禁自动重登。此项留空即不启用；填写前先读 start_all.ps1 顶部的封号事故说明。

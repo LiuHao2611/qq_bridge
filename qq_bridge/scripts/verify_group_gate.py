@@ -33,7 +33,7 @@ PROC_NAME = "_block_group_messages"
 def _payload(group: bool) -> dict:
     base = {
         "time": 1730000000,
-        "self_id": 2503891418,
+        "self_id": 2149466287,
         "post_type": "message",
         "sub_type": "normal",
         "user_id": 1743124119,
