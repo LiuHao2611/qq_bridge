@@ -128,9 +128,11 @@ def problems(image_container: str, image_latest: str,
         path = parts[1].strip()
         if not (path.startswith("/app/src/") or path.startswith("/app/tools/")):
             continue
-        # 运行时产物，不是源码热贴：pic_cache 由 cache.py 自建；目录 mtime 变更
-        # 也会出现在 docker diff 里，无后缀即目录，必须跳过。
-        if path.startswith("/app/src/data/") or "/pic_cache/" in path:
+        # 运行时产物，不是源码热贴：pic_cache 由 cache.py 自建；.wm_cache 是
+        # game_tools 运行期生成的头像/字形缓存（与 pic_cache 同性质）；目录 mtime
+        # 变更也会出现在 docker diff 里，无后缀即目录，必须跳过。
+        if (path.startswith("/app/src/data/") or "/pic_cache/" in path
+                or "/.wm_cache/" in path):
             continue
         if not Path(path).suffix:
             continue
@@ -158,7 +160,8 @@ def selftest() -> int:
     # 反例：运行时自建 pic_cache / 目录 mtime 变更不得被当成源码热贴
     legal = ["C /app/src", "C /app/src/data", "A /app/src/data/pic_cache",
              "A /app/src/data/pic_cache/5e1e5aa7.png",
-             "A /app/src/data/pic_cache/index.json"]
+             "A /app/src/data/pic_cache/index.json",
+             "A /app/src/plugins/qq_bridge/game_tools/.wm_cache/avatars/glyph_abc.png"]
     legal_problems = problems(*(good[:5] + (legal,)))
     if legal_problems:
         print("SELFTEST FAIL：运行时 pic_cache 产物被误判为热贴：%s" % legal_problems[0])
