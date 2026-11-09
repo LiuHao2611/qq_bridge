@@ -4115,14 +4115,14 @@ async def market_text(item: str, page: int = 1) -> str:
         _tags0 = _id0.get("tags") or []
         _icon_rel = (_id0.get("icon") or _en0.get("icon")
                      or _en0.get("thumb") or _id0.get("thumb") or "")
-        # 部件/蓝图的 icon 是**套装主图**（同一套里所有部件 hash 相同，图完全一样），
-        # 真正区分部位的是 subIcon（prime_helmet / prime_chassis / prime_barrel /
-        # prime_receiver / prime_stock / blueprint …）。用户反馈「战甲/武器/部件图几乎
-        # 都一样」即因此，部件/蓝图优先用 subIcon。
-        _sub_icon = (_en0.get("subIcon") or _id0.get("subIcon")
-                     or _id0.get("sub_icon") or "")
-        if _sub_icon and any(t in _tags0 for t in ("component", "blueprint")):
-            _icon_rel = _sub_icon
+        # 总图用商品自身 icon（Atlas Prime 完整立绘）；subIcon 是全游戏共用的
+        # blueprint_128x128.png → Fandom Blueprint.png，套上去每张总图卡都长一样
+        # （2026-11-09「总图取的不对」）。部件蓝图仍用 subIcon 区分部位。
+        if "component" in _tags0:
+            _sub_icon = (_en0.get("subIcon") or _id0.get("subIcon")
+                         or _id0.get("sub_icon") or "")
+            if _sub_icon:
+                _icon_rel = _sub_icon
         if _id0.get("ducats") is not None:
             _ducats = int(_id0.get("ducats"))
         _tax_v = _id0.get("tradingTax")          # v2 camelCase
@@ -4574,7 +4574,7 @@ try:
 except Exception:  # noqa: BLE001
     pass
 _ICON_TIMEOUT = 6.0
-_ICON_SIZE = 160          # 头条块图标渲染尺寸（px），代理侧缩放省流量
+_ICON_MAX_W = 360         # 商品图代理只限宽（不裁切），原始长宽比交给渲染层自适应
 _ICON_NEG_TTL = 30 * 60   # 负缓存：图标取不到别每条消息重打
 
 
@@ -4630,9 +4630,7 @@ async def fetch_official_art(en_name: str) -> bytes | None:
     return None
 
 
-#: WM subIcon 文件名 → Fandom wiki 通用部位图（512px，四周有留白，**完整不裁切**）。
-#: WM 的 `sub_icons/..._128x128.png` 是紧裁图（机体/头盔的上下直接贴边），
-#: Fandom 的通用部位图有完整留白，渲染层 contain 后不会看起来被切。
+#: WM subIcon → Fandom 通用部位图（带留白、不裁切）；仅部件蓝图用。
 _PART_ART_MAP = {
     "prime_helmet": "PrimeHelmet.png",
     "prime_chassis": "PrimeChassis.png",
@@ -4654,12 +4652,10 @@ _PART_ART_MAP = {
     "pouch": "Pouch.png",
     "stars": "Stars.png",
     "boot": "Boot.png",
-    "blueprint": "Blueprint.png",
+    # 不映射 blueprint：Fandom Blueprint.png 是全游戏通用工程图，与商品无关
 }
-#: Prime **武器/近战**部位：Fandom 只有普通版通用图，直接复用会让「Prime 部件显示成普通图」
-#: （2026-11-06 用户反馈：武器部件有 Prime 的，卡片显示成普通的）。这些部位优先取 WM 自己的
-#: `prime_*` subIcon（金饰 Prime 图），通用图仅作取图失败时的兜底。战甲部位
-#: （prime_helmet/chassis/systems）Fandom 有专属 Prime 图，不在本集合内、仍走通用链路。
+#: Prime 武器/近战部位优先取 WM prime_* subIcon（金饰图），Fandom 只有普通版；
+#: 战甲部位 Fandom 有 Prime 专属图，不在本集合。
 _PRIME_WM_PREFER = frozenset({
     "prime_barrel", "prime_receiver", "prime_stock", "prime_blade", "prime_handle",
     "prime_hilt", "prime_link", "prime_pouch", "prime_stars", "prime_boot",
@@ -4759,7 +4755,8 @@ async def fetch_item_icon(icon_rel: str) -> bytes | None:
     """
     if not icon_rel:
         return None
-    cached = _icon_cache_get(icon_rel)
+    key = "ar2:" + icon_rel   # 避开旧 fit=cover 方图缓存
+    cached = _icon_cache_get(key)
     if cached is not _MISS:
         return cached
     full = WM_STATIC + icon_rel
@@ -4773,14 +4770,17 @@ async def fetch_item_icon(icon_rel: str) -> bytes | None:
             b = _image_bytes(r)
         except Exception:  # noqa: BLE001
             b = None
-    # ② wsrv.nl 公共代理（绕开 CF 浏览器指纹）
+    # ② 代理只限宽不限高（不 fit=cover），保留原始长宽比给渲染层自适应
     if b is None:
         try:
-            r = await _http_get(_proxy_avatar_url(full), dict(MARKET_UA), {}, _ICON_TIMEOUT)
+            from urllib.parse import quote
+            r = await _http_get(
+                "%s?url=%s&w=%d&output=png" % (WM_IMG_PROXY, quote(full, safe=""), _ICON_MAX_W),
+                dict(MARKET_UA), {}, _ICON_TIMEOUT)
             b = _image_bytes(r)
         except Exception:  # noqa: BLE001
             b = None
-    _icon_cache_put(icon_rel, b)
+    _icon_cache_put(key, b)
     return b
 
 

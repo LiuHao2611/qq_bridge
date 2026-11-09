@@ -704,11 +704,12 @@ async def _collect_market_avatars(body: str) -> dict:
 async def _collect_market_item_icon(body: str) -> bytes | None:
     """从市价卡 @wmhdr| 标记解析图标，best-effort 返回字节（失败 None）。
 
-    取图策略（2026-11-03 用户反馈「武器图/战甲图被裁切」后调整）：
-      * **武器套装 / 战甲套装** → 优先官方 WFCD 512px 完整渲染图
-        （WM 的 128 方形图会把枪管裁掉、把战甲截到半身）；
-      * 部件/蓝图/MOD/赋能 → WM 自身图标（官方仓库没有部件图；MOD/赋能是卡面图）。
-    渲染层统一做 contain 等比自适应（竖长战甲给更高的图标槽）。官方图取不到时回落 WM 图标。
+    取图策略：
+      * 武器/战甲套装 → 官方 WFCD 512px 全图（WM 方形图会裁枪管/截半身）；
+      * 部件蓝图 → Fandom 部位图（区分部位）；
+      * 总图/MOD/赋能 → WM 商品自身 icon。总图是 Atlas Prime 立绘，绝不能走
+        Fandom 通用 Blueprint.png（与商品无关，2026-11-09「总图取的不对」）。
+    渲染层按真实 AR 等比自适应。
     """
     for ln in (body or "").split("\n"):
         if not ln.startswith("@wmhdr|"):
@@ -721,10 +722,9 @@ async def _collect_market_item_icon(body: str) -> bytes | None:
         cat = (cols[2] if len(cols) > 2 else "").strip()
         # MOD/赋能/集团卡/架势/光环/安魂：卡面图，绝不能用武器全图
         _mod_like = any(k in cat for k in ("MOD", "赋能", "集团卡", "架势", "光环", "安魂"))
-        # 部件/蓝图：先取 Fandom 通用部位图（512px 带留白，不会上下贴边被切），
-        # 失败再回落 WM 自己的 128px subIcon。
+        # 仅部件蓝图走 Fandom 部位图；总图（蓝图且非部件）必须落商品自身 icon
         _component = ("部件" in cat) or ("蓝图" in cat)
-        if _component and rel:
+        if "部件" in cat and rel:
             art = await warframe.fetch_part_art(rel)
             if art:
                 return art

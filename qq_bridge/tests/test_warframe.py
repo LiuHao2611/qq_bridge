@@ -990,12 +990,7 @@ def test_market_markers_render_through_guide(monkeypatch):
 
 
 def test_market_part_uses_subicon(monkeypatch):
-    """部件/蓝图的 @wmhdr 图标必须是 subIcon（部位图），不能是套装主图。
-
-    回归背景：WM 的 set 响应里同一套所有部件 `icon` 都是**同一个 hash 的主图**
-    （Wukong 五个部件全是 6fa7196a…png），直接用它会让战甲/武器/部件图长得一样。
-    真正的部位图在 `i18n.en.subIcon`（prime_helmet / prime_chassis / prime_barrel …）。
-    """
+    """部件 @wmhdr 必须用 subIcon 部位图（set 响应里同套部件 icon 是同一 hash 主图）。"""
     async def fake_market_get(url: str, params: str = "") -> dict | None:
         if "/v2/orders/item/" in url:
             return {"data": [{"type": "sell", "platinum": 6, "quantity": 1,
@@ -1048,13 +1043,8 @@ def test_prime_weapon_part_prefers_wm_prime_subicon(monkeypatch):
 
 
 def test_collect_market_item_icon_routing(monkeypatch):
-    """图标取图路由：武器/战甲套装优先官方完整图；MOD/赋能/部件/蓝图走 WM 图。
-
-    回归背景：WM 的 128 方形 icon 会把 Sicarus Prime 的枪管裁出画布，
-    武器/战甲套装必须优先官方 WFCD 512px 全图；MOD/赋能是卡面图，部件官方仓库没有。
-    """
-    # 必须与文件顶部同一包路径（src.plugins...），否则会拿到另一个模块实例，
-    # monkeypatch 打不到 _collect_market_item_icon 内部引用的 warframe。
+    """套装取官方全图；部件取部位图；MOD/赋能/总图取 WM 商品自身 icon。"""
+    # 必须与文件顶部同一包路径，否则 monkeypatch 打不到函数内部引用的 warframe。
     from src.plugins.qq_bridge.game_tools import _collect_market_item_icon
 
     calls: dict = {}
@@ -1090,11 +1080,13 @@ def test_collect_market_item_icon_routing(monkeypatch):
         _hdr("武器 · 套装 · 副武器", "Sicarus Prime Set"))) == b"OFFICIAL"
     assert calls.get("official") == "Sicarus Prime", calls
 
-    # 部件 / 蓝图 → Fandom 完整部位图（不是 WM 的紧裁 subIcon，更不是官方套装主图）
-    for cat in ("部件 · 武器", "蓝图 · 战甲"):
-        calls.clear()
-        assert asyncio.run(_collect_market_item_icon(_hdr(cat))) == b"PART", cat
-        assert "part" in calls and "official" not in calls, cat
+    # 部件 → Fandom 部位图；总图（蓝图且非部件）→ WM 商品自身 icon，绝不用通用工程图
+    calls.clear()
+    assert asyncio.run(_collect_market_item_icon(_hdr("部件 · 武器"))) == b"PART"
+    assert "part" in calls and "official" not in calls
+    calls.clear()
+    assert asyncio.run(_collect_market_item_icon(_hdr("蓝图 · 战甲"))) == b"WM"
+    assert "wm" in calls and "part" not in calls and "official" not in calls
 
     # MOD / 赋能 → WM 卡面图
     for cat in ("传奇 · MOD · 主武器 · 霰弹枪", "传奇 · 赋能"):
@@ -1110,7 +1102,7 @@ def test_collect_market_item_icon_routing(monkeypatch):
     assert warframe._part_art_name(
         "sub_icons/weapon/prime_barrel_128x128.png") == "Barrel.png"
     assert warframe._part_art_name(
-        "sub_icons/blueprint_128x128.png") == "Blueprint.png"
+        "sub_icons/blueprint_128x128.png") is None   # 通用 BLUEPRINT 工程图不映射
     assert warframe._part_art_name(
         "sub_icons/melee/prime_blade_128x128.png") == "Blade.png"
     assert warframe._part_art_name("unknown/foo.png") is None

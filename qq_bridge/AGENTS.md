@@ -23,6 +23,7 @@
 | 所有门禁脚本的数据源必须由调用方**显式指定**（`--fixture` 带则只读真实快照、不带则只读实时 worldstate），禁止缺夹具时自动回退在线、也禁止在线失败时偷偷读夹具；容器镜像不含 `tests/`，容器内一律不带 `--fixture` | `tools/check_tenet_layout.py` 的 `_load` / `check_kind` / `_check` / `all_elements_problems` / `_selftest` 全程透传 `use_fixture`，`main()` 用 `_selftest(args.fixture)`；`tests/test_tenet.py::test_tenet_gate_selftest_without_fixture_uses_live_data`（临时移走夹具仍 PASS）、`::test_tenet_gate_fixture_missing_fails_loudly`（夹具缺失 rc≠0 + `FileNotFoundError`）；注入验证：把 `_load` 写死 `True` 时前一条立即 FAIL、恢复后全绿；`--selftest` 第 1 类判据收紧为「真实元素图标」，避免把读夹具失败误判成缺图标已拦住；容器内实测 `--selftest` PASS、`--selftest --fixture` rc=1 明确报错 |
 | 市价卡（`wm` / `#wf 价格`）武器部件必须区分 Prime：Fandom 通用部位图只有普通版，**Prime 武器/近战部件优先取 WM `prime_*` subIcon（金饰图，按原始比例 contain 不 cover 裁切）**，失败才回落通用图；部件 `icon` 是套装主图（同一套所有部件同 hash），部位区分只认 `subIcon`；底部「48时内/90天内 零级售价/收价」必须走结构化 `@mstat`（4 行 × 最低/最高/最新 三气泡，绿/红/主色），禁止退回纯文本堆叠 | `warframe._PRIME_WM_PREFER` + `warframe._fetch_prime_subicon`（`prime_barrel/receiver/stock/blade/...` 先取 WM 金饰图）；`tests/test_warframe.py::test_prime_weapon_part_prefers_wm_prime_subicon`（注入：从集合删 `prime_barrel` → FAIL）；`tests/test_pic_templates.py::test_guide_market_mstat_four_rows_and_pills`（`boxes` 精确数 4 行 / 12 气泡，注入重复渲染 → 8≠4 FAIL）；`market_text` 只发 `@mstat`，`guide.build` 把连续 `@mstat` 合并成单块渲染 |
 | **市价卡货币图标必须用游戏内真实 PNG（白金 = Wiki `Platinum64.png` 银环＋蓝宝石 / 现金 = `Credits64.png` Corpus 信用点卡 / 杜卡德 = `Ducat.png` 金色 Orokin 纹章），禁止几何方块 / 色块 / 占位图交差**；市价卡**默认浅色主题**（`星际战甲·市价` → `LIGHT`），不依赖运行时 `data/` 配置即可开箱浅色（用户 2026-11-09：「做一个浅色版本，给白金/现金/杜卡德币都加上对应的游戏内图标」）。三枚 PNG 是**随代码交付的源码资产**（不是 `data/` 运行时缓存），几何图标只允许作异常兜底且必须登记缺失 | `src/plugins/qq_bridge/pic/templates/assets/wf_currency/{platinum,credits,ducats}.png`（DE/Wiki 官方游戏内图标；主项目根 `.gitignore` 有全局 `*.png`，靠 `qq_bridge/.gitignore` 白名单 `!.../wf_currency/*.png` 放行入库）；`pic/currency_icons.py` 真实 PNG 优先、`_load` 裁透明边 + RGBA，`draw` 等比 contain 不裁切，缺图 `log.warning` + 回落 `icons.draw` 几何兜底 + `missing()` 登记；`pic/card_binds.py::_DEFAULT_CARD_BINDS = {"星际战甲·市价": LIGHT}`（配置文件 `data/pic_card_themes.json` 经 `theme.card_theme` 优先 > 内置默认 > 全局，`pic/__init__._resolve_card_theme_name` 注入 render 链路，每次渲染读盘即时生效）；`guide.py` 统计条 `currency_icons.draw("ducats"/"credits")` + 表头 `currency_icons.draw("platinum")`，杜卡德值 `不可兑换` 时不画杜卡德图标；`tools/fetch_wf_currency_icons.py --check` 三枚 PNG 闸门；`tests/test_warframe_market_card.py` 10 用例（浅色默认绑定 / 三枚 PNG 存在 / gate 缺图报错 / 真实图标 boxes 登记 / @mstat 四行不回归）+ `tools/check_market_currency_layout.py --selftest` 7 类注入（溢出/重叠/间距/缺图标/杜卡德省略/表头图标/@mstat 破坏）全部被拦；两张截图 `_shot_market_currency_light.png` / `_shot_market_currency_neon.png` 放大核对无豆腐框/重叠/裁切 |
+| **市价卡总图/蓝图商品必须显示商品自身 `icon`（不是全游戏通用 `sub_icons/blueprint_128x128.png` → Fandom `Blueprint.png` 通用工程图）；取图代理只限宽 `&w=`、禁 `&h=` / `fit=cover`；图标槽按源图真实 AR 连续自适应；白金图标必须在「每一行价格气泡后面」而非列头；头像列头第一列不得留白**（用户 2026-11-09 第二条反馈：「总图取的不对…注意自适应比例大小」「白金应该展示在每一行的价格后面」「列头第一列头像处被空着了，补上」） | `warframe.py::market_text` 只有 `tags` 含 `component` 时才用 `subIcon`；`_PART_ART_MAP` 删除 `blueprint` 映射（`_part_art_name("sub_icons/blueprint_128x128.png") is None`）；`fetch_item_icon` 改 `&w=360&output=png` + 缓存键 `ar2:` 避开旧方图缓存；`_collect_market_item_icon` 总图（含「蓝图」但无「部件」）只走 `fetch_item_icon`；`guide.py` 图标槽 `_s=clamp(ar**0.5)` 并登记 `wm.hdr.item_icon`；`market_currency.draw_table_header` 居中画「头像」并登记 `tbl.hdr.avatar`、删 `draw_price_header`、`draw_price_cell` 每行价格后置真实白金并登记 `tbl.row.badge`/`tbl.row.platinum`；`tools/check_market_currency_layout.py --check` 5 样例（方/竖长/宽幅图）验槽 AR 容差 0.08 + `check_boxes` 溢出/重叠/间距 0，`--selftest` 注入 10 类反例（白金退回列头 / 头像列头留白 / 某行漏白金 / 图标不紧跟气泡 / 槽比例失真 / 槽漏登记…）全部拦下；`tests/test_warframe_market_card.py` 16 用例（总图用自身 icon / 通用工程图映射禁用 / 代理只限宽 / 路由不走 part / 每行白金贴合且垂直居中 / 槽 AR 自适应） |
 | 紫卡倾向现行值只允许取 `warframe.RIVEN_DISPOSITION`(1.2)；禁止再按武器输出 0.5~1.55 倍率、1~5 星级点阵或「热门武器不建议投入」类分档建议（DE 2026-10-22 热修 44.1.3 已移除武器差异） | `tools/check_disp_layout.py --check`：对外文本旧口径黑名单命中即 `exit 1`，`--selftest` 用注入旧文案验证门禁会报错；`tests/test_warframe.py::test_no_legacy_disposition_wording` 守倾向卡/文本降级/紫卡分析/模拟开卡/帮助文本 5 处；`guide.build(boxes=...)` 登记 disp 面板真实包围盒查溢出/重叠/间距 |
 | 紫卡趋势只能基于自建落盘快照（真实采样点），禁止把单次挂单当趋势、禁止编造历史价；词条价差必须「同等级 rank8 + 同分位配对对称 + 中位数」，卡面中位价须与溢价同源；挂牌要价一律标「非成交价」 | `tools/check_riven_trend_layout.py --check`（9 组样本，溢出/重叠/间距/口径 0）；`--selftest` 注入不对称对比与折线溢出反例；`tests/test_riven_trend.py` 11 用例，含 `paired_pct` 对称性与「显示中位价与溢价同源」回归 |
 | 生产紫卡卡改动必须落在生产源码目录并 rebuild 镜像 + recreate 容器；**禁止只 `docker cp` 热贴进运行容器**（容器一重建就丢，镜像和源码还是旧版） | 交差前校验「宿主磁盘 / 镜像层 / 运行容器」三份 `riven_analysis.py`、`riven_card.py`、`riven.py`、`tools/check_riven_layout.py`、`tools/check_riven_market.py` 的 md5 一致，且 `docker diff qq-bridge` 无 `/app/src`、`/app/tools` 源码覆盖 |
@@ -1171,3 +1172,36 @@ stars/boot`）；`fetch_part_art` 对这些部位**先取 WM `prime_*` subIcon�
 - **生产落地（按 §31 必须）**：commit + push 后 `docker build -f docker/Dockerfile.bridge -t qq-bridge:latest .` → `docker compose -f docker-compose.bridge.yml up -d --force-recreate --no-deps --no-build bridge` → `tools/check_bridge_deploy.py` 三层 md5 全等 + 容器内真实 `pic.render` 出图；不含 `tests/`，容器内不带 `--fixture`。
 - **20KB 棘轮（提交约束）**：`guide.py` 是存量超大文件（提交 blob 59,918B），本次**净缩减 802B**（< HEAD 60,720B）；提交经 `GITHOOKS_LEGACY_RATCHET=1` 触发棘轮放行（存量文件不得变大、新文件仍严格 <20KB）。`card_binds.py`(2,051B) / `market_currency.py`(3,814B) / `currency_icons.py`(5,530B) 均为新建小模块，`pic/__init__.py`(12,969B)，全部 <20KB；`icons.py`/`theme.py` 回退 HEAD 零改动未变大。
 - **没验证到的（如实交代）**：真实 QQ 客户端发「价格/市价」口令出的浅色卡仍需用户最终确认（本轮证据是容器内同链路渲染 + 宿主截图）；`_market_out/` 临时调试产物（含灰机三枚中间图、pytest 临时目录）位于被 `.gitignore` 忽略目录，不入库，未强制删除；白金官方图标改用 Wiki `Platinum64.png` 后，`fetch_wf_currency_icons.py` 已具备网络可达时一键重取覆盖能力。
+
+## §00:19 市价卡第二轮修正：总图取图 / 每行白金 / 头像列头（2026-11-10，用户第二条反馈）
+
+- **现象（用户截图 `10253b2f…png`）**：① 左上角总图显示的是通用 `BLUEPRINT` 工程图，不是该商品自己的总图蓝图；② 白金图标画在列头「白金价格」前，用户要求跟在每行价格后面；③ 列头第一列（头像列）整块空白。用户附加要求「注意自适应比例大小」「保持美观，完美布局和比例」，指定 `@skill:card-design`。
+
+- **根因（逐层查证，非猜测）**：
+  | 层 | 旧行为 | 证据 |
+  |---|---|---|
+  | WM v2 数据 | 总图 `i18n.en.icon` 是商品专属图（`items/images/en/atlas_prime_blueprint.<hash>.png`，实测 512×965 Atlas Prime 全身立绘），`subIcon` 是全游戏共用的 `sub_icons/blueprint_128x128.png` | WebFetch 真实 `/v2/item/atlas_prime_blueprint/set` + 下载原图核对尺寸 |
+  | `market_text` | 无条件用 `subIcon` 覆盖 `icon` | 源码 `_id0`/`_en0` 段 |
+  | `_PART_ART_MAP` | `blueprint → Blueprint.png`（Fandom 通用工程图，与商品无关） | 用户截图裁剪 4x 确认卡上就是这张 `BLUEPRINT` |
+  | `_collect_market_item_icon` | 分类含「蓝图」即走 `fetch_part_art()` 通用部位图 | 源码路由分支 |
+  | `fetch_item_icon` | 复用 `_proxy_avatar_url()` 的 `w=h=…&fit=cover`，把竖长立绘裁成方形 | `_AVATAR_PROXY_SIZE` 方图参数 |
+  | 渲染层 | 图标槽三档离散 `if ar>=1.5 / <=0.8 / else`，不能贴合连续比例 | `guide.py` 旧 `_icon_ar` 分支 |
+
+- **修复**：
+  | 文件 | 改动 |
+  |---|---|
+  | `game_tools/warframe.py` | `market_text` 仅 `component` 用 `subIcon`；删 `_PART_ART_MAP["blueprint"]`；`_ICON_SIZE=160` → `_ICON_MAX_W=360`；`fetch_item_icon` 改「只限宽」代理 `&w=360&output=png`，缓存键 `ar2:` 避开旧方图缓存 |
+  | `game_tools/__init__.py` | `_collect_market_item_icon` 只有分类含「部件」才走 `fetch_part_art`；总图（蓝图且非部件）落 `fetch_item_icon`；套装仍优先官方全图，MOD/赋能不变 |
+  | `pic/templates/guide.py` | 商品图槽改为 `_s=max(0.72,min(1.62,ar**0.5))` 连续自适应（面积近似恒定）；登记 `wm.hdr.item_icon` box；表头底色从 `box_x0+4` 起覆盖头像列 |
+  | `pic/templates/market_currency.py` | 删 `draw_price_header`；新增 `draw_table_header`（头像列居中画「头像」→ `tbl.hdr.avatar`）与 `draw_price_cell`（价格气泡 + 后置真实白金 → `tbl.row.badge`/`tbl.row.platinum`，整组按实测文字宽度居中） |
+  | `tools/check_market_currency_layout.py` | `SAMPLES` 3→5（新增离线合成竖长 `(120,240)` / 宽幅 `(240,120)` 商品图）；新增 `icon_slot_ar` / `_icon_slot_problems` 校验槽 AR 容差 0.08；box 契约换成 `tbl.hdr.avatar` 恰好 1、`tbl.hdr.platinum` 不存在、`tbl.row.platinum` 数 = `tbl.row.badge` 数、图标紧跟气泡 `0<=gap<=16`；`--selftest` 新增 6 类本轮真实反例 |
+  | `tests/test_warframe_market_card.py` | 10→16 用例：白金每行贴合且垂直居中、槽 AR 三档自适应、总图用自身 icon、通用 `Blueprint.png` 映射禁用、代理只限宽、总图路由不走 part |
+  | `tests/test_warframe.py` | 旧断言 `蓝图 · 战甲 → PART` 改 `→ WM`、`_part_art_name(blueprint_128x128) == "Blueprint.png"` 改 `is None`；压缩冗长 docstring 使 57,258B ≤ HEAD 57,714B |
+
+- **card-design 验收（度量优先，不是目测拍脑袋）**：`--check` 5/5 样例 `check_boxes` **溢出 0 / 重叠 0 / 间距 0**；槽 AR 方图 `1.000`、竖长 `0.521`（源 `0.500`）、宽幅 `2.027`（源 `2.000`）；`--selftest` 10 类注入反例全部被拦；截图 `tests/_shot_market_currency_{light,neon,noducat,tall_icon,wide_icon}.png` 与真实商品图 `tests/_shot_real_itemicon_top_2x.png` 人眼核对无裁切/压扁/重叠。
+
+- **零回归证据（trust-but-verify）**：全量 `pytest` 1226 passed / 13 failed / 3 errors；用 `git stash` 把本轮 7 个已跟踪文件临时还原到 HEAD 后重跑同一批 31 个用例，失败集合**逐项完全一致**（`bg_overrides` 6 / `riven_parse` 3 / `riven_full` 3 errors / `ai_mode` 1 / `pic_templates` 2 / `fissures_countdown` 1，均为基线既有问题，与本轮模块无交集）；本轮直接相关用例 16 passed + 3 passed。
+
+- **20KB 棘轮**：4 个存量超大文件全部净缩减（`game_tools/__init__.py` −130B、`warframe.py` −289B、`guide.py` −1089B、`test_warframe.py` −456B）；3 个新/小文件 <20KB 自动放行（`market_currency.py` 5,535B / 门禁 14,562B / 市价卡单测 13,278B）。
+
+- **没验证到的**：真实 QQ 客户端用线上 WFM 实时数据出卡仍需用户确认（本轮证据是容器内同链路渲染 + 宿主 fixture 截图）；WM 总图与部件图共用战甲立绘是 v2 set 接口的数据特性，本轮按「总图用自身 icon、部件用 subIcon 部位图」兼容，未做逐商品图片内容去重。

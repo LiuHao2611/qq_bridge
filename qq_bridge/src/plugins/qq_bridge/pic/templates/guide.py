@@ -216,13 +216,11 @@ def build(
         except Exception:  # noqa: BLE001 — 坏图按无图标处理
             _icon_img = None
             _icon_ar = 1.0
+    # 图标槽按图片真实长宽比连续自适应（面积恒定、长边有上限），contain 不裁切
     _ibase = t.fs(104)
-    if _icon_ar >= 1.5:                       # 宽幅武器：横向加宽
-        _iw, _ih = int(round(_ibase * 1.55)), _ibase
-    elif _icon_ar <= 0.8:                     # 竖长战甲/立绘：纵向加高
-        _iw, _ih = int(round(_ibase * 0.92)), int(round(_ibase * 1.15))
-    else:                                     # MOD/赋能等卡面：正方
-        _iw, _ih = _ibase, _ibase
+    _s = max(0.72, min(1.62, _icon_ar ** 0.5))
+    _iw = int(round(_ibase * _s))
+    _ih = int(round(_ibase / _s))
 
     # ---- 解析 body -> 块（head / text / skill气泡 / aug气泡）----
     blocks: list[dict] = []
@@ -737,6 +735,8 @@ def build(
                                       radius=int(min(_iw, _ih) * 0.10),
                                       outline=_tint(t.accent, 0.75, base), width=3)
                 c.paste(_ph, (_ix, _iy), rounded_mask((_iw, _ih), 14))
+            if boxes is not None:
+                boxes.append(("wm.hdr.item_icon", _ix, _iy, _ix + _iw, _iy + _ih))
             _tx = _ix + _iw + 18
             _tw_max = (pad_in + content_w) - _tx
 
@@ -837,21 +837,13 @@ def build(
                 ry = box_y0 + 7 + ri * row_h
                 _c = (r["cols"] + [""] * 7)[:7]            # 卖家|状态|声望|数量|白金价格|uid|头像
                 if r["hdr"]:
-                    # 表头行底色（强度可配 tbl_header_alpha）
+                    # 表头底色覆盖头像列（第一列不再空白，2026-11-09 用户反馈）
                     h_a = getattr(t, "tbl_header_alpha", 24)
                     if h_a > 0:
-                        c.rounded_rect((col_x[0] + 4, ry, col_x[-1] - 4, ry + row_h),
+                        c.rounded_rect((box_x0 + 4, ry, col_x[-1] - 4, ry + row_h),
                                        radius=8, fill=t.accent, fill_alpha=h_a * 255 // 100)
-                    for ci, cell in enumerate(_c[:5]):
-                        _hfs = t.fs(18)   # 表头小一号，避免「声望/数量/白金价格」挤在一起
-                        if _col_roles[ci] == "price":
-                            _hx = (col_x[ci] + col_x[ci + 1]) // 2
-                            # 价格列表头前置白金图标（market_currency 绘制）
-                            market_currency.draw_price_header(
-                                c, t, _hx, ry, row_h, _hfs, cell, boxes)
-                        else:
-                            c.text((col_x[ci] + 14, ry + row_h // 2), cell, size=_hfs,
-                                   color=t.text_sub, role="bold", anchor="lm")
+                    market_currency.draw_table_header(
+                        c, t, col_x, box_x0, av_w, ry, row_h, t.fs(18), _c[:5], boxes)
                     continue
                 # 头像：优先真实头像（带 cf_clearance cookie 取到），取不到回落确定性生成头像
                 uid = _c[5] if len(_c) > 5 else ""
@@ -888,23 +880,16 @@ def build(
                             pv = int(float(cell)) if cell not in ("", "-") else _pmin
                         except Exception:
                             pv = _pmin
-                        _is_min = (pv == _pmin)
-                        if _is_min:
-                            pcol = t.ok  # 最低价＝最优价，标绿（对齐参考卡首行绿价）
+                        if pv == _pmin:
+                            pcol = t.ok  # 最低价＝最优价，标绿
                         else:
                             tt = 0.5 if _pmax <= _pmin else (pv - _pmin) / (_pmax - _pmin)
                             pcol = _price_grad(tt)
-                        tw = Canvas.text_width(cell, tbl_fs, "regular")
-                        badge_h = row_h - 14
-                        badge_w = max(tw + 24, badge_h + 10)
-                        cx = (col_x[ci] + col_x[ci + 1]) // 2
-                        bx0, by0 = cx - badge_w // 2, ry + (row_h - badge_h) // 2
-                        # 渐变/绿价格气泡：填充色 + 同色描边，文字按亮度取黑/白
-                        c.rounded_rect((bx0, by0, bx0 + badge_w, by0 + badge_h),
-                                       radius=badge_h // 2, fill=pcol,
-                                       outline=_tint(pcol, 0.65, base), width=2)
-                        c.text((cx, ry + row_h // 2), cell, size=tbl_fs,
-                               color=_text_on(pcol), anchor="mm")
+                        # 气泡 + 后置白金图标：整体居中于价格列（度量优先，见 market_currency）
+                        market_currency.draw_price_cell(
+                            c, t, (col_x[ci] + col_x[ci + 1]) // 2, ry, row_h,
+                            tbl_fs, cell, pcol, _tint(pcol, 0.65, base),
+                            _text_on(pcol), boxes)
                     elif role == "status":
                         _is_game = "游戏" in cell
                         _is_on = ("在线" in cell) or _is_game
