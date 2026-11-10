@@ -1,0 +1,25 @@
+{
+  "source": "Warframe Rabbit「紫卡分析」原卡，用户 2026-11-06 08:59 提供，655x1920",
+  "image": "clipboard-2026-11-06T08-59-08-208Z-6fb2b736.jpg",
+  "image_md5_prefix": "f6f65e5b",
+  "note": "逐字抄录自原卡价格区（y=1033..1235），是外部基准，禁止按当前实现的输出反改。原卡这张恰好处于『无精确匹配样本』状态，因此 big/foot 仍是『暂无匹配样本』，但零洗中位价 369P 与词条价差预估 386P 是两套独立口径，不是同一个数。",
+  "price_left": {
+    "title": "市场价格预计",
+    "big": "暂无匹配样本",
+    "sub": "零洗中位价：",
+    "sub_val": "369P",
+    "foot": "暂无匹配样本"
+  },
+  "price_right": {
+    "title": "词条价差预估",
+    "big": "386P",
+    "sub": "来源：wm市场|置信度80%",
+    "foot": "模型预估 谨慎参考"
+  },
+  "observed": "最近观测：13小时内",
+  "observed_pattern": "^最近观测：\\d+(小时|天)内$",
+  "sub_pattern": "^来源：wm市场\\|置信度\\d+%$",
+  "price_pattern": "^\\d+P$",
+  "no_match_text": "暂无匹配样本",
+  "no_actual_sample_text": "暂无实盘样本"
+}

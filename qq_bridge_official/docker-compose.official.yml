@@ -1,0 +1,58 @@
+# ============================================================================
+# docker-compose.official.yml —— QQ 官方机器人【独立副本】的编排
+#
+# 与 NapCat 版（D:/AI/manju_agent/qq_bridge/docker-compose.bridge.yml）物理隔离：
+#   * 独立项目名 / 镜像名 / 容器名 / 端口 / 数据卷 / 日志 —— 互不共享一个字节
+#   * 官方 Bot（AppID 1906371548）由本容器独占连接（QQ 开放平台 AppID 单连接语义）
+#   * NapCat 容器另由 napcat-disable-official.override.yml 关闭其官方连接权
+#
+# 官方通道是 QQAdapter 主动连腾讯 wss://，不依赖 NapCat 反向 WS；
+# 容器仍监听一个 HTTP 端口（8081）用于 /api/qqo/* 管理接口与 fastapi driver。
+#
+# 构建：docker compose -f docker-compose.official.yml up -d --build
+# 回退：docker compose -f docker-compose.official.yml down
+# ============================================================================
+name: qq_bridge_official
+
+services:
+  bridge-official:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.bridge
+    image: qq-bridge-official:latest
+    container_name: qq-bridge-official
+    restart: unless-stopped
+    ports:
+      # 与 NapCat 版 8080 错开；仅本机管理接口需要，不对外
+      - "127.0.0.1:8081:8081"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8081"
+      # 主项目后端在宿主；容器内 localhost 是容器自己，必须指向宿主
+      MANJU_API_BASE: "http://host.docker.internal:7788/api/v1"
+      TASK_MONITOR_BASE: "http://host.docker.internal:8099/api/v1"
+      # 下载中心复用 NapCat compose 起的 aria2 sidecar（宿主 6800），不另起容器
+      DL_ARIA2_RPC: "http://host.docker.internal:6800/jsonrpc"
+      DL_DIR: "/downloads"
+      OPS_WATCH_ENABLE: "false"
+      WF_WIKI_MODCARDS_DISABLE: "0"
+      WF_OCR_BACKEND: "rapid"
+      # 纯官方通道：确保 NapCat 反向 WS 相关入站即便误连也不产生业务副作用
+      GROUP_ENABLED: "true"
+      TZ: "Asia/Shanghai"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # 本副本自己的 .env（含官方凭据），与 NapCat 版完全独立
+      - ./.env:/app/.env:ro
+      # 本副本自己的运行态数据（记忆/历史/贴纸/config 全部独立生成）
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./tmp:/app/tmp
+      - ./downloads:/downloads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket;socket.create_connection(('127.0.0.1',8081),3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s

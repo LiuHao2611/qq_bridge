@@ -1,0 +1,69 @@
+# ===== 密钥与环境（绝不入库） =====
+.env
+.env.example
+.venv/
+napcat/
+napcat_node/
+node20.to-delete/
+
+# ===== 运行时数据 / 缓存 / 日志 =====
+data/
+logs/
+
+# ===== Docker 离线 wheel 缓存（由 tools/build_docker_wheels.py 重新生成，不入库） =====
+docker/wheels/
+.playwright-cli/
+.pytest_tmp/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# ===== 临时与废弃文件 =====
+*.to-delete
+*.to-delete.*
+__tmp_*.py
+
+# ===== 调试 scratch 产物（非源码，不入仓） =====
+_wf_*.txt
+_wf_*.mjs
+_wf_*.html
+_backup_*.py
+*_preview*.png
+_verify_*.png
+_icon_*.png
+_halo_*.png
+_panel_*.png
+_e2e_*.png
+_probe_*.png
+*.to-delete.png
+
+# ===== 本地运行数据 / 第三方子仓库（含独立 .git，禁止入库） =====
+.research/
+tmp/
+vendor/
+# Windows 保留设备名文件（命令行 > NUL 误生成的垃圾，git 无法索引）
+NUL
+
+# ===== 调试 scratch（根目录 _ 前缀 + 抓取 dump，按本仓库约定不入仓） =====
+# 用 /_ 锚定 qq_bridge 根目录，避免误伤 src/ 内的 __init__.py
+/_*
+/.tmp_qqlogin/
+/probe.py
+/wf_wiki_*.html
+# 任意层级的带时间戳备份目录（如 src/plugins/qq_bridge/_backup_riven_recommend_*）
+_backup_*/
+
+# ===== 隐私 / 二进制运行时（绝不入库） =====
+*.exe
+*.qqxlog
+
+# ===== Warframe 市价卡货币图标：必需的**源码资产**，随代码交付 =====
+# 主项目根 .gitignore 有全局 `*.png`（针对生成物/截图），这里按子目录规则精确放行
+# 这三张是 DE 官方游戏内图标 / 按官方造型重绘的等价物，不是调试截图，也不进 data/。
+!src/plugins/qq_bridge/pic/templates/assets/wf_currency/*.png
+
+# ===== 签到卡黄金图标：必需的**源码资产**，随代码交付 =====
+# 同样被根 `*.png` 命中，按子目录精确放行。7 枚 128x128 RGBA PNG：6 枚 FA Solid SVG
+# 离线镀金（CC BY 4.0）+ 1 枚 coins.png 是本项目 AI 生成的电影级写实单枚金币
+# （自制资产，build 不覆盖，见同目录 README.md），不是调试截图；缺图 gate(strict) 会硬拦。
+!src/plugins/qq_bridge/pic/templates/assets/checkin_gold/*.png

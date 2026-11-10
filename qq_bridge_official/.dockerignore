@@ -1,0 +1,43 @@
+# 构建上下文裁剪：只把运行时代码打进镜像，数据/日志/机密一律走 volume
+
+# 虚拟环境与缓存
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 机密（绝不入镜像）
+.env
+.env.*
+!.env.example
+
+# 运行时数据（compose 以 volume 挂载）
+data/
+logs/
+tmp/
+downloads/
+_env/
+
+# 自绘图片磁盘缓存（TTL 300s，纯运行时产物）。
+# Dockerfile 是 `COPY src ./src`，根目录的 `*.png` 规则匹配不到 src/ 子目录，
+# 不显式排除就会把宿主 41 张历史缓存图烘进镜像 —— 重建后仍可能带旧图。
+# cache.py::_ensure_loaded() 会 mkdir(parents=True)，镜像里没有该目录不影响运行。
+src/data/pic_cache/
+
+# 体积大、运行时不需要
+tools/ocr_fixtures/
+docs/
+_preview/
+_preview-*.png
+*.log
+
+# 根目录调试/探针/打包产物（不进镜像；注意 src/ 下的 png 资源不受影响）
+_*.py
+_wf_*
+*.png
+*.ps1
+napcat_node/
+node20*
+node22*
+*.to-delete*
+downloads/

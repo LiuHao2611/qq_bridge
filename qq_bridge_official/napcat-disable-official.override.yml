@@ -1,0 +1,28 @@
+# ============================================================================
+# napcat-disable-official.override.yml —— 【隔离切换】关闭 NapCat 容器的官方连接权
+#
+# 背景：QQ 开放平台 AppID 的 WebSocket 是【单连接】语义。AppID 1906371548
+#       的连接权已划归官方独立副本（qq-bridge-official）。若 NapCat 容器
+#       也用同一 AppID 连接，两进程会互踢、双方都收不到消息。
+#
+# 做法：叠加在 NapCat 版 compose 之上，仅给 bridge service 注入一个环境变量。
+#       bot.py 走 load_dotenv() 默认 override=False —— compose environment
+#       优先级高于共享 .env 文件，因此这里能盖过 .env 里的 OFFICIAL_ENABLE=true。
+#
+# ★ 不修改 NapCat 的任何源码 / .env / 原 compose 文件（只读铁律）★
+#   本文件是【新增】的编排叠加层，放在官方副本目录，属于隔离部署资产。
+#
+# 用法（切回官方连接到副本时执行）：
+#   cd D:/AI/manju_agent/qq_bridge
+#   docker compose -f docker-compose.bridge.yml \
+#     -f ../qq_bridge_official/napcat-disable-official.override.yml \
+#     up -d --force-recreate bridge
+#
+# 回退（让 NapCat 重新接管官方通道，撤销隔离时）：
+#   cd D:/AI/manju_agent/qq_bridge
+#   docker compose -f docker-compose.bridge.yml up -d --force-recreate bridge
+# ============================================================================
+services:
+  bridge:
+    environment:
+      OFFICIAL_ENABLE: "false"
