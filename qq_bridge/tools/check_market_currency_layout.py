@@ -237,8 +237,13 @@ def run_check() -> int:
     for x in rank_errs:
         print("   ", x)
     problems += rank_errs
+    # 赋能二值化卡（满级 / 0级）同样过排版/图标/等级契约
+    arc_errs, arc_line = RG.check_arcane(
+        SHOTS, check_boxes, MIN_GAP, _currency_problems, _icon_slot_problems)
+    print(arc_line)
+    problems += arc_errs
 
-    print("\n市价卡布局闸门：%s" % ("PASS（%d/%d 样例 + 等级卡，溢出 0 / 重叠 0 / 间距 0）"
+    print("\n市价卡布局闸门：%s" % ("PASS（%d/%d 样例 + 等级卡 + 赋能卡，溢出 0 / 重叠 0 / 间距 0）"
                                 % (len(SAMPLES), len(SAMPLES))
                                 if not problems else "FAIL %d 项" % len(problems)))
     return 1 if problems else 0

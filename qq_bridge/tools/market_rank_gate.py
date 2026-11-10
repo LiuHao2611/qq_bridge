@@ -33,6 +33,53 @@ SHOTS = ROOT / "tests"
 MIXED = {"零级", "R1", "满级"}
 RANKED_ROWS = 10
 RANKED_SHOT = "_shot_market_currency_ranked.png"
+# 赋能二值化（2026-11-10）：满级成品 / 未满级原料，只有「满级」「0级」两种标记，
+# 绝不出现 MOD 的「零级」或中间态 R1~R4（合成中间态无独立交易价值）。
+ARCANE_LABELS = {"0级", "满级"}
+ARCANE_SHOT = "_shot_market_currency_arcane.png"
+
+
+def _render_arcane(theme_name: str = "light"):
+    """渲染赋能 6 列样例（R0 原料→0级 / R5 成品→满级），返回 (Canvas, boxes)。"""
+    t = theme.get(theme_name)
+    boxes: list = []
+    c = guide.build(t, body=R._body_arcane(), boxes=boxes,
+                    avatars={f"u{i}": R._avatar(i) for i in range(1, 11)},
+                    item_icon=R._icon(),
+                    source="数据源：Warframe.Market · 赋能卡布局验收")
+    return c, boxes
+
+
+def arcane_rank_problems(boxes: list, ranked_rows: int) -> list[str]:
+    """赋能等级列契约：表头 1、每行 1 枚、标记集合 ⊆ {0级,满级} 且含满级。"""
+    rank_boxes = [b for b in boxes if b[0].startswith("tbl.row.rank:")]
+    names = [b[0] for b in boxes]
+    p: list[str] = []
+    if names.count("tbl.hdr.rank") != 1:
+        p.append("[赋能] 等级表头应恰好 1 个，实际 %d" % names.count("tbl.hdr.rank"))
+    if len(rank_boxes) != ranked_rows:
+        p.append("[赋能] 每行应各 1 枚等级胶囊：应 %d / 实 %d" % (ranked_rows, len(rank_boxes)))
+    seen = {b[0].split(":", 1)[1] for b in rank_boxes}
+    if seen - ARCANE_LABELS:
+        p.append("[赋能] 不得出现 MOD 用语或 R1~R4 中间态，实得 %s" % sorted(seen))
+    if "满级" not in seen:
+        p.append("[赋能] 样例应含满级 R5 以证明映射，实得 %s" % sorted(seen))
+    return p
+
+
+def check_arcane(shots_dir: Path, check_boxes, min_gap: int,
+                 currency_problems, icon_slot_problems) -> tuple[list[str], str]:
+    """赋能卡真实出图 + 排版/图标/等级二值契约，返回 (问题列表, 打印行)。"""
+    c, boxes = _render_arcane("light")
+    (shots_dir / ARCANE_SHOT).write_bytes(c.to_bytes())
+    layout = check_boxes((16, 16, c.width - 16, c.height - 16), boxes, min_gap)
+    cur = currency_problems(boxes, False) + icon_slot_problems(boxes, 1.0)
+    aranks = arcane_rank_problems(boxes, RANKED_ROWS)
+    line = ("[%s] %s → %dx%d, boxes=%d, 排版=%d, 图标=%d, 赋能等级=%d"
+            % ("OK" if not (layout or cur or aranks) else "FAIL", ARCANE_SHOT,
+               c.width, c.height, len(boxes), len(layout), len(cur), len(aranks)))
+    problems = ["%s: %s" % (ARCANE_SHOT, x) for x in layout + cur + aranks]
+    return problems, line
 
 
 def _render_ranked(theme_name: str = "light"):
@@ -91,7 +138,7 @@ def check_ranked(shots_dir: Path, check_boxes, min_gap: int,
 
 
 def selftest_rank(plain_boxes: list) -> list[str]:
-    """注入等级列的真实反例，证明 rank_problems 不是摆设。返回错误列表。"""
+    """注入等级列 + 赋能二值化的真实反例，证明门禁不是摆设。返回错误列表。"""
     errs: list[str] = []
     _, rboxes = _render_ranked("light")
     if rank_problems(rboxes, RANKED_ROWS, MIXED):
@@ -109,4 +156,19 @@ def selftest_rank(plain_boxes: list) -> list[str]:
         errs.append("等级不再混排（全变零级）未被拦住")
     if not rank_problems(plain_boxes + [("tbl.hdr.rank", 300, 100, 330, 120)], 0, set()):
         errs.append("非 MOD 卡混入等级列未被拦住")
+    # 赋能二值化反例：MOD 用语「零级」、中间态 R3、漏满级，3 类都应被拦
+    _, aboxes = _render_arcane("light")
+    if arcane_rank_problems(aboxes, RANKED_ROWS):
+        errs.append("正常赋能卡被误报")
+    wrong_word = [("tbl.row.rank:零级" if b[0].startswith("tbl.row.rank:0级") else b[0],) + b[1:]
+                  for b in aboxes]
+    if not arcane_rank_problems(wrong_word, RANKED_ROWS):
+        errs.append("赋能用了 MOD 用语「零级」未被拦住")
+    mid_rank = [("tbl.row.rank:R3" if b[0].startswith("tbl.row.rank:0级") else b[0],) + b[1:]
+                for b in aboxes]
+    if not arcane_rank_problems(mid_rank, RANKED_ROWS):
+        errs.append("赋能出现中间态 R3 未被拦住")
+    no_full = [b for b in aboxes if b[0] != "tbl.row.rank:满级"]
+    if not arcane_rank_problems(no_full, RANKED_ROWS):
+        errs.append("赋能样例漏满级（无法证明 R5 映射）未被拦住")
     return errs

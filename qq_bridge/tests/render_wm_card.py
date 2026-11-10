@@ -124,11 +124,47 @@ def _body_ranked() -> str:
     return "\n".join(lines)
 
 
+def _body_arcane() -> str:
+    """赋能（Arcane）6 列样例（2026-11-10「满级展示满级，否则 0级」）：
+    Arcane Energize 真实市场 R0 原料单（7-9p）+ R5 满级成品单（400-900p）混排。
+    赋能等级已由 warframe._rank_prefix 二值化：R0~R4→0级、R5→满级，无 R1~R4。
+    """
+    rows = [
+        ("AlkaTale", "0级", "在线", 2, 1, 7),
+        ("annanjing", "0级", "在线", 0, 1, 7),
+        ("Denia_x", "0级", "游戏中", 27, 8, 8),
+        ("HURTLHX", "0级", "游戏中", 9, 24, 8),
+        ("Ca1Ya", "0级", "游戏中", 26, 22, 8),
+        ("Seccowo", "0级", "在线", 4, 7, 8),
+        ("IminousPrime", "0级", "游戏中", 2, 2, 8),
+        ("wshywx", "0级", "游戏中", 0, 2, 8),
+        ("R5_Hunter", "满级", "在线", 200, 1, 420),
+        ("R5_Seller", "满级", "游戏中", 145, 1, 899),
+    ]
+    lines = [
+        "@wmhdr|赋能·充沛|Arcane Energize|传奇 · 赋能|不可兑换|—|1667|79|icons/arcane_energize.png|60% 几率为自己和 15 米内友军恢复 150 能量",
+        "@hdr|卖家|等级|状态|声望|数量|白金价格",
+    ]
+    for i, (name, rk, st, rep, qty, price) in enumerate(rows, 1):
+        lines.append(f"@row|{name}|{rk}|{st}|{rep}|{qty}|{price}|u{i}|")
+    lines += [
+        "@mstat|48时内全等级售价|5|140|8",
+        "@mstat|90天内全等级售价|3|170|7",
+        "@mstat|48时内全等级收价|1|120|3",
+        "@mstat|90天内全等级收价|1|150|4",
+        "@shout|/w AlkaTale Hi! I want to buy: Arcane Energize for 7 platinum. (wf.m via qq_bridge)",
+        '@page|页码:1/167 使用"wm 赋能充沛 -2"查看下一页.',
+        "@foot|WARFRAME.MARKET / PC",
+    ]
+    return "\n".join(lines)
+
+
 def main() -> int:
     avatars = {f"u{i}": _avatar(i) for i in range(1, 11)}
     icon = _icon()
     outs = []
-    for body, tag in ((_body(), ""), (_body_ranked(), "_ranked")):
+    for body, tag in ((_body(), ""), (_body_ranked(), "_ranked"),
+                      (_body_arcane(), "_arcane")):
         for mode in ("light", "neon"):
             t = resolve(mode)
             png = render_raw("guide", t, body=body, title="", avatars=avatars,

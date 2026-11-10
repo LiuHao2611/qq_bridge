@@ -4028,13 +4028,19 @@ async def market_text(item: str, page: int = 1) -> str:
     if not orders:
         return f"「{clean_item}」在市场上暂无挂单（英文名 {url_name}）"
 
-    is_mod = any("rank" in o for o in orders)
-    # 从统计接口推导 MOD 满级数；统计缺失时从当前订单兜底
-    mod_max_rank = _extract_max_mod_rank(stats)
+    is_mod = any("rank" in o for o in orders)  # 赋能/MOD 订单都带 rank
+    # 赋能只有满级成品 / 未满级原料两档有交易意义（R1~R4 合成中间态无价值）。
+    # tags 优先；详情被风控拿不到时以 url 前缀兜底（赋能头盔含 _helmet，排除）。
+    _tags = (item_detail or {}).get("tags") or []
+    is_arcane = ("arcane_enhancement" in _tags
+                 or (url_name.startswith("arcane_") and "_helmet" not in url_name))
+    # 满级数优先用 WM 官方 maxRank，退回统计接口，再退回订单兜底
+    mod_max_rank = (item_detail or {}).get("maxRank")
+    if mod_max_rank is None:
+        mod_max_rank = _extract_max_mod_rank(stats)
     if is_mod and mod_max_rank is None:
         mod_max_rank = max((o.get("rank") for o in orders if "rank" in o), default=None)
 
-    # 处理「满级」语义
     if rank_label == "满级":
         if not is_mod:
             return f"「{clean_item}」不是 MOD，无法按等级过滤"
@@ -4042,7 +4048,7 @@ async def market_text(item: str, page: int = 1) -> str:
             return f"「{clean_item}」暂无等级信息，无法确定满级"
         target_rank = mod_max_rank
 
-    # MOD 未指定等级=全部等级混排（2026-11-10 定案），每行标等级；显式等级仍过滤且照标。
+    # 未指定等级=全部等级混排（2026-11-10 定案），每行标等级；显式等级仍过滤且照标。
     if target_rank is not None and not is_mod:
         return f"「{clean_item}」不是 MOD，无法按等级过滤"
     if target_rank is not None:
@@ -4059,14 +4065,13 @@ async def market_text(item: str, page: int = 1) -> str:
     # 标题只在用户显式指定等级时才带后缀；默认零级不额外加「R0」
     display_item = f"{_zh_name} {rank_label}" if rank_label else _zh_name
 
-    # 是否为在线/游戏内玩家（Rabbit 卡片「游戏在线/在线」列判定）
+    # 在线/游戏内玩家判定
     def _is_online(o):
         return ((o.get("user") or {}).get("status") or "").lower().replace("_", "") in (
             "ingame", "online", "in_game")
 
     # 排序（Rabbit 风格·买家视角）：价格低→高（最便宜优先）→ 同价最新上架优先。
-    # v2 orders 的时间字段是 updatedAt（v1 才是 last_update），旧实现读 last_update
-    # 恒为空 → 同价排序失效（2026-09-29 修复，兼容两种字段名）。
+    # v2 时间字段 updatedAt（v1 为 last_update），兼容两种名；旧读错致同价排序失效。
     def _lu_ts(o):
         lu = o.get("updatedAt") or o.get("createdAt") or o.get("last_update") or ""
         try:
@@ -4077,14 +4082,12 @@ async def market_text(item: str, page: int = 1) -> str:
     def _price_key(o):
         return ((o.get("platinum") or 0), -(_lu_ts(o)))
 
-    # 列表顺序（对齐 Rabbit 卡片 1/125 页）：**在线卖家整组在前**，组内按价格升序，
-    # 其后接离线卖家（同价离线不挤掉在线），状态列照实标「游戏在线/在线/离线」。
+    # 排序（对齐 Rabbit）：在线卖家整组在前、组内价格升序，其后离线卖家。
     online = sorted([o for o in sells if _is_online(o)], key=_price_key)
     offline = sorted([o for o in sells if not _is_online(o)], key=_price_key)
     ordered = online + offline
 
-    # 分页（2026-09-29 修复）：页码必须按**全部出售挂单**计算，之前只对展示用的
-    # 10 条算页数 → total 恒为 1、永远不出现「页码:1/125」那行。
+    # 分页按全部卖单算页数（旧版只按展示 10 条 → total 恒 1，页码行不出现）。
     per = 10
     total = max(1, (len(ordered) + per - 1) // per)
     page = max(1, min(page, total))
@@ -4092,12 +4095,11 @@ async def market_text(item: str, page: int = 1) -> str:
 
     _cat = _item_cat_text(url_name)
 
-    # ---- 物品详情（图标/杜卡德/交易税/稀有度）解析 ----
-    # 来源：/v1/items/{url_name} 的 payload.items[0]（与订单同风控策略，失败不影响出卡）
+    # 物品详情（图标/杜卡德/税率/稀有度），失败不影响出卡
     _icon_rel, _ducats, _tax, _rarity, _eff_disp = "", None, None, "", ""
     if item_detail:
         _id0 = item_detail
-        # v2 物品的图标在 i18n.en.icon/thumb（ItemI18NJson），根字段仅 v1 才有 → 两边都试
+        # v2 图标在 i18n.en.icon/thumb，根字段仅 v1 才有 → 两边都试
         _i18n0 = _id0.get("i18n") or {}
         _en0 = _i18n0.get("en") or {}
         _zh0 = _i18n0.get("zh-hans") or _i18n0.get("zh") or {}
@@ -4172,12 +4174,16 @@ async def market_text(item: str, page: int = 1) -> str:
     # （图标路径相对 static/assets，渲染层据此单独拉取；卖家/在线数来自本次订单统计）
     lines = [f"@wmhdr|{display_item}|{_en_disp}|{_cat_disp}|{_ducats_disp}|{_tax_disp}"
              f"|{_sellers_n}|{_online_n}|{_icon_rel}|{_eff_disp}"]
-    # 等级短标签：表格「等级」列 + 统计前缀共用。非 MOD 恒零级；MOD 零级/满级/Rx/全等级。
+    # 等级短标签（表格「等级」列 + 统计前缀共用）。赋能二值：满级=满级，R0~R4 一律 0级
+    # （赋能只有满级成品 / 未满原料两类有交易意义，R1~R4 合成中间态无独立价值）；
+    # 普通 MOD 保留零级/满级/Rx 逐档；非等级物品恒零级。
     def _rank_prefix(rank):
         if not is_mod:
             return "零级"
         if rank is None:
             return "全等级"
+        if is_arcane:
+            return "满级" if mod_max_rank is not None and rank == mod_max_rank else "0级"
         if rank == 0:
             return "零级"
         if mod_max_rank is not None and rank == mod_max_rank:
@@ -4206,15 +4212,10 @@ async def market_text(item: str, page: int = 1) -> str:
         else:
             lines.append(f"@row|{name}|{st}|{rep}|{o.get('quantity') or 1}|{o.get('platinum') or 0}|{uid}|{avatar_rel}")
 
-    # ---- 价格统计（Rabbit 卡片四行：48时内/90天内 × 售价/收价）----
-    # 口径（对齐 WM 官网 statistics 页，2026-09-29 重写）：
-    #   · 售价 = 成交价 → statistics_closed 最近一档
-    #       （48hours 是逐小时档、90days 是逐日档，两条线各取各自窗口）
-    #   · 收价 = 挂收价 → statistics_live 中 order_type=buy 的最近一档
-    #   · 最新 = 该档 open_price（最新成交价）；live 档无 open_price → 显示「暂无」
-    #   · 非 MOD 物品（战甲/套装/部件等）恒为零级 → 前缀「零级」
-    # 旧实现的 3 个 bug：①把 live 的 48hours+90days 拼成一个数组取最后一条 →
-    # 48时内售价 实际取到 90天档；②90天内两行恒缺失；③「最新」取 avg_price（30.5 这种均价）。
+    # 价格统计四行（48时/90天 × 售价/收价，对齐 WM statistics，2026-09-29）：
+    # 售价取 statistics_closed 各窗口最近档；收价取 statistics_live 的 buy 最近档；
+    # 最新取该档 open_price（live 无则「暂无」）；非等级物品前缀「零级」。
+    # 旧 bug（已修）：拼 48h+90d 取尾条取错窗口、漏 90 天两行、最新误用 avg_price。
     if stats:
         pl = stats.get("payload") or {}
 
