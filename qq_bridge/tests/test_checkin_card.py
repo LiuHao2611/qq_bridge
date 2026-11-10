@@ -185,10 +185,68 @@ def test_gate_check_all_states_months_zero_problems():
 
 
 def test_template_under_20kb_ratchet():
-    """主模板必须 <20480B（HEAD 14KB 非存量超大文件，无棘轮豁免）。"""
-    sha = subprocess.check_output(
-        ["git", "-C", str(ROOT.parent), "hash-object", "-w",
-         "qq_bridge/src/plugins/qq_bridge/pic/templates/checkin.py"], text=True).strip()
-    size = int(subprocess.check_output(
-        ["git", "-C", str(ROOT.parent), "cat-file", "-s", sha], text=True).strip())
-    assert size < 20480, "checkin.py git blob %d B 超 20KB 硬上限" % size
+    """主模板与门禁脚本都必须 <20480B（HEAD 均非存量超大文件，无棘轮豁免）。"""
+    for rel in ("src/plugins/qq_bridge/pic/templates/checkin.py",
+                "src/plugins/qq_bridge/pic/templates/checkin_parts.py",
+                "tools/check_checkin_layout.py", "tools/checkin_style_gate.py"):
+        sha = subprocess.check_output(
+            ["git", "-C", str(ROOT.parent), "hash-object", "-w", "qq_bridge/" + rel],
+            text=True).strip()
+        size = int(subprocess.check_output(
+            ["git", "-C", str(ROOT.parent), "cat-file", "-s", sha], text=True).strip())
+        assert size < 20480, "%s git blob %d B 超 20KB 硬上限" % (rel, size)
+
+
+# ---------------------------------------------------------------- 视觉精修契约（2026-11-10 15:0x）
+# 用户「注意每个边框内外边距、字体、文字大小、加粗程度、颜色」。以下三条把主观
+# 视觉规范变成机器可拦：字号层级 / 间距 token / 分区标题同色同字重。
+sys.path.insert(0, str(TOOLS))
+import checkin_style_gate as SG  # noqa: E402
+
+
+def test_type_scale_is_layered():
+    """字号层级：标题>核心数值>分区标题>正文>弱文字，逐级差达标。"""
+    assert P.type_scale_problems() == [], P.type_scale_problems()
+
+
+def test_spacing_are_four_pixel_tokens():
+    """所有间距类常量须为 4 的倍数 token（杜绝 10/14/18/22 混用）。"""
+    assert P.spacing_token_problems() == [], P.spacing_token_problems()
+
+
+def test_section_titles_share_accent_and_bold():
+    """4 个分区标题同层同色同字重：accent + bold，无奖励标题单独用绿。"""
+    assert SG.section_style_problems() == [], SG.section_style_problems()
+
+
+def test_visual_gate_catches_real_counterexamples():
+    """三条注入反例（字号倒挂 / 非 token 间距 / 同层异色+去粗）必须各自被拦。"""
+    assert SG.scale_probe(), "字号层级倒挂未拦住"
+    assert SG.spacing_probe(), "非 4 倍数间距未拦住"
+    assert SG.style_probe(), "分区标题同层异色/去 bold 未拦住"
+
+
+def test_visual_contract_problems_bundles_parts():
+    """视觉契约打包函数 = parts 的字号+间距判据，且当前源码无问题。"""
+    assert SG.visual_contract_problems() == (
+        P.type_scale_problems() + P.spacing_token_problems())
+
+
+def test_zero_progress_no_isolated_current_line():
+    """0 进度里程碑不得画孤立当前位置竖线（曾肉眼抓到，机器补拦）。
+
+    守语义不锁字面：当前源码干净；等价守卫 if frac / if px>cx0 放行；
+    无条件 if True、删整段守卫、找不到竖线都必须被拦。"""
+    assert SG.zero_progress_line_problems() == [], SG.zero_progress_line_problems()
+    src = open(SG.SOURCE, encoding="utf-8").read()
+    # 等价进度守卫写法放行人（不 implementation-coupled）
+    for repl in ("if frac:", "if px > cx0:"):
+        assert SG.zero_progress_line_problems(src.replace("if total > 0:", repl, 1)) == [], repl
+    # 无条件画 / 删守卫 / 删竖线本身，三种回退都必须被拦
+    assert SG.zero_progress_line_problems(src.replace("if total > 0:", "if True:", 1))
+    import re
+    assert SG.zero_progress_line_problems(
+        re.sub(r"    if total > 0:\n        px = .*\n        c\.line\(\(px,.*\n", "", src))
+    assert SG.zero_progress_line_problems(src.replace("c.line((px,", "c.line((qx,", 1))
+    # 反例探针：注入 if True 必须命中，还原后干净
+    assert SG.zero_progress_probe(), "0 进度孤立竖线守卫回退未被拦住"

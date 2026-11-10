@@ -1,28 +1,17 @@
 # -*- coding: utf-8 -*-
 """pic/templates/checkin.py —— 每日签到卡（浅色 Rabbit 风，取长补短版）。
 
-视觉对标（2026-11-10，用户参考图 ``884ea321…png`` = Warframe Rabbit 签到卡）：
-  * 浅色柔和：页白底 + 浅色主卡 + 圆角；顶部居中「签到」+ 闹钟图标 + 分隔线；
-  * 绿色左边框结果横幅（签到成功 / 今天已签到 / 还没签到 三态）；
-  * 「签到状态」分区卡 + 2×2 圆角胶囊（连签 / 累计 / 喵币 / 名次）；
-  * 蓝色分区标题 + 绿色成功强调 + 补签说明 + 小提示；
-  * 页脚 PC 绿胶囊 + 机器人名 + 「*善用右键/长按提取文字」（同 plain/alerts 品牌规范）。
-
-取长补短（**不逐像素复刻、不编造字段**）：
-  * 参考图的「群段位 / 经验值 / 群萝卜」本项目**没有**，绝不编造；改用真实字段
-    连签 / 累计 / 喵币 / 名次（名次缺失时显示距下一里程碑天数）。
-  * 参考图结果横幅的「抽中签 / 路边捡礼品盒」是 Rabbit 专属抽奖文案，本项目无此机制，
-    横幅正文用真实数据拼装（今日 +N / 连签 N 天）。
-  * 保留**项目强项**（参考图反而更弱）：完整 7 列月历（参考图只有两个方框 8/10）、
-    里程碑进度条、真实奖励拆分（每日基础 + 连签阶梯 + 里程碑）。
-  * 参考图右侧二次元插画**无本地版权资产**：用主题贴纸背景（decor.background）替代，
-    不画角落大贴纸，避免半透明图压住月历/页脚文字违反 card-design 重叠红线。
-
-配色**全部走主题**（t.accent 蓝 / t.ok 绿 / t.card / t.text ...），light 主题天然浅色且
-主题编辑器可调；`radius` 也走主题（brutalist 主题仍可得直角，向后兼容）。
-度量与绘制同源：所有分区 y 用统一 ``GAP`` + 模块级常量推进，月历行数由 ``_month_matrix``
-推算；``build(boxes=...)`` 在真实绘制时登记每个叶子元素包围盒，供门禁查溢出/重叠/间距。
-逻辑层（连签 / 累计 / 里程碑 / 补签 / 排行）沿用 manager，未改动。
+对标参考图 884ea321（Warframe Rabbit 签到卡）：浅色主卡 + 顶部居中「签到」+ 闹钟 +
+绿色左边框三态横幅 +「签到状态」2×2 圆角胶囊 + 7 列月历 + 里程碑进度条 + 真实奖励
+拆分 + PC/曼珠页脚。取长补短、**不逐像素复刻、不编造字段**：Rabbit 专属的群段位/
+经验值/群萝卜/抽中礼品盒本项目没有，一律不编造，横幅/胶囊只用 manager 真实字段
+（连签/累计/喵币/名次/距里程碑）；右侧插画无版权资产，用主题贴纸背景替代，不画
+角落大贴纸压字。配色/圆角全走主题（accent 蓝/ok 绿/t.card/t.text/radius），light
+天然浅色且编辑器可调，brutalist 仍出直角向后兼容。度量与绘制同源：分区 y 用统一
+GAP + checkin_parts 常量推进，月历行数由 _month_matrix 推算，build(boxes=...) 登记
+每个叶子包围盒供门禁查溢出/重叠/间距。逻辑层沿用 manager，未改动。
+2026-11-10 15:0x 视觉精修：字号层级 40/24/20/17/16/15/14、间距全 4px token、
+分区标题统一 accent+bold、数值改 lm 基准手动右对齐（细节见 AGENTS.md §15:0x）。
 """
 from __future__ import annotations
 
@@ -52,21 +41,25 @@ def _pill(c: Canvas, t, box, label: str, value: str, icon: str,
       * ``<key>.label``      标签文字
       * ``<key>.value``      数值文字（右基线 x1-PAD_VAL，实测与右边框留白）
     """
-    PAD_VAL = 14                      # 数值距胶囊右边缘留白（>8px，避免圆角处显拥挤）
+    PAD_VAL = 16                      # 数值距胶囊右边缘留白（4 倍数 token，>8px 防贴边）
+    PAD_IN = 12                       # 胶囊左内边距（统一 token）
     x0, y0, x1, y1 = box
     cy = (y0 + y1) / 2
     fill = _blend(accent, t.card, 0.88)
     c.rounded_rect(box, radius=(y1 - y0) // 2, fill=fill, outline=accent, width=1)
-    ix = x0 + 12 + PILL_ICON / 2
+    ix = x0 + PAD_IN + PILL_ICON / 2
     icons.draw(c, icon, ix, cy, PILL_ICON, accent, style="line")
-    lab_x = x0 + 12 + PILL_ICON + 8
+    lab_x = x0 + PAD_IN + PILL_ICON + 8
     c.text((lab_x, cy), label, size=FS_PILL_LAB, color=t.text_sub, role="regular", anchor="lm")
-    val_x = x1 - PAD_VAL
-    c.text((val_x, cy), value, size=FS_PILL_VAL, color=t.text, role="bold", anchor="ra")
+    # 数值统一 lm 基准 + 手动右对齐：Pillow ra=right-ascender 在 24px bold 时下缘
+    # 下沉压胶囊底边（肉眼核对抓到，20px 时不显）。数值盒用实测半高，不按 FS//2 估算。
+    val_right = x1 - PAD_VAL
+    val_left = val_right - _w(value, FS_PILL_VAL, "bold")
+    c.text((val_left, cy), value, size=FS_PILL_VAL, color=t.text, role="bold", anchor="lm")
     if boxes is not None:
+        vh = Canvas.text_size(value, FS_PILL_VAL, "bold")[1]
         boxes.append((key, x0, y0, x1, y1))
-        boxes.append((key + ".value", val_x - _w(value, FS_PILL_VAL, "bold"),
-                      cy - FS_PILL_VAL // 2, val_x, cy + FS_PILL_VAL // 2))
+        boxes.append((key + ".value", val_left, cy - vh // 2, val_right, cy + vh // 2))
 
 
 def build(
@@ -212,8 +205,10 @@ def build(
         b_title = "还没签到"
         b_msg = "发 /签到 领今日喵币～"
         b_tcol = warn
-    c.text((cx0 + 18, y + 22), b_title, size=FS_BANNER_T, color=b_tcol, role="bold", anchor="lm")
-    c.text((cx0 + 18, y + 58), b_msg, size=FS_BANNER_M, color=text, role="regular", anchor="lm")
+    # 横幅文字：x 左内边距统一 16 token；y 按放大后字号（24/17）重排，上下呼吸对称
+    BANNER_PAD_X = 16
+    c.text((cx0 + BANNER_PAD_X, y + 30), b_title, size=FS_BANNER_T, color=b_tcol, role="bold", anchor="lm")
+    c.text((cx0 + BANNER_PAD_X, y + 66), b_msg, size=FS_BANNER_M, color=text, role="regular", anchor="lm")
     c.add_region("ok", [cx0, y, cx0 + 6, y + BANNER_H], label="成功色", group="语义色",
                  tip="点击修改成功色")
     _rec(boxes, "banner", bbox)
@@ -265,8 +260,10 @@ def build(
     for m, _ in _MILESTONES:
         tx = cx0 + (m / _MILE_MAX) * (cx1 - cx0)
         c.line((tx, bar_y - 3, tx, bar_y + MILE_BAR_H + 3), fill=div, width=1)
-    px = cx0 + (min(total, _MILE_MAX) / _MILE_MAX) * (cx1 - cx0)
-    c.line((px, bar_y - 6, px, bar_y + MILE_BAR_H + 6), fill=accent, width=2)
+    # 0 进度不画当前位置竖线：否则一根 2px 蓝线孤立贴在轨道最左外缘（观感瑕疵）
+    if total > 0:
+        px = cx0 + (min(total, _MILE_MAX) / _MILE_MAX) * (cx1 - cx0)
+        c.line((px, bar_y - 6, px, bar_y + MILE_BAR_H + 6), fill=accent, width=2)
     c.add_region("track", [cx0, bar_y, cx1, bar_y + MILE_BAR_H], label="进度条轨道",
                  group="进度条", tip="点击修改进度条")
     _rec(boxes, "mile.bar", bar_box)
@@ -288,8 +285,8 @@ def build(
     _rec(boxes, "mile.legend", (cx0, leg_y - FS_LEGEND, cx1, leg_y + FS_LEGEND))
     y += mile_h + GAP
 
-    # ============ 本次签到奖励（绿色小标题 + 胶囊）============
-    c.text((cx0, y + SEC_TITLE_H / 2), "本次签到奖励", size=FS_SEC, color=ok,
+    # ============ 本次签到奖励（分区标题与其它三区统一 accent 主色 + bold）============
+    c.text((cx0, y + SEC_TITLE_H / 2), "本次签到奖励", size=FS_SEC, color=accent,
            role="bold", anchor="lm")
     _rec(boxes, "reward.title", _tb((cx0, y + SEC_TITLE_H / 2), "本次签到奖励",
                                     FS_SEC, "bold", "lm"))
@@ -302,9 +299,11 @@ def build(
         pcol = warn if rare else ok
         c.rounded_rect((bx0, by0, bx0 + rw, by0 + REWARD_PILL_H), radius=REWARD_PILL_H // 2,
                        fill=_blend(pcol, card, 0.90), outline=_blend(pcol, card, 0.5), width=1)
-        icons.draw(c, "wand", bx0 + 10 + 8, by0 + REWARD_PILL_H / 2, 16, pcol, style="line")
+        # 奖励胶囊内边距统一：左 12 token，图标→文字 gap 8 token（禁用 10/6 混用）
+        R_PIL = 12
+        icons.draw(c, "wand", bx0 + R_PIL + 8, by0 + REWARD_PILL_H / 2, 16, pcol, style="line")
         label = "%s  %s" % (lab, txt) if txt else lab
-        c.text((bx0 + 10 + 16 + 6, by0 + REWARD_PILL_H / 2), label, size=FS_REWARD,
+        c.text((bx0 + R_PIL + 16 + 8, by0 + REWARD_PILL_H / 2), label, size=FS_REWARD,
                color=text, role="bold", anchor="lm")
         _rec(boxes, "reward.pill.%d" % i, (bx0, by0, bx0 + rw, by0 + REWARD_PILL_H))
     y += reward_h + GAP
@@ -330,8 +329,8 @@ def build(
             daykey = "%04d-%02d-%02d" % (int(cal_year), int(cal_month), d)
             checked = daykey in days
             is_today = in_month and d == today_day
-            cell = (ccx - cell_w / 2 + 3, cy_top + 2,
-                    ccx + cell_w / 2 - 3, cy_top + DAY_H - 2)
+            cell = (ccx - cell_w / 2 + 4, cy_top + 2,
+                    ccx + cell_w / 2 - 4, cy_top + DAY_H - 2)  # 水平内缩 4 token
             cy = (cell[1] + cell[3]) / 2
             if is_today and checked:
                 c.rounded_rect(cell, radius=r_ctrl, fill=_blend(ok, card, 0.80),
@@ -371,9 +370,9 @@ def build(
                    radius=6, outline=ok, width=1)
     c.text((cx0 + PC_W / 2, fy), "PC", size=12, color=ok, role="bold", anchor="mm")
     foot_name = "曼珠"      # 本项目自有品牌，不冒充 Warframe Rabbit
-    nx = cx0 + PC_W + 10
+    nx = cx0 + PC_W + 8     # 页脚元素间 gap 统一 8 token
     c.text((nx, fy), foot_name, size=FS_FOOT, color=ok, role="bold", anchor="lm")
-    nx += _w(foot_name, FS_FOOT, "bold") + 10
+    nx += _w(foot_name, FS_FOOT, "bold") + 8
     c.text((nx, fy), "*善用右键/长按提取文字", size=FS_FOOT, color=weak,
            role="regular", anchor="lm")
     _rec(boxes, "footer", (cx0, y + 2, cx1, y + FOOTER_H))

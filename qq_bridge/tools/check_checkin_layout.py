@@ -14,10 +14,15 @@
   * 数据契约                     —— 必备分区 label 齐全（横幅 / 4 胶囊 / 进度条 / 奖励 /
                                      月历 / 页脚）；三态文案正确；绝不出现 Rabbit 专属编造字段
   * 跨月鲁棒                     —— 28/29/30/31 天月份都渲染不触线（月历行数变化）
+  * 视觉精修（15:0x）            —— 字号层级 / 间距 4px token / 分区标题同色同字重 /
+                                     0 进度不画孤立当前位置竖线，判据按功能拆到
+                                     checkin_style_gate.py（守本脚本 <20KB）
 
 2026-11-10：用户「参考 Rabbit 图优化签到卡 + 改浅色主题」。本门禁把改前深色终端风
 （> 每日签到 / [OK] / Consolas / radius=0）与编造字段（群段位/经验值/群萝卜/抽中/礼品盒）
-全部列为反例，注入验证必须被拦下。
+全部列为反例，注入验证必须被拦下。15:0x 用户「注意每个边框内外边距/字体/字号/加粗/颜色」
+再补 4 类视觉判据（字号倒挂 / 非 token 间距 / 分区标题同层异色或去粗 / 0 进度孤立竖线），
+其中孤立竖线是肉眼核对抓到、机器初漏的真实回归，selftest 共 15 类。
 
 绝不降级：任何一组不过就 ``exit 1``；不吞异常、不放宽阈值。
 """
@@ -30,11 +35,20 @@ import sys
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # /app
 sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "src", "plugins"))
+# 同目录的视觉精修判据模块：显式加入 tools/ 以兼容任意 cwd / import 方式（容器/宿主一致）
+_TOOLS = os.path.dirname(os.path.abspath(__file__))
+if _TOOLS not in sys.path:
+    sys.path.insert(0, _TOOLS)
 
 from qq_bridge.pic import _resolve_card_theme_name  # noqa: E402
 from qq_bridge.pic import theme as _theme  # noqa: E402
 from qq_bridge.pic.templates import checkin as _checkin  # noqa: E402
 from qq_bridge.pic.templates import checkin_parts as _parts  # noqa: E402
+# 视觉精修语义判据（颜色/加粗/字号层级/间距 token）按功能拆出，守本脚本 <20KB。
+from checkin_style_gate import (  # noqa: E402
+    section_style_problems, visual_contract_problems, value_padding_problems,
+    scale_probe, spacing_probe, style_probe, zero_progress_probe,
+)
 
 MIN_GAP = 2
 
@@ -122,22 +136,6 @@ def check_boxes(bounds, boxes, min_gap: int = MIN_GAP) -> list[str]:
     return problems
 
 
-def value_padding_problems(boxes) -> list[str]:
-    """数值文字与胶囊右边框的留白契约：至少 8px（防圆角处显拥挤/贴边）。"""
-    p: list[str] = []
-    for label, x0, y0, x1, y1 in boxes:
-        if not label.startswith("status.pill.") or label.endswith(".value"):
-            continue
-        val = next((b for b in boxes if b[0] == label + ".value"), None)
-        if val is None:
-            p.append("[贴边] %s 缺 .value 包围盒登记" % label)
-            continue
-        pad = x1 - val[3]                      # 胶囊右边缘 - 数值右边缘
-        if pad < 8:
-            p.append("[贴边] %s 数值距右边框仅 %dpx < 8px" % (label, pad))
-    return p
-
-
 def _label(hex_color: str) -> int:
     s = hex_color.lstrip("#")
     return (int(s[0:2], 16) + int(s[2:4], 16) + int(s[4:6], 16)) // 3
@@ -165,7 +163,7 @@ def _source_path() -> str:
 
 
 def source_contract_problems() -> list[str]:
-    """主模板源码契约：不得回退深色终端风硬编码。"""
+    """主模板源码契约：不得回退深色终端风硬编码，不得回退非 token 硬编码间距。"""
     p: list[str] = []
     try:
         with open(_source_path(), encoding="utf-8") as f:
@@ -185,6 +183,15 @@ def source_contract_problems() -> list[str]:
     for token, why in banned.items():
         if token.lower() in lower:
             p.append("[源码] 命中禁用回退 %r：%s" % (token, why))
+    # 用户 15:0x 精修：横幅/胶囊/奖励/页脚不得再散落 +18/+14/+10 等非 token 硬编码偏移
+    # （分区 y 用 SEC_TITLE_H/2、格内 ±4 等来自常量的合法表达式不受影响）。
+    for token, why in {
+        'cx0 + 18': "横幅文字 x 硬编码（应 cx0 + 16 token）",
+        'bx0 + 10': "奖励图标 x 硬编码（应 12 token）",
+        '+ 6, by0': "奖励文字 gap 硬编码（应 8 token）",
+    }.items():
+        if token in src:
+            p.append("[源码] 非 token 内边距回退 %r：%s" % (token, why))
     return p
 
 
@@ -254,6 +261,9 @@ def run_check(out: str = "") -> tuple[list[str], str]:
     problems += pale_theme_problems(t)
     problems += source_contract_problems()
     problems += invented_field_problems()
+    # 用户 15:0x 视觉精修：字号层级 / 间距 token / 分区标题同色同字重（判据在 checkin_style_gate）
+    problems += visual_contract_problems()
+    problems += section_style_problems()
 
     n_cases = 0
     for cal_case in CAL_CASES:
@@ -320,17 +330,34 @@ def _selftest() -> int:
     # 9 源码回退判据：注入真实禁用 token 必须命中
     if not _source_probe():
         errs.append("源码深色终端回退未被拦下")
-    # 10 数值贴边：数值右边缘距胶囊 <8px 必须被拦；正常 14px 不误报
-    tight = [("status.pill.0", 0, 0, 100, 20), ("status.pill.0.value", 50, 0, 96, 20)]
-    if not any("贴边" in p for p in value_padding_problems(tight)):
-        errs.append("数值贴边（4px）未被拦下")
-    loose = [("status.pill.0", 0, 0, 100, 20), ("status.pill.0.value", 50, 0, 86, 20)]
+    # 10 数值贴边：水平（右<8px）/ 垂直（上下<6px）都要拦；正常留白不误报
+    # boxes = (label, x0, y0, x1, y1)
+    tight_r = [("status.pill.0", 0, 0, 100, 40), ("status.pill.0.value", 50, 11, 96, 29)]
+    if not any("右边框" in p for p in value_padding_problems(tight_r)):
+        errs.append("数值水平贴边（4px）未被拦下")
+    tight_b = [("status.pill.0", 0, 0, 100, 40), ("status.pill.0.value", 50, 3, 86, 37)]
+    if not any("垂直" in p for p in value_padding_problems(tight_b)):
+        errs.append("数值垂直贴边（上3/下3px）未被拦下")
+    # 正常：右留 14、上下各留 11 → 三面都不贴
+    loose = [("status.pill.0", 0, 0, 100, 40), ("status.pill.0.value", 50, 11, 86, 29)]
     if value_padding_problems(loose):
-        errs.append("数值正常留白（14px）被误报")
+        errs.append("数值正常留白（右14/上下11）被误报：%s" % value_padding_problems(loose))
     # 11 父子嵌套：子盒完全在父盒内不算重叠（防贴边判据引入的合法嵌套被误杀）
     nested = [("pill", 0, 0, 100, 40), ("pill.value", 40, 10, 86, 30)]
     if check_boxes((0, 0, 100, 100), nested):
         errs.append("合法父子嵌套被误判为重叠")
+    # 12 字号层级：核心数值压到与分区标题同级（差 0<4）须被拦
+    if not scale_probe():
+        errs.append("字号层级倒挂（核心数值=分区标题）未被拦下")
+    # 13 间距 token：GAP 改回 14（非 4 倍数）须被拦
+    if not spacing_probe():
+        errs.append("非 token 间距（GAP=14）未被拦下")
+    # 14 分区标题语义样式：奖励标题改用 ok 绿（同层异色）须被拦；去 bold 须被拦
+    if not style_probe():
+        errs.append("分区标题同层异色 / 去 bold 未被拦下")
+    # 15 里程碑 0 进度孤立竖线：把进度守卫换成 if True 须被拦（肉眼曾抓到，机器补拦）
+    if not zero_progress_probe():
+        errs.append("0 进度孤立竖线（当前位置竖线无进度守卫）未被拦下")
     print("selftest:", "PASS" if not errs else "FAIL — " + "; ".join(errs))
     return 0 if not errs else 1
 
