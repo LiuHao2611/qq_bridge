@@ -21,7 +21,7 @@ class _Seg:
         self.data = data
 
 
-def _mk_event(uid, gid, text, with_at=False, self_id="3858741376"):
+def _mk_event(uid, gid, text, with_at=False, self_id="900000009"):
     """构造最简 onebot MessageEvent（duck typing，normalize 用 getattr 读字段）。"""
     segs = []
     if with_at:
@@ -54,7 +54,7 @@ def test_gallery_pick_bypasses_at_gate():
     _activate(uid)
     try:
         ev = _mk_event(uid, gid, "3")
-        r = normalize(ev, self_id="3858741376", trace_id="t-g")
+        r = normalize(ev, self_id="900000009", trace_id="t-g")
         assert r is not None, "画廊上下文里回纯数字应免@放行"
         assert r.at_bot is True
         assert r.raw_text == "3"
@@ -68,7 +68,7 @@ def test_gallery_active_but_non_numeric_still_dropped():
     _activate(uid)
     try:
         ev = _mk_event(uid, gid, "你好喵")
-        r = normalize(ev, self_id="3858741376", trace_id="t-g2")
+        r = normalize(ev, self_id="900000009", trace_id="t-g2")
         assert r is None, "画廊上下文里非数字闲聊仍应被@门禁丢"
     finally:
         gallery.reset()
@@ -80,7 +80,7 @@ def test_gallery_pick_out_of_range_digits_dropped():
     _activate(uid)
     try:
         ev = _mk_event(uid, gid, "12345")
-        r = normalize(ev, self_id="3858741376", trace_id="t-g3")
+        r = normalize(ev, self_id="900000009", trace_id="t-g3")
         assert r is None, "非编号的长数字不应走画廊放行"
     finally:
         gallery.reset()
@@ -91,11 +91,11 @@ def test_no_gallery_pure_digit_still_dropped():
     uid, gid = 89004, 79004
     gallery.reset()
     ev = _mk_event(uid, gid, "3")
-    r = normalize(ev, self_id="3858741376", trace_id="t-g4")
+    r = normalize(ev, self_id="900000009", trace_id="t-g4")
     assert r is None, "无画廊时纯数字无@应被丢"
 
 
-# ------------------------- 翻页口令免 @（2026-09-13 事故：线上 3287416492）-------
+# ------------------------- 翻页口令免 @（2026-09-13 线上事故，用户号已脱敏）-------
 # 事故现场日志：event=dispatcher_drop reason=group_not_at raw_message=下一页
 # 用户在画廊里发「下一页」没 @机器人 → 被 group_not_at 静默丢弃 → 体感"发了没反应"。
 # 修：与「回复编号」同理，画廊上下文内的**整句翻页口令**一并免 @ 放行。
@@ -106,7 +106,7 @@ def test_gallery_nav_bypasses_at_gate():
     try:
         for w in ("下一页", "上一页", "翻页", "下页", "next", "上一页。"):
             ev = _mk_event(uid, gid, w)
-            r = normalize(ev, self_id="3858741376", trace_id="t-nav-%s" % w)
+            r = normalize(ev, self_id="900000009", trace_id="t-nav-%s" % w)
             assert r is not None, "画廊上下文里发「%s」应免@放行（事故现场词）" % w
             assert r.at_bot is True
             assert r.raw_text == w
@@ -119,7 +119,7 @@ def test_gallery_nav_without_gallery_still_dropped():
     uid, gid = 89006, 79006
     gallery.reset()
     ev = _mk_event(uid, gid, "下一页")
-    r = normalize(ev, self_id="3858741376", trace_id="t-nav-x")
+    r = normalize(ev, self_id="900000009", trace_id="t-nav-x")
     assert r is None, "没有活跃画廊时翻页口令无@应被丢"
 
 
@@ -130,7 +130,7 @@ def test_gallery_context_similar_chatter_still_dropped():
     try:
         for w in ("下面给你看看", "下一页要画猫", "再下一页吧", "这页不错"):
             ev = _mk_event(uid, gid, w)
-            r = normalize(ev, self_id="3858741376", trace_id="t-nav-y")
+            r = normalize(ev, self_id="900000009", trace_id="t-nav-y")
             assert r is None, "「%s」不该被翻页免@放行" % w
     finally:
         gallery.reset()

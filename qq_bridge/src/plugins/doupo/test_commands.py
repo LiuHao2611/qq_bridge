@@ -54,7 +54,7 @@ _stub_nonebot()
 from doupo import commands, core, config as cfg  # noqa: E402
 from doupo.store import Store  # noqa: E402
 
-G = "1075851417"
+G = "900000001"
 A, B = "100001", "100002"
 
 _results = []

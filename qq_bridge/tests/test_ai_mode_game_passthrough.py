@@ -74,8 +74,8 @@ def test_route_passthrough_game_cmd_in_ai_mode(monkeypatch):
 
     def ev(text):
         return SimpleNamespace(
-            raw_text=text, scope_key="g:1075851417", is_group=True,
-            group_id=1075851417, user_id=1743124119, images=None, voices=None,
+            raw_text=text, scope_key="g:900000001", is_group=True,
+            group_id=900000001, user_id=900000002, images=None, voices=None,
         )
 
     async def run():

@@ -75,7 +75,11 @@ services:
       #    字面量 "[\"ws://...\"]" 导致 SyntaxError: Invalid URL。
       ONEBOT_URL: 'ws://host.docker.internal:8080/onebot/v11/ws'
       WEBUI_TOKEN: 1e2883288f7b034c53f6253fd487971f
-      ACCOUNT: 2149466287
+      # 登录号唯一来源 = .env 的 BOT_UIN。禁止在这里写死真实 QQ 号。
+      # ${BOT_UIN:?} 缺值时 compose 立即报错，绝不静默拿空号登录（高频重登会触发封号）。
+      # 换号只改 .env 的 BOT_UIN，两个启动脚本都会先把它导出到 compose 进程环境。
+      # 详见 docs/账号配置_换号指南.md。
+      ACCOUNT: ${BOT_UIN:?请在 .env 设置 BOT_UIN（机器人登录 QQ 号），禁止在 compose 写死}
       # 快速登录票据失效时的密码回退（NapCat 4.18+ 支持；前端「快速登录密码」栏写入 data/compose.env）
       #   只存 32 位 MD5，不存明文；由 `docker compose --env-file data/compose.env up -d --force-recreate` 注入
       #   ⚠️ 铁律：严禁自动重登。此项留空即不启用；填写前先读 start_all.ps1 顶部的封号事故说明。

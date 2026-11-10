@@ -24,7 +24,7 @@ import pytest
 # conftest 由 pytest 最先加载，所以只能放这里。
 #
 # 不隔离的后果（2026-11-05 实测）：tests/test_plan_commands.py 直接调 game_tools
-# 的 handler，伪造的群消息（group_id=1075851417、user_id=3287416492）连同真实
+# 的 handler，伪造的群消息（group_id=900000001、user_id=900000002）连同真实
 # 群号一起写进生产 logs/qq_bridge.log。事后排查时那批假消息和真群消息长得一模
 # 一样，差点被判成「群聊总闸被绕过」。
 os.environ.setdefault("QQ_LOG_DIR", tempfile.mkdtemp(prefix="qq_bridge_pytest_logs_"))

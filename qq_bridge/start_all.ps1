@@ -50,6 +50,26 @@ $composeEnv = Join-Path $root 'data\compose.env'
 # 监听端口（默认 8080，与 start_bridge.ps1 / stop_bridge.ps1 同源解析）
 $port = 8080
 $envFile = Join-Path $root '.env'
+
+# ----------------------------------------------------------------------------
+# 账号单一来源：从 .env 读 BOT_UIN 并导出到 compose 进程环境
+# ----------------------------------------------------------------------------
+# docker-compose.napcat.yml 的 ACCOUNT 用 ${BOT_UIN:?} 插值。compose 传 --env-file
+# data\compose.env 时会【遮蔽】项目 .env（实测），导致 ${BOT_UIN} 取空 —— 那样
+# NapCat 会拿空号登录，是高频重登/封号的诱因。所以这里显式读 .env 的 BOT_UIN
+# 导出到进程环境（优先级高于 --env-file），缺值立即报错，绝不静默往下走。
+if (-not (Test-Path $envFile)) {
+    Write-Host "[登录号][错误] 缺少 $envFile，无法读取 BOT_UIN。请先复制 .env.example 为 .env 并填写。"
+    exit 1
+}
+$botUinMatch = Select-String -Path $envFile -Pattern '^\s*BOT_UIN\s*=\s*(\d+)' | Select-Object -First 1
+if (-not $botUinMatch) {
+    Write-Host "[登录号][错误] .env 缺少 BOT_UIN=<机器人QQ号>。换号只改这一行，禁止写死在代码/compose。"
+    exit 1
+}
+$env:BOT_UIN = $botUinMatch.Matches[0].Groups[1].Value
+Write-Host "[登录号] BOT_UIN=$env:BOT_UIN（唯一来源：.env；换号只改那里）"
+
 if (Test-Path $envFile) {
     $m = Select-String -Path $envFile -Pattern '^\s*PORT\s*=\s*(\d+)' | Select-Object -First 1
     if ($m) { $port = [int]$m.Matches[0].Groups[1].Value }

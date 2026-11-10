@@ -35,7 +35,7 @@ def _run(coro):
 def _job(seq=15, busy_retries=1):
     return {
         "seq": seq, "job_id": "j15", "task_id": "abcd1234ef56",
-        "user_id": 1743124119, "group_id": 0, "state": "running",
+        "user_id": 900000002, "group_id": 0, "state": "running",
         "prompt": "便利店门口 vlog 自拍", "images": [], "error": None,
         "busy_retries": busy_retries,
     }

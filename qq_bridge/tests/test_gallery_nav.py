@@ -2,9 +2,9 @@
 """画廊翻页口令「下一页」全链路单测（2026-09-13 线上事故修复）。
 
 事故：用户在群里看完画廊（提示写着「翻页说「历史 2」或「下一页」」）后发「下一页」，
-机器人毫无反应。日志实证（logs/qq_bridge.log）：
+机器人毫无反应。日志实证（logs/qq_bridge.log，QQ 号已脱敏为假号，仅留事件结构）：
 
-    event=dispatcher_drop reason=group_not_at user_id=3287416492 raw_message=下一页
+    event=dispatcher_drop reason=group_not_at user_id=900000002 raw_message=下一页
 
 根因是**三道门都没给翻页口令开门**，缺一道都仍然不通：
 
@@ -35,7 +35,7 @@ from src.plugins.qq_bridge.dispatcher import normalize  # noqa: E402
 from src.plugins.qq_bridge.intent import match_keyword, route as route_intent  # noqa: E402
 from src.plugins.qq_bridge.session import Session  # noqa: E402
 
-SELF_ID = "3858741376"
+SELF_ID = "900000009"
 
 
 # ---------------------------------------------------------------- helpers

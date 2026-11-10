@@ -19,19 +19,9 @@ import re
 import urllib.request
 from pathlib import Path
 
-# ---- 运行时真实默认值来源（2026-09-05 修复「有默认值但页面显示空」）----
-# 背景：.env 未显式配置某些 key 时，原先直接回退 SCHEMA 的 default 字符串，
-# 而 SCHEMA 里 TEST_REPLY / GROUP_JOIN_REPLY / GROUP_WELCOME_REPLY /
-# LOCAL_NEGATIVE_PROMPT / MANJU_FILE_BASE 的 default 写死为 ""，导致前端输入框
-# 显示空白——但 config.py 里这些字段有真实生效的默认文案（或派生值），
-# 用户误以为"参数有默认值却没展示"。
-# 现状：改为优先取 config.Config 的运行时真实值（单一事实来源 = config.py），
-# 取不到才回退 SCHEMA default。config.py 自身不 import nonebot，导入它是安全的，
-# 不会破坏本模块的 nonebot 隔离链（与 config.py 一致的可单测性）。
-# 包内相对导入（正常插件加载路径）。包路径与单模块路径会产生两个不同的
-# Config 类对象（Python class 按所在 module namespace 生成），单测/热生效
-# 必须保持一致——否则 setattr 到 _RuntimeConfig 不影响 qq_bridge.ratelimit
-# 用 `from ..config import Config` 加载的另一份。
+# 缺省值优先取 config.Config 运行时真实值（单一事实来源 = config.py），取不到才回退 SCHEMA default。
+# config.py 不 import nonebot，导入安全；必须走包内相对导入 `from ..config import Config`，
+# 否则单模块路径会生成另一份 Config 类，setattr 热生效改 A 份、业务读 B 份而假失败。
 #
 # 关键时序陷阱：config_api 模块加载时，业务模块（qq_bridge.ratelimit 等）尚未
 # import——sys.modules['qq_bridge.config'] 还不存在，会 fallback 到单模块 'config'
@@ -129,23 +119,20 @@ ENV_PATH = ROOT_DIR / ".env"
 # ---------------------------------------------------------------------------
 SCHEMA: list[tuple] = [
     # ---- 核心·身份与权限 ----
-    # 登录账号：真正的登录来源是容器环境变量 ACCOUNT（docker-compose.napcat.yml）。
-    # 2026-10-29 Docker 化后，start_all.ps1 已不再从这里读账号，改此项不会切换 NapCat 登录的号。
+    # 账号唯一来源 = .env；换号见 docs/；禁止他处写死 QQ 号。
     ("核心·身份与权限", "BOT_UIN", "机器人登录 QQ 号", "text", None, True,
-     "⚠️ 仅供参考：NapCat 实际登录的账号由 docker-compose.napcat.yml 的 ACCOUNT 环境变量决定，"
-     "改这里不会切换登录号（换号需改 compose 后重建容器并用新号扫码）。"
-     "账号安全铁律：禁止内置默认号（原默认值 3858741376 已于 2026-09-16 被封，已清空）",
-     "", "", False),
+     "唯一来源 = .env::BOT_UIN（compose 用 ${BOT_UIN:?} 注入）；换号只改 .env 一行",
+     "", "900000009", False),
     ("核心·身份与权限", "ONEBOT_V11_ACCESS_TOKEN", "OneBot 鉴权 Token", "text", None, True,
      "NapCat 客户端须与此一致；泄露等于他人可控制你的机器人", "", "8ebfc30d5a726914", True),
     # 2026-09-07：以下权限类参数由 core=true 改为 core=false——dispatcher.allow / safety
     # 都是运行时直接读 Config.X（类属性），setattr(Config, key, val) 立即生效，无需重启。
     ("核心·身份与权限", "BOT_OWNER_QQ", "主人 QQ（白名单）", "intlist", None, False,
-     "仅这些 QQ 可触发生图/管理；逗号分隔（热生效）", "", "1743124119", False),
+     "仅这些 QQ 可触发生图/管理；逗号分隔（热生效）", "", "900000002", False),
     ("核心·身份与权限", "STRICT_WHITELIST", "严格白名单模式", "bool", None, False,
      "开启后未列入白名单的私聊/群一律静默（热生效）", "false", "", False),
     ("核心·身份与权限", "GROUP_WHITELIST", "监听群（白名单）", "intlist", None, False,
-     "仅这些群内机器人会响应；逗号分隔（热生效）", "", "1075851417", False),
+     "仅这些群内机器人会响应；逗号分隔（热生效）", "", "900000001", False),
     ("核心·身份与权限", "PRIVATE_WHITELIST", "私聊白名单", "intlist", None, False,
      "允许私聊触发的 QQ；空=仅主人（热生效）", "", "", False),
     ("核心·身份与权限", "USER_BLACKLIST", "用户黑名单", "intlist", None, False,

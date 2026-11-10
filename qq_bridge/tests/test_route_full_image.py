@@ -49,7 +49,7 @@ class FakeEvent:
         self.message = segs
         self.message_type = "group"
         self.group_id = 123
-        self.user_id = 1743124119
+        self.user_id = 900000002
         self.message_id = 1
 
     def get_matcher(self):

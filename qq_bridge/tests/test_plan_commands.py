@@ -183,10 +183,10 @@ class _Seg:
 
 
 class _FakeEvent:
-    # 群号/用户号必须是**不可能出现在 GROUP_WHITELIST 里**的假值。
-    # 这里原本写的是真群 1075851417 + 真实用户 3287416492，导致 pytest 跑一遍
-    # 就把这批伪造消息写进生产 logs/qq_bridge.log，和真群消息无法区分
-    # （2026-11-05 排查时误判成群聊总闸失效）。
+    # 群号/用户号必须是**不可能出现在 GROUP_WHITELIST 里**的假值（AGENTS.md §51）。
+    # 2026-11-05 事故：这里曾误用真实群号 + 真实用户号，pytest 跑一遍就把
+    # 伪造消息写进生产 logs/qq_bridge.log，和真群消息无法区分，排查时误判成
+    # 群聊总闸失效。现全部改为 9xxxxxxx 假号，真实号一律只在 .env 配置。
     def __init__(self, text):
         self.original_message = [_Seg("text", {"text": text})]
         self.message_type = "group"
@@ -197,7 +197,7 @@ class _FakeEvent:
 class _FakeBot:
     def __init__(self):
         self.sent = []
-        self.self_id = "3949742250"
+        self.self_id = "900000009"
 
     async def send(self, event, message):
         self.sent.append(message)

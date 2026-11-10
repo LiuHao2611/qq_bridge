@@ -20,7 +20,7 @@ class _Seg:
         self.data = data
 
 
-def _mk_event(uid, gid, text, with_at=False, self_id="3858741376"):
+def _mk_event(uid, gid, text, with_at=False, self_id="900000009"):
     """构造一个最简 onebot MessageEvent（duck typing，normalize 用 getattr 读字段）。"""
     segs = []
     if with_at:
@@ -46,7 +46,7 @@ def test_no_pending_is_dropped():
     uid, gid = 88001, 77001
     choice_sessions.consume(uid)  # 清理
     ev = _mk_event(uid, gid, "1")
-    r = normalize(ev, self_id="3858741376", trace_id="t-no")
+    r = normalize(ev, self_id="900000009", trace_id="t-no")
     assert r is None, f"无 pending 群消息无 @ 应被丢，实际={r}"
 
 
@@ -57,7 +57,7 @@ def test_pending_bypass_text():
     choice_sessions.ask(uid, gid, "一个背着书包的小女孩")
     try:
         ev = _mk_event(uid, gid, "1")
-        r = normalize(ev, self_id="3858741376", trace_id="t-yes")
+        r = normalize(ev, self_id="900000009", trace_id="t-yes")
         assert r is not None, "有 pending 群消息无 @ 应被放行"
         assert r.at_bot is True
         assert r.raw_text == "1"
@@ -73,7 +73,7 @@ def test_pending_bypass_with_at_still_works():
     choice_sessions.ask(uid, gid, "a cat")
     try:
         ev = _mk_event(uid, gid, "1", with_at=True)
-        r = normalize(ev, self_id="3858741376", trace_id="t-at")
+        r = normalize(ev, self_id="900000009", trace_id="t-at")
         assert r is not None and r.at_bot is True and r.raw_text == "1"
     finally:
         choice_sessions.consume(uid)

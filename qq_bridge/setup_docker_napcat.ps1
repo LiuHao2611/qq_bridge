@@ -57,6 +57,19 @@ foreach ($d in @('data\qq','data\config','data\plugins')) {
 
 Write-Host "`n===== [3/5] docker compose up -d ====="
 if (-not (Test-Path $compose)) { Write-Host "[!] 缺少 $compose"; exit 1 }
+# 账号单一来源：从 .env 读 BOT_UIN 导出到 compose 进程环境。
+# compose 的 ACCOUNT 用 ${BOT_UIN:?} 插值，缺值会直接报错；这里提前给出精确提示。
+# 换机器人号只改 .env 的 BOT_UIN 一行，禁止写死在脚本 / compose / 代码里。
+$envFile = Join-Path $root '.env'
+$botUinMatch = if (Test-Path $envFile) {
+    Select-String -Path $envFile -Pattern '^\s*BOT_UIN\s*=\s*(\d+)' | Select-Object -First 1
+} else { $null }
+if (-not $botUinMatch) {
+    Write-Host "[!] .env 缺少 BOT_UIN=<机器人QQ号>。请先复制 .env.example 为 .env 并填写；换号只改这一行。"
+    exit 1
+}
+$env:BOT_UIN = $botUinMatch.Matches[0].Groups[1].Value
+Write-Host "  登录号 BOT_UIN=$env:BOT_UIN（唯一来源：.env）"
 docker compose -f $compose up -d
 if ($LASTEXITCODE -ne 0) { Write-Host "[!] compose up 失败，见上方输出。"; exit 1 }
 

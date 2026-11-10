@@ -64,7 +64,7 @@ _stub_nonebot()
 from xiuxian import commands, core, config  # noqa: E402
 from xiuxian.store import Store  # noqa: E402
 
-G = "1075851417"
+G = "900000001"
 A, B, C, D = "100001", "100002", "100003", "100004"
 
 _results = []

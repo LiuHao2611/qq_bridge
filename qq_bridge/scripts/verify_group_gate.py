@@ -29,25 +29,31 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROC_NAME = "_block_group_messages"
 
+# 测试假号：必须是不可能进入 GROUP_WHITELIST 的值（AGENTS.md §51），
+# 禁止复用任何真实 QQ / 群号，否则跑一次就在生产日志里制造假消息。
+_FAKE_SELF = 900000009
+_FAKE_USER = 900000002
+_FAKE_GROUP = 900000001
+
 
 def _payload(group: bool) -> dict:
     base = {
         "time": 1730000000,
-        "self_id": 2149466287,
+        "self_id": _FAKE_SELF,
         "post_type": "message",
         "sub_type": "normal",
-        "user_id": 1743124119,
+        "user_id": _FAKE_USER,
         "message_type": "group" if group else "private",
         "message_id": 1001,
         "message": "测试",
         "original_message": "测试",
         "raw_message": "测试",
         "font": 0,
-        "sender": {"user_id": 1743124119, "nickname": "tester"},
+        "sender": {"user_id": _FAKE_USER, "nickname": "tester"},
         "to_me": True,
     }
     if group:
-        base["group_id"] = 1075851417
+        base["group_id"] = _FAKE_GROUP
     return base
 
 

@@ -71,10 +71,11 @@ async def _check_wrapper() -> tuple[bool, bool]:
     install_outbound_guard()
 
     fake_self = object()
-    r1 = await V11Bot.call_api(fake_self, "send_group_msg", group_id=1075851417, message="hi")
+    # 假号：必须用不可能进白名单的 9xxxxxxx（AGENTS.md §51），禁止真实 QQ / 群号。
+    r1 = await V11Bot.call_api(fake_self, "send_group_msg", group_id=900000001, message="hi")
     group_blocked = r1.get("blocked") is True and "send_group_msg" not in hits
 
-    r2 = await V11Bot.call_api(fake_self, "send_private_msg", user_id=1743124119, message="hi")
+    r2 = await V11Bot.call_api(fake_self, "send_private_msg", user_id=900000002, message="hi")
     private_passthrough = r2.get("message_id") == 999 and "send_private_msg" in hits
 
     return group_blocked, private_passthrough

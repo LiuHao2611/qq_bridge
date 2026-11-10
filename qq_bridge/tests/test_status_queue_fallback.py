@@ -70,7 +70,7 @@ def jobs_guard():
     queue_mgr._jobs[:] = orig
 
 
-def _job(seq=13, state="running", user_id=1743124119, task_id="abcd1234ef56",
+def _job(seq=13, state="running", user_id=900000002, task_id="abcd1234ef56",
          prompt="便利店门口 vlog 自拍", started=None, enqueued=None):
     return {
         "seq": seq, "job_id": "j%d" % seq, "task_id": task_id,
@@ -95,7 +95,7 @@ def test_running_status_returns_book_shaped_dict(jobs_guard):
     assert info is not None
     assert info["task_id"] == "abcd1234"[:8] == info["trace_id"]  # 截 8 位
     assert info["kind"] == "t2i"
-    assert info["user_id"] == 1743124119
+    assert info["user_id"] == 900000002
     assert info["prompt"] == "便利店门口 vlog 自拍"
     assert info["queued_behind"] == 2
     assert 100 < info["started_at"] < time.time() + 1
@@ -146,7 +146,7 @@ def test_status_reports_queue_running_as_progress_pic(rec, monkeypatch):
     """核心回归：簿空 + 队列有 running → 发 progress 进度卡（prompt 来自队列），不说闲着。"""
     _stub_book_empty(monkeypatch)
     monkeypatch.setattr(queue_mgr, "running_status",
-                        lambda: {"task_id": "abcd1234", "user_id": 1743124119,
+                        lambda: {"task_id": "abcd1234", "user_id": 900000002,
                                  "group_id": 0, "kind": "t2i", "prompt": "便利店 vlog",
                                  "trace_id": "abcd1234", "channel": "queue",
                                  "started_at": time.time() - 60, "queued_behind": 3})
@@ -174,7 +174,7 @@ def test_status_reports_queued_backlog_instead_of_idle(rec, monkeypatch):
     _stub_book_empty(monkeypatch)
     monkeypatch.setattr(queue_mgr, "running_status", lambda: None)
     monkeypatch.setattr(queue_mgr, "pending_status",
-                        lambda: {"seq": 14, "task_id": "", "user_id": 1743124119,
+                        lambda: {"seq": 14, "task_id": "", "user_id": 900000002,
                                  "group_id": 0, "kind": "t2i", "prompt": "便利店 vlog",
                                  "trace_id": "", "channel": "queue", "state": "queued",
                                  "started_at": time.time() - 180, "queued_behind": 39})
@@ -192,7 +192,7 @@ def test_status_reports_queued_backlog_instead_of_idle(rec, monkeypatch):
     body = seen.get("body", "")
     assert "闲着呢" not in body, "有 39 条排队却回闲着呢：%r" % body
     assert "39 条排队" in body
-    assert "1743124119" in body
+    assert "900000002" in body
     assert "已等 180 秒" in body
 
 
@@ -218,7 +218,7 @@ def test_status_bystander_text_mentions_owner_and_queue_depth(rec, monkeypatch):
     """旁观者 + 进度卡渲染失败回落文本：文案含「群友」+ 排队数后缀。"""
     _stub_book_empty(monkeypatch)
     monkeypatch.setattr(queue_mgr, "running_status",
-                        lambda: {"task_id": "abcd1234", "user_id": 1743124119,
+                        lambda: {"task_id": "abcd1234", "user_id": 900000002,
                                  "group_id": 0, "kind": "t2i", "prompt": "便利店 vlog",
                                  "trace_id": "abcd1234", "channel": "queue",
                                  "started_at": time.time() - 60, "queued_behind": 3})
@@ -231,6 +231,6 @@ def test_status_bystander_text_mentions_owner_and_queue_depth(rec, monkeypatch):
 
     assert len(rec.texts) == 1
     t = rec.texts[0]
-    assert "群友 1743124119" in t
+    assert "群友 900000002" in t
     assert "生图" in t
     assert "前面还排着 3 条" in t

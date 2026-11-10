@@ -17,9 +17,9 @@
   P3 测试日志隔离
      pytest 必须由 tests/conftest.py 统一把 QQ_LOG_DIR 指向临时目录；
      独立脚本 src/plugins/*/test_e2e.py 自己改道，且 GID 不能在
-     GROUP_WHITELIST 里。
-     事故：tests/test_plan_commands.py 伪造 group_id=1075851417 的群事件，
-     pytest 一跑就把假消息写进生产 qq_bridge.log，排查时误判成群聊总闸失效。
+     GROUP_WHITELIST 里（必须是 9xxxxxxx 假号，AGENTS.md §51）。
+     事故：历史上有测试伪造真群号群事件，pytest 一跑就把假消息写进生产
+     logs/qq_bridge.log，排查时误判成群聊总闸失效。
 
 用法：
     python tools/check_bridge_sanity.py             # 跑真检查，失败 exit 1
@@ -280,15 +280,17 @@ def selftest() -> int:
     # P2：空 secret 必须被拦下（不联网就能判）
     bad.append(("P2 secret 为空", check_aria2("", "http://127.0.0.1:1/jsonrpc")))
 
-    # P3：独立脚本借真群号 + 没改道日志（原样）；pytest 的 conftest 没隔离
+    # P3：独立脚本借真群号 + 没改道日志（原样）；pytest 的 conftest 没隔离。
+    # 白名单用假号即可，检测器只判「gids 是否落在白名单」，与具体号无关。
+    _FAKE_WL = [900000001, 900000003]
     bad.append(("P3 脚本借真群号", check_test_isolation(
         [{"path": "src/plugins/doupo/test_e2e.py", "kind": "script",
-          "gids": [1075851417], "log_redirect": False}],
-        [1075851417, 291127183])))
+          "gids": [_FAKE_WL[0]], "log_redirect": False}],
+        _FAKE_WL)))
     bad.append(("P3 conftest 未隔离日志", check_test_isolation(
         [{"path": "tests/conftest.py", "kind": "pytest",
           "gids": [], "log_redirect": False}],
-        [1075851417, 291127183])))
+        _FAKE_WL)))
 
     ok = True
     for name, errs in bad:
@@ -334,7 +336,8 @@ def selftest() -> int:
               "gids": [900000001], "log_redirect": True},
              {"path": "tests/conftest.py", "kind": "pytest",
               "gids": [], "log_redirect": True}],
-            [1075851417, 291127183])),
+            # 白名单是真实群的假想值，绝不该和测试 GID 重叠；这里特意用别的假号
+            [900000003, 900000004])),
     ]
     for name, errs in good:
         if errs:

@@ -26,7 +26,7 @@ def _load():
 def test_config_get_structure_and_core_flag(tmp_path, monkeypatch):
     config_api = _load()
     env = tmp_path / ".env"
-    env.write_text("# header\nIMAGE_CHANNEL=local\nLOCAL_STEPS=0\nBOT_OWNER_QQ=1743124119\n")
+    env.write_text("# header\nIMAGE_CHANNEL=local\nLOCAL_STEPS=0\nBOT_OWNER_QQ=900000002\n")
     monkeypatch.setattr(config_api, "ENV_PATH", env)
 
     view = config_api.get_config_view()
@@ -55,7 +55,7 @@ def test_config_put_preserves_comments_and_split_core_hot(tmp_path, monkeypatch)
     """
     config_api = _load()
     env = tmp_path / ".env"
-    env.write_text("# keep\nIMAGE_CHANNEL=local\nLOCAL_STEPS=0\nBOT_OWNER_QQ=1743124119\n")
+    env.write_text("# keep\nIMAGE_CHANNEL=local\nLOCAL_STEPS=0\nBOT_OWNER_QQ=900000002\n")
     monkeypatch.setattr(config_api, "ENV_PATH", env)
 
     res = config_api.apply_config({"IMAGE_CHANNEL": "online", "LOCAL_STEPS": "20"})
@@ -70,7 +70,7 @@ def test_config_put_preserves_comments_and_split_core_hot(tmp_path, monkeypatch)
     assert "# keep" in text                      # 注释保留
     assert "IMAGE_CHANNEL=online" in text        # 替换
     assert "LOCAL_STEPS=20" in text
-    assert "BOT_OWNER_QQ=1743124119" in text     # 未改保留（env 原行不在 formatted 里）
+    assert "BOT_OWNER_QQ=900000002" in text      # 未改保留（env 原行不在 formatted 里）
 
     # 追加 .env 原本不存在、但属于 schema 的 key（PRIVATE_COOLDOWN，core=false）
     res2 = config_api.apply_config({"PRIVATE_COOLDOWN": "15"})

@@ -99,7 +99,7 @@ def load_game_tools():
 
 class FakeEvent:
     def __init__(self, text="", image=False):
-        self.user_id = 1743124119
+        self.user_id = 900000002
         self.group_id = 0
         self._text = text
         self._segs = ([{"type": "image", "data": {"file": "x.png"}}] if image else [])
@@ -113,7 +113,7 @@ class FakeEvent:
 class FakeBot:
     def __init__(self):
         self.sent = []
-        self.self_id = 2503891418
+        self.self_id = 900000009
 
     async def send(self, event, msg, **kw):
         self.sent.append(str(msg))

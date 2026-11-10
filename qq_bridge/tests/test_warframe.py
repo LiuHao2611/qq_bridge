@@ -626,12 +626,12 @@ def test_plain_text_ignores_at_segment():
             self.data = d
 
     class FakeEvent:
-        message = [Seg("at", {"qq": "3949742250"}), Seg("text", {"text": "电男"})]
-        original_message = [Seg("at", {"qq": "3949742250"}), Seg("text", {"text": "电男"})]
+        message = [Seg("at", {"qq": "900000009"}), Seg("text", {"text": "电男"})]
+        original_message = [Seg("at", {"qq": "900000009"}), Seg("text", {"text": "电男"})]
 
         def get_plaintext(self):
             # 模拟 NapCat：at 段未改写，get_plaintext 会带 @
-            return "@3949742250电男"
+            return "@900000009电男"
 
     ev = FakeEvent()
     assert _plain_text(ev) == "电男"
@@ -666,11 +666,11 @@ def test_at_bot_uses_original_message():
     class FakeEvent:
         # 模拟 nonebot handler 执行后的 message：at 段已被改写成空文本
         message = [Seg("text", {"text": ""}), Seg("image", {"url": "http://x/img.png"})]
-        original_message = [Seg("at", {"qq": "3949742250"}),
+        original_message = [Seg("at", {"qq": "900000009"}),
                             Seg("image", {"url": "http://x/img.png"})]
 
     class FakeBot:
-        self_id = "3949742250"
+        self_id = "900000009"
 
     ev = FakeEvent()
     assert _at_bot(ev, FakeBot()) is True
@@ -1257,20 +1257,20 @@ def test_handle_wf_alias_sends_card():
             pass
 
     class FakeEvent:
-        user_id = 3287416492
-        group_id = 1075851417
+        user_id = 900000002
+        group_id = 900000001
         channel = "napcat"
-        original_message = [Seg("at", {"qq": "3949742250"}), Seg("text", {"text": " 毒妈"})]
-        message = [Seg("text", {"text": "@3949742250毒妈"})]
+        original_message = [Seg("at", {"qq": "900000009"}), Seg("text", {"text": " 毒妈"})]
+        message = [Seg("text", {"text": "@900000009毒妈"})]
 
         def get_plaintext(self):
-            return "@3949742250毒妈"
+            return "@900000009毒妈"
 
         def get_matcher(self):
             return FakeMatcher()
 
     class FakeBot:
-        self_id = "3949742250"
+        self_id = "900000009"
 
         async def send(self, event, msg, **kw):
             raise AssertionError("不应走纯文本降级")
