@@ -63,6 +63,7 @@ _backup_*/
 !src/plugins/qq_bridge/pic/templates/assets/wf_currency/*.png
 
 # ===== 签到卡黄金图标：必需的**源码资产**，随代码交付 =====
-# 同样被根 `*.png` 命中，按子目录精确放行。7 枚 FA Solid SVG 离线镀金的 128x128
-# RGBA PNG（CC BY 4.0，见同目录 README.md），不是调试截图；缺图 gate(strict) 会硬拦。
+# 同样被根 `*.png` 命中，按子目录精确放行。7 枚 128x128 RGBA PNG：6 枚 FA Solid SVG
+# 离线镀金（CC BY 4.0）+ 1 枚 coins.png 是本项目 AI 生成的电影级写实单枚金币
+# （自制资产，build 不覆盖，见同目录 README.md），不是调试截图；缺图 gate(strict) 会硬拦。
 !src/plugins/qq_bridge/pic/templates/assets/checkin_gold/*.png

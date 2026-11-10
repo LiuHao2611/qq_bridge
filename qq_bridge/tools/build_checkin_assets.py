@@ -2,10 +2,13 @@
 """宿主离线生成签到卡「黄金铸造图标 + 风格字体子集」资产（运行时不依赖本脚本依赖）。
 
 一次运行，产出随代码交付的源码资产（唯一生成入口，可复现）：
-  * ``pic/templates/assets/checkin_gold/<kind>.png`` —— 7 枚黄金浮雕图标（128x128 RGBA）
-    来源 Font Awesome Free 6.5.0 Solid SVG（Icons CC BY 4.0）；下载 -> svgpathtools 解析 ->
-    aggdraw 复合 Path（nonzero winding，正确挖孔/抗锯齿）-> Pillow 金色渐变 + 顶高光 +
-    深铜描边 + 内阴影 + 柔和投影。运行时只读 PNG，不依赖 svgpathtools/aggdraw/cairo。
+  * ``pic/templates/assets/checkin_gold/<kind>.png`` —— 7 枚黄金浮雕图标（128x128 RGBA）：
+    **6 枚** FA 源（clock/bolt/check/arrow-up/star/wand-magic-sparkles，Icons CC BY 4.0）
+    经下载 -> svgpathtools 解析 -> aggdraw 复合 Path（nonzero winding，正确挖孔/抗锯齿）
+    -> Pillow 金色渐变 + 顶高光 + 深铜描边 + 内阴影 + 柔和投影；
+    **1 枚 coins.png 是 AI 生成的电影级写实单枚金币**（真实金属光影/浮雕/微划痕，
+    本项目自制资产），``build()`` 绝不覆盖它（见 MANUAL_ASSETS）。运行时只读 PNG，
+    不依赖 svgpathtools/aggdraw/cairo。
   * ``pic/templates/assets/checkin_fonts/<name>.ttf`` —— 4 款按「卡面固定文案字符」子集
     的字体（Google Fonts，SIL OFL 1.1）。动态昵称由 vendored 雅黑兜底（已随 COPY src
     进镜像），故固定字集即可，体积 <700KB / 4 款。
@@ -18,7 +21,7 @@
   * wand 正确 slug = ``wand-magic-sparkles``（``wand`` 是 404）。
 
 用法:
-    python tools/build_checkin_assets.py            # 生成/覆盖全部资产
+    python tools/build_checkin_assets.py            # 生成/覆盖**可复现**资产，跳过 MANUAL_ASSETS
     python tools/build_checkin_assets.py --check     # 交付闸门：只校验本地资产齐全且为真
 """
 from __future__ import annotations
@@ -52,11 +55,13 @@ ICONS = {
     "clock": "clock",                             # 顶部标题闹钟
     "bolt": "bolt",                               # 连签次数
     "check": "check",                             # 累计签到
-    "coins": "coins",                             # 当前喵币（黄金金币，替换旧 diamond）
+    "coins": "coins",                             # 当前喵币（AI 电影级写实金币，见 MANUAL_ASSETS）
     "arrow-up": "arrow-up",                       # 距里程碑
     "star": "star",                               # 群内名次
     "wand-magic-sparkles": "wand-magic-sparkles",  # 奖励胶囊
 }
+# MANUAL_ASSETS（手工/AI 资产契约，当前 = {"coins"}）由 checkin_coin_gate import，
+# 见下方判据段；build()/check() 不得用 FA 覆盖它，--check 走写实特征校验。
 FA_BASE = "https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.0/svgs/solid/%s.svg"
 
 # 逻辑 role -> (原始字体文件名 stem, Google Fonts CSS2 family 查询串, 用途)
@@ -283,11 +288,25 @@ def _subset(raw: bytes, chars: str, out: Path) -> None:
         subset.save_font(font, f, opts)
 
 
+# ------- 写实金币判据 + 手工资产契约按功能拆到 checkin_coin_gate.py（守 20KB 门禁）-------
+# 本脚本既能被 `python tools/build_checkin_assets.py` 直接跑，也会被容器
+# `runpy.run_path(..., run_name="__main__")` 执行 `--check`；两种入口都需能 import 到
+# 同目录模块，故显式把脚本目录加入 sys.path（runpy.run_path 不保证脚本目录在 sys.path）。
+import sys as _sys  # noqa: E402
+if str(Path(__file__).resolve().parent) not in _sys.path:
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+from checkin_coin_gate import MANUAL_ASSETS, coin_photo_problems  # noqa: E402,F401
+
+
 # ---------------------------------------------------------------- 校验
 def check() -> int:
     errs: list[str] = []
     for kind in ICONS:
         p = GOLD / (kind + ".png")
+        if kind in MANUAL_ASSETS:
+            # 写实金币：单枚实心正圆，占比天然高（0.80），走独立写实判据（禁套稀疏图标阈值）
+            errs.extend("%s：%s" % (kind, e) for e in coin_photo_problems(p))
+            continue
         if not p.is_file():
             errs.append("缺图标 %s" % p)
             continue
@@ -322,9 +341,10 @@ def check() -> int:
         for e in errs[:50]:
             print("  " + e)
         return 1
-    print("[check] PASS：%d 枚黄金图标（%dx%d RGBA，占比正常） + %d 款风格字体"
-          "（按角色字集覆盖，零缺字；display/section 不含 ·）"
-          % (len(ICONS), OUT_PNG, OUT_PNG, len(FONT_SPECS)))
+    print("[check] PASS：%d 枚黄金图标（%dx%d RGBA：%d 枚 FA 镀金占比正常 + %d 枚 AI 写实"
+          "金币实心盘/明暗/羽化） + %d 款风格字体（按角色字集覆盖，零缺字；display/section 不含 ·）"
+          % (len(ICONS), OUT_PNG, OUT_PNG, len(ICONS) - len(MANUAL_ASSETS),
+             len(MANUAL_ASSETS), len(FONT_SPECS)))
     return 0
 
 
@@ -338,9 +358,19 @@ def build() -> int:
 
     gold_imgs: list[tuple[str, Image.Image]] = []
     for kind, slug in ICONS.items():
+        p = GOLD / (kind + ".png")
+        if kind in MANUAL_ASSETS:
+            # 手工/AI 资产绝不覆盖：缺失就报错让它被发现，不静默回落 FA 矢量金币
+            problems = coin_photo_problems(p)
+            if problems:
+                raise SystemExit("[build] 手工资产 %s 不可用：%s；"
+                                 "该图随代码入库、build 不生成，请从版本库恢复" % (p, problems))
+            gold_imgs.append((kind, Image.open(p).convert("RGBA")))
+            print("  keep %-22s -> %s (AI 手工资产，build 不覆盖，%dB)"
+                  % (kind, p.name, p.stat().st_size))
+            continue
         svg = _fetch(FA_BASE % slug, CACHE / (slug + ".svg")).decode("utf-8", "ignore")
         g = gild(_fit(rasterize(svg))).resize((OUT_PNG, OUT_PNG), Image.LANCZOS)
-        p = GOLD / (kind + ".png")
         g.save(p, "PNG", optimize=True)
         gold_imgs.append((kind, g))
         print("  icon %-22s -> %s (%dB)" % (kind, p.name, p.stat().st_size))

@@ -137,7 +137,12 @@ def draw(canvas: Canvas, kind: str, cx: float, cy: float, size: int) -> tuple[in
         nw, nh = max(1, int(round(w * s))), max(1, int(round(h * s)))
         layer = im.resize((nw, nh), Image.LANCZOS)
         x0, y0 = int(round(cx - nw / 2)), int(round(cy - nh / 2))
-        canvas.paste_alpha(layer, (x0, y0), layer)
+        # 不传 mask：layer 自带 straight alpha，paste_alpha 走 alpha_composite 直接保真。
+        # 曾误传 layer 自身当 mask —— paste_alpha 对 RGBA mask 会 convert("L") 取**亮度**，
+        # 使 alpha 被亮度二次相乘：深色写实金币 (110,86,41) 亮度≈0.34 -> alpha 削到 34%，
+        # 浅橙胶囊底透出 66% -> 冲淡成发白青斑球面（2026-11-10 实卡肉眼+avgRGB 证据）。
+        # 6 枚 FA 镀金图标因本身亮(L 高)削得少而一直没暴露，写实币才现形。禁止加回 mask。
+        canvas.paste_alpha(layer, (x0, y0))
         return (x0, y0, x0 + nw, y0 + nh)
     key = name or (kind or "?")
     if key not in _warned:
