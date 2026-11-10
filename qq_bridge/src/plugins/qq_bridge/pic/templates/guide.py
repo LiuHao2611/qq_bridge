@@ -222,6 +222,9 @@ def build(
     _iw = int(round(_ibase * _s))
     _ih = int(round(_ibase / _s))
 
+    # wm 市价卡字号/行高单一来源（定义见 market_currency.wm_types，避免本文件膨胀过棘轮）
+    wm = market_currency.wm_types(t) if body.startswith("@wmhdr|") else None
+
     # ---- 解析 body -> 块（head / text / skill气泡 / aug气泡）----
     blocks: list[dict] = []
     cur_zone = None  # None / "skill" / "aug"：后续「·」行归属
@@ -413,13 +416,13 @@ def build(
         elif b["kind"] in ("skill", "aug", "generic"):
             y_calc += len(b["lines"]) * line_h + BUB_PAD_Y * 2
         elif b["kind"] == "tbl":
-            y_calc += len(b["rows"]) * (t.fs(24) + 24) + 14
+            y_calc += len(b["rows"]) * wm.row_h + 14
         elif b["kind"] == "wmhdr":
-            _icon = _ih                            # 与渲染共用同一图标槽高度
-            y_calc += t.fs(24) + 12 + 14          # 顶部栏 + 分隔线
-            y_calc += _icon + 14 + 14             # 物品块 + 分隔线
-            y_calc += t.fs(34) + 16 + 14          # 统计条 + 分隔线
-            y_calc += t.fs(24) + 12               # 玩家卖单 区块标题
+            # 高度计算与渲染共用 market_currency 的字号/文字栈高度，杜绝底部裁切
+            y_calc += wm.bar_fs + 12 + 14             # 顶部栏 + 分隔线
+            y_calc += max(_ih, market_currency.wmhdr_text_height(wm, b["cols"])) + 14 + 14  # 物品块
+            y_calc += t.fs(15) + 6 + t.fs(market_currency.STAT_VAL_FS) + 12 + 14  # 统计条
+            y_calc += wm.sect_fs + 12                 # 玩家卖单 区块标题
         elif b["kind"] == "warn":
             y_calc += len(b["lines"]) * line_h + BUB_PAD_Y * 2
         elif b["kind"] == "page":
@@ -694,12 +697,12 @@ def build(
             y = _by0 + _box_h + 16
             continue
         if kind == "wmhdr":
-            # ---- wm 市价卡头条块（对齐 warframe.market 订单页视觉）----
+            # ---- wm 市价卡头条块（对齐 WF.Market 订单页）----
             _c0 = b["cols"]
             _zh, _en, _cat = _c0[0], _c0[1], _c0[2]
             _ducats, _tax, _sellers, _online = _c0[3], _c0[4], _c0[5], _c0[6]
             _eff = _c0[8] if len(_c0) > 8 else ""      # 效果行（MOD 面板文本，可空）
-            _bar_fs = t.fs(24)
+            _bar_fs = wm.bar_fs
             # ① 顶部栏：交易市场 / MARKET ORDERS（左）· 买家 WTS（右，主色）
             c.text((pad_in, y), "交易市场", size=_bar_fs, color=t.text, role="bold", anchor="lm")
             _w1 = Canvas.text_width("交易市场", _bar_fs, "bold")
@@ -710,11 +713,11 @@ def build(
             y += _bar_fs + 12
             c.line((pad_in, y, pad_in + content_w, y), fill=t.divider, width=2)
             y += 14
-            # ② 物品块：左图标 + 右文字栈（图标槽按图片长宽比自适应）
+            # ② 物品块：左图标 + 右文字栈（图标槽按 AR 自适应）
             _ix, _iy = pad_in, y
             if _icon_img is not None:
                 try:
-                    # 等比自适应（不裁切）+ 浅主色底衬：宽幅武器、竖长战甲/部件都完整可见
+                    # 等比自适应不裁切 + 浅主色底衬
                     _plate = Image.new("RGBA", (_iw, _ih), (0, 0, 0, 0))
                     _pd = ImageDraw.Draw(_plate)
                     _pd.rounded_rectangle((0, 0, _iw, _ih), radius=14,
@@ -725,7 +728,7 @@ def build(
                 except Exception:  # noqa: BLE001 — 图标坏了就回落几何占位
                     _icon_img = None
             if _icon_img is None:
-                # 几何占位（不用文字：PIL 默认字体无中文字形，避免画成豆腐块/报错）
+                # 几何占位（PIL 默认字体无中文字形，不用文字避免豆腐框）
                 _ph = Image.new("RGBA", (_iw, _ih), (0, 0, 0, 0))
                 _pd = ImageDraw.Draw(_ph)
                 _pd.rounded_rectangle((0, 0, _iw, _ih), radius=14,
@@ -750,42 +753,41 @@ def build(
                 return (_s + "…") if _s else "…"
 
             _cy = _iy
-            c.text((_tx, _cy), _fit_txt(_zh, t.fs(30), "bold"), size=t.fs(30),
-                   color=t.text, role="bold", anchor="lm"); _cy += t.fs(36)
+            c.text((_tx, _cy), _fit_txt(_zh, wm.title_fs, "bold"), size=wm.title_fs,
+                   color=t.text, role="bold", anchor="lm"); _cy += wm.title_lh
             if _en:
-                c.text((_tx, _cy), _fit_txt(_en, t.fs(18)), size=t.fs(18),
-                       color=t.text_sub, anchor="lm"); _cy += t.fs(24)
+                c.text((_tx, _cy), _fit_txt(_en, wm.en_fs), size=wm.en_fs,
+                       color=t.text_sub, anchor="lm"); _cy += wm.en_lh
             if _cat:
-                c.text((_tx, _cy), _fit_txt(_cat, t.fs(16)), size=t.fs(16),
-                       color=t.text_sub, anchor="lm"); _cy += t.fs(22)
+                c.text((_tx, _cy), _fit_txt(_cat, wm.sub_fs), size=wm.sub_fs,
+                       color=t.text_sub, anchor="lm"); _cy += wm.sub_lh
             if _eff:
-                c.text((_tx, _cy), _fit_txt(_eff, t.fs(16)), size=t.fs(16),
-                       color=t.text_sub, anchor="lm"); _cy += t.fs(22)
-            y = _iy + _ih + 14
+                c.text((_tx, _cy), _fit_txt(_eff, wm.sub_fs), size=wm.sub_fs,
+                       color=t.text_sub, anchor="lm"); _cy += wm.sub_lh
+            y = _iy + max(_ih, _cy - _iy) + 14
             c.line((pad_in, y, pad_in + content_w, y), fill=t.divider, width=1)
             y += 14
-            # ③ 统计条：杜卡德 / 交易税 / 在售卖家（小号双语标签 + 大号数值 + 游戏内货币图标）
-            # 货币图标绘制抽到 market_currency.draw_stats_strip（按功能拆分，避免本文件继续膨胀）
+            # ③ 统计条：杜卡德 / 交易税 / 在售卖家（绘制见 market_currency）
             y = market_currency.draw_stats_strip(
                 c, t, pad_in, y, content_w, boxes, base, _tint,
                 _ducats, _tax, _sellers, _online)
             c.line((pad_in, y, pad_in + content_w, y), fill=t.divider, width=1)
             y += 14
             # ④ 玩家卖单 区块标题（右：在线优先 / ONLINE FIRST）
-            c.text((pad_in, y), "玩家卖单", size=t.fs(24), color=t.text, role="bold", anchor="lm")
-            _sw = Canvas.text_width("玩家卖单", t.fs(24), "bold")
-            c.text((pad_in + _sw + 10, y), "SELL ORDERS", size=t.fs(15), color=t.text_sub, anchor="lm")
+            c.text((pad_in, y), "玩家卖单", size=wm.sect_fs, color=t.text, role="bold", anchor="lm")
+            _sw = Canvas.text_width("玩家卖单", wm.sect_fs, "bold")
+            c.text((pad_in + _sw + 10, y), "SELL ORDERS", size=t.fs(16), color=t.text_sub, anchor="lm")
             _on = "在线优先 / ONLINE FIRST"
             _ow = Canvas.text_width(_on, t.fs(15), "regular")
             c.text((pad_in + content_w - _ow, y), _on, size=t.fs(15), color=t.text_sub, anchor="lm")
-            y += t.fs(24) + 12
+            y += wm.sect_fs + 12
             continue
         if kind == "tbl":
             rows = b["rows"]
             # 2026-11-03：玩家头像列 + 价格渐变气泡（高→低）。列：头像|卖家|状态|声望|数量|白金价格
-            tbl_fs = t.fs(24)
-            row_h = tbl_fs + 24
-            AV = max(30, tbl_fs + 8)                       # 头像直径（比字号稍大更醒目）
+            tbl_fs = wm.tbl_fs
+            row_h = wm.row_h
+            AV = max(38, tbl_fs + 12)                      # 头像直径（比字号稍大更醒目）
             box_h = len(rows) * row_h + 14
             box_x0, box_y0 = pad_in, y
             base = _eff_card(t)
@@ -821,7 +823,7 @@ def build(
             _headers = b.get("headers") or []
             _col_roles = [_HS.get(h.strip(), "text") for h in (_headers + [""] * 5)[:5]]
             _name_color = getattr(t, "link", "#8B5CF6")
-            # 价格梯度（基于本页展示行：最高价→玫红，最低价→青绿；最低价额外标绿＝最优价）
+            # 价格梯度（最高价→玫红，最低价→青绿并标绿＝最优价）
             _prices = []
             for r in rows:
                 if r["hdr"]:
@@ -837,22 +839,22 @@ def build(
                 ry = box_y0 + 7 + ri * row_h
                 _c = (r["cols"] + [""] * 7)[:7]            # 卖家|状态|声望|数量|白金价格|uid|头像
                 if r["hdr"]:
-                    # 表头底色覆盖头像列（第一列不再空白，2026-11-09 用户反馈）
+                    # 表头底色覆盖头像列（不留白）
                     h_a = getattr(t, "tbl_header_alpha", 24)
                     if h_a > 0:
                         c.rounded_rect((box_x0 + 4, ry, col_x[-1] - 4, ry + row_h),
                                        radius=8, fill=t.accent, fill_alpha=h_a * 255 // 100)
                     market_currency.draw_table_header(
-                        c, t, col_x, box_x0, av_w, ry, row_h, t.fs(18), _c[:5], boxes)
+                        c, t, col_x, box_x0, av_w, ry, row_h, wm.hdr_fs, _c[:5], boxes)
                     continue
-                # 头像：优先真实头像（带 cf_clearance cookie 取到），取不到回落确定性生成头像
+                # 头像：真实头像优先，取不到回落确定性占位
                 uid = _c[5] if len(_c) > 5 else ""
                 ax = box_x0 + 8
                 ay = ry + (row_h - AV) // 2
                 _real = (avatars or {}).get(uid) if uid else None
                 _drew_real = False
                 if _real:
-                    # 真头像：裁正方形 → 圆形蒙版 → 粘贴（失败即回落生成头像，绝不静默留空）
+                    # 真头像：裁方 → 圆形蒙版 → 粘贴（失败回落占位，不静默留空）
                     try:
                         _aimg = Image.open(BytesIO(_real)).convert("RGBA")
                         _aimg = _cover_square(_aimg, AV)
@@ -885,23 +887,23 @@ def build(
                         else:
                             tt = 0.5 if _pmax <= _pmin else (pv - _pmin) / (_pmax - _pmin)
                             pcol = _price_grad(tt)
-                        # 气泡 + 后置白金图标：整体居中于价格列（度量优先，见 market_currency）
+                        # 气泡 + 后置白金图标居中；价格数字用独立大字（见 market_currency）
                         market_currency.draw_price_cell(
                             c, t, (col_x[ci] + col_x[ci + 1]) // 2, ry, row_h,
                             tbl_fs, cell, pcol, _tint(pcol, 0.65, base),
-                            _text_on(pcol), boxes)
+                            _text_on(pcol), boxes, price_fs=wm.price_fs)
                     elif role == "status":
                         _is_game = "游戏" in cell
                         _is_on = ("在线" in cell) or _is_game
                         _dot_col = t.link if _is_game else (t.ok if _is_on else t.text_sub)
-                        _dr = max(3, int(tbl_fs * 0.18))
+                        _dr = max(4, int(tbl_fs * 0.16))
                         _dx = col_x[ci] + 14 + _dr
                         c.ellipse((_dx - _dr, ry + row_h // 2 - _dr,
                                    _dx + _dr, ry + row_h // 2 + _dr), fill=_dot_col)
                         c.text((col_x[ci] + 14 + _dr * 2 + 6, ry + row_h // 2), cell,
-                               size=tbl_fs, color=t.text, anchor="lm")
+                               size=tbl_fs, color=_dot_col, role="bold", anchor="lm")
                     elif role == "name":
-                        # 名称列限宽：超宽逐字截断加省略号，绝不压到下一列（加粗对齐参考卡）
+                        # 名称列限宽：超宽截断加省略号，绝不压到下一列
                         _maxw = (col_x[ci + 1] - col_x[ci]) - 14 - 6
                         _disp = cell
                         if Canvas.text_width(_disp, tbl_fs, "bold") > _maxw:

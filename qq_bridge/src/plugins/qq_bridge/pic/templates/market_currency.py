@@ -16,11 +16,49 @@ box 登记名与门禁 / 测试保持一致：``wm.cur.ducats`` / ``wm.cur.credi
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from .. import currency_icons
 from ..canvas import Canvas
 
 #: 统计条里哪些列带货币图标（gi 索引 → 货币 kind）。卖家列（gi=2）无货币。
 _STAT_CUR = {0: "ducats", 1: "credits"}
+
+#: 统计条数值字号（唯一来源：高度计算与 draw_stats_strip 共用，防底部裁切）。
+STAT_VAL_FS = 38
+
+
+def wm_types(t) -> SimpleNamespace:
+    """wm 市价卡字号/行高的**单一来源**（2026-11-10「放大加粗字体」）。
+
+    高度计算与渲染共用同一组常量，杜绝「高度按小字算、渲染按大字画」的裁切。
+    层级：主标题 > 数值 > 玩家名/价格 > 正文 > 弱文字，对齐 Warframe.Market 订单页。
+    放本模块（<20KB，可增长）而非 guide.py（存量 >20KB 棘轮，只能净缩减）。
+    """
+    tbl_fs = t.fs(28)
+    return SimpleNamespace(
+        bar_fs=t.fs(28),            # 顶部「交易市场 / 买家 WTS」
+        title_fs=t.fs(44), title_lh=t.fs(52),   # 商品中文大标题（第一视觉锚点）
+        en_fs=t.fs(21), en_lh=t.fs(26),         # 英文名
+        sub_fs=t.fs(17), sub_lh=t.fs(23),       # 分类 / 效果弱文字
+        sect_fs=t.fs(30),           # 「玩家卖单」区块标题
+        tbl_fs=tbl_fs,              # 表格正文（玩家名/状态/声望/数量）
+        price_fs=t.fs(32),          # 价格数字（比正文更醒目）
+        row_h=tbl_fs + 34,          # 行高：正文外留 34px 呼吸区
+        hdr_fs=t.fs(19),            # 表头
+    )
+
+
+def wmhdr_text_height(wm, cols) -> int:
+    """右栏文字栈（标题/英文/分类/效果）实测行高累加，供高度计算与渲染共用。"""
+    h = wm.title_lh
+    if cols[1]:
+        h += wm.en_lh
+    if cols[2]:
+        h += wm.sub_lh
+    if len(cols) > 8 and cols[8]:
+        h += wm.sub_lh
+    return h
 
 
 def draw_stats_strip(c: "Canvas", t, pad_in: int, y: int, content_w: int, boxes, base,
@@ -29,14 +67,14 @@ def draw_stats_strip(c: "Canvas", t, pad_in: int, y: int, content_w: int, boxes,
 
     ``base`` / ``tint`` 来自 guide.py（列表气泡底色 / 列竖线着色）。
     """
-    _lab_fs, _val_fs = t.fs(15), t.fs(30)
+    _lab_fs, _val_fs = t.fs(15), t.fs(STAT_VAL_FS)   # 数值放大加粗，标签仍弱文字
     _groups = [
         ("杜卡德", "DUCATS", ducats, ""),
         ("交易税", "TRADE TAX", tax, ""),
         ("在售卖家", "SELLERS", sellers, f"在线 {online}" if online else ""),
     ]
     _gw = content_w / 3
-    _ico_sz = t.fs(28)
+    _ico_sz = t.fs(34)
     _ico_gap = 8
     for gi, (lab_zh, lab_en, val, sub) in enumerate(_groups):
         _gx = pad_in + gi * _gw
@@ -86,24 +124,27 @@ def draw_table_header(c: "Canvas", t, col_x, box_x0: int, av_w: int,
 
 
 def draw_price_cell(c: "Canvas", t, cx: int, ry: int, row_h: int, tbl_fs: int,
-                    cell: str, pcol: str, outline: str, text_color: str, boxes) -> None:
+                    cell: str, pcol: str, outline: str, text_color: str, boxes,
+                    price_fs: int | None = None) -> None:
     """画价格单元：渐变/绿价格气泡 + **后置白金真实图标**，整体居中于价格列。
 
     组宽 = 气泡宽 + gap(8) + 图标边长，起点 = 列中线 − 组宽/2（先度量再定位）。
+    ``price_fs`` 让价格数字比表格正文更醒目（参考图纯大数字）；缺省沿用 tbl_fs。
     """
-    tw = Canvas.text_width(cell, tbl_fs, "regular")
+    pfs = price_fs or tbl_fs
+    tw = Canvas.text_width(cell, pfs, "bold")
     badge_h = row_h - 14
-    badge_w = max(tw + 24, badge_h + 10)
-    ico = max(14, int(badge_h * 0.62))
-    gap = 8
+    badge_w = max(tw + 28, badge_h + 10)
+    ico = max(16, int(badge_h * 0.64))
+    gap = 9
     total = badge_w + gap + ico
     bx0 = int(round(cx - total / 2))
     by0 = ry + (row_h - badge_h) // 2
     cy = ry + row_h // 2
     c.rounded_rect((bx0, by0, bx0 + badge_w, by0 + badge_h),
                    radius=badge_h // 2, fill=pcol, outline=outline, width=2)
-    c.text((bx0 + badge_w // 2, cy), cell, size=tbl_fs,
-           color=text_color, anchor="mm")
+    c.text((bx0 + badge_w // 2, cy), cell, size=pfs,
+           color=text_color, role="bold", anchor="mm")
     ix = bx0 + badge_w + gap
     currency_icons.draw(c, "platinum", ix + ico / 2, cy, ico)
     if boxes is not None:

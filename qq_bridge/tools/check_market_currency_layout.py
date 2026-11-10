@@ -20,9 +20,14 @@
   * ``@mstat`` 四行统计块。
 任一不符 ``exit 1``。
 
+每张还核对 **字号层级契约**（2026-11-10「放大加粗字体」）：商品标题≥40 /
+统计数值≥34 / 价格≥30 / 区块标题≥28（相对 t.fs 基数），且层级
+主标题>价格≥正文>弱文字、行高呼吸区≥28px，字号回退变小即报错。
+
 ``--selftest`` 把真实犯过的错放回去，证明闸门会报错：重叠/溢出/间距、
 漏登记图标、白金退回列头、头像列头留白、某行漏白金图标、图标未紧跟气泡、
-商品图槽比例失真、不可兑换仍画杜卡德、缺真实 PNG、删掉浅色内置绑定、mstat 少一行。
+商品图槽比例失真、不可兑换仍画杜卡德、缺真实 PNG、删掉浅色内置绑定、mstat 少一行、
+商品标题改小回退、字号层级倒挂、行高压缩、统计数值改小回退。
 """
 from __future__ import annotations
 
@@ -44,6 +49,7 @@ from src.plugins.qq_bridge.pic import (  # noqa: E402
     theme,
 )
 from src.plugins.qq_bridge.pic.templates import guide  # noqa: E402
+from src.plugins.qq_bridge.pic.templates import market_currency as _mc  # noqa: E402
 
 MIN_GAP = 2
 CARD = "星际战甲·市价"
@@ -112,6 +118,34 @@ def icon_slot_ar(boxes: list) -> float | None:
     return (slot[3] - slot[1]) / max(1, slot[4] - slot[2])
 
 
+def wm_type_problems(t) -> list[str]:
+    """字号层级契约（2026-11-10「放大加粗字体」）：主标题 > 价格 ≥ 正文 > 弱文字，
+    且关键字号不得低于放大基线、行高必须给足呼吸区。字号回退变小即报错。
+
+    字号单一来源是 ``market_currency.wm_types``；这里只做「值」的机器判定，
+    防止后人把 t.fs(44) 悄悄改回 t.fs(30) 又不改高度计算 → 底部裁切 / 主次不分。
+    """
+    wm = _mc.wm_types(t)
+    p: list[str] = []
+    # 放大基线（相对 t.fs(1)，用 base 值比较，避免受 font_scale 影响）
+    def base(fs: int) -> float:
+        return fs / max(0.01, float(t.font_scale or 1.0))
+    if base(wm.title_fs) < 40:
+        p.append("[字号] 商品标题 fs=%d < 放大基线 40（主标题应超大）" % base(wm.title_fs))
+    if base(_mc.STAT_VAL_FS) < 34:
+        p.append("[字号] 统计数值 STAT_VAL_FS=%d < 放大基线 34" % base(_mc.STAT_VAL_FS))
+    if base(wm.price_fs) < 30:
+        p.append("[字号] 价格数字 fs=%d < 放大基线 30" % base(wm.price_fs))
+    if base(wm.sect_fs) < 28:
+        p.append("[字号] 区块标题 fs=%d < 放大基线 28" % base(wm.sect_fs))
+    if not (wm.title_fs > wm.price_fs >= wm.tbl_fs > wm.sub_fs):
+        p.append("[字号] 层级倒挂：应 主标题>价格≥表格正文>弱文字，实得 %d/%d/%d/%d"
+                 % (wm.title_fs, wm.price_fs, wm.tbl_fs, wm.sub_fs))
+    if base(wm.row_h - wm.tbl_fs) < 28:
+        p.append("[行高] 表格正文外呼吸区 < 28px（应宽松，不得压缩重叠）")
+    return p
+
+
 def _icon_slot_problems(boxes: list, src_ar: float) -> list[str]:
     """商品图槽必须按源图真实 AR 自适应（容差 0.08），不能压成固定方槽。"""
     ar = icon_slot_ar(boxes)
@@ -169,6 +203,9 @@ def run_check() -> int:
         problems.append("[主题] 整链解析未落到 light（实得 %r，若为运行时配置覆盖请忽略）" % resolved)
     if theme.resolve(resolved, CARD).name != theme.LIGHT:
         problems.append("[主题] resolve(%r, %s) 未落到 light" % (resolved, CARD))
+    # 字号层级契约（放大加粗不得回退；单一来源 market_currency.wm_types）
+    for _fs_err in wm_type_problems(theme.get("light")):
+        problems.append(_fs_err)
 
     for theme_name, ducat, shot, want, dims, src_ar in SAMPLES:
         icon = _synth_icon(*dims) if dims else None
@@ -272,6 +309,39 @@ def run_selftest() -> int:
         theme._CARD_THEMES_PATH = orig_path
     if card_binds.default_card_theme(CARD) != "light":
         errs.append("浅色绑定还原失败")
+
+    # ⑪⑭ 字号/行高契约：把真实会犯的回退放回去，必须被 wm_type_problems 拦下
+    _t = theme.get("light")
+    if wm_type_problems(_t):
+        errs.append("放大后的正常字号被误报")
+    _orig_wmt, _orig_stat = _mc.wm_types, _mc.STAT_VAL_FS
+    try:
+        # ⑪ 商品标题悄悄改小回退（fs(44)→fs(30)）
+        _shrunk = _mc.wm_types(_t)
+        _shrunk.title_fs = _t.fs(30)
+        _mc.wm_types = lambda t, _s=_shrunk: _s
+        if not any("[字号] 商品标题" in p for p in wm_type_problems(_t)):
+            errs.append("商品标题字号回退未被拦住")
+        # ⑫ 层级倒挂（价格比主标题还大）
+        _inv = _mc.wm_types(_t)
+        _inv.title_fs, _inv.price_fs = _t.fs(30), _t.fs(44)
+        _mc.wm_types = lambda t, _s=_inv: _s
+        if not any("层级倒挂" in p for p in wm_type_problems(_t)):
+            errs.append("字号层级倒挂未被拦住")
+        # ⑬ 行高压缩到贴脸
+        _cramped = _mc.wm_types(_t)
+        _cramped.row_h = _cramped.tbl_fs + 8
+        _mc.wm_types = lambda t, _s=_cramped: _s
+        if not any("[行高]" in p for p in wm_type_problems(_t)):
+            errs.append("表格行高压缩重叠未被拦住")
+        # ⑭ 统计数值回退变小
+        _mc.STAT_VAL_FS = 26
+        if not any("统计数值" in p for p in wm_type_problems(_t)):
+            errs.append("统计数值字号回退未被拦住")
+    finally:
+        _mc.wm_types, _mc.STAT_VAL_FS = _orig_wmt, _orig_stat
+    if wm_type_problems(_t):
+        errs.append("字号契约 monkeypatch 还原失败")
 
     print("selftest：%s" % ("PASS 全部注入反例被拦下" if not errs else "FAIL — " + "; ".join(errs)))
     return 1 if errs else 0
