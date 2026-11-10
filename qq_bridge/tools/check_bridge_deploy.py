@@ -164,6 +164,12 @@ def problems(image_container: str, image_latest: str,
         if (path.startswith("/app/src/data/") or "/pic_cache/" in path
                 or "/.wm_cache/" in path):
             continue
+        # Python import 时自动生成的字节码缓存（.pyc），与 pic_cache 同性质的
+        # 运行时产物：容器一跑 bot.py / 验证脚本 import 模块就会在 __pycache__/
+        # 下生成 *.pyc，绝不能当成 docker cp 热贴源码，否则任何运行过的真实
+        # 部署都被误报 P3，逼人忽略闸门（违反禁静默吞错）。
+        if "/__pycache__/" in path and path.endswith(".pyc"):
+            continue
         if not Path(path).suffix:
             continue
         out.append("P3 运行容器有源码热贴覆盖（docker diff）：%s" % ln.strip())
@@ -192,17 +198,26 @@ def selftest() -> int:
             print("SELFTEST FAIL：注入「%s」没有被拦住" % name)
             return 1
         print("SELFTEST OK：注入「%s」→ %s" % (name, p[0][:90]))
-    # 反例：运行时自建 pic_cache / 目录 mtime 变更不得被当成源码热贴
+    # 反例：运行时自建 pic_cache / 目录 mtime / __pycache__/*.pyc 不得被当成源码热贴
     legal = ["C /app/src", "C /app/src/data", "A /app/src/data/pic_cache",
              "A /app/src/data/pic_cache/5e1e5aa7.png",
              "A /app/src/data/pic_cache/index.json",
-             "A /app/src/plugins/qq_bridge/game_tools/.wm_cache/avatars/glyph_abc.png"]
+             "A /app/src/plugins/qq_bridge/game_tools/.wm_cache/avatars/glyph_abc.png",
+             "C /app/src/plugins/qq_bridge/multimodal/__pycache__/audio_seed.cpython-313.pyc",
+             "A /app/src/plugins/qq_bridge/__pycache__/config.cpython-313.pyc"]
     legal_problems = problems(*(good[:5] + (legal,)))
     if legal_problems:
-        print("SELFTEST FAIL：运行时 pic_cache 产物被误判为热贴：%s" % legal_problems[0])
+        print("SELFTEST FAIL：运行时产物（pic_cache/.wm_cache/__pycache__）被误判为热贴：%s"
+              % legal_problems[0])
         return 1
-    print("SELFTEST OK：运行时 pic_cache / 目录变更 → 不报 P3")
-    print("SELFTEST PASS (4/4 注入被拦下 + 1 项运行时产物不误报)")
+    print("SELFTEST OK：运行时 pic_cache / .wm_cache / __pycache__*.pyc / 目录变更 → 不报 P3")
+    # 白名单不得过宽：把 .pyc 塞进非 __pycache__ 路径（真实热贴伪装）仍必须报 P3
+    fake_pyc = good[:5] + (["C /app/src/plugins/qq_bridge/evil.pyc"],)
+    if not any(x.startswith("P3") for x in problems(*fake_pyc)):
+        print("SELFTEST FAIL：非 __pycache__ 路径的 .pyc 热贴未拦截（白名单过宽）")
+        return 1
+    print("SELFTEST OK：注入「非 __pycache__ 路径 .pyc 热贴」→ 仍报 P3（白名单不过宽）")
+    print("SELFTEST PASS (4/4 注入被拦下 + 2 项运行时产物/白名单边界校验)")
     return 0
 
 
