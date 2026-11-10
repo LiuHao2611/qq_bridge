@@ -1,35 +1,32 @@
 # -*- coding: utf-8 -*-
-"""pic/templates/checkin.py —— 每日签到卡（浅色 Rabbit 风，取长补短版）。
+"""每日签到卡（浅色 Rabbit 风 + 黄金图标 + 分层字体）。
 
-对标参考图 884ea321（Warframe Rabbit 签到卡）：浅色主卡 + 顶部居中「签到」+ 闹钟 +
-绿色左边框三态横幅 +「签到状态」2×2 圆角胶囊 + 7 列月历 + 里程碑进度条 + 真实奖励
-拆分 + PC/曼珠页脚。取长补短、**不逐像素复刻、不编造字段**：Rabbit 专属的群段位/
-经验值/群萝卜/抽中礼品盒本项目没有，一律不编造，横幅/胶囊只用 manager 真实字段
-（连签/累计/喵币/名次/距里程碑）；右侧插画无版权资产，用主题贴纸背景替代，不画
-角落大贴纸压字。配色/圆角全走主题（accent 蓝/ok 绿/t.card/t.text/radius），light
-天然浅色且编辑器可调，brutalist 仍出直角向后兼容。度量与绘制同源：分区 y 用统一
-GAP + checkin_parts 常量推进，月历行数由 _month_matrix 推算，build(boxes=...) 登记
-每个叶子包围盒供门禁查溢出/重叠/间距。逻辑层沿用 manager，未改动。
-2026-11-10 15:0x 视觉精修：字号层级 40/24/20/17/16/15/14、间距全 4px token、
-分区标题统一 accent+bold、数值改 lm 基准手动右对齐（细节见 AGENTS.md §15:0x）。
+浅色主卡 +「签到」+ 三态横幅 + 2×2 胶囊 + 7 列月历 + 里程碑条 + 奖励 + 页脚。
+只展示 manager 真实字段（连签/累计/喵币/名次/里程碑），绝不编造 Rabbit 专属字段
+（群段位/经验值/群萝卜/抽中礼品盒）；配色圆角全走主题，brutalist 向后兼容。
+图标走 checkin_gold_icons 真实黄金 PNG，字体走 checkin_font 分层（三款风格字+
+昵称回退雅黑），绘制度量同源；build(boxes=...) 登记叶子盒供门禁查溢出/重叠/间距。
+视觉规范（字号层级/间距 token/数值右对齐/0 进度竖线）见 AGENTS.md §15:0x。
 """
 from __future__ import annotations
 
 from ..canvas import Canvas
-from .. import decor, icons
-# 版式常量 + 纯度量/混色/包围盒辅助拆到本小模块（主模板守 <20KB 硬上限）
+from .. import decor
+# 版式常量/度量辅助拆到 parts（主模板守 <20KB 棘轮）
 from .checkin_parts import (
     PAD, GAP, CONTENT_PAD, HDR_H, FS_TITLE, FS_SUB, FS_RANK,
     BANNER_H, BANNER_BAR, FS_BANNER_T, FS_BANNER_M,
     FS_SEC, SEC_TITLE_H, STATUS_CARD_PAD, PILL_H, PILL_GAP_X, PILL_GAP_Y,
     FS_PILL_LAB, FS_PILL_VAL, PILL_ICON,
-    MILE_BAR_H, MILE_LEGEND_H, FS_LEGEND,
+    MILE_BAR_H, MILE_LEGEND_H, MILE_LEGEND_GAP, FS_LEGEND,
     REWARD_PILL_H, REWARD_PILL_GAP, FS_REWARD,
     WD_H, DAY_H, FS_WD, FS_DAY,
     NOTE_LINE_H, NOTE_GAP, FS_NOTE, FOOTER_H, FS_FOOT, PC_W, PC_H,
     _MILESTONES, _MILE_MAX,
     _blend, _w, _rec, _tb, _month_matrix,
 )
+# 黄金图标（真实 PNG，缺图 gate）+ 分层字体（wrap 后 c.text 走风格字，绘制度量同源）
+from . import checkin_font as _cf, checkin_gold_icons as _gold
 
 
 def _pill(c: Canvas, t, box, label: str, value: str, icon: str,
@@ -48,7 +45,9 @@ def _pill(c: Canvas, t, box, label: str, value: str, icon: str,
     fill = _blend(accent, t.card, 0.88)
     c.rounded_rect(box, radius=(y1 - y0) // 2, fill=fill, outline=accent, width=1)
     ix = x0 + PAD_IN + PILL_ICON / 2
-    icons.draw(c, icon, ix, cy, PILL_ICON, accent, style="line")
+    ibox = _gold.draw(c, icon, ix, cy, PILL_ICON)
+    if boxes is not None:
+        boxes.append(("pill.icon." + key.rsplit(".", 1)[-1], *ibox))
     lab_x = x0 + PAD_IN + PILL_ICON + 8
     c.text((lab_x, cy), label, size=FS_PILL_LAB, color=t.text_sub, role="regular", anchor="lm")
     # 数值统一 lm 基准 + 手动右对齐：Pillow ra=right-ascender 在 24px bold 时下缘
@@ -57,7 +56,7 @@ def _pill(c: Canvas, t, box, label: str, value: str, icon: str,
     val_left = val_right - _w(value, FS_PILL_VAL, "bold")
     c.text((val_left, cy), value, size=FS_PILL_VAL, color=t.text, role="bold", anchor="lm")
     if boxes is not None:
-        vh = Canvas.text_size(value, FS_PILL_VAL, "bold")[1]
+        vh = _cf.size(value, FS_PILL_VAL, "bold")[1]
         boxes.append((key, x0, y0, x1, y1))
         boxes.append((key + ".value", val_left, cy - vh // 2, val_right, cy + vh // 2))
 
@@ -151,7 +150,9 @@ def build(
     cx1 = width - PAD - CONTENT_PAD
     content_w = cx1 - cx0
 
-    c = Canvas(width, h, bg, theme=t)
+    _gold.gate(strict=True)   # 缺真实黄金 PNG 直接 SystemExit，禁止几何兜底当交付
+    _cf.gate(strict=True)     # 缺风格字体同样拦（动态昵称另有 vendored 雅黑回退）
+    c = _cf.wrap(Canvas(width, h, bg, theme=t))    # 分层字体代理：c.text 走风格字，绘制度量同源
     decor.background(c, t, tpl="checkin")          # 主题贴纸背景（替代参考图兔子水印）
     # 主卡（圆角走主题；double_border 时加内圈细线）
     c.rounded_rect((PAD, PAD, width - PAD, h - PAD),
@@ -170,7 +171,9 @@ def build(
     icon_sz = 30
     group_w = icon_sz + 14 + tw
     gx0 = (width - group_w) / 2
-    icons.draw(c, "clock", gx0 + icon_sz / 2, title_cy, icon_sz, accent, style="line")
+    ibox = _gold.draw(c, "clock", gx0 + icon_sz / 2, title_cy, icon_sz)
+    if boxes is not None:
+        boxes.append(("hdr.icon", *ibox))
     c.text((gx0 + icon_sz + 14, title_cy), "签到", size=FS_TITLE, color=accent,
            role="bold", anchor="lm")
     _rec(boxes, "hdr.title", (gx0, title_cy - FS_TITLE // 2,
@@ -268,20 +271,27 @@ def build(
                  group="进度条", tip="点击修改进度条")
     _rec(boxes, "mile.bar", bar_box)
     leg_y = bar_y + MILE_BAR_H + 12 + MILE_LEGEND_H / 2
+    ly0, ly1 = leg_y - FS_LEGEND // 2, leg_y + FS_LEGEND // 2
     lx = cx0
-    for m, bonus in _MILESTONES:
+    # 逐 token 登记真实盒，check_boxes 量化相邻间距（整条父盒查不出粘连）
+    for i, (m, bonus) in enumerate(_MILESTONES):
         reached = total >= m
         is_next = (not reached) and (nxt and m == int(nxt[0]))
-        token = ("✓%d:+%d" % (m, bonus)) if reached else (
-            "▶%d:+%d" % (m, bonus) if is_next else "%d:+%d" % (m, bonus))
+        # 风格字体缺 ✓/▶ 字形，改「文字+颜色+字重」区分三态，杜绝豆腐框
+        token = ("已达成 %d天 +%d" % (m, bonus)) if reached else (
+            "下一档 %d天 +%d" % (m, bonus) if is_next else "%d天 +%d" % (m, bonus))
         col = ok if reached else (accent if is_next else weak)
-        c.text((lx, leg_y), token, size=FS_LEGEND, color=col, role="bold" if is_next else "regular",
-               anchor="lm")
-        lx += _w(token, FS_LEGEND, "bold" if is_next else "regular") + 12
+        role = "bold" if (reached or is_next) else "regular"
+        c.text((lx, leg_y), token, size=FS_LEGEND, color=col, role=role, anchor="lm")
+        tw = _w(token, FS_LEGEND, role)
+        _rec(boxes, "mile.legend.%d" % i, (lx, ly0, lx + tw, ly1))
+        lx += tw + MILE_LEGEND_GAP
     if nxt:
         mday, mbn, rem = nxt
-        c.text((cx1, leg_y), "还差%d天 +%d" % (rem, mbn), size=FS_LEGEND, color=accent,
-               role="bold", anchor="ra")
+        nt = "还差%d天 +%d" % (rem, mbn)
+        nw = _w(nt, FS_LEGEND, "bold")
+        c.text((cx1, leg_y), nt, size=FS_LEGEND, color=accent, role="bold", anchor="ra")
+        _rec(boxes, "mile.legend.next", (cx1 - nw, ly0, cx1, ly1))
     _rec(boxes, "mile.legend", (cx0, leg_y - FS_LEGEND, cx1, leg_y + FS_LEGEND))
     y += mile_h + GAP
 
@@ -301,7 +311,7 @@ def build(
                        fill=_blend(pcol, card, 0.90), outline=_blend(pcol, card, 0.5), width=1)
         # 奖励胶囊内边距统一：左 12 token，图标→文字 gap 8 token（禁用 10/6 混用）
         R_PIL = 12
-        icons.draw(c, "wand", bx0 + R_PIL + 8, by0 + REWARD_PILL_H / 2, 16, pcol, style="line")
+        _gold.draw(c, "wand", bx0 + R_PIL + 8, by0 + REWARD_PILL_H / 2, 16)
         label = "%s  %s" % (lab, txt) if txt else lab
         c.text((bx0 + R_PIL + 16 + 8, by0 + REWARD_PILL_H / 2), label, size=FS_REWARD,
                color=text, role="bold", anchor="lm")

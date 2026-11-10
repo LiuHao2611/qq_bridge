@@ -8,14 +8,19 @@
 
 检查项：
   P1 运行容器挂载的镜像 ID == `qq-bridge:latest` 当前 ID（是否真的 recreate）
-  P2 本次改动涉及的 .py 在宿主 / 镜像层 / 运行容器三层 md5 全等
+  P2 本次改动涉及的 .py **及随镜像交付的资产 PNG/TTF** 在宿主 / 镜像层 / 运行容器三层 md5 全等
   P3 `docker diff qq-bridge` 无 /app/src、/app/tools 覆盖（禁止 docker cp 热贴）
+
+2026-11-10：签到卡新增 7 枚黄金 PNG + 4 款风格字体 TTF（随 COPY src 进镜像），
+若只比 .py 则「资产没进镜像 / 容器里是旧资产」不会被发现，故 `--all` 纳入两资产目录，
+并新增 `--assets` 只比资产。资产与代码走同一条 P2 三层 md5 判据。
 
 用法（在宿主 qq_bridge 目录）：
   python tools/check_bridge_deploy.py              # 默认取 HEAD~1..HEAD 改动的代码文件
-  python tools/check_bridge_deploy.py --all       # 比对 src/ 下全部 .py（慢，但最全）
+  python tools/check_bridge_deploy.py --all       # 比 src/ 全部 .py + 签到卡资产（慢，但最全）
+  python tools/check_bridge_deploy.py --assets     # 只比签到卡黄金 PNG + 字体 TTF
   python tools/check_bridge_deploy.py --files src/x.py tools/y.py
-  python tools/check_bridge_deploy.py --selftest  # 注入三类反例，验证闸门会报错
+  python tools/check_bridge_deploy.py --selftest  # 注入三类反例（含资产 md5 不一致）验证闸门会报错
 
 退出码：0=通过；1=不一致（或注入未被拦住）；2=docker/git 不可用等前置错误。
 """
@@ -30,6 +35,24 @@ ROOT = Path(__file__).resolve().parents[1]  # qq_bridge/
 CONTAINER = "qq-bridge"
 IMAGE = "qq-bridge:latest"
 APP = "/app/"
+#: 随 `COPY src` 进镜像的真实资产（签到卡黄金图标 + 分层字体），须与 .py 一样三层 md5 全等。
+ASSET_DIRS = (
+    "src/plugins/qq_bridge/pic/templates/assets/checkin_gold",
+    "src/plugins/qq_bridge/pic/templates/assets/checkin_fonts",
+)
+ASSET_SUFFIXES = (".png", ".ttf")
+
+
+def _asset_files() -> list[str]:
+    """返回两资产目录下所有 PNG/TTF 的相对路径（相对 /app），按名排序。"""
+    out: list[str] = []
+    for d in ASSET_DIRS:
+        folder = ROOT / d
+        if folder.is_dir():
+            out += [(folder / f).relative_to(ROOT).as_posix()
+                    for f in sorted(folder.iterdir())
+                    if f.is_file() and f.suffix.lower() in ASSET_SUFFIXES]
+    return out
 
 
 def _run(args: list[str], timeout: int = 90) -> subprocess.CompletedProcess:
@@ -46,13 +69,17 @@ def _latest_image_id() -> str:
     return r.stdout.strip() if r.returncode == 0 else ""
 
 
-def _host_files(explicit: list[str] | None, all_py: bool) -> list[str]:
-    """返回相对 /app 的路径（如 src/... / tools/... / bot.py）。"""
+def _host_files(explicit: list[str] | None, all_py: bool,
+                assets_only: bool = False) -> list[str]:
+    """返回相对 /app 的路径（如 src/... / tools/... / bot.py / assets/...）。"""
     if explicit:
         out = [p.replace("\\", "/").lstrip("/") for p in explicit]
+    elif assets_only:
+        out = _asset_files()
     elif all_py:
         out = [str(p.relative_to(ROOT)).replace("\\", "/")
                for p in sorted((ROOT / "src").rglob("*.py"))]
+        out += _asset_files()               # --all「最全」须含随镜像交付的真实资产
     else:
         git = _run(["git", "-C", str(ROOT), "rev-parse", "--show-toplevel"])
         if git.returncode != 0:
@@ -64,6 +91,9 @@ def _host_files(explicit: list[str] | None, all_py: bool) -> list[str]:
         out = [p[len(prefix) + 1:]
                for p in d.stdout.splitlines()
                if p.startswith(prefix + "/") and p.endswith(".py")]
+        # 本次改动若含真实资产文件，也纳入比对（避免只比 .py 漏掉资产）
+        out += [p[len(prefix) + 1:] for p in d.stdout.splitlines()
+                if p.startswith(prefix + "/") and p.endswith(ASSET_SUFFIXES)]
         # 哨兵：即便本次没改这些入口，也要确认镜像/容器不是整体过期
         for sentinel in ("bot.py", "src/plugins/qq_bridge/pic/__init__.py"):
             if sentinel not in out:
@@ -141,11 +171,16 @@ def problems(image_container: str, image_latest: str,
 
 
 def selftest() -> int:
-    h = {"src/a.py": "a" * 32, "src/b.py": "b" * 32}
+    # host 混入一个资产 PNG，证明资产与 .py 走同一条 P2 三层 md5 判据
+    asset = "src/plugins/qq_bridge/pic/templates/assets/checkin_gold/clock.png"
+    h = {"src/a.py": "a" * 32, "src/b.py": "b" * 32, asset: "e" * 32}
     good = ("sha256:same", "sha256:same", h, dict(h), dict(h), [])
+    stale_asset = dict(h)
+    stale_asset[asset] = "f" * 32          # 容器里资产是旧的 → P2 必须报
     cases = [
         ("容器仍挂旧镜像", good[:1] + ("sha256:new",) + good[2:], "P1"),
-        ("三层 md5 不一致", good[:4] + ({"src/a.py": "c" * 32, "src/b.py": "b" * 32},) + good[5:], "P2"),
+        ("代码三层 md5 不一致", good[:4] + ({"src/a.py": "c" * 32, "src/b.py": "b" * 32, asset: "e" * 32},) + good[5:], "P2"),
+        ("资产 PNG 三层 md5 不一致", good[:4] + (stale_asset,) + good[5:], "P2"),
         ("docker cp 热贴源码", good[:5] + (["C /app/src/plugins/x.py"],), "P3"),
     ]
     if problems(*good):
@@ -167,7 +202,7 @@ def selftest() -> int:
         print("SELFTEST FAIL：运行时 pic_cache 产物被误判为热贴：%s" % legal_problems[0])
         return 1
     print("SELFTEST OK：运行时 pic_cache / 目录变更 → 不报 P3")
-    print("SELFTEST PASS (3/3 注入被拦下 + 1 项运行时产物不误报)")
+    print("SELFTEST PASS (4/4 注入被拦下 + 1 项运行时产物不误报)")
     return 0
 
 
@@ -179,9 +214,9 @@ def main(argv: list[str]) -> int:
         i = argv.index("--files")
         explicit = [a for a in argv[i + 1:] if not a.startswith("-")]
     try:
-        files = _host_files(explicit or None, "--all" in argv)
+        files = _host_files(explicit or None, "--all" in argv, "--assets" in argv)
         if not files:
-            print("FAIL：没有可比对的 .py 文件（用 --files 或 --all 指定）")
+            print("FAIL：没有可比对的 .py / 资产文件（用 --files / --all / --assets 指定）")
             return 1
         host = _md5_host(files)
         image = _md5_layer(files, "image")

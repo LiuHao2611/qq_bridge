@@ -250,3 +250,95 @@ def test_zero_progress_no_isolated_current_line():
     assert SG.zero_progress_line_problems(src.replace("c.line((px,", "c.line((qx,", 1))
     # 反例探针：注入 if True 必须命中，还原后干净
     assert SG.zero_progress_probe(), "0 进度孤立竖线守卫回退未被拦住"
+
+
+# ---------------------------------------------------------------- 里程碑图例 token 粘连（2026-11-10 肉眼抓到）
+def test_legend_tokens_registered_as_real_boxes_with_gap():
+    """图例 4 档 + 右侧「还差」须逐枚登记真实盒，相邻水平间距 >=8px（防连读）。"""
+    from src.plugins.qq_bridge.pic.templates import checkin_font as CF
+    boxes = []
+    _build(boxes=boxes)                          # ok 态有 next_milestone=(15,200,3)
+    toks = sorted((b for b in boxes if b[0].startswith("mile.legend.")
+                   and b[0] != "mile.legend"), key=lambda b: b[1])
+    assert [b[0] for b in toks] == ["mile.legend.0", "mile.legend.1",
+                                    "mile.legend.2", "mile.legend.3", "mile.legend.next"]
+    for a, b in zip(toks, toks[1:]):
+        assert b[1] - a[3] >= 8, "图例 %s <-> %s 间距不足（连读粘连）" % (a[0], b[0])
+    # 间距常量须为 4px token，且度量同源（token 宽走 checkin_font）
+    assert P.MILE_LEGEND_GAP % 4 == 0 and P.MILE_LEGEND_GAP >= 16
+    assert CF.width("已达成 3天 +30", P.FS_LEGEND, "bold") > 0
+
+
+def test_legend_gate_catches_sticky_and_missing_counterexamples():
+    """反例注入：相邻 token 压到 gap=0 / 删一枚 / 换行，判据须各自命中。"""
+    assert SG.mile_legend_problems([
+        ("mile.legend", 40, 518, 760, 546),
+        ("mile.legend.0", 44, 525, 150, 539),
+        ("mile.legend.1", 170, 525, 275, 539),
+        ("mile.legend.2", 295, 525, 416, 539),
+        ("mile.legend.3", 436, 525, 512, 539),
+        ("mile.legend.next", 662, 525, 756, 539),
+    ], has_next=True) == [], "正常 20px 样本被误报"
+    good = [("mile.legend", 40, 518, 760, 546),
+            ("mile.legend.0", 44, 525, 150, 539),
+            ("mile.legend.1", 170, 525, 275, 539),
+            ("mile.legend.2", 295, 525, 416, 539),
+            ("mile.legend.3", 436, 525, 512, 539),
+            ("mile.legend.next", 662, 525, 756, 539)]
+    assert any("间距" in x or "重叠" in x for x in SG.mile_legend_problems(
+        [good[0], good[1], ("mile.legend.1", 150, 525, 255, 539)] + good[3:], True))
+    assert any("缺里程碑 token" in x for x in SG.mile_legend_problems(good[:4], True))
+    assert SG.mile_legend_probe(), "图例粘连反例探针未命中"
+
+
+# ---------------------------------------------------------------- 黄金图标 + 分层字体资产（2026-11-10）
+def test_gold_icons_and_font_assets_are_real():
+    """7 枚黄金 PNG + 4 款字体必须真实到位且非空（禁几何兜底/豆腐块交付）。"""
+    assert SG.checkin_asset_contract_problems() == [], SG.checkin_asset_contract_problems()
+    from src.plugins.qq_bridge.pic.templates import checkin_gold_icons as GI
+    assert GI.missing() == [], "黄金图标缺真实 PNG：%s" % GI.missing()
+    for k in SG.GOLD_KINDS:
+        assert GI.available(k), "图标 %s 未到位" % k
+
+
+def test_font_layer_routes_and_same_source_measure():
+    """分层字体按字号/字重路由，绘制与度量同源（防「测雅黑、画风格字」错位）。"""
+    from src.plugins.qq_bridge.pic.templates import checkin_font as CF
+    assert CF.route(P.FS_TITLE, "bold") == "display"       # 40px 毛笔标题
+    assert CF.route(P.FS_SEC, "bold") == "section"          # 20px 行楷分区
+    assert CF.route(P.FS_PILL_VAL, "bold") == "heavy"       # 24px 圆润粗体数值
+    assert CF.route(P.FS_NOTE, "regular") == "body"         # 14px 圆润正文
+    for s, sz, role in (("签到", 40, "bold"), ("还差3天 +200", 14, "bold"),
+                        ("本月签到记录", 20, "bold")):
+        assert CF.width(s, sz, role) == CF.measure(s, sz, role)[0], "绘制度量不同源：%r" % s
+
+
+def test_asset_wiring_gate_catches_real_regressions():
+    """反例注入：撤 gate strict / 撤同源度量接线，资产契约判据须各自命中。"""
+    assert SG.checkin_asset_probe(), "撤 gate/同源度量接线未被拦下"
+    src = open(SG.SOURCE, encoding="utf-8").read()
+    psrc = open(SG._PARTS, encoding="utf-8").read()
+    assert SG.checkin_asset_contract_problems(src, psrc) == []
+    bad = SG.checkin_asset_contract_problems(
+        src.replace("_cf.wrap(Canvas", "_cf.wrap_none(Canvas", 1), psrc)
+    assert any("wrap" in x for x in bad)
+    bad2 = SG.checkin_asset_contract_problems(
+        src, psrc.replace("_cf.size(text, size, role)", "c.text_size(text, size, role)", 1))
+    assert any("同源度量" in x for x in bad2)
+
+
+def test_missing_gold_png_hard_fails(monkeypatch, tmp_path):
+    """prove-it 注入：真实 PNG 缺失时 gate(strict=True) 必须 SystemExit（不静默兜底）。"""
+    from src.plugins.qq_bridge.pic.templates import checkin_gold_icons as GI
+    monkeypatch.setattr(GI, "_ASSETS", tmp_path)            # 指向空目录 => 全缺
+    with pytest.raises(SystemExit, match="黄金图标缺失"):
+        GI.gate(strict=True)
+    assert GI.missing() == list(GI.KINDS)
+
+
+def test_missing_style_font_hard_fails(monkeypatch, tmp_path):
+    """prove-it 注入：风格字体缺失时 gate(strict=True) 必须 SystemExit。"""
+    from src.plugins.qq_bridge.pic.templates import checkin_font as CF
+    monkeypatch.setattr(CF, "_ASSETS", tmp_path)
+    with pytest.raises(SystemExit, match="风格字体缺失"):
+        CF.gate(strict=True)

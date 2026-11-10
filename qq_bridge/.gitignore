@@ -61,3 +61,8 @@ _backup_*/
 # 主项目根 .gitignore 有全局 `*.png`（针对生成物/截图），这里按子目录规则精确放行
 # 这三张是 DE 官方游戏内图标 / 按官方造型重绘的等价物，不是调试截图，也不进 data/。
 !src/plugins/qq_bridge/pic/templates/assets/wf_currency/*.png
+
+# ===== 签到卡黄金图标：必需的**源码资产**，随代码交付 =====
+# 同样被根 `*.png` 命中，按子目录精确放行。7 枚 FA Solid SVG 离线镀金的 128x128
+# RGBA PNG（CC BY 4.0，见同目录 README.md），不是调试截图；缺图 gate(strict) 会硬拦。
+!src/plugins/qq_bridge/pic/templates/assets/checkin_gold/*.png

@@ -15,6 +15,9 @@ from __future__ import annotations
 from datetime import datetime
 
 from ..canvas import Canvas, rgb
+# 签到卡专用分层字体（绘制/度量同源）：_w/_tb 必须走它，不能走 Canvas.text_* 的雅黑度量，
+# 否则「测量按雅黑、绘制按风格字」会导致包围盒与实际绘制错位（card-design 红线 6）。
+from . import checkin_font as _cf
 
 # ---- 画布 / 留白 / 统一间距（度量与绘制同源）----
 # 2026-11-10 15:0x 视觉精修：所有「间距类」常量归一到 4 的倍数 token
@@ -51,6 +54,7 @@ PILL_ICON = 18           # 图标尺寸（非间距 token）
 # ---- 里程碑进度条 ----
 MILE_BAR_H = 16
 MILE_LEGEND_H = 24
+MILE_LEGEND_GAP = 20     # 图例 token 水平间距（5×4 token；was 硬编码 12，肉眼抓到粘连）
 FS_LEGEND = 14           # 刻度弱文字（was 13，浅色底可读性）
 
 # ---- 奖励胶囊 ----
@@ -80,7 +84,7 @@ _MILE_MAX = 30
 SPACING_KEYS = (
     "PAD", "GAP", "CONTENT_PAD", "HDR_H", "BANNER_H", "SEC_TITLE_H",
     "STATUS_CARD_PAD", "PILL_H", "PILL_GAP_X", "PILL_GAP_Y",
-    "MILE_BAR_H", "MILE_LEGEND_H", "REWARD_PILL_H", "REWARD_PILL_GAP",
+    "MILE_BAR_H", "MILE_LEGEND_H", "MILE_LEGEND_GAP", "REWARD_PILL_H", "REWARD_PILL_GAP",
     "WD_H", "DAY_H", "NOTE_LINE_H", "NOTE_GAP", "FOOTER_H",
 )
 
@@ -96,7 +100,7 @@ def _blend(c1: str, c2: str, ratio: float) -> str:
 
 
 def _w(s: str, size: int, role: str = "regular") -> int:
-    return Canvas.text_width(s, size, role)
+    return _cf.width(s, size, role)
 
 
 def _rec(boxes, label: str, box) -> None:
@@ -107,7 +111,7 @@ def _rec(boxes, label: str, box) -> None:
 
 def _tb(pos, text: str, size: int, role: str, anchor: str) -> tuple:
     """由 text_size + anchor 推算文本真实包围盒（与绘制测量同源）。"""
-    w, h = Canvas.text_size(text, size, role)
+    w, h = _cf.size(text, size, role)
     x, y = pos
     if anchor == "mm":
         return (x - w // 2, y - h // 2, x + w // 2, y + h // 2)

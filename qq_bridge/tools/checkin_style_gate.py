@@ -193,3 +193,156 @@ def zero_progress_probe() -> bool:
     injected = src.replace("if total > 0:", "if True:", 1)
     bad = zero_progress_line_problems(injected)
     return bool(bad) and not zero_progress_line_problems(src)
+
+
+# ---------------------------------------------------------------- 里程碑图例 token 间距（肉眼核对抓到粘连，机器补拦）
+LEGEND_TOKENS = ("mile.legend.0", "mile.legend.1", "mile.legend.2", "mile.legend.3")
+LEGEND_MIN_GAP = 8          # 相邻图例 token 最小水平间距（实测恒 20px；<8 观感即连读）
+LEGEND_PARENT = "mile.legend"
+LEGEND_NEXT = "mile.legend.next"
+
+
+def _legend_box(boxes, label):
+    return next((b for b in boxes if b[0] == label), None)
+
+
+def mile_legend_problems(boxes, has_next: bool | None = None) -> list[str]:
+    """图例 4 枚 token 须各自登记真实盒 + 相邻水平间距 ≥8px + 不重叠 + 不越父盒 + 同行。
+
+    2026-11-10 肉眼核对 zoom_mile.png 抓到四档图例挤成一行（+30 与后一个「已达成」
+    连读），根因是旧版只登记整条 ``mile.legend`` 父盒、check_boxes 看不到 token 间水平
+    间距。故模板逐 token 登记叶子盒，本判据量化「整条父盒查不出」的粘连。
+    ``has_next`` 此轮夹具都有下一里程碑（PROF_ZERO 也是 (3,30,3)）；None=按 .next 盒
+    是否在位自动判断，避免把「无下一档」误判为缺盒。
+    """
+    p: list[str] = []
+    toks = [_legend_box(boxes, k) for k in LEGEND_TOKENS]
+    absent = [LEGEND_TOKENS[i] for i, b in enumerate(toks) if b is None]
+    if absent:
+        p.append("[图例] 缺里程碑 token 包围盒：%s（整条父盒不算，须逐枚登记）" % absent)
+        return p                              # 缺盒时后续两两比对无意义
+    parent = _legend_box(boxes, LEGEND_PARENT)
+    if parent is None:
+        p.append("[图例] 缺 %s 父盒（无法校验越界）" % LEGEND_PARENT)
+    # 同行：4 枚 token 的 y 中心须一致（同一图例行，防某枚被挤到下一行）
+    yc = {(b[2] + b[4]) / 2 for b in toks}
+    if len(yc) != 1:
+        p.append("[图例] token 未在同行：y 中心=%s" % sorted(yc))
+    ordered = sorted(toks, key=lambda b: b[1])   # 4 枚 token 按 x 排序
+    nxt = _legend_box(boxes, LEGEND_NEXT)
+    expect_next = (nxt is not None) if has_next is None else bool(has_next)
+    if expect_next and nxt is None:
+        p.append("[图例] 有下一里程碑时缺 %s 盒（右侧「还差」未登记）" % LEGEND_NEXT)
+    chain = ordered + ([nxt] if nxt is not None else [])
+    for a, b in zip(chain, chain[1:]):
+        gap = b[1] - a[3]
+        if gap < 0:
+            p.append("[图例] %s <-> %s 重叠 %dpx" % (a[0], b[0], -gap))
+        elif gap < LEGEND_MIN_GAP:
+            p.append("[图例] %s <-> %s 水平间距 %dpx < %dpx（连读粘连）"
+                     % (a[0], b[0], gap, LEGEND_MIN_GAP))
+        if abs(((a[2] + a[4]) / 2) - ((b[2] + b[4]) / 2)) > 1:
+            p.append("[图例] %s 与 %s y 中心不齐（换行/漂移）" % (a[0], b[0]))
+    if parent is not None:
+        for b in chain:
+            if b[1] < parent[1] - 1 or b[3] > parent[3] + 1:
+                p.append("[图例] %s 水平越出 %s 父盒" % (b[0], LEGEND_PARENT))
+    return p
+
+
+def mile_legend_probe() -> bool:
+    """反例：把 token2 紧贴 token1（gap 0）须被拦；正常 20px 样本须干净。"""
+    good = [
+        (LEGEND_PARENT, 40, 518, 760, 546),
+        ("mile.legend.0", 44, 525, 150, 539),
+        ("mile.legend.1", 170, 525, 275, 539),
+        ("mile.legend.2", 295, 525, 416, 539),
+        ("mile.legend.3", 436, 525, 512, 539),
+        (LEGEND_NEXT, 662, 525, 756, 539),
+    ]
+    if mile_legend_problems(good, has_next=True):
+        return False                          # 正常样本不得误报
+    tight = [list(b) for b in good]
+    tight[2] = ("mile.legend.1", 150, 525, 255, 539)   # 紧贴 token0：gap=0
+    bad = mile_legend_problems([tuple(b) for b in tight], has_next=True)
+    missing = mile_legend_problems([b for b in good if b[0] != "mile.legend.3"],
+                                   has_next=True)
+    return any("间距" in x or "重叠" in x for x in bad) and any("缺里程碑 token" in x for x in missing)
+
+
+# ---------------------------------------------------------------- 黄金图标/分层字体资产接线契约
+ASSET_DIR = os.path.join(_ROOT, "src", "plugins", "qq_bridge", "pic", "templates",
+                         "assets")
+GOLD_DIR = os.path.join(ASSET_DIR, "checkin_gold")
+FONTS_DIR = os.path.join(ASSET_DIR, "checkin_fonts")
+GOLD_KINDS = ("clock", "bolt", "check", "coins", "arrow-up", "star",
+              "wand-magic-sparkles")
+FONT_ROLES = ("display", "section", "heavy", "body")
+
+
+_PARTS = os.path.join(_ROOT, "src", "plugins", "qq_bridge", "pic", "templates",
+                      "checkin_parts.py")
+_WIRING = (
+    ("_gold.gate(strict=True)", "缺真实黄金 PNG 未硬拦"),
+    ("_cf.gate(strict=True)", "缺风格字体未硬拦"),
+    ("_cf.wrap(Canvas", "分层字体绘制代理未接线"),
+    ("_gold.draw(c,", "黄金图标未走真实 PNG 通道"),
+)
+
+
+def checkin_asset_contract_problems(src: str | None = None,
+                                    psrc: str | None = None) -> list[str]:
+    """真实资产/接线契约：7 枚黄金 PNG + 4 款字体 + 同源度量三处接线都在位。
+
+    守「禁止几何兜底当交付」（AGENTS §18/§67）：PNG 缺一张、字体缺一款，或
+    checkin.py 撤掉 gate/wrap、checkin_parts 撤掉 _cf 同源度量，全都必须被拦。
+    只查**契约接线与文件存在**，PNG/TTF 内容真实性由 build_checkin_assets --check
+    与三层 md5 部署闸门负责，避免重复实现图像处理。
+    ``src``/``psrc`` 可注入改造后源码文本（反例探针用），None=读当前磁盘。
+    """
+    p: list[str] = []
+    for k in GOLD_KINDS:
+        f = os.path.join(GOLD_DIR, k + ".png")
+        if not os.path.isfile(f) or os.path.getsize(f) < 1024:
+            p.append("[资产] 黄金图标缺真实 PNG 或过小：%s" % f)
+    for r in FONT_ROLES:
+        f = os.path.join(FONTS_DIR, r + ".ttf")
+        if not os.path.isfile(f) or os.path.getsize(f) < 1024:
+            p.append("[资产] 分层字体缺失或过小：%s" % f)
+    if src is None:
+        try:
+            with open(SOURCE, encoding="utf-8") as f:
+                src = f.read()
+        except OSError as e:
+            return p + ["[资产] 读 checkin.py 失败：%s" % e]
+    for tok, why in _WIRING:
+        if tok not in src:
+            p.append("[资产] checkin.py 缺接线 %r：%s" % (tok, why))
+    if psrc is None:
+        try:
+            with open(_PARTS, encoding="utf-8") as f:
+                psrc = f.read()
+        except OSError as e:
+            return p + ["[资产] 读 checkin_parts.py 失败：%s" % e]
+    if "_cf.width(s, size, role)" not in psrc or "_cf.size(text, size, role)" not in psrc:
+        p.append("[资产] checkin_parts._w/_tb 未走 checkin_font 同源度量（绘制度量分裂）")
+    return p
+
+
+def checkin_asset_probe() -> bool:
+    """注入真实回退（不写磁盘）：撤 gate strict / 撤同源度量接线，判据须各自命中。"""
+    try:
+        with open(SOURCE, encoding="utf-8") as f:
+            src = f.read()
+        with open(_PARTS, encoding="utf-8") as f:
+            psrc = f.read()
+    except OSError:
+        return False
+    if checkin_asset_contract_problems(src, psrc):
+        return False                          # 当前源码本就不该有问题
+    bad_gate = checkin_asset_contract_problems(
+        src.replace("_gold.gate(strict=True)", "_gold.gate(strict=False)", 1), psrc)
+    bad_same = checkin_asset_contract_problems(
+        src, psrc.replace("_cf.width(s, size, role)", "c.text_width(s, size, role)", 1))
+    return (any("gate" in x for x in bad_gate)
+            and any("同源度量" in x for x in bad_same))

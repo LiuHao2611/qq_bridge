@@ -6,23 +6,15 @@
     python tools/check_checkin_layout.py --check --out /app/tmp/checkin.png
     python tools/check_checkin_layout.py --selftest          # 验证门禁本身能抓反例
 
-检查项（对齐 card-design 六条红线 + 本项目签到卡契约）：
-  * 溢出 / 重叠 / 同行最小间距   —— build(boxes=...) 真实包围盒，全局两两比对（红线 1/2/3）
-  * 度量同源                     —— boxes 来自真实绘制，不另写复算公式（红线 6）
-  * 浅色契约                     —— checkin 解析为 light、页面底色浅（亮度≥200）、
-                                     有主题贴纸背景；主模板不再硬编码 radius=0 / 深色终端风
-  * 数据契约                     —— 必备分区 label 齐全（横幅 / 4 胶囊 / 进度条 / 奖励 /
-                                     月历 / 页脚）；三态文案正确；绝不出现 Rabbit 专属编造字段
-  * 跨月鲁棒                     —— 28/29/30/31 天月份都渲染不触线（月历行数变化）
-  * 视觉精修（15:0x）            —— 字号层级 / 间距 4px token / 分区标题同色同字重 /
-                                     0 进度不画孤立当前位置竖线，判据按功能拆到
-                                     checkin_style_gate.py（守本脚本 <20KB）
+检查项（对齐 card-design 红线 + 签到卡契约，判据多在 checkin_style_gate.py 守本脚本 <20KB）：
+  * 溢出/重叠/同行间距/度量同源 —— build(boxes=...) 真实包围盒两两比对（红线 1/2/3/6）
+  * 浅色/数据/跨月契约          —— light 浅底、必备 label 齐、无编造字段、28~31 天不触线
+  * 视觉精修+图例+资产          —— 字号/间距 token/标题同层/0 进度竖线/图例 token 粘连/
+                                     黄金图标+分层字体接线（详见 checkin_style_gate.py）
 
-2026-11-10：用户「参考 Rabbit 图优化签到卡 + 改浅色主题」。本门禁把改前深色终端风
-（> 每日签到 / [OK] / Consolas / radius=0）与编造字段（群段位/经验值/群萝卜/抽中/礼品盒）
-全部列为反例，注入验证必须被拦下。15:0x 用户「注意每个边框内外边距/字体/字号/加粗/颜色」
-再补 4 类视觉判据（字号倒挂 / 非 token 间距 / 分区标题同层异色或去粗 / 0 进度孤立竖线），
-其中孤立竖线是肉眼核对抓到、机器初漏的真实回归，selftest 共 15 类。
+2026-11-10：改前深色终端风与编造字段全列为反例，注入须拦。15:0x 补 4 类视觉判据
+（字号倒挂/非 token 间距/分区标题异色去粗/0 进度孤立竖线）；17:xx 补图例 token 粘连
+与黄金图标/字体资产接线（肉眼抓到 +30 连读，整条父盒查不出）。selftest 共 17 类。
 
 绝不降级：任何一组不过就 ``exit 1``；不吞异常、不放宽阈值。
 """
@@ -44,10 +36,12 @@ from qq_bridge.pic import _resolve_card_theme_name  # noqa: E402
 from qq_bridge.pic import theme as _theme  # noqa: E402
 from qq_bridge.pic.templates import checkin as _checkin  # noqa: E402
 from qq_bridge.pic.templates import checkin_parts as _parts  # noqa: E402
-# 视觉精修语义判据（颜色/加粗/字号层级/间距 token）按功能拆出，守本脚本 <20KB。
+# 视觉/图例/资产语义判据按功能拆出，守本脚本 <20KB。
 from checkin_style_gate import (  # noqa: E402
     section_style_problems, visual_contract_problems, value_padding_problems,
+    mile_legend_problems, checkin_asset_contract_problems,
     scale_probe, spacing_probe, style_probe, zero_progress_probe,
+    mile_legend_probe, checkin_asset_probe,
 )
 
 MIN_GAP = 2
@@ -264,6 +258,7 @@ def run_check(out: str = "") -> tuple[list[str], str]:
     # 用户 15:0x 视觉精修：字号层级 / 间距 token / 分区标题同色同字重（判据在 checkin_style_gate）
     problems += visual_contract_problems()
     problems += section_style_problems()
+    problems += checkin_asset_contract_problems()   # 7 PNG + 4 TTF + gate/wrap/同源度量
 
     n_cases = 0
     for cal_case in CAL_CASES:
@@ -277,6 +272,9 @@ def run_check(out: str = "") -> tuple[list[str], str]:
                          for x in check_boxes(bounds, boxes)]
             problems += ["[%s/%s] %s" % (cal_case[0], state, x)
                          for x in value_padding_problems(boxes)]
+            has_nxt = bool(prof.get("next_milestone"))
+            problems += ["[%s/%s] %s" % (cal_case[0], state, x)
+                         for x in mile_legend_problems(boxes, has_next=has_nxt)]
             problems += ["[%s/%s] %s" % (cal_case[0], state, x)
                          for x in data_contract_problems(boxes, res, prof, state)]
     summary = ("主题 %s（bg %s / radius %s / %s）· %d 状态 × %d 月份 = %d 组渲染"
@@ -358,6 +356,11 @@ def _selftest() -> int:
     # 15 里程碑 0 进度孤立竖线：把进度守卫换成 if True 须被拦（肉眼曾抓到，机器补拦）
     if not zero_progress_probe():
         errs.append("0 进度孤立竖线（当前位置竖线无进度守卫）未被拦下")
+    # 16 图例 token 粘连（肉眼 +30 连读）/ 17 资产缺口（禁几何兜底）
+    if not mile_legend_probe():
+        errs.append("里程碑图例 token 粘连/缺盒/换行未被拦下")
+    if not checkin_asset_probe():
+        errs.append("黄金图标/字体资产缺失或 gate 撤 strict 未被拦下")
     print("selftest:", "PASS" if not errs else "FAIL — " + "; ".join(errs))
     return 0 if not errs else 1
 
