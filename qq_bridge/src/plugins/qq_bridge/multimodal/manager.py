@@ -21,6 +21,7 @@ from typing import Any
 from ..config import Config, get_logger, jlog
 from .album import AlbumError, MediaAlbum, media_album as _default_album
 from .audio import AudioClient, AudioError, audio_client as _default_audio
+from .audio_seed import SeedAudioClient, seed_audio_client as _default_seed_audio
 from .vision import VisionClient, VisionError, vision_client as _default_vision
 
 log = get_logger()
@@ -31,9 +32,11 @@ class MediaManager:
 
     def __init__(self, vision: VisionClient | None = None,
                  audio: AudioClient | None = None,
-                 album: MediaAlbum | None = None) -> None:
+                 album: MediaAlbum | None = None,
+                 seed_audio: SeedAudioClient | None = None) -> None:
         self.vision = vision or _default_vision
         self.audio = audio or _default_audio
+        self.seed_audio = seed_audio or _default_seed_audio
         self.album = album or _default_album
 
     # ---------------- 看图 ----------------
@@ -74,8 +77,38 @@ class MediaManager:
         """语音 → 文字（ASR）。"""
         return await self.audio.transcribe(audio_path)
 
+    def _tts_route(self) -> str:
+        """按配置决定本次 TTS 走哪家，返回 "seed" / "openai"。
+
+        provider 三态（config.Config.TTS_PROVIDER）：
+          · "seed"   —— 强制豆包生成式；没配 SEED_TTS_API_KEY 时由其显式报错；
+          · "openai" —— 强制火山方舟 OpenAI 兼容（旧行为）；
+          · "auto"   —— 谁配齐用谁：有 seed key 优先 seed，否则 openai 有模型
+                        就用 openai，都没有则显式报错告知两项怎么配（诚实契约，
+                        不静默回落、更不本地兜底）。
+        """
+        provider = str(getattr(Config, "TTS_PROVIDER", "") or "auto").strip().lower()
+        has_seed = bool(str(getattr(Config, "SEED_TTS_API_KEY", "") or "").strip())
+        has_openai = bool(str(getattr(Config, "AI_TTS_MODEL", "") or "").strip())
+        if provider == "seed":
+            return "seed"
+        if provider == "openai":
+            return "openai"
+        # auto：seed 优先（生成式音质更好、且用户新接入），否则 openai
+        if has_seed:
+            return "seed"
+        if has_openai:
+            return "openai"
+        raise AudioError(
+            "没配任何语音合成：填 SEED_TTS_API_KEY 用豆包 seed-audio（生成式，"
+            "推荐），或填 AI_TTS_MODEL 走火山方舟 OpenAI 兼容 /audio/speech；"
+            "两者都不配就不会说话（不本地兜底，硬凑是次品路径）")
+
     async def speak(self, text: str) -> bytes:
-        """文字 → 语音 bytes（TTS）。"""
+        """文字 → 语音 bytes（TTS，按 TTS_PROVIDER 路由）。"""
+        route = self._tts_route()
+        if route == "seed":
+            return await self.seed_audio.speak(text)
         return await self.audio.speak(text)
 
     # ---------------- 历史召回 ----------------
@@ -95,11 +128,22 @@ class MediaManager:
         def _flag(val: str) -> bool:
             return bool(str(val or "").strip())
 
+        has_seed = _flag(getattr(Config, "SEED_TTS_API_KEY", ""))
+        has_openai = _flag(getattr(Config, "AI_TTS_MODEL", ""))
+        # tts=True 表示至少有一家可用；route 反映 auto 实际会走哪家（诚实可观测）
+        try:
+            route = self._tts_route()
+        except AudioError:
+            route = "none"
         return {
             "vision": _flag(getattr(Config, "AI_VISION_MODEL", "")),
             "asr": _flag(getattr(Config, "AI_ASR_MODEL", "")),
-            "tts": _flag(getattr(Config, "AI_TTS_MODEL", "")),
+            "tts": has_seed or has_openai,
             "api_key": _flag(getattr(Config, "AI_API_KEY", "")),
+            # 新增：seed 能力 + 路由结果，供 /看图 状态 展示，不暴露 key 本身
+            "seed_tts": has_seed,
+            "openai_tts": has_openai,
+            "tts_route": route,
         }
 
 

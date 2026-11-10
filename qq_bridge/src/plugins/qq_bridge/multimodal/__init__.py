@@ -17,6 +17,9 @@ connector；本包是媒体**理解**层，必须保持「不 import nonebot、�
   audio.py    语音：ASR（ffmpeg 转 mp3 → OpenAI 兼容 /audio/transcriptions）
               + TTS（/audio/speech）；未配置显式告知缺什么，不本地兜底
               （本机未装 faster-whisper / edge-tts，硬凑就是次品路径）
+  audio_seed.py 豆包 seed-audio 生成式 TTS（openspeech 私有协议 /api/v3/tts/create，
+              X-Api-Key + text_prompt 描述情绪/口音/BGM → JSON 内嵌 base64 MP3）；
+              与 audio.py 两条独立产品线，复用 AudioError，由 manager 按 provider 路由
   album.py    会话媒体档案（收发过的图/视频/语音 + 视觉描述回填），
               历史图召回（与 gallery.py 的 t2i 相册分工不重叠）
   manager.py  门面：look / look_video / listen / speak / recall /
@@ -28,12 +31,16 @@ connector；本包是媒体**理解**层，必须保持「不 import nonebot、�
 """
 from .vision import VisionClient, VisionError, image_to_data_uri, vision_client
 from .audio import AudioClient, AudioError, audio_client
+from .audio_seed import (DEFAULT_VOICE_DESC as SEED_DEFAULT_VOICE_DESC,
+                         SeedAudioClient, decode_audio_field, seed_audio_client)
 from .album import AlbumError, MediaAlbum, media_album
 from .manager import MediaManager, media_manager
 
 __all__ = [
     "VisionClient", "VisionError", "vision_client", "image_to_data_uri",
     "AudioClient", "AudioError", "audio_client",
+    "SeedAudioClient", "seed_audio_client", "decode_audio_field",
+    "SEED_DEFAULT_VOICE_DESC",
     "MediaAlbum", "AlbumError", "media_album",
     "MediaManager", "media_manager",
 ]

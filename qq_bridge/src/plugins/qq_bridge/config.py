@@ -682,6 +682,28 @@ class Config:
     # 主人私聊语音：自动听写并当普通消息处理（关=忽略语音）
     MM_ASR_PRIVATE: bool = _as_bool(os.environ.get("MM_ASR_PRIVATE"), True)
 
+    # ---- TTS 提供方路由（2026-11-10：新增豆包 seed-audio 生成式语音）----
+    # provider 取值：
+    #   "openai" —— 火山方舟 / 任意 OpenAI 兼容 /audio/speech（沿用 AI_TTS_MODEL）；
+    #   "seed"   —— 豆包 openspeech 私有协议 /api/v3/tts/create（SEED_TTS_*）；
+    #   "auto"   —— 谁配齐用谁：优先 seed（有 key），否则 openai（有模型），都没有则报错。
+    # 默认 auto：兼容旧部署（只配了 AI_TTS_MODEL 仍照常走 openai），且新部署填了
+    # SEED_TTS_API_KEY 即自动启用生成式语音，零改代码。
+    TTS_PROVIDER: str = (os.environ.get("TTS_PROVIDER") or "auto").strip().lower()
+    # 豆包语音密钥（X-Api-Key）——**只从 .env 读，绝不硬编码/落库/打印**。
+    SEED_TTS_API_KEY: str = os.environ.get("SEED_TTS_API_KEY") or ""
+    SEED_TTS_ENDPOINT: str = (os.environ.get("SEED_TTS_ENDPOINT")
+                              or "https://openspeech.bytedance.com/api/v3/tts/create")
+    SEED_TTS_MODEL: str = os.environ.get("SEED_TTS_MODEL") or "seed-audio-1.0"
+    # 音色描述（生成式 text_prompt 的一部分，可写情绪/语速/口音/BGM/音效）
+    SEED_TTS_VOICE_DESC: str = os.environ.get("SEED_TTS_VOICE_DESC") or ""
+    # 生成式 TTS 实测 7~22s，超时放宽到 90s（CLOSE-05 显式超时仍生效）
+    SEED_TTS_TIMEOUT: float = _as_float(os.environ.get("SEED_TTS_TIMEOUT"), 90.0)
+    # 单次字数上限（按字符计费，默认 300 比 openai 的 500 更保守）
+    SEED_TTS_MAX_CHARS: int = _as_int(os.environ.get("SEED_TTS_MAX_CHARS"), 300)
+    # 采样率：16000/24000/32000/48000，非法值由客户端回退 24000
+    SEED_TTS_SAMPLE_RATE: int = _as_int(os.environ.get("SEED_TTS_SAMPLE_RATE"), 24000)
+
     # ---- 群风格学习（2026-10-21 M5：学群梗/群用语/氛围，注入人设）----
     # 安全口径：只学群**公开语境**的风格（梗/口头禅/氛围/忌讳），不抽个体隐私；
     # LLM 不可用 → 显式报错不伪造风格（禁止降级）。

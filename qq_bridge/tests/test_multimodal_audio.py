@@ -321,18 +321,33 @@ def test_album_format_list_and_gc(album):
 
 # ---------------- 6/7. manager ----------------
 def test_manager_capabilities_honest():
-    old = {k: getattr(Config, k, "") for k in
-           ("AI_VISION_MODEL", "AI_ASR_MODEL", "AI_TTS_MODEL", "AI_API_KEY")}
+    # 2026-11-10：新增 seed-audio 后 capabilities 契约扩展为 7 键。
+    # 全部相关配置都纳入临时清空（含 SEED_TTS_API_KEY，消除 .env 有 key 时的
+    # 偶发不稳定），断言「没配就是没配」的诚实语义 + 路由字段一致，比原 4 键更严格。
+    keys = ("AI_VISION_MODEL", "AI_ASR_MODEL", "AI_TTS_MODEL", "AI_API_KEY",
+            "SEED_TTS_API_KEY", "TTS_PROVIDER")
+    old = {k: getattr(Config, k, "") for k in keys}
     try:
-        Config.AI_VISION_MODEL = ""
-        Config.AI_ASR_MODEL = ""
-        Config.AI_TTS_MODEL = ""
-        Config.AI_API_KEY = ""
+        for k in keys:
+            setattr(Config, k, "")
+        Config.TTS_PROVIDER = "auto"
         caps = MediaManager().capabilities()
-        assert caps == {"vision": False, "asr": False, "tts": False,
-                        "api_key": False}   # 没配就是没配，不假装能
+        assert caps == {
+            "vision": False, "asr": False, "tts": False, "api_key": False,
+            "seed_tts": False, "openai_tts": False, "tts_route": "none",
+        }   # 没配就是没配，不假装能
+        # 只配视觉 → vision 亮，语音仍全灭（各能力独立，互不回落）
         Config.AI_VISION_MODEL = "v"
         assert MediaManager().capabilities()["vision"] is True
+        assert MediaManager().capabilities()["tts"] is False
+        # 只配 seed key → seed_tts 亮、auto 路由到 seed、api_key 不受影响
+        Config.SEED_TTS_API_KEY = "k"
+        caps2 = MediaManager().capabilities()
+        assert caps2["seed_tts"] is True and caps2["tts"] is True
+        assert caps2["tts_route"] == "seed"
+        # 精确断言：任何字段的「值」都不得等于 key 明文（而非在整段字符串里
+        # 找子串——键名 api_key 本身就含字母 k，子串断言会假失败）。
+        assert all(v != "k" for v in caps2.values()), "capabilities 绝不回显 key 值"
     finally:
         for k, v in old.items():
             setattr(Config, k, v)
