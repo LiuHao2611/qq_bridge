@@ -24,10 +24,16 @@
 统计数值≥34 / 价格≥30 / 区块标题≥28（相对 t.fs 基数），且层级
 主标题>价格≥正文>弱文字、行高呼吸区≥28px，字号回退变小即报错。
 
+2026-11-10 新增 **MOD「等级」列**（用户「遇到有等级的物品时应该展示物品等级」）：
+渲染 6 列等级卡（零级/R1/满级混排，对齐 Hammer Shot 真实订单），核对表头恰好 1 个
+「等级」标签、每行各 1 枚等级胶囊、多等级确实混排；5 列非 MOD 样例不得混入等级列
+（向后兼容）。``tbl.row.rank:<标记>`` 的包围盒名带标签，供门禁读实际等级分布。
+
 ``--selftest`` 把真实犯过的错放回去，证明闸门会报错：重叠/溢出/间距、
 漏登记图标、白金退回列头、头像列头留白、某行漏白金图标、图标未紧跟气泡、
 商品图槽比例失真、不可兑换仍画杜卡德、缺真实 PNG、删掉浅色内置绑定、mstat 少一行、
-商品标题改小回退、字号层级倒挂、行高压缩、统计数值改小回退。
+商品标题改小回退、字号层级倒挂、行高压缩、统计数值改小回退、漏「等级」表头、
+某行漏等级胶囊、等级不再混排、非 MOD 卡混入等级列。
 """
 from __future__ import annotations
 
@@ -98,9 +104,11 @@ def check_boxes(bounds, boxes, min_gap: int = MIN_GAP) -> list[str]:
     return problems
 
 
-def _render(theme_name: str, ducat: str, item_icon: bytes | None = None):
-    """按真实 wm 协议渲染一张卡，返回 (Canvas, boxes)。"""
-    body = R._body().replace("|不可兑换|1,000,000|", "|%s|1,000,000|" % ducat)
+def _render(theme_name: str, ducat: str, item_icon: bytes | None = None,
+            body: str | None = None):
+    """按真实 wm 协议渲染一张卡，返回 (Canvas, boxes)。body 缺省为 5 列非 MOD 样例。"""
+    body = body or R._body()
+    body = body.replace("|不可兑换|1,000,000|", "|%s|1,000,000|" % ducat)
     t = theme.get(theme_name)
     boxes: list = []
     c = guide.build(t, body=body, boxes=boxes,
@@ -221,7 +229,16 @@ def run_check() -> int:
             print("   ", x)
         problems += ["%s: %s" % (shot, x) for x in layout + cur]
 
-    print("\n市价卡布局闸门：%s" % ("PASS（%d/%d 样例，溢出 0 / 重叠 0 / 间距 0）"
+    # MOD 6 列等级卡（2026-11-10）拆在 market_rank_gate：纯函数参数注入，依赖单向
+    import market_rank_gate as RG
+    rank_errs, rank_line = RG.check_ranked(
+        SHOTS, check_boxes, MIN_GAP, _currency_problems, _icon_slot_problems)
+    print(rank_line)
+    for x in rank_errs:
+        print("   ", x)
+    problems += rank_errs
+
+    print("\n市价卡布局闸门：%s" % ("PASS（%d/%d 样例 + 等级卡，溢出 0 / 重叠 0 / 间距 0）"
                                 % (len(SAMPLES), len(SAMPLES))
                                 if not problems else "FAIL %d 项" % len(problems)))
     return 1 if problems else 0
@@ -342,6 +359,11 @@ def run_selftest() -> int:
         _mc.wm_types, _mc.STAT_VAL_FS = _orig_wmt, _orig_stat
     if wm_type_problems(_t):
         errs.append("字号契约 monkeypatch 还原失败")
+
+    # ⑮⑱ 等级列反例（2026-11-10）拆在 market_rank_gate
+    import market_rank_gate as RG
+    _, plain_boxes = _render("light", "100")
+    errs += RG.selftest_rank(plain_boxes)
 
     print("selftest：%s" % ("PASS 全部注入反例被拦下" if not errs else "FAIL — " + "; ".join(errs)))
     return 1 if errs else 0

@@ -90,19 +90,53 @@ def _body() -> str:
     return "\n".join(lines)
 
 
+def _body_ranked() -> str:
+    """MOD 6 列样例（2026-11-10「展示物品等级」）：混合 零级/R1/满级(R3)，
+    与 Hammer Shot 真实订单分布同构，验证等级标签混排 + 6 列布局 + 向后兼容。
+    """
+    rows = [
+        ("Bett_tt", "零级", "在线", 0, 1, 27),
+        ("ggdd69", "满级", "在线", 4, 1, 128),
+        ("Revolver_Z", "R1", "在线", 2, 1, 110),
+        ("tron12819", "满级", "游戏中", 2, 1, 134),
+        ("HonestKitty3831", "零级", "游戏中", 0, 2, 101),
+        ("FaHa0401", "满级", "在线", 23, 1, 140),
+        ("Navsult", "R1", "在线", 0, 1, 115),
+        ("Selunnete", "满级", "游戏中", 1, 1, 145),
+        ("WhiteSpectrumTTV", "零级", "游戏中", 9, 4, 120),
+        ("KiberPunkRU", "满级", "游戏中", 9, 1, 150),
+    ]
+    lines = [
+        "@wmhdr|重锤射击|Hammer Shot|稀有 · MOD · 主武器|不可兑换|—|437|312|icons/hammer_shot.png|+240% 暴击伤害",
+        "@hdr|卖家|等级|状态|声望|数量|白金价格",
+    ]
+    for i, (name, rk, st, rep, qty, price) in enumerate(rows, 1):
+        lines.append(f"@row|{name}|{rk}|{st}|{rep}|{qty}|{price}|u{i}|")
+    lines += [
+        "@mstat|48时内全等级售价|100|3000|134",
+        "@mstat|90天内全等级售价|100|3000|128",
+        "@mstat|48时内全等级收价|100|150|110",
+        "@mstat|90天内全等级收价|100|150|105",
+        "@shout|/w Bett_tt Hi! I want to buy: Hammer Shot for 27 platinum. (wf.m via qq_bridge)",
+        '@page|页码:1/44 使用"wm 重锤射击 -2"查看下一页.',
+        "@foot|WARFRAME.MARKET / PC",
+    ]
+    return "\n".join(lines)
+
+
 def main() -> int:
-    body = _body()
     avatars = {f"u{i}": _avatar(i) for i in range(1, 11)}
     icon = _icon()
     outs = []
-    for mode in ("light", "neon"):
-        t = resolve(mode)
-        png = render_raw("guide", t, body=body, title="", avatars=avatars,
-                         item_icon=icon, source="数据源：Warframe.Market · 订单更新 2026-11-03 12:47")
-        p = OUT / f"_wm_card_{mode}.png"
-        p.write_bytes(png)
-        outs.append(p)
-        print(f"{mode}: {len(png)} bytes -> {p}")
+    for body, tag in ((_body(), ""), (_body_ranked(), "_ranked")):
+        for mode in ("light", "neon"):
+            t = resolve(mode)
+            png = render_raw("guide", t, body=body, title="", avatars=avatars,
+                             item_icon=icon, source="数据源：Warframe.Market · 订单更新 2026-11-10")
+            p = OUT / f"_wm_card_{mode}{tag}.png"
+            p.write_bytes(png)
+            outs.append(p)
+            print(f"{mode}{tag}: {len(png)} bytes -> {p}")
     return 0
 
 

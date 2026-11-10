@@ -196,7 +196,7 @@ def test_dispatch_wf_analysis_sub():
 
 
 # ---------------- 紫卡倾向（DE 44.1.3 后全武器统一 1.2） ----------------
-#: 旧口径黑名单：任何对外输出命中即回归失败（2026-10-22 起这些说法全是错的）
+#: 旧口径黑名单：输出命中即回归失败（2026-10-22 起这些说法全错）
 _FORBIDDEN_DISPO = (
     "倾向极低：热门武器", "倾向极高：冷门武器", "毕业裂罅卡最值钱",
     "最新倾向", "●●●●○", "●○○○○", "(0.85)", "(0.70)",
@@ -295,7 +295,7 @@ def test_disposition_card_renders():
 
 
 def test_weapon_icon_resolver_fallback():
-    """官方图标解析：无图/缺失文件名/下载失败都应静默回落（返回 None，不抛异常）。"""
+    """官方图标解析：无图/缺失/下载失败都静默回落（返回 None，不抛异常）。"""
     from src.plugins.qq_bridge.pic.weapon_icons import icon_cache_path, ensure_icon
 
     assert icon_cache_path(None) is None
@@ -400,7 +400,7 @@ def test_zh_sortie_text(monkeypatch):
     assert "感染者" in r and "突变体阿拉德五世" in r and "内融核心" in r
 
 
-# ---------------- 新口令：倒计时 / 平原全量 / 赏金 / 九重天 / 周本 / 轮换 ----------------
+# ---- 新口令：倒计时 / 平原全量 / 赏金 / 九重天 / 周本 / 轮换 ----
 def test_fissures_countdown(monkeypatch):
     now = warframe._now()
     async def fake(fast=False):
@@ -635,7 +635,7 @@ def test_plain_text_ignores_at_segment():
 
     ev = FakeEvent()
     assert _plain_text(ev) == "电男"
-    # 退化：无 original_message → 回退 get_plaintext（此时若带 @ 属适配器行为，交由上层兜底）
+    # 退化：无 original_message → 回退 get_plaintext（带 @ 属适配器行为，上层兜底）
     ev2 = FakeEvent()
     ev2.original_message = None
     assert _plain_text(ev2) == "电男" or "@" in _plaintext_fallback(ev2)
@@ -699,14 +699,14 @@ def test_guide_meta_local_build_time():
     assert len(ts) >= 10  # MM-DD HH:MM
 
 
-# ---------------- 市价卡 DSL 复刻（对齐 Rabbit 参考卡，2026-09-29 重写） ----------------
+# ---- 市价卡 DSL 复刻（对齐 Rabbit 参考卡） ----
 # 统计口径（经真实 WM API + 用户 Rabbit 参考卡逐值比对确认）：
 #   · 售价 = statistics_closed[窗口]；收价 = statistics_live[窗口] 中 order_type=buy
 #   · 最低/最高 = **整个窗口**的 min(min_price) / max(max_price)（不是最近一档！）
 #     参考卡 90天售价 50-110、48时售价 62-77 只可能是全窗口极值
-#   · 最新 = 最近一档的 median（closed/live 均有；旧实现用 open_price → live 恒「暂无」）
+#   · 最新 = 最近档 median（旧实现用 open_price → live 恒暂无）
 #   · 非 MOD 前缀「零级」；MOD 按 rank 过滤，前缀 满级 / R{n} / 零级
-#   · 出售列表：在线/游戏内整组在前（组内价格升序），离线随后；页码按全部挂单计
+#   · 出售列表：在线/游戏内整组在前，离线随后；页码按全部挂单计
 def _mk_stats(closed48, closed90, buy48, buy90):
     """构造真实 WM statistics 结构（statistics_closed/Live 各含 48hours/90days 两窗口）。"""
     def C(x):  # closed 档须补 datetime；MOD 档保留 mod_rank
@@ -718,7 +718,7 @@ def _mk_stats(closed48, closed90, buy48, buy90):
 
 
 def test_market_text_rabbit_style(monkeypatch):
-    """market_text 输出须与 Rabbit 参考卡字段级一致（cart 标题/中文名/在线优先/四行统计/喊话/页脚）。"""
+    """market_text 输出与 Rabbit 参考卡字段级一致（标题/中文名/在线优先/四行统计/喊话/页脚）。"""
     async def fake_market_get(url: str, params: str = "") -> dict | None:
         if "/v2/orders/item/" in url:
             return {"data": [
@@ -806,8 +806,10 @@ def test_market_text_mod_max_rank(monkeypatch):
     r = asyncio.run(warframe.market_text("持久力 满级", page=1))
     rows = [ln for ln in r.split("\n") if ln.startswith("@row|")]
     assert len(rows) == 2, rows
-    prices = [int(ln.split("|")[5]) for ln in rows]
+    # MOD 6 列（含等级）：价格索引由 5 后移到 6
+    prices = [int(ln.split("|")[6]) for ln in rows]
     assert prices == [120, 130], prices
+    assert "@hdr|卖家|等级|状态|声望|数量|白金价格" in r
     assert r.startswith("@wmhdr|持久力 满级|Primed Continuity|")
     assert "@mstat|48时内满级售价|110|140|125" in r
     assert "@mstat|90天内满级售价|115|150|120" in r
@@ -846,8 +848,9 @@ def test_market_text_mod_r0(monkeypatch):
     r = asyncio.run(warframe.market_text("持久力 R0", page=1))
     rows = [ln for ln in r.split("\n") if ln.startswith("@row|")]
     assert len(rows) == 2, rows
-    prices = [int(ln.split("|")[5]) for ln in rows]
+    prices = [int(ln.split("|")[6]) for ln in rows]  # MOD 6 列价格索引 6
     assert prices == [2, 3], prices
+    assert "@hdr|卖家|等级|状态|声望|数量|白金价格" in r
     assert r.startswith("@wmhdr|持久力 R0|Primed Continuity|")
     assert "@mstat|48时内零级售价|2|5|3" in r
     assert "@mstat|48时内零级收价|1|2|1" in r
@@ -879,7 +882,7 @@ def test_market_text_mod_not_mod_with_rank(monkeypatch):
 
 
 def test_market_text_offline_topup(monkeypatch):
-    """出售列表：在线/游戏内整组在前（组内价格升序），离线随后；状态照实标注。
+    """出售列表：在线/游戏内整组在前，离线随后；状态照实标注。
 
     对齐 Rabbit 参考卡：2026-09-29 实测 wukong_prime_set 第 1 页 10 行全为在线/游戏内卖家
     （74~78p）；而纯价格升序会把 67/69/70p 的离线单排到最前 —— 故为「在线整组优先」，
@@ -940,7 +943,7 @@ def test_market_markers_render_through_guide(monkeypatch):
 
     守两件真出过问题的事：
       ① @hdr 的「白金价格」必须映射成 price 角色（否则价格变纯文本、没有气泡）；
-      ② @row 新列序（卖家|状态|声望|数量|价格|uid|头像）与表头一一对齐。
+      ② @row 列序与表头一一对齐（MOD 6 列含等级：卖家|等级|状态|声望|数量|价格|uid|头像）。
     最低价 27 应被画成 t.ok 绿色气泡；列角色失配时绿像素≈0，此断言必挂。
     """
     async def fake_market_get(url: str, params: str = "") -> dict | None:
@@ -970,7 +973,8 @@ def test_market_markers_render_through_guide(monkeypatch):
     warframe._MARKET_META_CACHE.clear()
 
     body = asyncio.run(warframe.market_text("primed_point_blank", page=1))
-    assert "@wmhdr|" in body and "@hdr|卖家|状态|声望|数量|白金价格" in body
+    assert "@wmhdr|" in body and "@hdr|卖家|等级|状态|声望|数量|白金价格" in body
+    assert all(ln.split("|")[2] == "零级" for ln in body.split("\n") if ln.startswith("@row|"))
 
     from src.plugins.qq_bridge.pic.theme import get as _get_theme, LIGHT
     from src.plugins.qq_bridge.pic.templates import guide
@@ -990,7 +994,7 @@ def test_market_markers_render_through_guide(monkeypatch):
 
 
 def test_market_part_uses_subicon(monkeypatch):
-    """部件 @wmhdr 必须用 subIcon 部位图（set 响应里同套部件 icon 是同一 hash 主图）。"""
+    """部件 @wmhdr 用 subIcon 部位图（set 里同套部件 icon 是同一 hash 主图）。"""
     async def fake_market_get(url: str, params: str = "") -> dict | None:
         if "/v2/orders/item/" in url:
             return {"data": [{"type": "sell", "platinum": 6, "quantity": 1,
@@ -1044,7 +1048,7 @@ def test_prime_weapon_part_prefers_wm_prime_subicon(monkeypatch):
 
 def test_collect_market_item_icon_routing(monkeypatch):
     """套装取官方全图；部件取部位图；MOD/赋能/总图取 WM 商品自身 icon。"""
-    # 必须与文件顶部同一包路径，否则 monkeypatch 打不到函数内部引用的 warframe。
+    # 须与文件顶部同包路径，否则 monkeypatch 打不到函数内 warframe 引用。
     from src.plugins.qq_bridge.game_tools import _collect_market_item_icon
 
     calls: dict = {}
@@ -1069,7 +1073,7 @@ def test_collect_market_item_icon_routing(monkeypatch):
         return (f"@wmhdr|测试|{en}|{cat}|0|0|1|1|icons/x.png|\n"
                 "@hdr|卖家|状态|声望|数量|白金价格\n")
 
-    # 武器套装 / 战甲套装 → 官方完整图（WM 的方形图会把枪管裁掉、战甲截半身）
+    # 武器/战甲套装→官方完整图（WM 方图裁枪管、截半身）
     for cat in ("武器 · 套装 · 副武器", "套装 · 战甲"):
         calls.clear()
         assert asyncio.run(_collect_market_item_icon(_hdr(cat))) == b"OFFICIAL", cat
@@ -1080,7 +1084,7 @@ def test_collect_market_item_icon_routing(monkeypatch):
         _hdr("武器 · 套装 · 副武器", "Sicarus Prime Set"))) == b"OFFICIAL"
     assert calls.get("official") == "Sicarus Prime", calls
 
-    # 部件 → Fandom 部位图；总图（蓝图且非部件）→ WM 商品自身 icon，绝不用通用工程图
+    # 部件→Fandom 部位图；总图→WM 自身 icon，不用通用工程图
     calls.clear()
     assert asyncio.run(_collect_market_item_icon(_hdr("部件 · 武器"))) == b"PART"
     assert "part" in calls and "official" not in calls
@@ -1151,7 +1155,7 @@ def test_fetch_market_avatars_direct_with_cookie(monkeypatch):
 
 
 def test_fetch_market_avatars_proxy_fallback_without_cookie(monkeypatch):
-    """没有 cf_clearance 时跳过 3.4s 的直连（CF 必然 403），直接走 wsrv 公共图片代理。"""
+    """无 cf_clearance 时跳过 3.4s 直连（CF 必 403），直接走 wsrv 代理。"""
     png = _real_png()
     calls = []
 
@@ -1183,7 +1187,7 @@ def test_fetch_market_avatars_rejects_non_image(monkeypatch):
     assert out["u_ok"] is None
 
 
-# ---------------- 真实网络冒烟（容错：失败也须返回非空字符串） ----------------
+# ---- 真实网络冒烟（失败也须返回非空字符串） ----
 def test_live_worldstate_smoke():
     r = asyncio.run(warframe.sortie_text())
     assert isinstance(r, str) and r.strip()
@@ -1199,7 +1203,7 @@ def test_live_void_trader_smoke():
     assert isinstance(r, str) and r.strip()
 
 
-# ---------------- 请求频率保护（单飞锁：缓存过期并发也只发 1 次 HTTP） ----------------
+# ---- 请求频率保护（单飞锁：缓存过期并发只发 1 次 HTTP） ----
 def test_worldstate_singleflight(monkeypatch):
     calls: list[str] = []
 

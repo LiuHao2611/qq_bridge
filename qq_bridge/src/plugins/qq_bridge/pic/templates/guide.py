@@ -222,8 +222,8 @@ def build(
     _iw = int(round(_ibase * _s))
     _ih = int(round(_ibase / _s))
 
-    # wm 市价卡字号/行高单一来源（定义见 market_currency.wm_types，避免本文件膨胀过棘轮）
-    wm = market_currency.wm_types(t) if body.startswith("@wmhdr|") else None
+    # 字号/行高单一来源；纯表格卡（@hdr/@row）也用同一份，避免 wm=None 崩溃
+    wm = market_currency.wm_types(t)
 
     # ---- 解析 body -> 块（head / text / skill气泡 / aug气泡）----
     blocks: list[dict] = []
@@ -264,7 +264,7 @@ def build(
                 blocks.append({"kind": "tbl", "rows": [_row], "headers": (_cols if _is_hdr else [])})
             continue
         if raw.startswith("@ttl|"):
-            # 居中大标题（+ 可选前置图标），下方一条贯通横线 —— 对齐 Warframe Rabbit 卡片
+            # 居中大标题（+ 可选前置图标），下方贯通横线
             _tp = raw[5:].split("|")
             _tt = (_tp[0] or "").strip()
             if not _tt:
@@ -418,11 +418,11 @@ def build(
         elif b["kind"] == "tbl":
             y_calc += len(b["rows"]) * wm.row_h + 14
         elif b["kind"] == "wmhdr":
-            # 高度计算与渲染共用 market_currency 的字号/文字栈高度，杜绝底部裁切
-            y_calc += wm.bar_fs + 12 + 14             # 顶部栏 + 分隔线
-            y_calc += max(_ih, market_currency.wmhdr_text_height(wm, b["cols"])) + 14 + 14  # 物品块
-            y_calc += t.fs(15) + 6 + t.fs(market_currency.STAT_VAL_FS) + 12 + 14  # 统计条
-            y_calc += wm.sect_fs + 12                 # 玩家卖单 区块标题
+            # 高度与渲染共用 market_currency 字号/文字栈，杜绝底部裁切
+            y_calc += wm.bar_fs + 12 + 14             # 顶部栏
+            y_calc += max(_ih, market_currency.wmhdr_text_height(wm, b["cols"])) + 14 + 14
+            y_calc += t.fs(15) + 6 + t.fs(market_currency.STAT_VAL_FS) + 12 + 14
+            y_calc += wm.sect_fs + 12                 # 卖单标题
         elif b["kind"] == "warn":
             y_calc += len(b["lines"]) * line_h + BUB_PAD_Y * 2
         elif b["kind"] == "page":
@@ -434,14 +434,14 @@ def build(
         elif b["kind"] == "disp":
             y_calc += 2 * line_h + BUB_PAD_Y * 2 + 10
         elif b["kind"] == "sub":
-            # 副标题可带独立字号；行距取「默认行高」与「字号+4」的较大者，防止大字溢出
+            # 副标题可带独立字号；行距取默认行高与字号+4 的较大者，防大字溢出
             y_calc += len(b["lines"]) * max(line_h, (b.get("fs") or font_size) + 4)
         elif b["kind"] == "shout":
             y_calc += len(b["lines"]) * line_h
         elif b["kind"] == "foot":
             y_calc += len(b["lines"]) * t.fs(20) + 8
         elif b["kind"] == "mstat":
-            # 整个 mstat 块：上方留白 + 细分隔 + N 行（气泡高 + 行距）+ 底部留白，高度只算一次
+            # mstat 块：上留白 + 分隔 + N 行 + 下留白，高度只算一次
             _mrows = len(b.get("rows") or [])
             y_calc += 10 + 8
             y_calc += _mrows * (t.fs(20) + 24)
@@ -535,7 +535,7 @@ def build(
                 box_col = t.accent
                 f_a = getattr(t, "bubble_fill_alpha", 13)
                 b_a = getattr(t, "bubble_border_alpha", 55)
-                # 底色真 alpha 混合（2026-09-17）：透出底下背景图案，卡片半透明时协调不显死色
+                # 底色真 alpha 混合：透出背景图案，半透明时不显死色
                 c.rounded_rect((box_x0, box_y0, box_x0 + box_w, box_y0 + box_h),
                                radius=bub_r, fill=box_col, fill_alpha=f_a * 255 // 100,
                                outline=_tint(box_col, b_a / 100.0, base), width=bub_w)
@@ -784,16 +784,16 @@ def build(
             continue
         if kind == "tbl":
             rows = b["rows"]
-            # 2026-11-03：玩家头像列 + 价格渐变气泡（高→低）。列：头像|卖家|状态|声望|数量|白金价格
+            # 头像列 + 价格渐变气泡；列序见 @hdr（卖家|等级?|状态|声望|数量|白金价格）
             tbl_fs = wm.tbl_fs
             row_h = wm.row_h
-            AV = max(38, tbl_fs + 12)                      # 头像直径（比字号稍大更醒目）
+            AV = max(38, tbl_fs + 12)                      # 头像直径
             box_h = len(rows) * row_h + 14
             box_x0, box_y0 = pad_in, y
             base = _eff_card(t)
             bub_r = getattr(t, "bubble_radius", 12)
             bub_w = getattr(t, "bubble_border_width", 1)
-            # 列表气泡背景（浅主色底 + 边框）
+            # 列表气泡背景
             c.add_region("tbl",
                          [box_x0, box_y0, box_x0 + content_w, box_y0 + box_h],
                          label="列表", group="表格")
@@ -802,59 +802,64 @@ def build(
                            fill_alpha=getattr(t, "tbl_bubble_alpha", 9) * 255 // 100,
                            outline=_tint(t.accent, getattr(t, "tbl_bubble_border_alpha", 38) / 100.0, base),
                            width=bub_w)
-            # 头像列固定宽 + 其余列按比例
+            # 头像列固定宽 + 其余按比例（MOD 6 列含等级，否则 5 列）
             av_w = AV + 14
             col_area_x0 = box_x0 + av_w
             col_area_w = (box_x0 + content_w) - col_area_x0
-            _ratios = [0.36, 0.17, 0.11, 0.08, 0.28]      # 卖家/状态/声望/数量/白金价格
+            _headers = b.get("headers") or []
+            _has_rank = any(h.strip() == "等级" for h in _headers)
+            _ncols = 6 if _has_rank else 5
+            _ratios = market_currency.table_ratios(_has_rank)
             col_x = [col_area_x0]
             for _r in _ratios:
                 col_x.append(col_x[-1] + col_area_w * _r)
-            # 列竖线（头像列之后）
+            # 列竖线
             for ci in range(1, len(_ratios)):
                 xx = col_x[ci]
                 c.line((xx, box_y0 + 7, xx, box_y0 + box_h - 7),
                        fill=_tint(t.accent, getattr(t, "tbl_col_line_alpha", 26) / 100.0, base), width=1)
-            # 按表头识别列角色（用户名/数量/等级/价格/状态）
+            # 表头 → 列角色
             _HS = {"用户名": "name", "卖家": "name", "用户": "name",
                    "数量": "qty", "等级": "rank",
                    "价格": "price", "单价": "price", "白金价格": "price", "白金": "price",
                    "状态": "status", "声望": "rep", "信誉": "rep"}
-            _headers = b.get("headers") or []
-            _col_roles = [_HS.get(h.strip(), "text") for h in (_headers + [""] * 5)[:5]]
+            _col_roles = [_HS.get(h.strip(), "text") for h in (_headers + [""] * _ncols)[:_ncols]]
+            _price_ci = _col_roles.index("price") if "price" in _col_roles else _ncols - 1
             _name_color = getattr(t, "link", "#8B5CF6")
-            # 价格梯度（最高价→玫红，最低价→青绿并标绿＝最优价）
+            # 价格梯度（最低价标绿＝最优）
             _prices = []
             for r in rows:
                 if r["hdr"]:
                     continue
-                _pc = (r["cols"] + [""] * 7)
+                _pc = (r["cols"] + [""] * 8)
                 try:
-                    _prices.append(int(float(_pc[4])))
+                    _prices.append(int(float(_pc[_price_ci])))
                 except Exception:
                     pass
             _pmin = min(_prices) if _prices else 0
             _pmax = max(_prices) if _prices else 0
             for ri, r in enumerate(rows):
                 ry = box_y0 + 7 + ri * row_h
-                _c = (r["cols"] + [""] * 7)[:7]            # 卖家|状态|声望|数量|白金价格|uid|头像
+                # 末两列恒 uid/头像；前 _ncols 列可见
+                _full = r["cols"] + [""] * (_ncols + 2)
+                _c = _full[:_ncols]
+                uid = _full[_ncols]
                 if r["hdr"]:
-                    # 表头底色覆盖头像列（不留白）
+                    # 表头底色覆盖头像列
                     h_a = getattr(t, "tbl_header_alpha", 24)
                     if h_a > 0:
                         c.rounded_rect((box_x0 + 4, ry, col_x[-1] - 4, ry + row_h),
                                        radius=8, fill=t.accent, fill_alpha=h_a * 255 // 100)
                     market_currency.draw_table_header(
-                        c, t, col_x, box_x0, av_w, ry, row_h, wm.hdr_fs, _c[:5], boxes)
+                        c, t, col_x, box_x0, av_w, ry, row_h, wm.hdr_fs, _c, boxes)
                     continue
-                # 头像：真实头像优先，取不到回落确定性占位
-                uid = _c[5] if len(_c) > 5 else ""
+                # 头像：真实优先，取不到回落占位
                 ax = box_x0 + 8
                 ay = ry + (row_h - AV) // 2
                 _real = (avatars or {}).get(uid) if uid else None
                 _drew_real = False
                 if _real:
-                    # 真头像：裁方 → 圆形蒙版 → 粘贴（失败回落占位，不静默留空）
+                    # 真头像：裁方 → 圆形蒙版 → 粘贴
                     try:
                         _aimg = Image.open(BytesIO(_real)).convert("RGBA")
                         _aimg = _cover_square(_aimg, AV)
@@ -862,22 +867,27 @@ def build(
                         _drew_real = True
                     except Exception:  # noqa: BLE001
                         _drew_real = False
-                if not _drew_real:  # 中性占位符：灰底 + 人形剪影（明确“该玩家在 WM 无头像”，不冒充真人照片）
+                if not _drew_real:  # 中性占位：灰底+人形剪影，不冒充真人照片
                     _ph = Image.new("RGBA", (AV, AV), (0, 0, 0, 0))
                     _pd = ImageDraw.Draw(_ph)
                     _muted = _tint(t.accent, 0.16, base)
                     _pd.ellipse((0, 0, AV, AV), fill=_muted)
-                    _fg = _tint(base, 0.55, "#9aa0a6")  # 中性灰剪影
+                    _fg = _tint(base, 0.55, "#9aa0a6")
                     _hr = AV * 0.17
                     _hx, _hy = AV // 2, int(AV * 0.37)
                     _pd.ellipse((_hx - _hr, _hy - _hr, _hx + _hr, _hy + _hr), fill=_fg)  # 头
                     _sr = AV * 0.30
                     _pd.ellipse((_hx - _sr, int(AV * 0.55), _hx + _sr, int(AV * 1.15)), fill=_fg)  # 肩
                     c.paste(_ph, (ax, ay), rounded_mask((AV, AV), AV // 2))
-                # 各列
-                for ci, cell in enumerate(_c[:5]):
+                for ci, cell in enumerate(_c):
                     role = _col_roles[ci] if ci < len(_col_roles) else "text"
-                    if role == "price":
+                    if role == "rank":
+                        _col = market_currency.rank_colors(t).get(
+                            cell, (t.accent, 16))[0]
+                        market_currency.draw_rank_cell(
+                            c, t, (col_x[ci] + col_x[ci + 1]) // 2, ry, row_h,
+                            tbl_fs, cell, _tint(_col, 0.5, base), boxes)
+                    elif role == "price":
                         try:
                             pv = int(float(cell)) if cell not in ("", "-") else _pmin
                         except Exception:
@@ -887,7 +897,7 @@ def build(
                         else:
                             tt = 0.5 if _pmax <= _pmin else (pv - _pmin) / (_pmax - _pmin)
                             pcol = _price_grad(tt)
-                        # 气泡 + 后置白金图标居中；价格数字用独立大字（见 market_currency）
+                        # 气泡 + 后置白金图标居中，价格用独立大字
                         market_currency.draw_price_cell(
                             c, t, (col_x[ci] + col_x[ci + 1]) // 2, ry, row_h,
                             tbl_fs, cell, pcol, _tint(pcol, 0.65, base),
@@ -903,7 +913,7 @@ def build(
                         c.text((col_x[ci] + 14 + _dr * 2 + 6, ry + row_h // 2), cell,
                                size=tbl_fs, color=_dot_col, role="bold", anchor="lm")
                     elif role == "name":
-                        # 名称列限宽：超宽截断加省略号，绝不压到下一列
+                        # 名称限宽截断，绝不压到下一列
                         _maxw = (col_x[ci + 1] - col_x[ci]) - 14 - 6
                         _disp = cell
                         if Canvas.text_width(_disp, tbl_fs, "bold") > _maxw:
@@ -1052,7 +1062,7 @@ def build(
         if kind == "mstat":
             # ---- 市价卡底部「价格统计」四行（优化版）----
             # 标签（左，加粗）+ 右侧三等分：最低(绿)/最高(红)/最新(主色)，
-            # 每个值 = 小标签 + 数值胶囊（度量优先，组居中于等分列，无空格凑间距）。
+            # 每个值 = 小标签 + 数值胶囊（度量优先，组居中于等分列）。
             _fs_val = t.fs(20)
             _fs_cap = t.fs(14)
             _pill_h = int(t.fs(20)) + 14

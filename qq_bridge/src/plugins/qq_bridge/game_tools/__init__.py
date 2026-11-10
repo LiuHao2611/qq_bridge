@@ -675,13 +675,13 @@ async def _collect_market_avatars(body: str) -> dict:
       保证每个玩家行都有一张图（生成的是图标/机器人，非真人照片，明确标注）。
     best-effort，整体失败返回 {}。
     """
-    rows: list[tuple[str, str, str]] = []   # (uid, avatar_rel, ingame)
+    rows: list[tuple[str, str, str]] = []  # (uid, avatar, name)
     for ln in (body or "").split("\n"):
         if not ln.startswith("@row|"):
             continue
         cols = ln.split("|")[1:]
-        if len(cols) >= 7 and cols[5]:
-            rows.append((cols[5], cols[6], cols[0]))
+        if len(cols) >= 7 and cols[-2]:
+            rows.append((cols[-2], cols[-1], cols[0]))
     if not rows:
         return {}
     real = [(u, r) for u, r, _ in rows if r]

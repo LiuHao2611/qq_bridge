@@ -104,11 +104,26 @@ def draw_stats_strip(c: "Canvas", t, pad_in: int, y: int, content_w: int, boxes,
     return y
 
 
+#: MOD 等级列的相对列宽（6 列：卖家/等级/状态/声望/数量/白金价格）。
+# 卖家列从 0.36 让出 0.16 给新增「等级」与必要呼吸；价格列保持最宽不被挤压。
+# 与 5 列（非 MOD）比例分开，二者各自求和 = 1.0（列竖线/列起点按此推进）。
+RATIOS_5 = [0.36, 0.17, 0.11, 0.08, 0.28]         # 卖家/状态/声望/数量/白金价格
+# 状态列须容纳「游戏中」+圆点(约 112px)，不能低于 0.18，否则压到声望列；
+# 卖家名有省略号截断兜底，可让出宽度。
+RATIOS_6 = [0.29, 0.13, 0.19, 0.09, 0.07, 0.23]   # 卖家/等级/状态/声望/数量/白金价格
+
+
+def table_ratios(has_rank: bool) -> list[float]:
+    """列宽比例唯一来源：有等级列走 6 列、无则走 5 列；两者各自求和 = 1.0。"""
+    return list(RATIOS_6 if has_rank else RATIOS_5)
+
+
 def draw_table_header(c: "Canvas", t, col_x, box_x0: int, av_w: int,
                       ry: int, row_h: int, hfs: int, cells, boxes) -> None:
-    """画表头：头像列居中补「头像」标签，其余五列统一左对齐到固定列起点。
+    """画表头：头像列居中补「头像」标签，其余列统一左对齐到固定列起点。
 
     白金图标不进列头（用户反馈），列头价格单元只是纯文字 ``白金价格``。
+    列数由 ``cells`` 决定（5 列非 MOD / 6 列 MOD 含「等级」），不再写死 5。
     """
     cy = ry + row_h // 2
     lab = "头像"
@@ -118,9 +133,13 @@ def draw_table_header(c: "Canvas", t, col_x, box_x0: int, av_w: int,
     if boxes is not None:
         boxes.append(("tbl.hdr.avatar", int(lx), int(cy - hfs / 2),
                       int(lx + lw), int(cy + hfs / 2)))
-    for ci, cell in enumerate(list(cells)[:5]):
-        c.text((col_x[ci] + 14, cy), cell, size=hfs,
-               color=t.text_sub, role="bold", anchor="lm")
+    for ci, cell in enumerate(list(cells)):
+        hx = col_x[ci] + 14
+        c.text((hx, cy), cell, size=hfs, color=t.text_sub, role="bold", anchor="lm")
+        if boxes is not None and cell == "等级":
+            cw = Canvas.text_width(cell, hfs, "bold")
+            boxes.append(("tbl.hdr.rank", int(hx), int(cy - hfs / 2),
+                          int(hx + cw), int(cy + hfs / 2)))
 
 
 def draw_price_cell(c: "Canvas", t, cx: int, ry: int, row_h: int, tbl_fs: int,
@@ -151,3 +170,44 @@ def draw_price_cell(c: "Canvas", t, cx: int, ry: int, row_h: int, tbl_fs: int,
         boxes.append(("tbl.row.badge", bx0, by0, bx0 + badge_w, by0 + badge_h))
         boxes.append(("tbl.row.platinum", ix, int(cy - ico / 2),
                       ix + ico, int(cy + ico / 2)))
+
+
+def rank_colors(t) -> dict:
+    """等级标记 → (文字色, 填充 alpha%)，语义配色，浅色/深色主题都成立。
+
+    满级=暖色强调、中间等级=主色、零级/缺失=弱文字灰（最不抢眼）。
+    单独成函数供 guide 侧算 ``outline``（Canvas.rounded_rect 描边需传入已混好的色）。
+    """
+    return {
+        "满级": (t.warn, 20),
+        "零级": (t.text_sub, 12),
+        "—": (t.text_sub, 6),
+    }
+
+
+def draw_rank_cell(c: "Canvas", t, cx: int, ry: int, row_h: int, tbl_fs: int,
+                   label: str, outline: str, boxes) -> None:
+    """画 MOD 等级胶囊（零级/满级/Rx/—），居中于等级列，登记 ``tbl.row.rank``。
+
+    胶囊尺寸走文字实测 + 固定内边距，高度略小于行高（不与相邻行/列重叠），
+    对齐价格气泡的水平呼吸感。文字色 / 填充 alpha 走 ``rank_colors`` 单一来源，
+    描边色由调用方按主题底色混好传入（对齐 draw_price_cell 的 outline 约定）。
+    """
+    label = label or "—"
+    fs = max(t.fs(15), int(tbl_fs * 0.82))
+    rc = rank_colors(t)
+    col, fill_alpha = rc.get(label, (t.accent, 16))  # Rx 走主色
+    tw = Canvas.text_width(label, fs, "bold")
+    padx = 10
+    cw = tw + padx * 2
+    ch = max(t.fs(22), int(row_h * 0.56))
+    bx0 = int(round(cx - cw / 2))
+    by0 = ry + (row_h - ch) // 2
+    cy = ry + row_h // 2
+    c.rounded_rect((bx0, by0, bx0 + cw, by0 + ch), radius=ch // 2, fill=col,
+                   fill_alpha=fill_alpha * 255 // 100, outline=outline, width=1)
+    c.text((bx0 + cw // 2, cy), label, size=fs, color=col, role="bold", anchor="mm")
+    if boxes is not None:
+        # 标签带进 box 名（tbl.row.rank:<标记>），供门禁核对真实等级混排；
+        # 统计数量用 startswith("tbl.row.rank")，不影响 check_boxes 的重叠判定。
+        boxes.append(("tbl.row.rank:" + label, bx0, by0, bx0 + cw, by0 + ch))

@@ -4042,22 +4042,11 @@ async def market_text(item: str, page: int = 1) -> str:
             return f"「{clean_item}」暂无等级信息，无法确定满级"
         target_rank = mod_max_rank
 
-    # MOD 未指定等级时，默认只看零级（对齐 Rabbit 参考卡：表格显示等级列，统计前缀「零级」）
-    default_to_r0 = False
-    if is_mod and target_rank is None:
-        target_rank = 0
-        default_to_r0 = True
-
-    fallback_all_ranks = False
+    # MOD 未指定等级=全部等级混排（2026-11-10 定案），每行标等级；显式等级仍过滤且照标。
+    if target_rank is not None and not is_mod:
+        return f"「{clean_item}」不是 MOD，无法按等级过滤"
     if target_rank is not None:
-        if not is_mod:
-            return f"「{clean_item}」不是 MOD，无法按等级过滤"
         sells = [o for o in orders if o.get("type") == "sell" and o.get("rank") == target_rank]
-        if not sells and default_to_r0:
-            # 零级没单时降级展示全部等级，避免用户完全看不到挂单
-            target_rank = None
-            sells = [o for o in orders if o.get("type") == "sell"]
-            fallback_all_ranks = True
     else:
         sells = [o for o in orders if o.get("type") == "sell"]
 
@@ -4183,8 +4172,21 @@ async def market_text(item: str, page: int = 1) -> str:
     # （图标路径相对 static/assets，渲染层据此单独拉取；卖家/在线数来自本次订单统计）
     lines = [f"@wmhdr|{display_item}|{_en_disp}|{_cat_disp}|{_ducats_disp}|{_tax_disp}"
              f"|{_sellers_n}|{_online_n}|{_icon_rel}|{_eff_disp}"]
-    # 卖单表头：卖家 / 状态 / 声望 / 数量 / 白金价格（对齐参考卡列序）
-    lines.append("@hdr|卖家|状态|声望|数量|白金价格")
+    # 等级短标签：表格「等级」列 + 统计前缀共用。非 MOD 恒零级；MOD 零级/满级/Rx/全等级。
+    def _rank_prefix(rank):
+        if not is_mod:
+            return "零级"
+        if rank is None:
+            return "全等级"
+        if rank == 0:
+            return "零级"
+        if mod_max_rank is not None and rank == mod_max_rank:
+            return "满级"
+        return f"R{rank}"
+
+    # 表头：MOD 卖家|等级|状态|声望|数量|白金价格|uid|头像；非 MOD 仍 5 列。
+    lines.append("@hdr|卖家|等级|状态|声望|数量|白金价格" if is_mod
+                 else "@hdr|卖家|状态|声望|数量|白金价格")
     _ST = {"ingame": "游戏中", "online": "在线", "offline": "离线"}
     for o in rows:
         u = o.get("user") or {}
@@ -4193,14 +4195,16 @@ async def market_text(item: str, page: int = 1) -> str:
         st = _ST.get(_raw_status, u.get("status") or "?")
         rep = u.get("reputation")
         rep = 0 if rep is None else int(rep)
-        # 第 7 列带真实头像相对路径（user.avatar，相对 static/assets/）——渲染层据此用
-        # cf_clearance cookie 拉真实头像；取不到（Cloudflare 拦）回落确定性生成头像（见下「真实玩家头像」段）。
+        # uid/头像固定最后两列（5/6 列通用），渲染层据此拉真实头像。
         uid = u.get("id") or ""
         avatar_rel = u.get("avatar") or ""
-        # 列序（与 @hdr 一致）：卖家|状态|声望|数量|白金价格|uid|头像
-        lines.append(f"@row|{name}|{st}|{rep}|{o.get('quantity') or 1}|{o.get('platinum') or 0}|{uid}|{avatar_rel}")
-    if fallback_all_ranks:
-        lines.append("·未找到零级挂单，已展示全部等级")
+        if is_mod:
+            _rk = _rank_prefix(o.get("rank"))
+            if _rk == "全等级":
+                _rk = "—"  # 单条缺 rank 不冒充零级/满级
+            lines.append(f"@row|{name}|{_rk}|{st}|{rep}|{o.get('quantity') or 1}|{o.get('platinum') or 0}|{uid}|{avatar_rel}")
+        else:
+            lines.append(f"@row|{name}|{st}|{rep}|{o.get('quantity') or 1}|{o.get('platinum') or 0}|{uid}|{avatar_rel}")
 
     # ---- 价格统计（Rabbit 卡片四行：48时内/90天内 × 售价/收价）----
     # 口径（对齐 WM 官网 statistics 页，2026-09-29 重写）：
@@ -4267,18 +4271,10 @@ async def market_text(item: str, page: int = 1) -> str:
                     _fmt_price(max(highs) if highs else None),
                     _fmt_price(newest))
 
-        def _rank_prefix(rank):
-            if rank is None:
-                # 非 MOD（战甲/套装/部件/守护…）天然零级，对齐 Rabbit 卡「零级售价」写法
-                return "" if is_mod else "零级"
-            if rank == 0:
-                return "零级"
-            if mod_max_rank is not None and rank == mod_max_rank:
-                return "满级"
-            return f"R{rank}"
-
         closed = pl.get("statistics_closed")
         live = pl.get("statistics_live")
+        # 全等级混排时 target_rank=None → 统计不按 rank 过滤，_rank_prefix(None) 给「全等级」；
+        # 显式等级时过滤到该 rank、前缀「零级/满级/Rx」。
         rp = _rank_prefix(target_rank)
         _4fields = (
             _stat_fields(f"48时内{rp}售价", _sec_arr(closed, "48hours", rank=target_rank)),
@@ -4289,7 +4285,6 @@ async def market_text(item: str, page: int = 1) -> str:
         got = False
         for _f in _4fields:
             if _f:
-                # 标签已含「零级/满级/Rx」前缀（非 MOD 恒为「零级」），渲染层拆三气泡
                 lines.append(f"@mstat|{_f[0]}|{_f[1]}|{_f[2]}|{_f[3]}")
                 got = True
         if not got:
