@@ -50,7 +50,7 @@
 | 紫卡拍卖接口只认**武器家族** slug（`rubico_prime` / `glaive_prime` 均 400，`rubico` / `glaive` 200）；且只认 API 型 UA（Chrome UA 返回 200 但 `auctions: []`） | `riven_recommend._family_slug` 去 `prime/vandal/wraith/dex` 后缀；`riven_card._WFM_AUCTION_HEADERS`（curl UA + `Platform: pc`）；`_market_recs_cached` 的 `-`→`_` 规范化；本行规则 |
 | **bridge 部署形态唯一**：只允许容器 `qq-bridge` 一条路线。禁止宿主 python（`start_bridge.ps1`）与容器同时绑 8080 —— Windows 的 `SO_REUSEADDR` 会让两边**都 bind 成功**，流量归谁不确定，输了的那侧会永久 `ws_down` 却一直占着端口 | `tools/check_bridge_sanity.py` P1：发现「容器在跑 + 宿主 python 也在听」或「多个 python 实例听同一端口」即 `exit 1`；`start_all.ps1` 第 2 段只走 compose；`start_bridge.ps1` 检测到容器在跑拒绝启动（`exit 1`）；`--selftest` 注入双绑 / 重复实例反例 |
 | **测试不得污染生产日志**：任何伪造群事件的测试（pytest 用例、`src/plugins/*/test_e2e.py`）必须把 `QQ_LOG_DIR` 指向临时目录，且群号/用户号必须是**不可能出现在 `GROUP_WHITELIST` 里**的假值（9xxxxxxx） | `tools/check_bridge_sanity.py` P3：`tests/conftest.py` 未设 `QQ_LOG_DIR`、独立脚本未改道、`GID` 命中白名单 → `exit 1`；`--selftest` 注入「脚本借真群号」「conftest 未隔离」反例；`config.LOG_DIR` 是唯一收口点（import 时读 `QQ_LOG_DIR`） |
-| **账号不得硬编码**：真实 QQ 号 / 群号只能在 `.env`（不入库）配置一次，简称「账号单一来源」。机器人登录号唯一来源 = `.env::BOT_UIN` → compose `ACCOUNT: ${BOT_UIN:?}` → 容器；主人/白名单走 `config.py` 读环境变量；禁止写死进生产代码 / 验证脚本 / compose / 测试夹具（测试一律 9xxxxxxx 假号）。注释里的历史封号复盘号与 `docs/`/`README.md` 历史记录豁免 | `tools/check_no_hardcoded_qq.py --check`：已知真实号存 sha256 黑名单 + 动态读 `.env` 所有账号类字段当前值，命中代码行裸数字即 `exit 1`（注释/docstring 豁免，合法长数字不误报）；`--selftest` 注入 6 类已知真号 + 动态新号 + 注释/假号/时间戳正例；反例注入已验证：写回已知真号 / 换号新值 / 新增账号字段新号均被拦。换号步骤见 `docs/账号配置_换号指南.md`；两个启动脚本先把 `.env::BOT_UIN` 导出到 compose 进程环境（对抗 `--env-file` 遮蔽 `.env` 的实测陷阱） |
+| **账号不得硬编码**：真实 QQ 号 / 群号只能在 `.env`（不入库）配置一次，简称「账号单一来源」。机器人登录号唯一来源 = `.env::BOT_UIN` → compose `ACCOUNT: ${BOT_UIN:?}` → 容器；主人/白名单走 `config.py` 读环境变量；禁止写死进生产代码 / 验证脚本 / compose / 测试夹具（测试一律 9xxxxxxx 假号）。注释里的历史封号复盘号与 `docs/`/`README.md` 历史记录豁免 | `tools/check_no_hardcoded_qq.py` 无参数跑真检查（仅 `--selftest`）：已知真实号存 sha256 黑名单 + 动态读 `.env` 所有账号类字段当前值，命中代码行裸数字即 `exit 1`（注释/docstring 豁免，合法长数字不误报）；`--selftest` 注入 6 类已知真号 + 动态新号 + 注释/假号/时间戳正例；反例注入已验证：写回已知真号 / 换号新值 / 新增账号字段新号均被拦。换号步骤见 `docs/账号配置_换号指南.md`；两个启动脚本先把 `.env::BOT_UIN` 导出到 compose 进程环境（对抗 `--env-file` 遮蔽 `.env` 的实测陷阱） |
 
 | 斗破 / 修仙 只用**纯中文口令**，靠 `src/game_mode.py` 按 QQ 号记住当前游戏分流；**菜单是唯一切换口**（`斗破菜单` / `修仙菜单`），入口口令（`入道` / `我要修仙`）也必须 `set_mode`；禁止再靠 `dp` 前缀区分游戏 | `doupo/test_e2e.py` 62 项 + `xiuxian/test_e2e.py` 59 项真实 matcher 端到端（模式切换 / 互不抢答 / 无模式与错模式提示）；注入验证：删掉 `menu` 的 `set_mode` → **6 项 FAIL**，恢复 → 62/62 |
 | 新增口令必须**同时**登记 `register_keywords(game, [...])` 与 `MENU_GROUPS`：漏前者 `game_router` 认不出口令不给提示，漏后者「菜单条数 = matcher 数」会红 | `game_mode.looks_like_command`；`doupo/test_commands.py::菜单条数 = menu_total()`；`doupo/README.md` 文件表已写明 |
@@ -1263,13 +1263,13 @@ stars/boot`）；`fetch_part_art` 对这些部位**先取 WM `prime_*` subIcon�
   | `scripts/verify_no_group_push.py`、`tools/check_bridge_sanity.py` | 探针参数 / selftest 假想白名单 → 9xxxxxxx 假号（`check_bridge_sanity.py --selftest` 全绿） |
   | `tests/*`（10 文件）、`src/plugins/{doupo,xiuxian}/test_*.py`（4 文件） | 夹具 / 断言 / docstring 里的真实号 → 假号；`test_config_api.py` / `test_status_queue_fallback.py` 的字符串断言与输入同步改；修正替换后「假号被说成真实群」的矛盾注释 |
   | `_preview_riven_card.py`（本地未跟踪预览脚本） | QQ 图片缓存路径里的真实号 → 环境变量 `PREVIEW_RIVEN_IMG` / 占位路径 |
-  | `tools/check_no_hardcoded_qq.py`（新建） | `--check`：已知真实号存 **sha256 黑名单**（存哈希不存明文，门禁自身不泄露号码）+ 动态读 `.env` 所有账号类字段当前值；命中代码行裸数字即 `exit 1`；注释/docstring 与 `# noqa: HARDCODED_QQ`（仅 selftest 构造反例用）豁免；时间戳/字节阈值/超时默认值等合法长数字不误报。`--selftest`：6 类已知真号 + 动态新号 + 假号/时间戳/正例 + 注释豁免用例 |
+  | `tools/check_no_hardcoded_qq.py`（新建） | 无参数跑真检查（仅 `--selftest`）：已知真实号存 **sha256 黑名单**（存哈希不存明文，门禁自身不泄露号码）+ 动态读 `.env` 所有账号类字段当前值；命中代码行裸数字即 `exit 1`；注释/docstring 与 `# noqa: HARDCODED_QQ`（仅 selftest 构造反例用）豁免；时间戳/字节阈值/超时默认值等合法长数字不误报。`--selftest`：6 类已知真号 + 动态新号 + 假号/时间戳/正例 + 注释豁免用例 |
   | `docs/账号配置_换号指南.md`（新建） | 账号变量表 + 换机器人号/主人号/群的标准步骤 + 防回归说明 |
   | `AGENTS.md` | 规则表新增「账号不得硬编码」一条；头部最近更新追记；本 §10:30 交付记录 |
 
 - **验收（prove-it）**：
   - 账号硬编码全量扫描 **74 行 → 代码/配置/测试 0 行**（余 8 行均为注释里的历史封号复盘证据，门禁明确豁免；`docs/`/`README.md` 历史记录未篡改）。
-  - `tools/check_no_hardcoded_qq.py --check` PASS；`--selftest` 全绿；**反例注入 3 类全部 exit 1**：① 已知历史真号写回生产 py；② 换号后把 `.env::GROUP_WHITELIST` 改成新群号且代码写死同号；③ 新增账号类字段 `NEW_OWNER_QQ` 的新号写进代码。清理后 `.env` 原值复核无污染。
+  - `tools/check_no_hardcoded_qq.py`（无参数）PASS；`--selftest` 全绿；**反例注入 3 类全部 exit 1**：① 已知历史真号写回生产 py；② 换号后把 `.env::GROUP_WHITELIST` 改成新群号且代码写死同号；③ 新增账号类字段 `NEW_OWNER_QQ` 的新号写进代码。清理后 `.env` 原值复核无污染。
   - compose 插值 **4 场景实测**：缺 `BOT_UIN` → 显式报错 `required variable BOT_UIN is missing…`；shell 假号 → `ACCOUNT` 为假号；`--env-file` + shell 假号 → 假号（证明启动脚本导出有效）；项目 `.env` → 真实号（不报错）。
   - `tools/check_bridge_sanity.py --selftest` 全绿（修掉 1 处白名单/假号重叠的自相矛盾用例）。
 - **没验证到的**：真实 QQ 客户端用新号扫码登录、换号后 `/api/qq/status` 与群消息收发，需用户线上确认；`data/qq` 登录态与 `data/config/onebot11*.json` 属运行数据（不入库），换号后由扫码重建，不在本次代码治理范围。
