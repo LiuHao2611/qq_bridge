@@ -342,3 +342,32 @@ def test_missing_style_font_hard_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(CF, "_ASSETS", tmp_path)
     with pytest.raises(SystemExit, match="风格字体缺失"):
         CF.gate(strict=True)
+
+
+def test_asset_check_runs_without_host_only_build_deps():
+    """容器回归（2026-11-10 实测）：--check 只依赖 Pillow，不能被宿主离线生成依赖
+    aggdraw/svgpathtools/fontTools 拖累（容器内缺这三个导致 --check ModuleNotFoundError）。
+    惰性 import 后，屏蔽这三个模块，--check 仍须 PASS；build() 缺依赖须给明确 SystemExit。"""
+    script = """
+import sys
+class _Block:
+    def find_spec(self, name, path=None, target=None):
+        if name.split('.')[0] in ('aggdraw', 'svgpathtools', 'fontTools'):
+            raise ImportError('blocked: ' + name)
+sys.meta_path.insert(0, _Block())
+sys.argv = ['build_checkin_assets.py', '--check']
+import runpy
+try:
+    runpy.run_path(%r, run_name='__main__')
+except SystemExit as e:
+    assert e.code == 0, '--check 在缺生成依赖时不该失败: %%s' %% e.code
+""" % str(TOOLS / "build_checkin_assets.py")
+    r = subprocess.run([sys.executable, "-c", script], cwd=str(ROOT),
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "PASS" in r.stdout
+    # 生成路径缺依赖时须给明确 SystemExit（不裸抛 ModuleNotFoundError 静默失败）
+    src = (TOOLS / "build_checkin_assets.py").read_text(encoding="utf-8")
+    assert "def rasterize" in src and "from aggdraw import" in src  # 惰性 import 在位
+    assert src.index("def rasterize") < src.index("from aggdraw import")  # 非顶层
+    assert "需宿主安装 aggdraw/svgpathtools" in src, "缺生成依赖须显式报错"

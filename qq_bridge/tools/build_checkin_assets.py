@@ -31,9 +31,9 @@ from io import BytesIO
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
-from aggdraw import Draw as ADraw, Brush, Path as APath
-from svgpathtools import parse_path
-from fontTools import subset
+# 宿主离线「生成」专用依赖（aggdraw/svgpathtools/fontTools）改为惰性 import：
+# 运行时与容器只消费已生成的 PNG/TTF，--check 只依赖 Pillow，不该被生成链依赖拖累
+# （2026-11-10 容器 --check 报 ModuleNotFoundError: aggdraw 的真实回归）。
 
 ROOT = Path(__file__).resolve().parents[1]
 TPL = ROOT / "src" / "plugins" / "qq_bridge" / "pic" / "templates"
@@ -111,6 +111,11 @@ def _font_raw(stem: str, spec: str) -> bytes:
 # ---------------------------------------------------------------- SVG -> 抗锯齿 mask
 def rasterize(svg: str, size: int = SS, pad: int = PAD) -> Image.Image:
     """FA Solid SVG -> L 模式抗锯齿形状（复合 Path + nonzero winding，正确挖孔）。"""
+    try:
+        from aggdraw import Draw as ADraw, Brush, Path as APath  # noqa: PLC0415
+        from svgpathtools import parse_path  # noqa: PLC0415
+    except ImportError as e:
+        raise SystemExit("[build] 生成资产需宿主安装 aggdraw/svgpathtools（--check 只读 PNG/TTF 不需）：%s" % e)
     ds = re.findall(r'<path[^>]*\bd="([^"]+)"', svg)
     if not ds:
         raise SystemExit("[build] SVG 无 <path d=...>")
@@ -265,6 +270,10 @@ def font_charset(name: str) -> str:
 
 
 def _subset(raw: bytes, chars: str, out: Path) -> None:
+    try:
+        from fontTools import subset  # noqa: PLC0415
+    except ImportError as e:
+        raise SystemExit("[build] 生成字体需宿主安装 fontTools（--check 不需）：%s" % e)
     opts = subset.Options()
     font = subset.load_font(BytesIO(raw), opts)
     s = subset.Subsetter(options=opts)

@@ -1457,3 +1457,15 @@ stars/boot`）；`fetch_part_art` 对这些部位**先取 WM `prime_*` subIcon�
 - 未做真实 QQ 群端到端发 `/签到`（本轮证据为宿主离线渲染 + 门禁 + 单测 + 肉眼截图，非真实群消息）。
 - 父仓库 manju_agent 主项目大量 `M` 为红线，全程未 add / 未触碰；`.tmp/` 下探针与截图 gitignore 不入库。
 - 「独特风格」取「鎏金手札」而非字面粉笔/蜡笔/油画——卡片设计思路是**统一质感语言**（金属浮雕与书法分层自洽、可离线复现、无版权图），非堆砌风格词；若用户坚持粉笔/蜡笔可在此风格基线上再换贴图层。
+
+### §15:1x 续 · 提交 + §31 部署（2026-11-10 17:2x~17:5x）
+- **提交 ①**：精确 add 24 入库文件（8 改 + 16 新：7 PNG / 4 TTF / 2 README / `checkin_font.py` / `checkin_gold_icons.py` / `build_checkin_assets.py`；父仓库 manju_agent 主项目 M 全程未 add）→ `40a4334871400c1773a27e369db0fc3c3d7d09a7`，pre-commit 20KB 门禁 PASS。
+  - 插曲（如实记）：首次 `git commit -m` 误用 PowerShell here-string（Git Bash 不支持），message 被写成 `@MSG_EOF` 而 tree 正确；未 push 故 `git commit --amend -F -` 用 Bash heredoc 修正 message（末尾 `\n` 原样）。
+  - **push 绕 502**：标准 push 仍 `github.com:443 CONNECT 502`（60s 超时 rc=124）；`api.github.com` 200 + git credential 40 字符 PAT → Git Data API 原样同步（`.tmp/gitdata_sync3.py`）：24 blob sha 全等 / tree `4547b187`==本地 / commit `40a4334`==本地（message 末尾 `\n`+时间戳原样，一次成功无漂移）/ ref `20e86d2→40a4334` / **API 独立回读 `origin/master==本地 HEAD==40a4334` PASS**。
+- **§31 STEP 0 正证**：旧镜像 `0f8b9235` 跑 `check_bridge_deploy.py --assets` → 7 PNG / 4 TTF 全报 `No such file`（EXIT=2），硬证线上旧镜像无本轮资产、rebuild 必要。Docker server 29.9.2/overlay2、三容器全 healthy。
+- **§31 STEP 1-2**：`docker build -f docker/Dockerfile.bridge -t qq-bridge:latest .`（依赖层 CACHED、`COPY src`/`COPY tools` 真实 DONE）→ 新镜像 **`sha256:54bb3b14…`**（旧 `0f8b9235`）；`up -d --force-recreate --no-deps --no-build bridge` → healthy 挂 `54bb3b14`；**napcat/aria2 全程未动**（红线遵守）。
+- **§31 STEP 3 部署闸门**：`--selftest` **4/4 注入被拦 + 1 运行时产物不误报 PASS**；`--assets` **11 资产**三层 md5 全等（7 PNG + 4 TTF，新增资产校验首次上线即验真）；默认口径 **22 文件**、`--all` **全量 src .py + 资产**三层 md5 全等；P3 `docker diff` 无源码热贴。
+- **§31 STEP 4 容器内真实出图**：`docker exec -i` 喂 `tmp/render_checkin_container.py`（不落 `.py` 到 src/tools；`MSYS_NO_PATHCONV=1`；`render_sync("checkin", card="checkin")` 同线上主题解析链）渲染 ok/milestone/already/none 四态全 **PNG 魔数**（110771/114824/107558/106276 B），`tmp` bind mount 导出宿主肉眼核对：7 金图标真实浮雕质感（闹钟/闪电/对勾/金币/箭头/魔杖）、毛笔标题+行楷分区+圆润粗体数值三档分明、图例四档清晰不连读、milestone 态 `900 +207` 不贴边+三奖励胶囊（含橙色里程碑达成）不挤压、零豆腐/重叠/裁切。唯一 fallback 是动态昵称「林浩 的签到小屋」整串回退雅黑（预期）。
+- **§31 STEP 5 门禁 + 认账一个真实回归**：容器内账号门禁无参数 PASS、布局 `--selftest` PASS、`--check` 25 组 PASS；但 `build_checkin_assets.py --check` 报 `ModuleNotFoundError: aggdraw`——**根因**：该脚本顶层 import 了宿主离线「生成」专用依赖 aggdraw/svgpathtools/fontTools，而容器只消费已生成 PNG/TTF，`--check` 纯资产校验不该被生成链依赖拖累（线上出图本身不受影响，但「交付闸门在容器跑不起来」违反 IMA 禁静默吞错）。**修法**：三个生成依赖改为函数内惰性 import（`rasterize()` 用 aggdraw/svgpathtools、`_subset()` 用 fontTools），缺依赖时给明确 `SystemExit` 而非裸 ModuleNotFoundError；宿主 `build()` 生成链不变（真实跑 `--check` PASS）。**补回归单测** `test_asset_check_runs_without_host_only_build_deps`（屏蔽三模块跑 `--check` 仍 PASS + 校验惰性 import 位置）→ `test_checkin_card.py` 40→**41 passed**。
+- **提交 ②（本轮容器回归修复）**：`tools/build_checkin_assets.py` + `tests/test_checkin_card.py` + 本 AGENTS.md 精确 add → 新 commit（sha 见下）。需重新 Git Data API 同步 + rebuild + recreate + 三层 md5 + 容器内 `--check` 复验（确认 STEP 5 缺口闭合）。
+- **STEP 6 主题回读 + 最终状态**：见提交 ② 部署完成后补。仍未做：真实 QQ 群端到端发 `/签到` 由用户最终确认。
