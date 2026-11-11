@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pre-commit —— 20KB 代码文件上限 + 数据库文件拦截（两道门合并于此）。
+# pre-commit —— 200KB 代码文件上限 + 数据库文件拦截（两道门合并于此）。
 #
 # 启用方式（必做，否则 Git 只会去找 .git/hooks/）：
 #   git config core.hooksPath .githooks

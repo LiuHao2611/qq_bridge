@@ -26,8 +26,10 @@
      无默认值），await 它 —— 漏 ``code`` 会当场 TypeError（复现根因），带
      ``code=0`` 才通过；
   ③ 真跑 ``media_asset.ensure_material``（monkeypatch ``_new_request`` /
-     ``image_size`` 注入假依赖，不碰 sys.modules）：验三步顺序、字段、md5
-     缓存命中不重传、LRU 淘汰发出的是 **DELETE**、complete 失败向上传播。
+     ``image_meta`` / ``_http_put`` 注入假依赖，不碰 sys.modules）：验三步
+     顺序、字段、**prepare 申报的 content_type 与 PUT 头逐字一致**（2026-11-11
+     真网络矩阵坐实的唯一根因）、md5 缓存命中不重传、LRU 淘汰发出的是
+     **DELETE**、complete 失败向上传播、错误 Content-Type 被上层降级。
 * AST 结构（只用于无法脱离 nonebot 框架执行的 ``send()`` 接线）：
   ② ``send()`` 认 reply_ref.event_id、向 send_to_* 透传 event_id、空串
      ``or None`` 归一；``qq_interaction`` 写 event_id 进 reply_ref；
@@ -263,7 +265,7 @@ class _FakeRequest:
 
 
 class _FakeMaterialBot:
-    """按 (method,url) 分派 prepare/complete/delete，记录顺序；PUT 单独记。"""
+    """按 (method,url) 分派 prepare/complete/delete，记录顺序；PUT 走 _http_put 单独记。"""
 
     def __init__(self, complete_ok: bool = True):
         self.adapter = _FakeAdapter()
@@ -271,10 +273,15 @@ class _FakeMaterialBot:
         self.complete_ok = complete_ok
         self.deleted: list = []
         self.failed_delete: bool = False
+        #: prepare 申报的 content_type（供与 PUT 头逐字比对）
+        self.prepared_content_type: str | None = None
+        #: _http_put 收到的 (url, content_type, len(data))
+        self.put_calls: list = []
 
     async def _request(self, req):
         if req.method == "POST" and "media-images/prepare" in req.url:
             self.order.append("prepare")
+            self.prepared_content_type = (req.kw.get("json") or {}).get("content_type")
             return {"upload_id": "up_1", "presigned_url": "https://cos.example/put"}
         if req.method == "POST" and "media-images/complete" in req.url:
             self.order.append("complete")
@@ -289,25 +296,34 @@ class _FakeMaterialBot:
             "unexpected request: %s %s（DELETE 误用 POST/其它方法会走到这里）"
             % (req.method, req.url))
 
-    async def put_upload_part(self, *, presigned_url: str, data: bytes):
-        self.order.append("put")
-        assert data, "put 收到空字节"
 
+def _wire_fake(bot, *, meta=(6, 4, "image/png"), put_status=200, put_raises=None):
+    """用上下文管理替换 _new_request / image_meta / _http_put，退出即恢复，零残留。
 
-def _wire_fake(bot):
-    """用上下文管理替换 _new_request / image_size，退出即恢复，零残留。"""
+    * ``meta`` 注入 ``image_meta`` 返回值（解除 PIL 依赖，宿主/容器同跑）；
+    * ``_http_put`` 是 2026-11-11 Content-Type 修复后的干净 PUT 出口，测试
+      直接替换它记录 ``content_type``，不碰真实网络、不污染 sys.modules；
+    * ``put_status`` / ``put_raises`` 注入错误响应，验证上层降级。
+    """
+    original = (ma._new_request, ma.image_meta, ma._http_put)
+
+    async def fake_http_put(url, data, content_type):
+        bot.order.append("put")
+        bot.put_calls.append((url, content_type, len(data)))
+        if put_raises is not None:
+            raise put_raises
+        return put_status
+
     class _Wire:
         def __enter__(self):
-            self._req = ma._new_request
-            self._size = ma.image_size
             ma._new_request = lambda method, url, **kw: _FakeRequest(method, url, **kw)
-            ma.image_size = lambda data: (6, 4)  # 解除 PIL 依赖，宿主/容器同跑
+            ma.image_meta = lambda data: meta
+            ma._http_put = fake_http_put
             ma.reset_store()
             return bot
 
         def __exit__(self, *_):
-            ma._new_request = self._req
-            ma.image_size = self._size
+            (ma._new_request, ma.image_meta, ma._http_put) = original
             ma.reset_store()
 
     return _Wire()
@@ -322,6 +338,15 @@ def test_material_api_sequence_and_cache():
         assert r1["url"] == "qqbot-media://image/v1/TOKEN123"
         assert (r1["width"], r1["height"]) == (6, 4), "图片尺寸未写入素材引用"
         assert r1["cached"] is False
+        # 🔴 Content-Type 同源：prepare 申报值必须与 PUT 头逐字一致（COS 403 唯一根因）
+        assert bot.prepared_content_type == "image/png", \
+            "prepare 未用 image_meta 探测出的 content_type"
+        assert len(bot.put_calls) == 1, "PUT 应恰好调用一次"
+        put_url, put_ct, put_len = bot.put_calls[0]
+        assert put_ct == bot.prepared_content_type, \
+            "PUT Content-Type(%r) 与 prepare 申报(%r) 不一致 → COS 403 AccessDenied" \
+            % (put_ct, bot.prepared_content_type)
+        assert put_len == len(data), "PUT 字节数与源数据不符"
         before = list(bot.order)
         r2 = asyncio.run(ma.ensure_material(bot, data))  # 同一份字节
         assert r2.get("cached") is True, "md5 缓存未命中"
@@ -354,6 +379,86 @@ def test_injection_material_failure_propagates():
             raise AssertionError("素材守门未报错：complete 失败却没抛 MaterialUploadError")
         except ma.MaterialUploadError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# ③b Content-Type 根因守门（2026-11-11 真网络矩阵坐实，prove-it 强制）
+#   生产事故：旧 _put_bytes 走 bot.put_upload_part（无 CT + JSON 解析 COS 空
+#   body → ActionFailed），每次降级成两条；真因是 COS 预签名 PUT 必须带与
+#   prepare 申报逐字一致的 Content-Type。三组守门分别钉死「禁旧路径 / CT 同源
+#   / 错误 CT 或 COS 失败必须抛错供降级」。
+# ---------------------------------------------------------------------------
+def _put_bytes_fn(src: str):
+    tree = ast.parse(src)
+    fn = next((n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
+               and n.name == "_put_bytes"), None)
+    assert fn is not None, "找不到 _put_bytes"
+    return fn
+
+
+def _guard_put_never_uses_bot_upload_path(src: str):
+    """_put_bytes 不得再调 bot.put_upload_part / bot._request（会注入鉴权头 + JSON 解析 COS 空 body）。"""
+    fn = _put_bytes_fn(src)
+    blob = "\n".join(ast.unparse(n) for n in ast.walk(fn))
+    for banned in ("put_upload_part", "bot._request", "._request("):
+        assert banned not in blob, \
+            "_put_bytes 残留旧 COS 上传路径 %r（ActionFailed 根因会重现）：%s" \
+            % (banned, blob[:200])
+    assert "_http_put" in blob, "_put_bytes 未走干净 httpx PUT（_http_put）"
+
+
+def test_put_bytes_uses_clean_http_put_only():
+    _guard_put_never_uses_bot_upload_path(_MEDIA_ASSET.read_text(encoding="utf-8"))
+
+
+def _guard_prepare_and_put_share_content_type(src: str):
+    """ensure_material 内 prepare 申报与 _put_bytes 必须共用同一个 content_type 变量。"""
+    tree = ast.parse(src)
+    fn = next((n for n in tree.body if isinstance(n, ast.AsyncFunctionDef)
+               and n.name == "ensure_material"), None)
+    assert fn is not None, "找不到 ensure_material"
+    calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", "") in ("_prepare", "_put_bytes")]
+    assert len(calls) >= 2, "ensure_material 未同时调用 _prepare 和 _put_bytes"
+    prepare_ct = None
+    put_ct = None
+    for c in calls:
+        # 位置参数：_prepare(bot, file_name, data, content_type) / _put_bytes(url, data, content_type)
+        if c.args and len(c.args) >= 4 and getattr(c.func, "id", "") == "_prepare":
+            prepare_ct = ast.unparse(c.args[3])
+        if c.args and len(c.args) >= 3 and getattr(c.func, "id", "") == "_put_bytes":
+            put_ct = ast.unparse(c.args[2])
+    assert prepare_ct is not None and put_ct is not None, \
+        "无法定位 prepare/put 的 content_type 实参（改签名后需同步守门）"
+    assert prepare_ct == put_ct, \
+        "prepare 申报(%s) 与 PUT(%s) 的 content_type 不同源 → COS 403" \
+        % (prepare_ct, put_ct)
+
+
+def test_prepare_and_put_content_type_are_same_source():
+    _guard_prepare_and_put_share_content_type(_MEDIA_ASSET.read_text(encoding="utf-8"))
+
+
+def test_wrong_content_type_status_raises_for_downgrade():
+    """PUT 返回 403（模拟 CT 不一致/COS 拒绝）必须抛 MaterialUploadError 供上层降级。"""
+    bot = _FakeMaterialBot()
+    with _wire_fake(bot, put_status=403):
+        try:
+            asyncio.run(ma.ensure_material(bot, b"png-ct-403-unique"))
+            raise AssertionError("PUT 403 未抛 MaterialUploadError（会静默当成功/不降级）")
+        except ma.MaterialUploadError as e:
+            assert "put_bad_status" in str(e), "403 应记 put_bad_status：%s" % e
+
+
+def test_http_put_exception_raises_for_downgrade():
+    """_http_put 抛异常（网络断/超时）必须包成 MaterialUploadError 供上层降级。"""
+    bot = _FakeMaterialBot()
+    with _wire_fake(bot, put_raises=RuntimeError("network down")):
+        try:
+            asyncio.run(ma.ensure_material(bot, b"png-put-exc-unique"))
+            raise AssertionError("PUT 异常未抛 MaterialUploadError")
+        except ma.MaterialUploadError as e:
+            assert "put_failed" in str(e), "PUT 异常应记 put_failed：%s" % e
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +583,29 @@ def test_injection_guards():
         assert "DELETE" in str(e), "DELETE 守门报错位置不对：%s" % e
     _guard_delete_method(ma_src)
 
+    # 注入 D：_put_bytes 恢复旧 bot.put_upload_part 路径（= 本次 ActionFailed 根因）
+    bad_old = ma_src.replace("status = await _http_put(presigned_url, data, content_type)",
+                             "await bot.put_upload_part(presigned_url=presigned_url, data=data)", 1)
+    assert bad_old != ma_src, "注入 D 没找到锚点"
+    try:
+        _guard_put_never_uses_bot_upload_path(bad_old)
+        raise AssertionError("旧路径守门未报错（put_upload_part 没被拦 → ActionFailed 重现）")
+    except AssertionError as e:
+        assert "put_upload_part" in str(e), "旧路径守门报错位置不对：%s" % e
+    _guard_put_never_uses_bot_upload_path(ma_src)
+
+    # 注入 E：ensure_material 里 PUT 的 content_type 换成别的常量（CT 不同源 → COS 403）
+    bad_ct = ma_src.replace(
+        'md5_hex = await _put_bytes(prepared["presigned_url"], data, content_type)',
+        'md5_hex = await _put_bytes(prepared["presigned_url"], data, "application/octet-stream")', 1)
+    assert bad_ct != ma_src, "注入 E 没找到锚点"
+    try:
+        _guard_prepare_and_put_share_content_type(bad_ct)
+        raise AssertionError("CT 同源守门未报错（PUT 用错 Content-Type 没被拦 → COS 403）")
+    except AssertionError as e:
+        assert "同源" in str(e) or "不同源" in str(e), "CT 同源守门报错位置不对：%s" % e
+    _guard_prepare_and_put_share_content_type(ma_src)
+
 
 if __name__ == "__main__":
     import traceback
@@ -489,6 +617,10 @@ if __name__ == "__main__":
         test_material_api_sequence_and_cache,
         test_lru_eviction_uses_delete_method,
         test_injection_material_failure_propagates,
+        test_put_bytes_uses_clean_http_put_only,
+        test_prepare_and_put_content_type_are_same_source,
+        test_wrong_content_type_status_raises_for_downgrade,
+        test_http_put_exception_raises_for_downgrade,
         test_markdown_image_syntax,
         test_merge_segment_wiring,
         test_send_has_merge_and_fallback_branches,

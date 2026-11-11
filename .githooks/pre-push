@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pre-push —— 堵住 `git commit --no-verify`。
 #
-# 只用 pre-commit 的话，任何人加 --no-verify 就能把 >20KB 的代码推上去，
+# 只用 pre-commit 的话，任何人加 --no-verify 就能把 >200KB 的代码推上去，
 # 「必须生效」就成了一句空话。这里对**本次 push 引入的变更**用同一份
 # lib/gate.sh 再判一次：判定规则单一来源，不会两处漂移。
 #
@@ -56,5 +56,5 @@ if [ "$fail" -ne 0 ]; then
     gate_fail_message
     exit 1
 fi
-echo "[gate/pre-push] OK：${checked} 个变更文件通过 20KB / 用户数据门禁"
+echo "[gate/pre-push] OK：${checked} 个变更文件通过 200KB / 用户数据门禁"
 exit 0

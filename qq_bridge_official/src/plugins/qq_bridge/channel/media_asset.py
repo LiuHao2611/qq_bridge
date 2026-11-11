@@ -11,17 +11,27 @@
 
 官方素材管理 API（bot.q.qq.com/.../material-management.html，三步）：
   1. ``POST /v2/media-images/prepare``  申请上传 → upload_id + presigned_url
-  2. ``PUT <presigned_url>``            直传图片二进制 → ETag(md5)
+  2. ``PUT <presigned_url>``            直传图片二进制 → HTTP 200
   3. ``POST /v2/media-images/complete`` 完成 → url(qqbot-media://) + image_id
   引用：``![说明 #宽px #高px](<url>)``；单机器人上限 100 张、滑动 90 天过期。
 
+🔴 第 2 步的真平台铁律（2026-11-11 真网络矩阵实验坐实，勿再改错）：
+  * ``presigned_url`` 是腾讯云 COS 直传地址（q-sign-algorithm/q-signature 在
+    URL query 里），**不是**官方 API 域名。PUT 时 ``Content-Type`` 头必须
+    **逐字等于** prepare 申报的 ``content_type``，否则 COS 返回 403
+    ``AccessDenied``。同一 URL 实测：无 CT→403、octet-stream→403、
+    image/png→200、带官方鉴权头+image/png→200。故 CT 是唯一根因。
+  * **绝不能**走 ``bot.put_upload_part`` / ``bot._request``：适配器 ``_request``
+    会给每个请求注入 ``Authorization: QQBot <token>`` 并按官方 ``{code,...}``
+    JSON 解析响应，而 COS 返回空 body+ETag，解析不了抛 ActionFailed——
+    这正是上一版 ``put_failed: ActionFailed`` 每次降级成两条的根因。
+    改用干净 httpx PUT（收口在 ``_http_put``，可 monkeypatch）。
+
 适配器 nonebot-adapter-qq 1.7.2 **未封装** material-images API，故此处裸调：
   * prepare/complete 走 ``bot._request(Request(...))`` —— 自带 access_token
-    鉴权且过期自动刷新（适配器内部就这么用）；URL 用
-    ``bot.adapter.get_api_base().joinpath(...)``；
-  * PUT 直传用 ``bot.put_upload_part(presigned_url=..., data=...)`` —— 适配器
-    现成封装（POST 上传 COS 分片时内部用的就是它）。
-不引入新网络依赖；PIL 仅用于解析图片宽高（容器已有 pillow）。
+    鉴权且过期自动刷新（这俩是官方 API 域名，需要鉴权，适配器内部就这么用）；
+  * PUT 直传走 ``_http_put`` 干净 httpx（COS 域名，带正确 Content-Type，不解析 JSON）。
+不引入新网络依赖；PIL 仅用于解析图片宽高与格式（容器已有 pillow）。
 
 降级契约：本模块任何失败都抛 :class:`MaterialUploadError`，由 ``official.py::send``
 捕获后**回退原「图片条 + 按钮条」两条发送**，绝不让素材上传拖垮主卡片，也绝不
@@ -108,21 +118,49 @@ def _new_request(method: str, url, **kw):
     return Request(method, url, **kw)
 
 
-def image_size(data: bytes) -> tuple[int, int]:
-    """从图片字节解析 (宽, 高)；失败抛 MaterialUploadError。"""
+#: 容器出网 COS 预签名直传超时上限（CLOSE-05：给足但绝不无限等）
+_PUT_TIMEOUT = 30.0
+
+#: PIL format -> 官方 content_type。prepare 申报值与 PUT 的 Content-Type 头
+#: **必须完全一致**（真网络实验 2026-11-11 实证：不一致 COS 返回 403
+#: AccessDenied，一致才 200；见 _put_bytes 文档）。
+_CONTENT_TYPES = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "GIF": "image/gif",
+    "WEBP": "image/webp",
+}
+
+
+def image_meta(data: bytes) -> tuple[int, int, str]:
+    """从图片字节解析 ``(宽, 高, content_type)``；失败抛 MaterialUploadError。
+
+    content_type 由真实格式探测，供 prepare 申报与 PUT 头**共用同一个值**。
+    """
     try:
         from io import BytesIO
 
         from PIL import Image  # noqa: PLC0415 — 容器已装 pillow
 
         with Image.open(BytesIO(data)) as im:
-            return int(im.width), int(im.height)
+            fmt = str(getattr(im, "format", "") or "").upper()
+            return int(im.width), int(im.height), _CONTENT_TYPES.get(fmt, "image/png")
     except Exception as e:  # noqa: BLE001
         raise MaterialUploadError("image_size_failed: %s" % type(e).__name__) from e
 
 
-async def _prepare(bot, file_name: str, data: bytes) -> dict:
-    """POST /v2/media-images/prepare → {upload_id, presigned_url, ...}。"""
+def image_size(data: bytes) -> tuple[int, int]:
+    """兼容旧调用：只取 (宽, 高)。"""
+    w, h, _ = image_meta(data)
+    return w, h
+
+
+async def _prepare(bot, file_name: str, data: bytes, content_type: str) -> dict:
+    """POST /v2/media-images/prepare → {upload_id, presigned_url, ...}。
+
+    ``content_type`` 必须与后续 PUT 的 ``Content-Type`` 头逐字一致，否则 COS
+    预签名校验失败（403 AccessDenied）——2026-11-11 真网络矩阵实验坐实。
+    """
     base = bot.adapter.get_api_base()
     req = _new_request(
         "POST",
@@ -130,7 +168,7 @@ async def _prepare(bot, file_name: str, data: bytes) -> dict:
         json={
             "file_name": file_name,
             "file_size": len(data),
-            "content_type": "image/png",
+            "content_type": content_type,
             "md5": hashlib.md5(data).hexdigest(),
             "sha1": hashlib.sha1(data).hexdigest(),
         },
@@ -144,15 +182,39 @@ async def _prepare(bot, file_name: str, data: bytes) -> dict:
     return ret
 
 
-async def _put_bytes(bot, presigned_url: str, data: bytes) -> str:
-    """PUT 预签名 URL 直传字节 → 返回 ETag(md5)。"""
+async def _http_put(url: str, data: bytes, content_type: str) -> int:
+    """干净 HTTP PUT 到 COS 预签名地址，返回 status_code。
+
+    ⚠️ **绝不能**走 ``bot.put_upload_part`` / ``bot._request``：那条路径会把
+    ``Authorization: QQBot <token>`` 按官方 API JSON 解析响应，而 COS 预签名
+    直传返回空 body + ETag，解析不了会抛 ActionFailed（2026-11-11 生产日志
+    ``put_failed: ActionFailed`` 的直接来源）。
+
+    ⚠️ ``Content-Type`` 头必须**逐字等于** prepare 申报的 content_type：真网络
+    矩阵实验（同一 presigned_url）：不带 CT→403、application/octet-stream→403、
+    image/png→200、带官方鉴权头+image/png→200。故 CT 是唯一根因，鉴权头无害。
+    收口成本函数、测试可 monkeypatch 注入假响应，不碰真实网络、不污染 sys.modules。
+    """
+    import httpx  # noqa: PLC0415 — official.py 已依赖，容器有 0.28.x
+
+    async with httpx.AsyncClient(timeout=_PUT_TIMEOUT) as client:
+        resp = await client.put(url, content=data, headers={"Content-Type": content_type})
+    return int(getattr(resp, "status_code", 0))
+
+
+async def _put_bytes(presigned_url: str, data: bytes, content_type: str) -> str:
+    """PUT 预签名 URL 直传字节 → 成功返回 md5，失败抛 MaterialUploadError。
+
+    ``content_type`` 由 ``ensure_material`` 从图片字节探测，与 prepare 申报值
+    同源。COS 单块 PUT 的 ETag 就是内容 md5，官方 complete 以 COS 实际 ETag
+    比对，故这里返回本地 md5。
+    """
     try:
-        # 适配器现成封装：Request("PUT", url, content=data) 经 _request 发出。
-        # 它不返回响应，ETag 用我们自己的 md5（官方 complete 以 COS 实际 ETag
-        # 比对，而 COS 对单块 PUT 的 ETag 就是内容 md5）。
-        await bot.put_upload_part(presigned_url=presigned_url, data=data)
+        status = await _http_put(presigned_url, data, content_type)
     except Exception as e:  # noqa: BLE001
         raise MaterialUploadError("put_failed: %s" % type(e).__name__) from e
+    if not (200 <= status < 300):
+        raise MaterialUploadError("put_bad_status: %d (content_type=%s)" % (status, content_type))
     return hashlib.md5(data).hexdigest()
 
 
@@ -199,9 +261,9 @@ async def ensure_material(bot, data: bytes, file_name: str = "card.png") -> dict
     if cached:
         return {**cached, "md5": md5, "cached": True}
 
-    width, height = image_size(data)
-    prepared = await _prepare(bot, file_name, data)
-    md5_hex = await _put_bytes(bot, prepared["presigned_url"], data)
+    width, height, content_type = image_meta(data)
+    prepared = await _prepare(bot, file_name, data, content_type)
+    md5_hex = await _put_bytes(prepared["presigned_url"], data, content_type)
     completed = await _complete(bot, prepared["upload_id"], md5_hex)
     item = {
         "url": completed["url"],
