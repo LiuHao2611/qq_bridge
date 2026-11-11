@@ -167,7 +167,7 @@ def riven_full_data(weapon: str | None = None, parsed: dict | None = None,
         "kill_line": [],
         "gain_line": [],
         "cmd_groups": [],
-        "footer": {"pc": "PC", "brand": "Warframe Rabbit",
+        "footer": {"pc": "PC", "brand": "曼珠",
                    "tip": "*善用右键/长按提取文字"},
         "source": FULL_SOURCE,
     }
@@ -376,7 +376,7 @@ def reference_sample() -> dict:
                       ["wmr 触发几率 弹匣 带负 阿利乌双枪"]],
              "note": ""},
         ],
-        "footer": {"pc": "PC", "brand": "Warframe Rabbit",
+        "footer": {"pc": "PC", "brand": "曼珠",
                    "tip": "*善用右键/长按提取文字"},
         "source": "版式样例·非实时数据（复刻参考卡用于像素对齐）｜" + FULL_SOURCE,
     }

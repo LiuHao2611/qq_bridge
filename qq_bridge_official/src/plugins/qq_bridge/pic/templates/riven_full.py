@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""pic/templates/riven_full.py —— 紫卡全面分析卡（严格像素级复刻用户参考卡）。
+"""pic/templates/riven_full.py —— 紫卡全面分析卡（参考卡版式 + 项目自有背景/图标，去 Rabbit 化）。
 
 参考卡实测 655×1920（2026-11-06，逐像素取样，见 outputs/ref_grid*.png）：
 
@@ -10,7 +10,7 @@
 版式（设计空间 BASE_W=655、BASE_H=1920，S=width/655）：
 
     y18-56    页眉：黑底放大镜 + 居中「紫卡分析」蓝字；y71 通栏细线
-    y110-145  ▷ 紫卡数值分析（兔耳图标 + 蓝色大标题）
+    y110-145  ▷ 紫卡数值分析（项目自有图标 + 蓝色大标题）
     y168-484  数值圆角卡：武器名/Lv 徽章/倾向药丸 → 3 行词条（数值·图标·名称·
               低值·均值·高低·高值 + 绿色进度条）→ 市场负面参考 + 提示
     y500-535  ▷ 融融合词条分析
@@ -25,12 +25,16 @@
     y1510-1585 击杀效率 / 紫卡增益两行
     y1598-1730 ▷ [指令]查看紫卡其他数据 + 4 条双列指令 + 注
     y1748-1860 ▷ [指令]查看类似紫卡价格 + 2 条指令
-    y1872-1905 页脚细线 + PC 徽章 + Warframe Rabbit + 提示
-    右下 Q 版插画（前景贴纸，可用 show_chibi=False 关掉）
+    y1872-1905 页脚细线 + PC 徽章 + 项目自有品牌「曼珠」 + 提示
 
-「除了背景」：不复刻参考卡的粉色兔纹平铺底图，改用纯白/主题底；其余全部按
-参考卡坐标还原。MOD 缩略卡、兔耳/放大镜/购物车/柱状图图标与右下插画均为
-参考卡像素裁切资产（riven_full_assets/），属前景内容而非背景花纹。
+2026-11-11 去 Rabbit 化（用户决策，仅官方副本）：
+  * 背景 = 项目 light 主题贴纸底（decor.background(c, t, tpl="riven_full")），
+    替代原来的纯白 C_BG；主题必须绑定 light（见 pic/card_binds.py），否则拿到 neon 装饰。
+  * 去掉 Rabbit 卡通 chibi.png（原右下 515..655 × 1740..1920）。
+  * 兔耳 bunny.png / bunny_dark.png → 项目自有几何图标（pic/icons.py，solid/star/bolt）。
+  * 页脚「Warframe Rabbit」→ 项目自有品牌「曼珠」（与 checkin.py:382 同源）。
+其余全部按参考卡坐标还原。MOD 缩略卡、放大镜/购物车/柱状图图标为功能前景内容，
+保留；仅去除 Rabbit 专属的卡通/兔耳/品牌三处。
 
 度量纪律：所有文字经 ``T``/``Tokens`` 用 ``Canvas.text_width`` 实测宽度定位，
 列起点为常量、行尾右锚定；``boxes`` 收集真实包围盒供门禁检测溢出/重叠/间距。
@@ -44,6 +48,8 @@ from pathlib import Path
 from PIL import Image
 
 from .. import fonts
+from .. import decor
+from .. import icons as _icons
 from ..canvas import Canvas
 from ..theme import Theme
 
@@ -146,6 +152,9 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
     width = int(width or BASE_W)
     S = width / BASE_W
     c = Canvas(width, int(BASE_H * S), C_BG, theme=t)
+    # 项目自有 light 主题贴纸底（替代 Rabbit 粉色兔纹/纯白底）；tpl 命中卡片专属
+    # 背景覆盖，缺失键回落主题级全局值。不登记内容 boxes，不影响版式门禁。
+    decor.background(c, t, tpl="riven_full")
     d = c.draw
     if boxes is not None:
         boxes.clear()
@@ -213,7 +222,6 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
     W_PRICE_BIG = 166     # 「暂无匹配样本」
     W_PRICE_BIG_R = 68    # 「386P」
     W_PRICE_TITLE = 140   # 「市场价格预计」
-    W_FOOT_BRAND = 134    # 「Warframe Rabbit」
     W_FOOT_TIP = 160      # 「*善用右键/长按提取文字」
 
     def clip(text, size, role, max_w) -> str:
@@ -259,13 +267,16 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
 
     def section(y_base, title, target_w=W_SEC, x=72.0, icon_w=30.0,
                 icon_x=None):
-        """兔耳图标 + 蓝色大标题，字号按该类实测墨迹宽反推。
+        """项目自有 solid 图标 + 蓝色大标题，字号按该类实测墨迹宽反推。
 
-        参考卡各节标题并非同一字号：「融合词条分析」明显小于其余章节，
-        长标题「基于击杀效率配卡 - 需极化4次」则是大字号通栏（不压缩）。
+        2026-11-11 去 Rabbit 化：原兔耳 bunny.png → 项目 pic/icons.py 的
+        bolt（能量感，契合 Warframe）。参考卡各节标题并非同一字号：「融合词条
+        分析」明显小于其余章节，长标题「基于击杀效率配卡 - 需极化4次」则是
+        大字号通栏（不压缩）。图标占位与原兔耳一致，不挤占标题。
         """
         ix = (x - 40) if icon_x is None else icon_x
-        paste_asset("bunny.png", ix, y_base - 32, ix + icon_w, y_base)
+        _icons.draw(c, "bolt", P(ix + icon_w / 2), P(y_base - 16),
+                    P(max(18, icon_w)), C_BLUE, style="solid")
         T(x, y_base, title, fit(title, target_w, hi=34), C_BLUE, "bold")
 
     def diamond(cx, cy, r, color):
@@ -581,7 +592,10 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
     cmd_bases = [(1622, 1775)]
     for gi, g in enumerate(groups[:2]):
         yb = 1622 if gi == 0 else 1775
-        paste_asset("bunny_dark.png", 31, yb - 26, 46, yb + 2)
+        # 2026-11-11 去 Rabbit 化：原深色兔耳 bunny_dark.png → 项目 solid 菱形
+        # （与指令区的紫色菱形 bullet 同族），占位与原兔耳一致。
+        _icons.draw(c, "diamond", P(38.5), P(yb - 12), P(16), C_PURPLE,
+                    style="solid")
         ct = str(g.get("title") or "")
         T(62, yb, ct, fit(ct, W_CMD_TITLE), C_DARK, "bold")
         bullet_y = [1660, 1698] if gi == 0 else [1812, 1850]
@@ -604,15 +618,19 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
     c.rounded_rect((P(30), P(1881), P(62), P(1903)), radius=P(11),
                    fill=C_WHITE, outline=C_GREEN, width=max(1, P(1.4)))
     T(46, 1898, "PC", 14, C_GREEN, "bold", "ms")
-    brand = "Warframe Rabbit"
-    fs_brand = fit(brand, W_FOOT_BRAND, "regular")
-    bx = T(68, 1898, brand, fs_brand, "#4A7A96", "regular")
+    # 2026-11-11 去 Rabbit 化：页脚品牌 = 项目自有「曼珠」（与 checkin.py:382 同源），
+    # 不再冒充 Warframe Rabbit。固定字号（不再按 W_FOOT_BRAND 反推，避免短文本
+    # 被 fit 放大成巨字压到相邻提示）。
+    brand = "曼珠"
+    fs_brand = 15
+    bx = T(68, 1898, brand, fs_brand, "#4A7A96", "bold")
     tip = str((data.get("footer") or {}).get("tip") or "")
     if tip:
         # 提示行紧跟品牌，gap=8；起点由实测宽得出，不硬编码 → 两者永不重叠
         T(bx + 8, 1898, tip, fit(tip, W_FOOT_TIP, "regular"), "#3E8A8A", "regular")
-    if data.get("show_chibi", True):
-        paste_asset("chibi.png", 515, 1740, 655, 1920)
+    # 2026-11-11 去 Rabbit 化：移除右下 Rabbit 卡通 chibi.png（原 515..655 ×
+    # 1740..1920）。该区域改由 light 主题贴纸底自然填充，不再贴任何 Q 版形象；
+    # show_chibi 参数保留兼容旧调用方，但再无卡通可贴（彻底去 Rabbit 化）。
 
     # 样例标签（仅版式复刻夹具显示，明确非实时数据）
     if data.get("sample"):

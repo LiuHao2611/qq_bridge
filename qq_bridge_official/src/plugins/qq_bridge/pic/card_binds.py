@@ -17,6 +17,11 @@ from __future__ import annotations
 _DEFAULT_CARD_BINDS: dict[str, str] = {
     "星际战甲·市价": "light",
     "checkin": "light",   # 签到卡：浅色 Rabbit 风（2026-11-10，替代旧 brutalist 深色终端风）
+    # 紫卡全面分析卡（2026-11-11 去 Rabbit 化）：用户选定项目 light 主题底
+    # （贴纸平铺 + 双线描边，与市价/签到/裂隙一致），替代原 Rabbit 粉纹/纯白底。
+    # 必须内置绑定：Config.PIC_THEME 默认 neon，不绑定则拿到深色霓虹装饰。
+    # 两个 render 调用点（game_tools/__init__.py:1347/1393）均传此 card 名。
+    "星际战甲·紫卡全面分析": "light",
 }
 
 
