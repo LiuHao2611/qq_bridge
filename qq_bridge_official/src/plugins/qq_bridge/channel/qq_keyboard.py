@@ -203,6 +203,16 @@ def buttons_for(text: str) -> tuple[Btn, ...]:
     所有返回按钮的 data 满足零编造不变量(a)/(b)，且恒 ``primary=False``、
     恒 ``cmd != 当前口令``、恒 ``cmd != 帮助``（三条由守门反向设防）。
     """
+    # 第六次修改（2026-11-11 用户「紫卡分析增加一个按钮：全面分析」）：
+    # 紫卡分析**结果图专属**单按钮。只用内部哨兵命中，绝不匹配真实文本口令，
+    # 故普通「全面分析」「紫卡分析」文本仍零按钮（预约口令不自挂按钮），
+    # 只有 game_tools riven_analysis 出图分支显式注入该哨兵时才挂。
+    # 按钮 cmd=「全面分析」（inventory 真实口令）→ 点击走既有预约→再发图
+    # → _send_riven_full_parsed 出 655×1920 完整卡；该卡 ctx 无哨兵 → 零按钮。
+    if (text or "").strip() == _RIVEN_ANALYSIS_SENTINEL:
+        label, cmd = _RIVEN_FULL_BTN
+        return (Btn(label, cmd, False),)
+
     inv = get_inventory()
     raw = (text or "").strip()
     head = normalize_cmd(raw)
@@ -248,6 +258,16 @@ def buttons_for(text: str) -> tuple[Btn, ...]:
     # 单档 / 兜底卡 / 「帮助」：没有同卡其他档位可下钻 → 零按钮。
     return ()
 
+
+#: 紫卡分析结果图「全面分析」按钮专用哨兵（2026-11-11 第六次修改）。
+#: 这不是真实口令，只是 :func:`buttons_for` 的内部入参键——由 game_tools 的
+#: ``_send_guide`` riven_analysis 专属模板分支写进局部 ctx["keyboard_cmd"]，
+#: 经 official.py::send 的 ``btn_cmd`` 兜底链读到，从而**只在这张卡**挂一个
+#: 「全面分析」按钮。绝不做成全局口令分支：普通文本「全面分析」仍走零按钮
+#: （它是预约口令，不该给自己挂按钮）；点按钮回传的真实口令仍是「全面分析」，
+#: Btn.cmd 保持真实口令以通过零编造不变量，点击→预约→再发图→riven_full 完整卡。
+_RIVEN_ANALYSIS_SENTINEL = "__riven_analysis__"
+_RIVEN_FULL_BTN = ("全面分析", "全面分析")  # (label, cmd)，cmd∈inventory 真实口令
 
 #: 按钮卡片引导 markdown：QQ 官方 msg_type=2 是唯一支持「消息按钮」的类型，
 #: 且要求同时有合法 markdown.content；纯 keyboard 会被平台以

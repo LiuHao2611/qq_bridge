@@ -789,6 +789,14 @@ async def _send_guide(bot: Bot, event: MessageEvent, title: str, text: str,
                 timeout=20.0)
             _flog.info(_jlog("gt_render_done", kind="riven_analysis",
                               elapsed="%.2f" % (asyncio.get_running_loop().time() - _t0)))
+            # 2026-11-11 第六次按钮修改：紫卡分析结果图**专属**挂一个「全面分析」
+            # 按钮。用内部哨兵写进局部 ctx["keyboard_cmd"]：official.py::send 合并
+            # ctx 时「调用方显式字段优先」，btn_cmd 兜底链会读到该哨兵 →
+            # qq_keyboard.buttons_for 命中专用分支 → 只此卡挂「全面分析」按钮，
+            # 与图片合并同条。全面分析卡（_send_riven_full_parsed）自造 ctx 不含
+            # 此键 → btn_cmd 空 → 零按钮（用户「全面分析卡不附带按钮」）。NapCat
+            # 通道忽略 keyboard_cmd，行为完全不变。哨兵非常规文本口令，零编造安全。
+            ctx["keyboard_cmd"] = "__riven_analysis__"
             await asyncio.wait_for(send_pic(ctx, png), timeout=60.0)
             return
         except Exception as e:  # noqa: BLE001 — 专属模板失败 → 继续走 guide，绝不静默
