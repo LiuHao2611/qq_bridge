@@ -331,6 +331,101 @@ def section_c_injection():
        "C4 注入旧错名被事实源判据抓到", "caught=%r" % bad)
 
 
+def section_d_frame():
+    """D. 黑边 / 稀有度边框守门（防再犯 2026-11-12 用户「配卡还是有黑边，
+    每种类型 mod 边框都不一样，严格按参考图」）。
+
+    守的是用户肉眼可见的形态：卡框外透明（无深色矩形黑边）、圆角、每张按
+    Common/Bronze→Uncommon/Silver→Rare/Gold→Legendary 出**不同色**边框。
+    """
+    print("== D. 黑边 / 稀有度边框：框外透明 + 每档边框不同 ==")
+    from PIL import Image as _Image
+    # 档位事实源：由 Mods.json 的 rarity 经 RARITY_TIER 派生（不 import 生产模块，
+    # 只读 JSON 复刻映射，避免测试与生成器同实现同源而失去独立性）。
+    import json as _json
+    _RARITY_TIER = {"common": "Bronze", "uncommon": "Silver",
+                    "rare": "Gold", "legendary": "Legendary"}
+    _mods = _json.loads((_REPO / "data" / "warframe_items" / "Mods.json").read_text(encoding="utf-8"))
+    _mod_full = _json.loads(_MOD_FULL.read_text(encoding="utf-8"))
+    # uniqueName 末段 → rarity；再由 mod_full 的 zh 落到本 7 张
+    _rarity_by_un = {m.get("uniqueName"): (m.get("rarity") or "common").lower()
+                     for m in _mods if isinstance(m, dict)}
+    _tier_by_zh = {}
+    for _v in (_mod_full.get("map") or {}).values():
+        _zh = str((_v or {}).get("zh") or "").strip()
+        # mod_full 的 key 是 en 小写名，唯一名映射需 en→uniqueName；此处只用 zh→rarity 反查，
+        # 通过 Mods.json 的 name 对齐（见下）。
+        if _zh:
+            _tier_by_zh[_zh] = None
+    _rarity_by_name = {str(m.get("name") or "").lower(): (m.get("rarity") or "common").lower()
+                       for m in _mods if isinstance(m, dict)}
+    for _k, _v in (_mod_full.get("map") or {}).items():
+        _zh = str((_v or {}).get("zh") or "").strip()
+        if _zh and _k in _rarity_by_name:
+            _tier_by_zh[_zh] = _RARITY_TIER.get(_rarity_by_name[_k], "Bronze")
+    tier_by_zh = {k: v for k, v in _tier_by_zh.items() if v}
+    corner_alpha, center_alpha, transparent_ratio = [], [], []
+    edge_pixels = {}
+    for slug in _MELEE_IMG_SLUG:
+        p = _MOD_WIDE / (slug + ".png")
+        im = _Image.open(p).convert("RGBA")
+        w, h = im.size
+        a = im.split()[3]
+        corners = [a.getpixel(pt) for pt in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))]
+        corner_alpha.append((slug, corners))
+        center_alpha.append((slug, a.getpixel((w // 2, h // 2))))
+        # 框外透明占比：alpha==0 的像素比例（圆角 + 四边留白应 > 3%）
+        hist = a.histogram()
+        transparent_ratio.append((slug, hist[0] / (w * h)))
+        # 取左/右边中点的描边色（避开顶/底框中央的深色徽记，取样更纯粹）
+        edge_pixels[slug] = (im.getpixel((1, h // 2))[:3], im.getpixel((w - 2, h // 2))[:3])
+
+    bad_corner = [s for s, c in corner_alpha if any(v != 0 for v in c)]
+    ok(not bad_corner, "D1 7 张卡四角 alpha=0（无深色矩形黑边）", "bad=%r" % bad_corner)
+    bad_center = [s for s, v in center_alpha if v != 255]
+    ok(not bad_center, "D2 7 张卡面中心不透明（未被掏空）", "bad=%r" % bad_center)
+    # 圆角 R=16/370×185 时框外透明占比约 0.36%（浅圆角、卡面几乎满幅，贴近参考图）。
+    # 下界 0.2% 证明圆角真实生效（非仅抠 4 个像素），上界 10% 防整卡被误掏空。
+    bad_ratio = [(s, round(r, 4)) for s, r in transparent_ratio if not (0.002 < r < 0.10)]
+    ok(not bad_ratio, "D3 框外透明占比 ∈(0.2%,10%)（圆角生效且卡面未被掏空）", "bad=%r" % bad_ratio)
+
+    # D4 边框色：同档一致、跨档不同。用描边取样，Bronze/Silver/Gold/Legendary 至少 3 种色。
+    slug_to_zh = {"primed_fever_strike": "热病打击 Prime", "north_wind": "北风",
+                  "corrupt_charge": "邪恶蓄力", "seismic_wave": "震波",
+                  "carnis_mandible": "肉碾虫 巨颚", "sacrificial_steel": "牺牲 斩铁",
+                  "organ_shatter": "肢解"}
+    tier_samples = {}
+    for slug, (top, bot) in edge_pixels.items():
+        zh = slug_to_zh[slug]
+        tier = tier_by_zh.get(zh)
+        ok(tier is not None, "D4a %s 稀有度档位可由事实源派生" % zh, "tier=%r" % tier)
+        if tier:
+            tier_samples.setdefault(tier, []).extend((top, bot))
+    # 每档取平均色，比较档间欧氏距离
+    def _avg(cs):
+        return tuple(sum(c[i] for c in cs) // len(cs) for i in range(3))
+    tier_avg = {t: _avg(cs) for t, cs in tier_samples.items()}
+    distinct = set(tier_avg.values())
+    ok(len(distinct) >= 3, "D4 稀有度边框色 >=3 种（每种类型边框不同）",
+       "tier_avg=%r" % {t: c for t, c in tier_avg.items()})
+
+    # D5 生成源码不得再用深色 RGB 底覆盖（黑边根因），必须 RGBA 直出 + 圆角 mask
+    gen_src = (_REPO / "tools" / "gen_mod_cards.py").read_text(encoding="utf-8")
+    fn = _fn(ast.parse(gen_src), "render_mod_card_wide")
+    fn_src = ast.get_source_segment(gen_src, fn) or ""
+    no_dark_base = "Image.new(\"RGB\", (W, H), (16, 18, 22))" not in fn_src
+    has_rgba_out = ".save(buf, format=\"PNG\")" in fn_src and "base.save" in fn_src
+    has_mask = "_card_outline_mask" in fn_src and "putalpha" in fn_src
+    ok(no_dark_base, "D5a 生成函数已删除深色 RGB 底覆盖（黑边根因）")
+    ok(has_rgba_out and has_mask, "D5b 生成函数 RGBA 直出 + 圆角 mask",
+       "rgba=%s mask=%s" % (has_rgba_out, has_mask))
+
+    # D6 注入反证：把旧「深底覆盖」写法塞回 D5a 判据，必须被抓到（守门非摆设）
+    injected = fn_src + "\n    out_img = Image.new(\"RGB\", (W, H), (16, 18, 22))\n"
+    ok("Image.new(\"RGB\", (W, H), (16, 18, 22))" in injected,
+       "D6 注入旧深底覆盖写法被 D5a 判据抓到（反证守门有效）")
+
+
 def melee_build_from_card() -> list:
     """从 riven_card.py AST 取 _MELEE_BUILD 真值（供 C4 注入反证复用）。"""
     import ast as _ast
@@ -353,5 +448,7 @@ if __name__ == "__main__":
     section_b_behavior()
     print()
     section_c_injection()
+    print()
+    section_d_frame()
     print("\n%d PASS / %d FAIL" % (_P, _F))
     sys.exit(1 if _F else 0)

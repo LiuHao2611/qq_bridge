@@ -623,6 +623,34 @@ def _wide_frame(tier: str, part: str) -> Image.Image | None:
     return im.crop(b) if b else None
 
 
+#: 横版卡圆角半径（370×185，参考图四角圆润但不夸张，≈宽 4.3%）
+WIDE_CARD_RADIUS = 16
+#: 沿圆角轮廓的稀有度描边宽度（让「每种类型边框不一样」一眼可辨）
+WIDE_EDGE_WIDTH = 3
+#: 稀有度 → 整卡轮廓描边色（比 TIER_COLOR 更饱和，贴近游戏内卡框金属色）
+WIDE_EDGE_COLOR = {
+    "Bronze": (176, 126, 104),      # 铜/陶土（Common）
+    "Silver": (188, 208, 224),      # 冷银（Uncommon）
+    "Gold": (226, 183, 82),         # 暖金（Rare）
+    "Legendary": (245, 214, 120),   # 传奇白金偏金（Legendary）—— 与冷银明确拉开
+    "Galvanized": (150, 214, 230),  # 镀层/青
+    "Amalgam": (170, 226, 190),     # 融合/青绿
+    "Omega": (172, 131, 213),       # 紫
+}
+
+
+def _card_outline_mask(w: int, h: int, radius: int = WIDE_CARD_RADIUS) -> Image.Image:
+    """L 模式圆角矩形轮廓 mask：卡面内=255、框外=0。
+
+    这是「黑边」根因的正解 —— 立绘铺满整块矩形后，用本 mask 把框外 alpha
+    清零，贴图时（模板 `c.paste(im, ..., im)`）框外露出浅色底，不再是不透明深色。
+    """
+    m = Image.new("L", (w, h), 0)
+    d = ImageDraw.Draw(m)
+    d.rounded_rectangle((0, 0, w - 1, h - 1), radius=radius, fill=255)
+    return m
+
+
 def render_mod_card_wide(english_lower: str, force: bool = False) -> bytes | None:
     """横版配卡缩略卡（对齐游戏军械库/配卡界面的 370×185 横版样式，无效果描述）。
 
@@ -652,6 +680,11 @@ def render_mod_card_wide(english_lower: str, force: bool = False) -> bytes | Non
     tier = _tier_of(mod)
     color = TIER_COLOR.get(tier, (255, 255, 255))
 
+    # 圆角轮廓 mask：卡面内=255、框外=0（去黑边根因）
+    outline = _card_outline_mask(W, H)
+    edge_color = WIDE_EDGE_COLOR.get(tier, (198, 214, 226))
+
+    # base 只在圆角轮廓内不透明；框外恒透明，贴图时露出卡片浅底而非深色矩形。
     base = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 
     # 1) 立绘：cover 铺满 → 灰度混合 → 压暗 → 蓝灰 tint（与横版卡框的冷调统一）
@@ -677,6 +710,18 @@ def render_mod_card_wide(english_lower: str, force: bool = False) -> bytes | Non
                 pass
     if not art_ok:
         base.paste(Image.new("RGB", (W, H), (40, 44, 52)), (0, 0))
+
+    # 1b) 把整块矩形裁成圆角轮廓：框外 alpha=0。这一步是「黑边 → 无黑边」的关键。
+    base.putalpha(outline)
+
+    # 1c) 沿圆角轮廓描稀有度色边（每种类型/稀有度边框不同，且一眼可辨）。
+    edge = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ed = ImageDraw.Draw(edge)
+    ed.rounded_rectangle(
+        (0, 0, W - 1, H - 1), radius=WIDE_CARD_RADIUS,
+        outline=edge_color + (255,), width=WIDE_EDGE_WIDTH,
+    )
+    base.alpha_composite(edge)
 
     draw = ImageDraw.Draw(base)
 
@@ -738,10 +783,14 @@ def render_mod_card_wide(english_lower: str, force: bool = False) -> bytes | Non
         for i in range(n):
             base.alpha_composite(slot, (sx + i * 12, sy))
 
-    out_img = Image.new("RGB", (W, H), (16, 18, 22))
-    out_img.paste(base.convert("RGB"), (0, 0), base.split()[3])
+    # 最终再套一次圆角 mask：顶/底框翼尖、卡名、耗能、等级点若越过圆角一律裁掉，
+    # 保证框外恒 alpha=0。绝不再用 `Image.new("RGB", (16,18,22))` 深色底覆盖 ——
+    # 那正是把整块透明画布糊成不透明深色矩形、贴到浅色卡面露「黑边」的根因。
+    # Image.composite(a, b, outline)：轮廓内取 a(base.alpha)，轮廓外取 b(全 0)。
+    final_alpha = Image.composite(base.split()[3], Image.new("L", (W, H), 0), outline)
+    base.putalpha(final_alpha)
     buf = io.BytesIO()
-    out_img.save(buf, format="PNG")
+    base.save(buf, format="PNG")  # RGBA 直出，框外透明
     return buf.getvalue()
 
 
