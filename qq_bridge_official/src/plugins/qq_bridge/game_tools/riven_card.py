@@ -454,8 +454,20 @@ _BUILD = {
     "Shotgun": ["地狱火 Prime", "镀层 地狱", "凶残 Prime", "炽炎",
                 "镀层 巧艺", "寒冰之握", "撕碎 Prime"],
 }
-_MELEE_BUILD = ["压迫 Prime", "热毒 Prime", "渴血", "泣血",
-                "角斗 威力", "粉碎者", "触手 Prime"]
+#: 近战通用「病毒 + 切割 + 重击」配卡（2026-11-11 全量对齐图2 Rabbit 参考卡）。
+#: 7 张主卡（末格「当前紫卡」由 riven_full._build_mods 追加），逐字取自图2 原图，
+#: 每张都在灰机 Wiki《近战MOD·常规》分类表内核对过角色：
+#:   暗病打击 Prime / 北风      → 武器属性伤害（冰+毒=病毒，放大生命伤害）
+#:   肉瘤 巨颚(肉碾虫巨颚)      → 切割伤害 + 触发几率（流血绕过护甲）
+#:   牺牲 斩铁                  → 暴击几率 + 派系伤害（重击暴击核心）
+#:   肢解(并合肢解→重击准备速度)→ 暴击伤害
+#:   邪恶蓄力                   → 连击持续时间 + 初始连击（重击启动）
+#:   震波                       → Madurai 技法（近战范围清怪）
+#: 旧表「压迫 Prime/热毒 Prime/渴血/泣血/角斗 威力/粉碎者/触手 Prime」属纯状态流，
+#: 与图2 的病毒切割重击流不符，整表替换。仍为「近战通用」表：不同近战武器按此
+#: 套路出卡，不对单武器硬编码（避免又制造「一类武器写死一张表」的新错配）。
+_MELEE_BUILD = ["暗病打击 Prime", "北风", "邪恶蓄力", "震波",
+                "肉瘤 巨颚", "牺牲 斩铁", "肢解"]
 
 
 def _weapon_raw(name: str) -> dict | None:
@@ -522,6 +534,87 @@ def _apply_riven(bucket: dict, stats: list[dict], maxed: bool = False) -> None:
         elif k == "Reload Speed":
             bucket["reload"] += mag / 100.0       # 装填速度：正=更快（reload_mult 取倒数）
         # 其余（变焦/后坐/派系/触发等）不进 DPS（对齐参考卡「伤害+0.0%」）
+
+
+#: 能进 DPS 桶、可被「理论最优组合」选为正词条的词条键（_apply_riven 认识的键 ∩ 有意义基线）。
+#: 只做集合筛选，词条名/数值**全部**来自 riven_stat_base.json，零写死卡名/数值。
+_DPS_STAT_KEYS = frozenset({
+    "Critical Chance", "Critical Damage", "Damage", "Multishot",
+    "Fire Rate", "Attack Speed", "Fire Rate / Attack Speed",
+    "Electricity Damage", "Heat Damage", "Cold Damage", "Toxin Damage",
+    "Impact Damage", "Puncture Damage", "Slash Damage",
+    "Magazine Capacity", "Ammo Maximum", "Reload Speed",
+})
+#: 对 DPS 无影响、可作「理论最优组合」负槽的词条（进不了 _apply_riven 的乘区）。
+#: 顺序即优先级；取该武器类型 base 表里存在的第一个。排除 Ammo Maximum（有 mag 占空比影响）。
+_ZERO_IMPACT_NEG = ("Zoom", "Weapon Recoil", "Status Duration", "Combo Duration",
+                    "Initial Combo", "Damage to Grineer", "Damage to Corpus",
+                    "Damage to Infested")
+
+
+def _theoretical_best_stats(parsed: dict, w: dict) -> list[dict]:
+    """该武器类型的**理论最优紫卡组合**（Rabbit「最强紫卡」基准，2026-11-11 全量对齐）。
+
+    反推依据（图2 Rabbit 参考卡 + `reference_sample()` 阿利乌双枪卡两点）：
+      * 图2 Coda Motovore `紫卡增益 当前+15.2% → 最强+138.4%`、击杀效率 `8.6→9.9→20.5`；
+      * 阿利乌参考卡 `gain=16.3% / gain_max=161.1%`（`riven_full.reference_sample._gain_parts`）。
+      两张卡的「最强」都**远超**「当前同样 4 词条洗到上限」能达到的水平，故 Rabbit 的
+      `gain_max` 是**该武器能洗出的理论最优词条组合天花板**（武器潜力基准，与当前卡词条
+      无关），而不是「这张卡重洗到最好」。
+
+    旧实现 `_sim` 的 `best_b = _apply_riven(std, stats, maxed=True)` 只把**当前**同样
+    4 条洗满（组合锁定）——当前卡 roll 越接近上限，`gain≈gain_max` 越严重，
+    `dmg=gain/gain_max×100` 越被顶到 100（用户图1「伤害分乱写 100(S)」根因）。
+
+    本函数从 ``riven_stat_base.json[类型]`` 真表派生最优组合，遵守：
+      * 词条名/基线**全部取自真表**，零写死卡名/数值（守门 D 静态断言）；
+      * 正槽数量与当前卡一致（3 正 1 负→3 正），只从 ``_DPS_STAT_KEYS ∩ 真表`` 取满 roll
+        **边际 DPS 最高**者（边际用 ``_dps`` 真函数测，不用静态热度表）；
+      * 负槽取 ``_ZERO_IMPACT_NEG ∩ 真表`` 第一个、惩罚最轻端（不影响 DPS，只还原布局）；
+      * 满级中性基准 ``mid = |base| × disp × factor × (rank+1)/9``（与 `_mid` 同源，满 roll=mid×1.1）。
+
+    只服务于「最强紫卡」基准；当前卡贡献（`contrib`）仍按真实 ``stats`` 算，不受影响。
+    真表缺失/无武器面板时返回 ``[]``，`_sim` 回退到旧语义（诚实降级，不编造）。
+    """
+    _, base_tbl, _ = _load_riven_tables()
+    table = base_tbl.get(parsed.get("type")) or {}
+    if not table or not w:
+        return []
+    fix = _fix_of(parsed)
+    std = _gun_std_bucket(w)
+    dps_base = _dps(w, std)
+    disp = float(parsed.get("disp") or 1.0)
+    rank = parsed.get("rank")
+    rk = 8 if not isinstance(rank, int) else max(0, min(8, rank))
+
+    def mid_of(en: str, f: float) -> float:
+        base = abs(float(table.get(en) or 0))
+        return base * disp * f * (rk + 1) / 9.0 if base else 0.0
+
+    pool = [en for en in table if en in _DPS_STAT_KEYS
+            and abs(float(table.get(en) or 0)) > 0]
+
+    def marginal(en: str) -> float:
+        hi = mid_of(en, fix["buff"]) * 1.1
+        b = dict(std)
+        _apply_riven(b, [{"en": en, "value": hi, "unit": "%", "sign": "+", "_rng": None}])
+        return _dps(w, b) - dps_base
+
+    pool.sort(key=marginal, reverse=True)
+    n_pos = max(1, min(sum(1 for s in parsed["stats"] if s["sign"] != "-"), 3))
+    out: list[dict] = []
+    for en in pool[:n_pos]:
+        m = mid_of(en, fix["buff"])
+        out.append({"en": en, "value": round(m * 1.1, 1), "unit": "%", "sign": "+",
+                    "_rng": (m * 0.9, m * 1.1)})
+    if sum(1 for s in parsed["stats"] if s["sign"] == "-"):
+        for en in _ZERO_IMPACT_NEG:
+            m = mid_of(en, abs(fix["curse"]))
+            if m:
+                out.append({"en": en, "value": round(m * 0.9, 1), "unit": "%", "sign": "-",
+                            "_rng": (m * 0.9, m * 1.1)})
+                break
+    return out
 
 
 def _dps(w: dict, bucket: dict) -> float:
@@ -596,7 +689,14 @@ def _sim(parsed: dict, w: dict) -> dict:
     cur_b = dict(std)
     best_b = dict(std)
     _apply_riven(cur_b, stats)
-    _apply_riven(best_b, stats, maxed=True)
+    # 「最强紫卡」基准（2026-11-11 全量对齐 Rabbit）：用该武器理论最优组合，
+    # 而非「当前同样 4 条洗满」——后者使 gain≈gain_max、伤害分恒虚高到 100（图1 根因）。
+    # 真表缺失时回退旧语义（诚实降级，不编造天花板）。
+    _best = _theoretical_best_stats(parsed, w)
+    if _best:
+        _apply_riven(best_b, _best, maxed=True)
+    else:
+        _apply_riven(best_b, stats, maxed=True)
     dps_base = _dps(w, std)
     dps_cur = _dps(w, cur_b)
     dps_best = _dps(w, best_b)
@@ -1027,9 +1127,14 @@ def _scores(parsed: dict, sim: dict) -> dict:
         mkt -= (100.0 - float(NEG_MARKET.get(s["en"], 20))) * 0.22
     mkt = max(0.0, min(100.0, mkt))
     friendly = all(NEG_MARKET.get(s["en"], 20) >= 60 for s in neg)
+    # 综合评分口径（2026-11-11 全量对齐 Rabbit）：由两张参考卡反推 `综合 = max(伤害, 市场)`：
+    #   * 图2 Coda Motovore  伤害11.0 / 市场62.1 / 综合62.1 (=市场)
+    #   * 阿利乌 reference_sample 伤害10.1 / 市场0.0 / 综合10.1 (=伤害)
+    # 旧 `total = dmg_score` 恒等于伤害分，市场分再高也带不动综合——两张参考卡均不符。
+    total = max(dmg_score, mkt)
     return {"gain": gain, "gain_max": gain_max, "dmg": dmg_score,
             "mkt": mkt, "type": "市场卡" if friendly else "伤害卡",
-            "total": dmg_score}
+            "total": total}
 
 
 def _recs(parsed: dict, w: dict) -> dict:

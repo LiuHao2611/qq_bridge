@@ -4,8 +4,9 @@
 防的是用户图1：伤害分/市场分/综合评分「全 S」——根因是把 0–100 分制喂给
 ``riven_card._grade``（偏差百分比口径 p=(10+d)/20，d>9.2 即 S）。正确应 ``_letter``。
 
-本轮只修确凿的口径误用；``_scores.total=dmg`` 与 ``_dps`` 暴击封顶属模型口径，
-不在本守门强制（见报告「需定夺项」）。
+本守门只管「_letter vs _grade」字母口径（D1–D6），不动模型。
+``_scores.total=max(dmg,mkt)``（综合口径）与 ``gain_max``（最强紫卡基准）2026-11-11
+全量对齐 Rabbit，由独立守门 ``test_qq_riven_gainmax.py`` 覆盖，本守门不重复。
 
 锚定 official 副本根（parents[1]）。纯 AST + 真 riven_card._letter，宿主可跑。
 """

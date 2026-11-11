@@ -30,7 +30,10 @@ _CARD = _REPO / "src" / "plugins" / "qq_bridge" / "game_tools" / "riven_card.py"
 _P = _F = 0
 _GUN_ONLY = ("深层冷冻", "病原弹头", "致命洪流", "黄蜂蛰刺",
              "弹头扩散", "持续火力 Prime", "火焰装填 Prime")
-_MELEE_ONLY = ("压迫 Prime", "热毒 Prime", "渴血", "泣血", "角斗 威力", "粉碎者")
+# 图2 Rabbit 病毒切割重击流近战表（2026-11-11 全量对齐，随 _MELEE_BUILD 同步）
+_MELEE_ONLY = ("暗病打击 Prime", "北风", "邪恶蓄力", "震波", "肉瘤 巨颚", "牺牲 斩铁", "肢解")
+# 旧状态流卡名：仅用于反证「已整表替换、不再出现在近战表里」
+_OLD_MELEE = ("压迫 Prime", "热毒 Prime", "渴血", "泣血", "角斗 威力", "粉碎者", "触手 Prime")
 
 
 def ok(cond, name, detail=""):
@@ -158,6 +161,12 @@ def section_b_behavior():
        "gun_types=%s melee=%d" % (list(card._BUILD), len(card._MELEE_BUILD)))
     rifle = card._BUILD["Rifle"]; pistol = card._BUILD["Pistol"]
     shotgun = card._BUILD["Shotgun"]; melee = card._MELEE_BUILD
+
+    # B1b 近战表=图2 病毒切割重击流 7 张，旧状态流已整表移除（防回退）
+    ok(all(m in melee for m in _MELEE_ONLY), "B1b 近战含图2 重击流 7 张真名",
+       "n=%d" % len(melee))
+    ok(not any(m in melee for m in _OLD_MELEE), "B1c 旧状态流卡已全部移除")
+    ok(len(melee) == 7, "B1d 近战主卡 7 张（+当前紫卡=8格）", "n=%d" % len(melee))
 
     # B2 近战武器（含 Zaw）配近战卡，绝不出现枪卡
     for t in ("Melee", "Zaw"):

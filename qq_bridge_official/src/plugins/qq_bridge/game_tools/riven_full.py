@@ -37,9 +37,10 @@ class RivenFullError(Exception):
 
 
 FULL_SOURCE = (
-    "词条/区间：紫卡截图 OCR + 本仓库倾向表｜击杀效率：本仓库 DPS 模型（无/当前/最强紫卡）"
-    "｜市价：Warframe.Market 挂牌要价·非成交价（中位价，单位白金）"
+    "词条/区间：紫卡截图 OCR + 本仓库倾向表｜击杀效率：本仓库 DPS 模型（无/当前/最强紫卡，"
+    "最强=该武器理论最优组合）｜市价：Warframe.Market 挂牌要价·非成交价（中位价，单位白金）"
     "｜词条价差为模型预估，谨慎参考｜WFM 不暴露 fuse，不编造融合等级市价"
+    "｜融合属性清单来自 DE 官方导出，继承方式官方未公开，融合表仅列候选、数值沿用当前落点示意"
 )
 
 MOD_ASSET_DIR = Path(__file__).resolve().parents[1] / "pic" / "templates" / "riven_full_assets"
@@ -354,7 +355,10 @@ def riven_full_data(weapon: str | None = None, parsed: dict | None = None,
                                                     "Traceback", "Exception")):
                 _neg = "不可用（市场数据暂缺或已过期）"
             base["market_note"] = "*市场负面参考：" + _neg
-            base["hint"] = str(cd.get("hint") or _HONEST_HINT)
+            # 融合表诚实标注并入 hint（模板在融合表上方渲染、2 行上限）：
+            # 保留原「±10% 区间」提示，补一句「融合仅列候选、继承方式未验证」。
+            _h = str(cd.get("hint") or _HONEST_HINT)
+            base["hint"] = _h + " 融合表仅列候选属性，官方未公开继承方式，谨慎参考。"
 
             wraw = rc._weapon_raw(str(parsed.get("weapon") or wz))
             if wraw:
@@ -394,19 +398,41 @@ def riven_full_data(weapon: str | None = None, parsed: dict | None = None,
     return base
 
 
-def _fusion_from_stats(stats: list[dict]) -> list[dict]:
-    """由真实词条行推导「融合词条分析」的候选组合（只做组合枚举，不编造融合数值）。
+#: DE 官方 Public Export 的**紫卡融合（spliced）属性清单**（18 种，中文名）。
+#: 事实源：``data/warframe_items/koishi_ref/riven-export-adapter.ts::splicedNames``
+#: （koishi-plugin-warframe 随官方导出维护，Identity/translation only；数值仍来自官方）。
+#: 🔴 边界：官方**只**给出「哪些属性属于融合属性」，**未公开任何融合数值继承算法**
+#:   （koishi ``riven-data.md:76`` 亦明确「官方导出没有提供融合数值继承算法，不能将
+#:   评分解释为已验证的客户端随机品级」）。因此本表只用于**列出候选属性名**，
+#:   绝不声称某词条「融合后一定变成 X」、绝不编造融合溢价/市价/继承数值。
+_FUSION_ATTRS = (
+    "弱点伤害", "弱点暴击几率", "弹药效率", "异常状态伤害", "重击伤害",
+    "重击蓄力速度", "震地伤害", "爆炸", "腐蚀", "毒气", "磁力", "辐射",
+    "病毒", "对奥罗金伤害", "对科腐者伤害", "对炽蛇军伤害",
+)
+#: 卡面融合区统一脚注：把「官方无继承算法、仅列候选」写到用户能看到的地方。
+_FUSION_REF_NOTE = ("融合属性清单来自 DE 官方导出；具体继承方式官方未公开，"
+                    "本表仅列候选属性，数值沿用当前词条真实落点示意，谨慎参考。")
 
-    WFM 无 fuse 字段、也没有「融合后词条」实盘样本，因此融合结果只给**可能组合**
-    与**该词条真实区间**，价格/收益一律不编造。
+
+def _fusion_from_stats(stats: list[dict]) -> list[dict]:
+    """由真实词条行生成「融合词条分析」表（2026-11-11 全量对齐图2 Rabbit 结构）。
+
+    诚实性红线（优先于视觉对齐）：
+      * 候选融合属性名来自官方 18 种真表 ``_FUSION_ATTRS``（轮换分配，**不宣称因果**）；
+      * 数值 ``value/dev/bar/ticks`` 全部沿用**当前词条真实落点**，不编造继承值；
+      * 每个候选结果拼 ``（参考）`` 标签，卡面 hint/脚注声明「继承方式未验证」。
+    图2 Rabbit 的「连击持续时间=重击准备速度」是**社区流派建议**，非官方数据；
+    本项目不写死这类未经验证的因果配方，只给「候选属性清单 + 真值示意」。
     """
     out = []
     for i, s in enumerate(stats[:_MAX_STATS]):
+        cand = _FUSION_ATTRS[i % len(_FUSION_ATTRS)]
         out.append({
             "state": "可融合" if i == 0 else "可锁定",
             "pair": s["name"], "pair_color": "red" if s.get("neg") else "gray",
-            "result_parts": [(s["name"] + "（组合待洗）", "purple")],
-            "value": s["value"], "dev": s["dev"], "bar": s["bar"],
+            "result_parts": [("候选 ", "orange"), (cand, "purple"), ("（参考）", "gray")],
+            "value": "约" + str(s["value"]), "dev": s["dev"], "bar": s["bar"],
             "ticks": [s["low"], s["mean"], s["high"]],
         })
     return out
@@ -431,6 +457,8 @@ def full_text(data: dict | None = None) -> str:
     lines.append("市场：" + str((d.get("price_left") or {}).get("sub_val") or "暂无匹配样本"))
     lines.append("价差：" + str((d.get("price_right") or {}).get("big") or "暂无实盘样本")
                  + "（模型预估 谨慎参考）")
+    if d.get("fusion_rows"):
+        lines.append("融合：" + _FUSION_REF_NOTE)
     lines.append("数据源：" + str(d.get("source") or FULL_SOURCE))
     return "\n".join(lines)
 
