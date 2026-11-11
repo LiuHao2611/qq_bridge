@@ -501,6 +501,62 @@ def test_send_has_merge_and_fallback_branches():
     assert '"merged_card"' in src, "合并段未登记 merged_card kind"
 
 
+def _guard_zero_button_no_empty_keyboard(src: str):
+    """第四次修改守门：去掉自己+主菜单后单档卡零按钮，发送层三层不得下发空 keyboard。
+
+    ① make_keyboard 无按钮返 (None, ())；
+    ② _build_merged_card_segment 挂 keyboard 前必须判 kb_model is not None and btns；
+    ③ send() 必须有 has_buttons 前置判定，且「图片+按钮合并」条件含 has_buttons
+       （零按钮跳过合并/素材上传，图片走 msg_type=7 独立段，不构造空键盘）。
+    """
+    tree = ast.parse(src)
+
+    def fn_body(name):
+        fn = next((n for n in ast.walk(tree)
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name), None)
+        assert fn is not None, "official.py 找不到 %s" % name
+        return fn
+
+    # ① make_keyboard 零按钮约定在 qq_keyboard.py，由 card_buttons 测试守；这里验调用侧
+    send = fn_body("send")
+    send_blob = "\n".join(ast.unparse(n) for n in ast.walk(send))
+
+    # ② 合一函数：挂 keyboard 的语句必须处在「kb_model is not None and btns」条件内
+    merged = fn_body("_build_merged_card_segment")
+    merged_src = ast.unparse(merged)
+    assert "kb_model" in merged_src and "btns" in merged_src, \
+        "合一函数未取 make_keyboard 的 (kb_model, btns)"
+    kb_guard = any(
+        "kb_model" in ast.unparse(n.test) and "btns" in ast.unparse(n.test)
+        for n in ast.walk(merged) if isinstance(n, ast.If)
+    )
+    assert kb_guard, \
+        "合一函数挂 keyboard 前缺 `if kb_model is not None and btns` 守卫" \
+        "（零按钮卡会下发空 keyboard → 40034011）"
+
+    # ③ send() 有 has_buttons 判定，且合并 if 的条件含它
+    assert "_buttons_for" in send_blob and "has_buttons" in send_blob, \
+        "send() 缺 buttons_for 前置判定 has_buttons（零按钮卡无法安全跳过合并）"
+    merge_ifs = [
+        n for n in ast.walk(send) if isinstance(n, ast.If)
+        and "_IMAGE_BUTTON_MERGE" in ast.unparse(n.test)
+    ]
+    assert merge_ifs, "send() 找不到图片+按钮合并 if"
+    assert any("has_buttons" in ast.unparse(n.test) for n in merge_ifs), \
+        "合并条件未带 has_buttons（零按钮卡仍会走合并 → 空 keyboard 40034011）"
+    # 降级路径的按钮段也须受 has_buttons 守卫
+    seg_guard = any(
+        "has_buttons" in ast.unparse(n.test)
+        for n in ast.walk(send) if isinstance(n, ast.If)
+        and "_build_button_segment" in ast.unparse(n)
+    )
+    assert seg_guard, "降级路径按钮段缺 has_buttons 守卫（零按钮卡仍会发空按钮段）"
+
+
+def test_zero_button_no_empty_keyboard():
+    _guard_zero_button_no_empty_keyboard(_OFFICIAL.read_text(encoding="utf-8"))
+
+
 def test_merge_segment_has_markdown_and_keyboard_same_message():
     """容器真 nonebot：断最终 payload 是 markdown(含图)+keyboard 同段 msg_type=2。"""
     try:
@@ -606,6 +662,32 @@ def test_injection_guards():
         assert "同源" in str(e) or "不同源" in str(e), "CT 同源守门报错位置不对：%s" % e
     _guard_prepare_and_put_share_content_type(ma_src)
 
+    # 注入 F：删掉合一函数的零按钮守卫（= 单档卡下发空 keyboard 40034011 根因）
+    off_src = _OFFICIAL.read_text(encoding="utf-8")
+    bad_zero = off_src.replace(
+        "if kb_model is not None and btns:              # 有按钮才挂，零按钮绝不发空 keyboard",
+        "if True:  # INJECTED: 无条件挂 keyboard", 1)
+    assert bad_zero != off_src, "注入 F 没找到锚点"
+    try:
+        _guard_zero_button_no_empty_keyboard(bad_zero)
+        raise AssertionError("零按钮守门未报错（合一函数无条件挂空 keyboard 没被拦）")
+    except AssertionError as e:
+        assert "零按钮" in str(e) or "kb_model" in str(e) or "守卫" in str(e), \
+            "零按钮守门报错位置不对：%s" % e
+    _guard_zero_button_no_empty_keyboard(off_src)
+
+    # 注入 G：删掉 send() 合并条件的 has_buttons（零按钮卡仍走合并 → 空 keyboard）
+    bad_merge = off_src.replace(
+        "if _IMAGE_BUTTON_MERGE and image_datas and btn_cmd and has_buttons:",
+        "if _IMAGE_BUTTON_MERGE and image_datas and btn_cmd:", 1)
+    assert bad_merge != off_src, "注入 G 没找到锚点"
+    try:
+        _guard_zero_button_no_empty_keyboard(bad_merge)
+        raise AssertionError("零按钮守门未报错（合并条件丢 has_buttons 没被拦）")
+    except AssertionError as e:
+        assert "has_buttons" in str(e), "零按钮守门报错位置不对：%s" % e
+    _guard_zero_button_no_empty_keyboard(off_src)
+
 
 if __name__ == "__main__":
     import traceback
@@ -624,6 +706,7 @@ if __name__ == "__main__":
         test_markdown_image_syntax,
         test_merge_segment_wiring,
         test_send_has_merge_and_fallback_branches,
+        test_zero_button_no_empty_keyboard,
         test_merge_segment_has_markdown_and_keyboard_same_message,
         test_injection_guards,
     ]

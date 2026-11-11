@@ -1,26 +1,36 @@
 # -*- coding: utf-8 -*-
-"""QQ 官方按钮键盘验收（2026-11-11 全部重做，prove-it）。
+"""QQ 官方按钮键盘验收（2026-11-11 第四次修改，prove-it）。
 
-## 反偷懒设计（针对上一轮「自己考自己」被用户第二次驳回）
+## 第四次修改：去掉当前卡自己 / 主菜单，只留同卡相关按钮
 
-上一轮测试从 NATURAL_CMDS 词表抽词、再验同一张手工 _GROUPS 表 —— 标准答案
-照着实现抄，实现错了标准答案也跟着错。本版改为：
+第三次返工做到「每张卡挂自己档位」，但真实群截图（用户 11-11 13:16）确认仍
+每张卡带一个**蓝色 primary「当前卡自己」按钮**（红框，「裂隙」）+ 末尾**主菜单**。
+用户明确：「不要显示当前卡片按钮，还有去掉主菜单按钮，只展示当前卡片相关按钮」。
+本文件守门三条用户需求不变量 + 零编造 + 零按钮安全，**标准答案独立于实现**：
 
-* **独立基准**：``_independent_real_commands()`` 在本测试文件里用一套**独立于
-  command_inventory** 的 AST 遍历，直接从 game_tools 源码算出「真实会出卡的
-  口令全集」（所有 cmd/c/text 的 `in (...)`/`==` 字面量 + 模块词表 key + HELP
-  #token，排除卡片标题 value）。实现若漏了某个真实分支，两套独立遍历必然对不上。
-* **三道硬守门**：
-  ① 漏口令：基准里每个真实出卡口令必须有专属按钮（primary=自己），不许没有 / 不许落 GENERIC；
-  ② 零编造：任何按钮 data 必须 ∈ 基准全集（注入 `fhelp` / `w M` 立即 FAIL）；
-  ③ 无错误映射：每个口令点了回到自己；终幕/coda/信条/tenet 各自独立（注入
-     `终幕→信条` 映射立即 FAIL）。
-* **注入验证**（prove-it 强制）：``test_injection_guards`` 真的把三种错分别放
-  回去，断言对应守门报错，再恢复断言通过 —— 证明守门不是摆设。
+* **独立基准**：``_independent_real_commands()`` 用独立于 command_inventory 的 AST
+  遍历从 game_tools 源码算「真实出卡口令全集」；``_independent_ranks()`` 从 warframe
+  源码算真实 rank token。实现若编造词/漏词，两套遍历对不上 → FAIL。
+* **三条需求不变量**（对全基准口令 + 带参 + GENERIC 输入）：
+  ① 无任何 ``primary``（蓝色当前卡自己按钮已移除，全灰线框）；
+  ② 无「帮助」/「主菜单」按钮；
+  ③ 任何**零参**按钮 data ≠ 当前口令自己（带参串首词是市价口令，属合法结构，
+     由「零编造」守门验，不在此列）。
+* **零编造**：任何按钮 data ∈ 基准全集，或是合法带参串 ``<口令> <物品> <rank>``
+  （首词∈基准、末词∈独立 rank、物品非空）；注入 ``fhelp``/``w M``/假 rank 立即 FAIL。
+* **零按钮安全**：GENERIC 与单档卡 → ``buttons_for == ()`` 且
+  ``make_keyboard == (None, ())``（防下发空 keyboard → 40034011）；关键多档卡
+  （裂隙/赏金/信条/紫卡趋势）必须非空且只含邻档。
+* **注入验证**（prove-it 强制）：``test_injection_guards`` 把「自己」「主菜单」
+  「假 data」三类错分别放回，对应守门报错，再恢复断言通过 —— 证明守门不是摆设。
+
+职责分工：本文件负责「真实口令全集 / 三条需求不变量 / 零编造 / 零按钮 / 关键卡
+非空」；「每张卡有哪些档位、逐卡精确举一反三不漏档」由 ``test_qq_card_buttons.py``
+的独立 ``_baseline_groups()`` 守护。两文件互不调用对方的派生函数。
 
 跑法（容器内，不开网络、不发真消息）：
-  docker exec -i qq-bridge-official python -m pytest tests/test_qq_keyboard.py -v
-或：python tests/test_qq_keyboard.py   （宿主纯标准库，按钮结构项自动跳过 nonebot）
+  docker exec -i qq-bridge-official /opt/venv/bin/python -m pytest tests/test_qq_keyboard.py -v
+或：python tests/test_qq_keyboard.py   （宿主纯标准库，nonebot 结构项自动跳过）
 """
 from __future__ import annotations
 
@@ -33,6 +43,7 @@ import importlib.util  # noqa: E402
 
 _REPO = Path(__file__).resolve().parents[1]
 _GT = _REPO / "src/plugins/qq_bridge/game_tools/__init__.py"
+_WF = _REPO / "src/plugins/qq_bridge/game_tools/warframe.py"
 _CH = _REPO / "src/plugins/qq_bridge/channel"
 
 
@@ -51,7 +62,7 @@ kb = _load(_CH / "qq_keyboard.py", "qq_keyboard")
 
 
 # ---------------------------------------------------------------------------
-# 独立基准：以下抽取逻辑**不调用 command_inventory**，是另一份实现。
+# 独立基准：以下抽取逻辑**不调用 command_inventory / qq_keyboard**，是另一份实现。
 # ---------------------------------------------------------------------------
 _CMD_TABLES = {
     "NATURAL_CMDS", "GUIDE_TITLES", "ZERO_ARG_OK",
@@ -171,6 +182,56 @@ def _leaves(val, keys_only: bool = False):
     return None
 
 
+def _independent_ranks() -> tuple[str, ...]:
+    """独立 AST 派生：warframe._parse_mod_rank 的 rank_label return 第 3 位字面量。"""
+    tree = ast.parse(_WF.read_text(encoding="utf-8"))
+    fn = next((f for f in tree.body
+               if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and f.name == "_parse_mod_rank"), None)
+    assert fn is not None, "warframe 源码找不到 _parse_mod_rank"
+    out = []
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Return) and isinstance(n.value, ast.Tuple) \
+                and len(n.value.elts) >= 3:
+            v = n.value.elts[2]
+            if isinstance(v, ast.Constant) and isinstance(v.value, str) and v.value not in out:
+                out.append(v.value)
+    return tuple(out)
+
+
+def _self_head(text: str) -> str:
+    """独立实现「命令首词归一」（与 qq_keyboard.normalize_cmd 同口径，**不调用它**）。"""
+    t = (text or "").strip()
+    while t and t[0] in "#＃/":
+        t = t[1:].strip()
+    if not t:
+        return ""
+    parts = t.split()
+    head = parts[0] if parts else t
+    return head.lower() if head.isascii() else head
+
+
+_GENERIC_PROBES = ("", "  ", "/ai", "/ai on", "闲聊", "随便闲聊", "签到", "/pc", "/提醒 列表", "#", "＃")
+# 单档卡代表口令：这些是 card_buttons 派生的 1 档出卡族成员，其「单档」事实由
+# test_qq_card_buttons.py::_baseline_groups() 的逐卡精确守门守护（若源码把它变多档，
+# 那套独立基准会先 FAIL 并提示更新本白名单）。
+_SINGLE_SLOT_PROBES = ("灵化", "科研", "仲裁表", "平原", "配卡", "词条推荐",
+                       "警报", "执政官", "紫卡融合", "紫卡全面", "角色", "模拟开卡", "帮助")
+# 用户明确举例/要求的关键多档卡邻档集合（源码 mode dict / cmd tuple 事实，
+# 与 card_buttons/test_baseline_sane 同性质：写死用户锚点，实现改错即 FAIL）。
+_KEY_CARD_SIBLINGS = {
+    "裂隙": {"普通裂隙", "钢铁裂隙"},
+    "普通裂隙": {"裂隙", "钢铁裂隙"},
+    "钢铁裂隙": {"裂隙", "普通裂隙"},
+    "赏金": {"钢铁赏金"},
+    "钢铁赏金": {"赏金"},
+    "信条": {"终幕"},
+    "终幕": {"信条"},
+    "紫卡趋势": {"词条价差"},
+    "词条价差": {"紫卡趋势"},
+}
+
+
 # ---------------------------------------------------------------------------
 # 守门
 # ---------------------------------------------------------------------------
@@ -183,6 +244,7 @@ def test_independent_baseline_sane():
                  "科研任务", "认输", "运气", "退出"}
     missing = must_have - base
     assert not missing, "上轮漏检的纯分支口令未进独立基准：%s" % sorted(missing)
+    assert _independent_ranks() == ("满级", "R0"), "rank 独立基准不对：%s" % (_independent_ranks(),)
 
 
 def test_implementation_covers_baseline():
@@ -195,143 +257,132 @@ def test_implementation_covers_baseline():
     assert not only_impl, "实现多出源码里不存在的口令（可能编造）：%s" % only_impl
 
 
-def test_no_missing_button():
-    """守门① 漏口令：每个真实出卡口令都必须有专属按钮（primary=自己）。"""
+def test_no_self_menu_primary():
+    """守门①②③（用户三条需求）：无 primary / 无主菜单 / 零参按钮不含当前口令自己。"""
     base = _independent_real_commands()
-    missing = []
-    for cmd in sorted(base):
-        btns = kb.buttons_for(cmd)
-        if not btns or not btns[0].primary or btns[0].cmd.lower() != cmd.lower():
-            missing.append((cmd, [(b.cmd, b.primary) for b in btns]))
-    assert not missing, "以下真实口令没有专属 primary 按钮（落 GENERIC/遗漏）：%s" % (
-        missing[:12],)
+    probes = sorted(base) + [
+        "wm 绝路", "市价 延伸", "WM 绝路 满级", "wm 0级 绝路", "价格 满级 延伸",
+    ] + list(_GENERIC_PROBES)
+    violations = []
+    for p in probes:
+        self_head = _self_head(p)
+        for b in kb.buttons_for(p):
+            if b.primary:
+                violations.append((p, "蓝色 primary（当前卡自己按钮未移除）", b))
+            if b.cmd == "帮助" or b.label == "主菜单":
+                violations.append((p, "主菜单按钮未移除", b))
+            # 带参串首词是市价口令，属合法结构，仅在「零参按钮」上查「不含自己」
+            if " " not in b.cmd and b.cmd.lower() == self_head:
+                violations.append((p, "零参按钮含当前口令自己", b))
+    assert not violations, "需求不变量被破坏（前 12 条）：%s" % (violations[:12],)
 
 
 def test_no_fabricated_button_data():
-    """守门② 零编造：任何按钮 data ∈ 独立基准全集（fhelp/w M 立即 FAIL）。"""
+    """守门零编造：data ∈ 独立基准全集，或合法带参串 <口令> <物品> <rank>。"""
     base = _independent_real_commands()
-    probes = sorted(base) + ["", "随便闲聊", "/ai on", "#wf 配卡 奏凯", "签到", "/pc"]
+    ranks = _independent_ranks()
+    base_lower = {c.lower() for c in base}
+    probes = sorted(base) + [
+        "wm 绝路", "市价 延伸", "WM 绝路 满级", "wm 0级 绝路", "价格 满级 延伸",
+    ] + list(_GENERIC_PROBES)
     bad = set()
     for p in probes:
         for b in kb.buttons_for(p):
-            if b.cmd not in base:
+            if " " not in b.cmd:
+                if b.cmd.lower() not in base_lower:
+                    bad.add((p, b.cmd))
+                continue
+            parts = b.cmd.split()
+            if (len(parts) < 3 or parts[0].lower() not in base_lower
+                    or parts[-1] not in ranks or not all(parts[1:-1])):
                 bad.add((p, b.cmd))
-    assert not bad, "按钮 data 不在真实出卡全集（点了会静默=编造）：%s" % sorted(bad)
+    assert not bad, "按钮 data 编造/带参结构非法：%s" % sorted(bad)
 
 
-def test_no_wrong_mapping():
-    """守门③ 无错误映射：每个口令点了回到自己；终幕/coda/信条/tenet 各自独立。"""
-    base = _independent_real_commands()
-    for cmd in sorted(base):
-        btns = kb.buttons_for(cmd)
-        assert btns[0].cmd.lower() == cmd.lower(), "口令 %s 的 primary 不是自己：%s" % (
-            cmd, btns[0].cmd)
-    for cmd, self_primary in (("终幕", "终幕"), ("coda", "coda"),
-                              ("信条", "信条"), ("tenet", "tenet")):
-        p = kb.buttons_for(cmd)[0].cmd
-        assert p.lower() == self_primary.lower(), "错误映射：%s 的 primary 成了 %s（应 %s）" % (
-            cmd, p, self_primary)
-    # 终幕与信条不得共用同一 primary
-    assert kb.buttons_for("终幕")[0].cmd != kb.buttons_for("信条")[0].cmd
-
-
-def test_menu_and_generic_boundary():
-    """守门⑤ 主菜单常在 + GENERIC 边界：非游戏输入也带按钮，且 data 全真实。"""
-    base = _independent_real_commands()
-    for p in ("", "随便闲聊", "/ai on", "签到", "/pc", "/提醒 列表"):
+def test_generic_and_single_are_zero_buttons():
+    """GENERIC 输入 + 单档卡 → buttons_for == ()（去掉自己+主菜单后无可下钻）。"""
+    offenders = []
+    for p in list(_GENERIC_PROBES) + list(_SINGLE_SLOT_PROBES) + ["wm", "市价"]:
         btns = kb.buttons_for(p)
-        assert btns, "GENERIC 输入无按钮：%r" % p
-        assert any(b.cmd == "帮助" for b in btns), "GENERIC 缺主菜单：%r" % p
-        for b in btns:
-            assert b.cmd in base, "GENERIC 含非真实口令：%r -> %s" % (p, b.cmd)
+        if btns:
+            offenders.append((p, [(b.cmd, b.primary) for b in btns]))
+    assert not offenders, "这些卡应为零按钮，却产出了：%s" % (offenders[:12],)
 
 
-def test_keyboard_structure_valid():
-    """守门④ 结构合法：腾讯平台硬限（故意弄坏任一字段本测试必须失败）。"""
-    try:
-        from nonebot.adapters.qq.models.common import MessageKeyboard
-    except ImportError:
-        print("[skip] nonebot 不在宿主环境，结构项在容器内跑")
-        return
+def test_key_cards_nonempty_with_only_siblings():
+    """用户举例/要求的关键多档卡必须非空，且按钮恰好=同卡邻档（不含自己/主菜单）。"""
     base = _independent_real_commands()
-    for cmd in sorted(base) + ["", "闲聊", "/ai"]:
-        model, btns = kb.make_keyboard(cmd)
-        assert isinstance(model, MessageKeyboard), cmd
-        rows = model.content.rows
-        assert 1 <= len(rows) <= 5, "行数越界 %s" % cmd
-        for row in rows:
-            assert 1 <= len(row.buttons) <= 5, "每行按钮数越界 %s" % cmd
+    for cmd, want in _KEY_CARD_SIBLINGS.items():
+        assert cmd in base, "关键卡 %s 不在独立基准（源码改了？）" % cmd
+        got = {b.cmd for b in kb.buttons_for(cmd)}
+        assert got == want, "关键卡 %s 邻档错：got=%s want=%s" % (cmd, got, want)
+        assert all(w in base for w in got), "关键卡邻档含非真实口令：%s" % (got,)
+
+
+def test_zero_button_makes_none_keyboard():
+    """零按钮约定：make_keyboard 对单档/GENERIC 返 (None,())（不构造空 keyboard）。"""
+    for p in list(_GENERIC_PROBES) + list(_SINGLE_SLOT_PROBES) + ["wm", "市价"]:
+        model, btns = kb.make_keyboard(p)
+        assert model is None and btns == (), \
+            "零按钮卡 %r 的 make_keyboard 必须返 (None,())：model=%s btns=%s" % (p, model, btns)
+    # 有按钮卡：make_keyboard 返非空 MessageKeyboard（宿主无 nonebot 则跳过结构项）
+    try:
+        from nonebot.adapters.qq.models.common import MessageKeyboard  # noqa: F401
+    except ImportError:
+        print("[skip] nonebot 不在宿主，真 MessageKeyboard 结构项在容器内跑")
+        return
+    for p in ("裂隙", "赏金", "信条", "wm 绝路"):
+        model, btns = kb.make_keyboard(p)
+        assert isinstance(model, MessageKeyboard) and btns, "多档/市价卡 %r 应产出键盘" % p
+        for row in model.content.rows:
+            assert 1 <= len(row.buttons) <= 5, "行列越界 %r" % p
             for b in row.buttons:
-                assert b.render_data and b.render_data.label, "缺 label %s" % cmd
-                assert len(b.render_data.label) <= 10, "label>10 %s" % cmd
-                assert b.render_data.style in (0, 1, 3, 4), "style 非法 %s" % cmd
-                assert b.action and b.action.type == 1, "action.type≠1 %s" % cmd
-                assert b.action.permission and b.action.permission.type == 2, "permission 非法 %s" % cmd
-                assert b.action.data, "data 空 %s" % cmd
-        assert btns, "按钮组空 %s" % cmd
+                assert 0 < len(b.render_data.label) <= 10 and b.action.data, "按钮字段非法 %r" % p
+                assert b.render_data.style in (0, 1, 3, 4), "style 非法 %r" % p
 
 
 def test_injection_guards():
-    """prove-it 注入验证：三种错放回去，三道守门必须分别报错，恢复后通过。
-
-    * 给 buttons_for 注入一个假 data（模拟 fhelp/w M）→ 守门②应报错；
-    * 把终幕 primary 改成信条（模拟错误映射）→ 守门③应报错；
-    * 在源码副本塞一个假命令分支，独立基准应比实现多一词 → 守门①的
-      ``test_implementation_covers_baseline`` 逻辑应报错。
-    全部用临时对象/临时文件，绝不改真实源码、绝不污染 inventory 缓存。
-    """
+    """prove-it 注入验证：把「自己」「主菜单」「假 data」放回，守门必须分别报错。"""
     base = _independent_real_commands()
+    ranks = _independent_ranks()
 
-    # 注入 1：假按钮 data（零编造守门）
-    fake = sorted(base)[0] + "_FAKE_CMD"
-    injected = kb.buttons_for(sorted(base)[0]) + (kb.Btn("假", fake),)
-    assert any(b.cmd not in base for b in injected), "注入失败：假 data 未越界"
-    # 模拟守门②的判定式
+    # 注入 1：当前卡自己按钮（裂隙卡塞回「裂隙」）→ 需求守门③应拒绝
+    fissure_with_self = kb.buttons_for("裂隙") + (kb.Btn("裂隙", "裂隙"),)
     try:
-        assert all(b.cmd in base for b in injected), "零编造守门应拒绝假 data"
-        raise AssertionError("守门②未报错（注入的假 data 没被拦）")
+        assert not any(" " not in b.cmd and b.cmd.lower() == _self_head("裂隙")
+                       for b in fissure_with_self), "需求守门应拒绝裂隙卡里的自己按钮"
+        raise AssertionError("守门③未报错（当前卡自己按钮没被拦）")
     except AssertionError as e:
-        assert "零编造守门应拒绝" in str(e), "守门②报错位置不对：%s" % e
+        assert "守门③未报错" not in str(e), "守门③确实没拦住自己按钮"
 
-    # 注入 2：错误映射 终幕→信条（无错误映射守门）
-    wrong_primary = "信条"
+    # 注入 2：主菜单按钮（塞回「帮助」）→ 需求守门②应拒绝
+    with_menu = kb.buttons_for("赏金") + (kb.Btn("主菜单", "帮助"),)
     try:
-        assert kb.buttons_for("终幕")[0].cmd.lower() == wrong_primary.lower(), \
-            "无错误映射守门应拒绝 终幕→信条"
-        raise AssertionError("守门③未报错（终幕→信条 没被拦）")
+        assert not any(b.cmd == "帮助" or b.label == "主菜单" for b in with_menu), \
+            "需求守门应拒绝主菜单按钮"
+        raise AssertionError("守门②未报错（主菜单没被拦）")
     except AssertionError as e:
-        # 正常实现下 primary=终幕≠信条，上面的 assert 会先失败并带正确信息 → 说明守门有效
-        assert "守门③未报错" not in str(e), "守门③确实没拦住错误映射"
-    # 恢复断言：真实实现终幕 primary 仍是终幕
-    assert kb.buttons_for("终幕")[0].cmd == "终幕"
+        assert "守门②未报错" not in str(e), "守门②确实没拦住主菜单"
 
-    # 注入 3：源码塞一个假命令分支，独立基准应新增该口令 → 覆盖守门应报「实现漏了」
-    src = _GT.read_text(encoding="utf-8")
-    patched = src.replace(
-        'if cmd in ("赏金",):',
-        'if cmd in ("赏金", "ZZZ_INJECTED_CMD"):', 1)
-    assert patched != src, "注入 3 没找到锚点"
-    # 临时文件写在 game_tools 源码同级目录（宿主/容器都一定存在且可写），
-    # 不依赖 tests/ 是否存在于该环境（容器镜像只 COPY src，不含 tests/）。
-    tmp = _GT.with_name("_injected_gt.py")
-    original = _GT
+    # 注入 3：假 data（fhelp / 假 rank token）→ 零编造守门应拒绝
+    fake_data = sorted(base)[0] + "_FAKE_CMD"
+    fake_rank = "WM 绝路 满级X"
+    bad = [fake_data, fake_rank]
     try:
-        tmp.write_text(patched, encoding="utf-8")
-        # 用注入后的源码跑独立基准（临时把 _GT 指向它）
-        globals()["_GT"] = tmp
-        new_base = _independent_real_commands()
-        impl = inv_mod.build_inventory().commands  # 实现仍指向真实源码
-        leaked = sorted(new_base - impl)
-        try:
-            assert not leaked, "覆盖守门应报实现漏了注入口令"
-            raise AssertionError("守门①未报错（源码新增分支但实现没跟上没被拦）")
-        except AssertionError as e:
-            assert "守门①未报错" not in str(e), "守门①确实没拦住漏口令"
-    finally:
-        globals()["_GT"] = original
-        tmp.unlink(missing_ok=True)
-    # 恢复断言
-    assert kb.buttons_for("赏金")[0].cmd == "赏金"
+        assert all(
+            (b.lower() in {c.lower() for c in base}) if " " not in b
+            else (len(b.split()) >= 3 and b.split()[0].lower() in {c.lower() for c in base}
+                  and b.split()[-1] in ranks)
+            for b in bad
+        ), "零编造守门应拒绝假 data / 假 rank"
+        raise AssertionError("守门零编造未报错（假 data 没被拦）")
+    except AssertionError as e:
+        assert "守门零编造未报错" not in str(e), "零编造守门确实没拦住假 data"
+
+    # 恢复断言：真实实现三条都过
+    real = kb.buttons_for("裂隙")
+    assert all(not b.primary and b.cmd != "帮助" and b.cmd != "裂隙" for b in real)
+    assert "满级X" not in " ".join(b.cmd for b in kb.buttons_for("wm 绝路"))
 
 
 if __name__ == "__main__":
@@ -339,11 +390,11 @@ if __name__ == "__main__":
     tests = [
         test_independent_baseline_sane,
         test_implementation_covers_baseline,
-        test_no_missing_button,
+        test_no_self_menu_primary,
         test_no_fabricated_button_data,
-        test_no_wrong_mapping,
-        test_menu_and_generic_boundary,
-        test_keyboard_structure_valid,
+        test_generic_and_single_are_zero_buttons,
+        test_key_cards_nonempty_with_only_siblings,
+        test_zero_button_makes_none_keyboard,
         test_injection_guards,
     ]
     passed = failed = 0

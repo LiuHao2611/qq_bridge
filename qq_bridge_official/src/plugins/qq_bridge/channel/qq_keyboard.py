@@ -15,23 +15,37 @@
 * :mod:`card_buttons` —— 从 ``_handle`` 派生的「出卡函数 → 该卡所有档位」+
   市价口令集 + ``_parse_mod_rank`` 的 rank token 白名单（满级/R0）。
 
+## 第四次修改（用户「不要显示当前卡片按钮，去掉主菜单，只展示当前卡片相关按钮」）
+
+第三次返工虽做到「每张卡挂自己的档位」，但真实群截图里每张卡仍带一个
+**当前卡自己的蓝色 primary 按钮**（红框，「裂隙」）+ 末尾**主菜单**。用户明确：
+「不要显示当前卡片按钮，还有去掉主菜单按钮，只展示当前卡片相关按钮」。故本版：
+
 ``buttons_for(text)`` 规则：
-  1. **档位族卡**（如裂隙/赏金/信条/终幕/紫卡趋势…）：按钮 = 该卡的全部档位
-     canonical（裂隙卡→裂隙|普通裂隙|钢铁裂隙；赏金卡→赏金|钢铁赏金），primary
-     恒为当前口令自己。绝不再用 _POPULAR 塞无关全局词。
-  2. **市价卡带物品名**（如 ``wm 绝路``）：primary=当前完整口令 + 派生两个带参
-     rank 按钮 ``wm 绝路 满级`` / ``wm 绝路 R0``（data 携带物品名，点了才出对应
-     卡）+ 主菜单。rank token 只从 ``_parse_mod_rank`` 真实 return 字面量取。
-  3. **单档卡 / 兜底卡**（警报/仲裁表/资料卡…）：按钮 = 自己 + 主菜单（无邻居可
-     下钻时不硬凑）。
-  4. **非口令输入**（斜杠/闲聊/空）→ GENERIC 通用入口，data 全部 ∈ commands。
+  1. **档位族卡**（裂隙/赏金/信条/紫卡趋势…）：按钮 = 该卡全部档位**去掉当前口令
+     自己**（裂隙→普通裂隙|钢铁裂隙；赏金→钢铁赏金），全部 ``primary=False``
+     （不再有蓝色主按钮——primary 语义本就是「当前卡自己」，已按用户要求移除）。
+     绝不再用 _POPULAR 塞无关全局词，也不再加主菜单。
+  2. **市价卡带物品名**（如 ``wm 绝路``）：只派生两个带参 rank 按钮
+     ``wm 绝路 满级`` / ``wm 绝路 R0``（data 携带物品名，点了出对应卡），**不含
+     市价口令自己、不含主菜单**。rank token 只从 ``_parse_mod_rank`` 真实字面量取。
+  3. **单档卡 / 兜底卡**（警报/仲裁表/资料卡…）：没有任何「同卡其他档位」可下钻
+     → 返回 ``()``（**零按钮**）。发送层据此**只发图片、不发空 keyboard**（见
+     official.py 的 ``has_buttons`` 分支与 ``make_keyboard`` 的 ``(None,())`` 约定）。
+  4. **非口令输入**（斜杠/闲聊/空）→ 同样 ``()``：无「当前卡」就无可下钻按钮，
+     不再用 GENERIC 全局导航（那正是用户第一轮嫌弃的「全局都一样」根因）。
 
 **硬不变量**：任何按钮 data 必须满足二者之一——
-  (a) ∈ ``inventory.commands``（真实零参口令）；或
+  (a) ∈ ``inventory.commands``（真实零参口令，且 ≠ 当前口令自己、≠ 主菜单「帮助」）；或
   (b) 是合法带参串 ``<市价口令> <物品> <rank>``：首词 ∈ card_buttons.market_cmds、
       末词 ∈ card_buttons.rank_tokens、中间物品非空、且首词 ∈ commands。
-由构造方式保证，并由 tests/test_qq_card_buttons.py 的「零编造 + 跨卡错位」守门
-反向设防（注入假 rank / 把赏金按钮塞裂隙卡 立即 FAIL）。
+由构造方式保证，并由 tests/test_qq_card_buttons.py 的「零编造 + 跨卡错位 +
+不含自己/主菜单」守门反向设防（注入自己/主菜单/假 rank 立即 FAIL）。
+
+**零按钮约定（关键，防 40034011）**：``make_keyboard(text)`` 在 ``buttons_for``
+返空时返回 ``(None, ())``；official.py::send 用 ``has_buttons`` 前置判定：无按钮的
+卡走「图片单独发（msg_type=7）/ 纯 markdown 图」，绝不构造空 keyboard 下发平台。
+由 tests/test_qq_button_merge.py 的零按钮守门 + 容器真 payload 反向设防。
 
 腾讯平台约束：action.type=1 回调、permission.type=2 所有人可点、label≤10、
 每行≤5、行数≤5；keyboard 走 msg_type=2，作为图片卡片之后追加的独立消息。
@@ -56,15 +70,18 @@ except ImportError:  # 单文件直载（离线单测 `_load()`）时，同目�
 class Btn:
     label: str        # 按钮显示文字（≤10 字符，平台限制）
     cmd: str          # 点击后触发的口令（回调 button_data），必须 ∈ inventory.commands
-    primary: bool = False   # 主按钮蓝底(style=1)，其余灰线框(style=0)
+    # 第四次修改后恒 False：primary 语义=「当前卡自己」，用户已要求移除该蓝色按钮。
+    # 字段保留是为了 make_keyboard 的 style 表达式与历史注入测试兼容，不再有 True 值。
+    primary: bool = False
 
 
-# 主菜单按钮：「帮助」是 game_tools 真实一级口令（dispatch:2078），点了出工具箱卡。
+# 「帮助」是 game_tools 真实一级口令（dispatch:2078），点了出工具箱卡。
+# 第四次修改：主菜单按钮**从所有卡片移除**（用户「去掉主菜单按钮」）。常量保留仅为
+# 让「禁止出现帮助按钮」的守门有明确参照；buttons_for 任何分支都不得再返回它。
 _MENU_CMD = "帮助"
-_MENU = Btn("主菜单", _MENU_CMD)
 
-# GENERIC：主流程斜杠命令 / AI 闲聊 / 空口令的通用入口。每项都必须真实出卡，
-# 测试会断言 GENERIC 里每个 cmd ∈ inventory.commands（防编造）。
+# 第四次修改：GENERIC 全局导航已废弃（那正是用户第一轮嫌弃的「全局都一样」根因）。
+# 非口令输入无「当前卡」→ 无可下钻按钮 → buttons_for 返 ()。常量留作注入测试锚点。
 _GENERIC_CMDS = ("赏金", "裂隙", "市价", "抽签")
 
 
@@ -144,10 +161,15 @@ def _rank_button_data(head: str, rest: str) -> tuple[list[str], list[str]]:
 
 
 def buttons_for(text: str) -> tuple[Btn, ...]:
-    """按当前回复所属卡取「对应功能按钮」；绝不返回空。
+    """按当前回复所属卡取「同卡其他档位」按钮；无同卡下钻则返 ``()``（零按钮）。
 
-    规则见模块 docstring：档位族卡→该卡全部档位；市价卡带物品名→+带参 rank；
-    单档/兜底卡→自己+主菜单；非口令→GENERIC。所有 data 满足零编造不变量(a)/(b)。
+    第四次修改（用户「不要显示当前卡片按钮，去掉主菜单，只展示相关按钮」）：
+      * 档位族卡 → 该卡全部档位**去掉当前口令自己**，无 primary、无主菜单；
+      * 市价卡带物品名 → 只 ``满级/R0`` 带参按钮，无市价口令自己、无主菜单；
+      * 单档卡 / 非口令 → ``()``（发送层据此只发图片、不挂空 keyboard）。
+
+    所有返回按钮的 data 满足零编造不变量(a)/(b)，且恒 ``primary=False``、
+    恒 ``cmd != 当前口令``、恒 ``cmd != 帮助``（三条由守门反向设防）。
     """
     inv = get_inventory()
     raw = (text or "").strip()
@@ -157,15 +179,11 @@ def buttons_for(text: str) -> tuple[Btn, ...]:
         (c for c in inv.commands if c.lower() == head.lower()), ""
     ) if head else ""
 
-    # 主流程斜杠 / 闲聊 / 空 → GENERIC（data 全部是真实口令）
+    # 非口令（斜杠/闲聊/空）→ 无当前卡 → 零按钮（不再有 GENERIC 全局导航）
     if not cmd:
-        return tuple(
-            Btn(_display(c), c, primary=(i == 0))
-            for i, c in enumerate(_GENERIC_CMDS)
-        ) + (_MENU,)
+        return ()
 
     inv_cmd = next((c for c in inv.commands if c.lower() == cmd.lower()), cmd)
-    primary = Btn(_display(inv_cmd), inv_cmd, True)
     card = get_card_inventory()
 
     # 市价卡带物品名优先（wm 绝路 / 市价 延伸 满级 …）：档位族里没有市价卡，
@@ -181,22 +199,22 @@ def buttons_for(text: str) -> tuple[Btn, ...]:
         item_rest = " ".join(parts[1:]) if parts else ""
         rank_data, rank_labels = _rank_button_data(inv_cmd, item_rest)
         if rank_data:
-            return (primary,) + tuple(
+            # 只留带参 rank 按钮：不含市价口令自己、不含主菜单、无 primary
+            return tuple(
                 Btn(lbl, d, False) for d, lbl in zip(rank_data, rank_labels)
-            ) + (_MENU,)
+            )
 
-    # 档位族卡：按钮 = 该卡全部档位 canonical（含自己），primary 恒为自己。
-    # 单档卡（slots 只有自己）自然退化成「自己 + 主菜单」，不硬凑全局词。
+    # 档位族卡：按钮 = 该卡全部档位**去掉当前口令自己**，其余全灰（无 primary），
+    # 不再追加主菜单。平台每行≤5，去掉自己后最多 4 个邻档，安全。
     if len(slots) > 1:
         siblings = tuple(
-            Btn(c, c, primary=(c.lower() == inv_cmd.lower()))
+            Btn(c, c, False)
             for c in slots if c.lower() != inv_cmd.lower()
         )
-        # 平台每行≤5：primary + 最多 3 档位 + 主菜单 = 5
-        return (primary,) + siblings[:3] + (_MENU,)
+        return siblings[:5]
 
-    # 单档 / 兜底卡：只自己 + 主菜单
-    return (primary, _MENU)
+    # 单档 / 兜底卡 / 「帮助」：没有同卡其他档位可下钻 → 零按钮。
+    return ()
 
 
 #: 按钮卡片引导 markdown：QQ 官方 msg_type=2 是唯一支持「消息按钮」的类型，
@@ -234,15 +252,23 @@ def make_keyboard(text: str):
     延迟 import nonebot：本模块可在无依赖环境单测按钮表（command_inventory 纯
     标准库）。返回 ``(model, btns)``；btns 供调用方记日志（取 label）。
     纯函数——只依赖入参 + 缓存的 inventory，无全局可变态。
+
+    第四次修改：**零按钮约定**。当 ``buttons_for(text)`` 返 ``()``（单档卡/非口令/
+    市价裸口令）时，返回 ``(None, ())``，调用方（official.py）据此**不构造、不
+    下发空 keyboard**——空 rows 的 keyboard 会被平台以 40034011 拒收。这是
+    「去掉自己+主菜单后单档卡零按钮」能安全落地的关键接口变更。
     """
+    btns = buttons_for(text)
+    if not btns:
+        return None, ()
+
     from nonebot.adapters.qq.models.common import (  # noqa: PLC0415
         Action, Button, InlineKeyboard, InlineKeyboardRow, MessageKeyboard,
         Permission, RenderData,
     )
 
-    btns = buttons_for(text)
     row_buttons = []
-    for b in btns[:5]:  # 平台每行≤5；当前最多 1+3+1=5，正好一行
+    for b in btns[:5]:  # 平台每行≤5；去掉自己+主菜单后最多 4 邻档，安全
         row_buttons.append(Button(
             id="qb_%s" % (b.cmd or "menu"),
             render_data=RenderData(

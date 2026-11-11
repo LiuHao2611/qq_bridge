@@ -1,20 +1,24 @@
 # -*- coding: utf-8 -*-
-"""卡片级「对应功能按钮」验收（2026-11-11 第三次返工，prove-it，独立基准）。
+"""卡片级「对应功能按钮」验收（2026-11-11 第四次修改，prove-it，独立基准）。
 
-## 针对用户第三次反馈：「每张卡只挂对应功能按钮」
+## 针对用户第三/第四次反馈：「每张卡只挂对应功能按钮」→「再去掉自己+主菜单」
 
-第二次返工实现零编造+全量，但所有卡都显示成同一组全局导航（赏金/钢路/钢铁/
-裂隙/主菜单）。本文件守门「卡片级档位 + 市价带参 rank」两件事，且**不信任**
-card_buttons/qq_keyboard 的实现：档位族、市价口令、rank token 全部用本文件里
-**第二套独立 AST 遍历**从源码重算，实现与基准任何不一致都 FAIL。
+第三次返工实现「每卡挂自己档位」，但真实群截图里每张卡仍带一个蓝色 primary
+「当前卡自己」按钮（红框）+ 末尾主菜单。用户第四次明确：「不要显示当前卡片
+按钮，还有去掉主菜单按钮，只展示当前卡片相关按钮」。本文件守门两件事，且
+**不信任** card_buttons/qq_keyboard 的实现：档位族、市价口令、rank token 全部
+用本文件里**第二套独立 AST 遍历**从源码重算，实现与基准任何不一致都 FAIL。
 
-四道硬守门：
-  ① 档位族精确：每张卡的档位按钮集合 == 独立基准派生的该卡档位全集（漏档/错配 FAIL）；
-  ② 跨卡零错位：档位按钮只能来自自己所属卡（裂隙卡出现赏金/市价 FAIL）；
-  ③ 带参串零编造：市价按钮 data 必须严格 `<真实市价口令> <物品> <真实rank>`
+五道硬守门：
+  ① 档位族精确：card_buttons 派生的每卡档位全集 == 独立基准（漏档/错配 FAIL）；
+  ② 每卡按钮 == 该卡档位**去掉当前口令自己**（不多不少、无邻卡错位、无主菜单）；
+  ③ 带参串零编造：市价按钮 data 严格 `<真实市价口令> <物品> <真实rank>`
      （注入假 rank `满级X` / 假口令 `wm2` FAIL）；
-  ④ 满级/0级专属：`wm 绝路` 必出满级+R0、data 携带「绝路」、重复 rank 幂等剥离。
-  注入验证 `test_injection_guards`：三类错真实放回，断言对应守门报错，恢复全绿。
+  ④ 满级/0级专属：`wm 绝路` 只出满级+R0（无市价口令自己）、data 带「绝路」、
+     重复 rank 幂等剥离；
+  ⑤ 零按钮：单档卡 / GENERIC → buttons_for==() 且 make_keyboard==(None,())。
+  注入验证 `test_injection_guards`：把自己/主菜单/假 rank/假口令放回，断言守门
+  报错，恢复全绿 —— 证明守门不是摆设。
 
 跑法：python tests/test_qq_card_buttons.py（宿主纯标准库）
       docker exec -i qq-bridge-official /opt/venv/bin/python -m pytest tests/test_qq_card_buttons.py -v
@@ -225,28 +229,28 @@ def test_impl_matches_independent_baseline():
     assert ci.rank_tokens == _baseline_ranks(), "rank token 集不一致"
 
 
-def test_no_cross_card_neighbors():
-    """守门② 跨卡零错位：每张档位卡的按钮只能来自自己所属卡档位 + 主菜单。"""
+def test_each_card_buttons_equal_siblings():
+    """守门② 每卡按钮 == 该卡档位全集去掉当前口令自己（不多不少、无错位/自己/主菜单）。"""
     base = _baseline_groups()
-    all_modes = {c for modes in base.values() for c in modes}
     for fn, modes in base.items():
         if len(modes) <= 1:
-            continue  # 单档卡无邻居可错
+            continue  # 单档卡零按钮，由守门⑤验
         for probe in modes:
             btns = kb.buttons_for(probe)
-            slot = cb.get_card_inventory().slots_for(probe)
-            allowed = set(slot) | {"帮助"}
+            # 独立基准：本卡档位去掉 probe 自己（大小写不敏感）
+            expected = {m for m in modes if m.lower() != probe.lower()}
+            got = {b.cmd for b in btns if " " not in b.cmd}
+            assert got == expected, \
+                "卡 %s(口令 %s) 邻档错：got=%s expected=%s" % (fn, probe, got, expected)
             for b in btns:
-                # 零参档位按钮不得是别的卡的档位；带参串单独在守门③验
-                if " " not in b.cmd:
-                    assert b.cmd in allowed, \
-                        "跨卡错位：卡 %s(口令 %s) 按钮出现 %s（属%s）" % (
-                            fn, probe, b.cmd,
-                            next((f for f, ms in base.items() if b.cmd in ms), "?"))
-    # 具体反例：裂隙卡绝不能出现赏金/市价/紫卡
+                assert not b.primary, "残留蓝色 primary（当前卡自己按钮）：%s -> %s" % (probe, b)
+                assert b.cmd != "帮助" and b.label != "主菜单", \
+                    "残留主菜单按钮：%s -> %s" % (probe, b)
+                assert " " not in b.cmd, "档位卡不该出现市价带参按钮：%s -> %s" % (probe, b.cmd)
+    # 具体反例：裂隙卡绝不能出现自己/赏金/市价/紫卡/主菜单
     fissure = [b.cmd for b in kb.buttons_for("裂隙")]
-    for forbidden in ("赏金", "钢铁赏金", "市价", "紫卡", "抽签"):
-        assert forbidden not in fissure, "裂隙卡混入无关全局词 %s：%s" % (forbidden, fissure)
+    for forbidden in ("裂隙", "赏金", "钢铁赏金", "市价", "紫卡", "抽签", "帮助"):
+        assert forbidden not in fissure, "裂隙卡混入 %s：%s" % (forbidden, fissure)
 
 
 def test_rank_button_no_fabrication():
@@ -260,8 +264,8 @@ def test_rank_button_no_fabrication():
     for p in probes:
         for b in kb.buttons_for(p):
             if " " not in b.cmd:
-                assert b.cmd in inv_cmds or b.cmd == "帮助", \
-                    "零参按钮 data 编造：%r -> %s" % (p, b.cmd)
+                assert b.cmd in inv_cmds, \
+                    "零参按钮 data 编造（主菜单/自己/邻卡越界都会命中）：%r -> %s" % (p, b.cmd)
                 continue
             parts = b.cmd.split()
             assert len(parts) >= 3, "带参 data 结构非法（<口令> <物品> <rank>）：%s" % b.cmd
@@ -274,14 +278,18 @@ def test_rank_button_no_fabrication():
 
 
 def test_rank_exact_and_idempotent():
-    """守门④ 满级/0级专属：wm 绝路 必出满级+R0，data 带「绝路」，重复 rank 幂等。"""
+    """守门④ 满级/0级专属：wm 绝路只出满级+R0（无市价口令自己/主菜单/primary）、
+    data 携带「绝路」，重复 rank 幂等剥离。"""
     bs = kb.buttons_for("wm 绝路")
     data = [b.cmd for b in bs]
     assert "WM 绝路 满级" in data or "wm 绝路 满级" in data, \
         "缺满级按钮（或没携带物品名绝路）：%s" % data
     assert "WM 绝路 R0" in data or "wm 绝路 R0" in data, \
         "缺 0级/R0 按钮（或没携带物品名绝路）：%s" % data
+    # 市价卡第四次修改：只这两个带参按钮，无市价口令自己、无主菜单、无 primary
+    assert len(bs) == 2, "市价卡应恰好满级+R0 两个按钮：%s" % data
     for b in bs:
+        assert not b.primary and b.cmd != "帮助", "市价卡残留主菜单/primary：%s" % b
         if b.label in ("满级", "0级"):
             assert "绝路" in b.cmd, "rank 按钮没带物品名：%s" % b.cmd
     # 幂等：已带 rank 的输入再派生，物品名里不应残留任何源码可识别的 rank 写法
@@ -303,24 +311,39 @@ def test_rank_exact_and_idempotent():
 
 
 def test_structure_platform_limits():
-    """结构合法：腾讯平台硬限（label≤10 / 行≤5）；宿主无 nonebot 则只验 Btn 元组。"""
+    """结构合法：腾讯平台硬限（label≤10 / 行≤5 / 无 primary）；宿主无 nonebot 只验 Btn 元组。
+
+    第四次修改：去掉自己+主菜单后，档位卡按钮数 = 档位数-1（1~2），市价卡=2，
+    单档/GENERIC=0；不再有 primary、不再有末位主菜单。零按钮的 make_keyboard
+    必须返 (None,())，绝不构造空 keyboard 下发。
+    """
     base = _baseline_groups()
-    probes = set(c for modes in base.values() for c in modes) | {
-        "wm 绝路", "市价 延伸", "帮助", "", "/ai", "闲聊"}
-    for p in probes:
+    multi = {c for modes in base.values() if len(modes) > 1 for c in modes}
+    zero = {"帮助", "", "/ai", "闲聊", "wm", "警报", "科研", "仲裁表"}
+    priced = {"wm 绝路", "市价 延伸"}
+    for p in multi:
         btns = kb.buttons_for(p)
-        assert 2 <= len(btns) <= 5, "按钮数越界 %r -> %d" % (p, len(btns))
-        assert btns[0].primary, "primary 不在首位 %r" % p
-        assert btns[-1].cmd == "帮助", "末位不是主菜单 %r" % p
+        assert 1 <= len(btns) <= 4, "档位卡按钮数越界 %r -> %d" % (p, len(btns))
+        assert all(not b.primary and b.cmd != "帮助" for b in btns), \
+            "档位卡残留 primary/主菜单 %r" % p
         for b in btns:
             assert 0 < len(b.label) <= 10, "label 越界 %r -> %s" % (p, b.label)
+    for p in priced:
+        btns = kb.buttons_for(p)
+        assert 1 <= len(btns) <= 4 and all(not b.primary for b in btns), \
+            "市价卡按钮数/primary 越界 %r -> %d" % (p, len(btns))
+    for p in zero:
+        assert kb.buttons_for(p) == (), "零按钮卡产出按钮了 %r" % p
+        assert kb.make_keyboard(p) == (None, ()), \
+            "零按钮卡 make_keyboard 未返 (None,()) %r" % p
     try:
         from nonebot.adapters.qq.models.common import MessageKeyboard  # noqa: F401
     except ImportError:
         print("[skip] nonebot 不在宿主环境，真 MessageKeyboard 结构项在容器内跑")
         return
-    for p in probes:
+    for p in multi | priced:
         model, _btns = kb.make_keyboard(p)
+        assert isinstance(model, MessageKeyboard), "有按钮卡却没键盘 %r" % p
         rows = model.content.rows
         assert 1 <= len(rows) <= 5 and all(1 <= len(r.buttons) <= 5 for r in rows), \
             "keyboard 行列越界 %r" % p
@@ -328,26 +351,55 @@ def test_structure_platform_limits():
             for b in r.buttons:
                 assert len(b.render_data.label) <= 10 and b.action.data, \
                     "按钮字段非法 %r" % p
+                assert b.render_data.style in (0, 1, 3, 4), "style 非法 %r" % p
+
+
+def test_zero_button_cards_and_market():
+    """守门⑤ 零按钮 + 市价裸口令：单档/GENERIC/裸市价 → () 且 (None,())；
+    市价带物品名 → 只满级/R0。"""
+    zero = ["帮助", "", "/ai", "闲聊", "wm", "市价", "警报", "科研", "仲裁表",
+            "平原", "配卡", "词条推荐", "执政官", "紫卡融合", "紫卡全面", "角色", "模拟开卡"]
+    for p in zero:
+        assert kb.buttons_for(p) == (), "零按钮卡产出按钮了 %r" % p
+        assert kb.make_keyboard(p) == (None, ()), "零按钮卡未返 (None,()) %r" % p
+    # 市价带物品名：只两个带参 rank，无市价口令自己/主菜单
+    for p in ("wm 绝路", "市价 延伸", "WM 绝路 满级"):
+        data = [b.cmd for b in kb.buttons_for(p)]
+        assert len(data) == 2 and all(" " in d for d in data), \
+            "市价卡应只出两个带参 rank %r -> %s" % (p, data)
+        assert all(b.cmd != "帮助" and not b.primary for b in kb.buttons_for(p)), \
+            "市价卡残留主菜单/primary %r" % p
 
 
 def test_injection_guards():
-    """prove-it：三类真实错误放回，对应守门必须报错，恢复后通过。"""
+    """prove-it：四类真实错误放回，对应守门必须报错，恢复后通过。"""
     inv_cmds = inv_mod.build_inventory().commands
     base_market = _baseline_market()
     base_ranks = _baseline_ranks()
+    base_groups = _baseline_groups()
 
-    # 注入 1：跨卡错位——给裂隙卡加一个赏金按钮，守门②判定式应拒绝
-    fissure_with_cross = kb.buttons_for("裂隙") + (kb.Btn("赏金", "赏金"),)
-    slot = set(cb.get_card_inventory().slots_for("裂隙")) | {"帮助"}
+    def _fissure_siblings_ok(btns):
+        expected = {m for m in base_groups.get("_send_fissure", ()) if m.lower() != "裂隙"}
+        got = {b.cmd for b in btns if " " not in b.cmd}
+        return got == expected and all(not b.primary and b.cmd != "帮助" for b in btns)
+
+    # 注入 1：把「当前卡自己」塞回裂隙卡 → 守门②（== 邻档去自己）应拒绝
+    fissure_with_self = kb.buttons_for("裂隙") + (kb.Btn("裂隙", "裂隙"),)
     try:
-        assert all((b.cmd not in ({"赏金", "钢铁赏金", "市价", "紫卡", "抽签"}))
-                   for b in fissure_with_cross if " " not in b.cmd), \
-            "跨卡守门应拒绝裂隙卡里的赏金"
-        raise AssertionError("守门②未报错（跨卡错位没被拦）")
+        assert _fissure_siblings_ok(fissure_with_self), "守门②应拒绝塞回的自己按钮"
+        raise AssertionError("守门②未报错（自己按钮没被拦）")
     except AssertionError as e:
-        assert "守门②未报错" not in str(e), "守门②确实没拦住跨卡错位"
+        assert "守门②未报错" not in str(e), "守门②确实没拦住自己按钮"
 
-    # 注入 2：假 rank token——data 末词改成源码里没有的 满级X，守门③应拒绝
+    # 注入 2：把主菜单塞回裂隙卡 → 守门②应拒绝
+    fissure_with_menu = kb.buttons_for("裂隙") + (kb.Btn("主菜单", "帮助"),)
+    try:
+        assert _fissure_siblings_ok(fissure_with_menu), "守门②应拒绝塞回的主菜单"
+        raise AssertionError("守门②未报错（主菜单没被拦）")
+    except AssertionError as e:
+        assert "守门②未报错" not in str(e), "守门②确实没拦住主菜单"
+
+    # 注入 3：假 rank token——data 末词改成源码里没有的 满级X，守门③应拒绝
     fake_rank_data = "WM 绝路 满级X"
     parts = fake_rank_data.split()
     try:
@@ -356,7 +408,7 @@ def test_injection_guards():
     except AssertionError as e:
         assert "守门③未报错" not in str(e), "守门③确实没拦住假 rank"
 
-    # 注入 3：假市价口令——首词 wm2 不在真实口令集，守门③应拒绝
+    # 注入 4：假市价口令——首词 wm2 不在真实口令集，守门③应拒绝
     fake_market_data = "wm2 绝路 满级"
     hp = fake_market_data.split()[0]
     try:
@@ -367,7 +419,8 @@ def test_injection_guards():
         assert "守门③未报错" not in str(e), "守门③确实没拦住假市价口令"
 
     # 恢复断言
-    assert "赏金" not in [b.cmd for b in kb.buttons_for("裂隙")]
+    fissure_now = [b.cmd for b in kb.buttons_for("裂隙")]
+    assert "裂隙" not in fissure_now and "帮助" not in fissure_now
     assert "满级X" not in " ".join(b.cmd for b in kb.buttons_for("wm 绝路"))
 
 
@@ -376,10 +429,11 @@ if __name__ == "__main__":
     tests = [
         test_baseline_sane,
         test_impl_matches_independent_baseline,
-        test_no_cross_card_neighbors,
+        test_each_card_buttons_equal_siblings,
         test_rank_button_no_fabrication,
         test_rank_exact_and_idempotent,
         test_structure_platform_limits,
+        test_zero_button_cards_and_market,
         test_injection_guards,
     ]
     passed = failed = 0

@@ -95,6 +95,10 @@ def _build_button_segment(cmd: str, _QQMessage, _QQSegment):
         from .qq_keyboard import make_button_message, make_keyboard  # noqa: PLC0415
 
         kb_model, btns = make_keyboard(cmd)
+        # 第四次修改：单档卡/非口令零按钮 → make_keyboard 返 (None,())。
+        # 绝不能用空 model 构造段下发（空 keyboard → 40034011「无效 markdown content」）。
+        if kb_model is None or not btns:
+            return None, []
         seg = make_button_message(kb_model, _QQMessage, _QQSegment)
         return seg, [b.label for b in btns]
     except Exception as e:  # noqa: BLE001 — 按钮是增强项，失败只记日志不阻断发送
@@ -113,6 +117,11 @@ async def _build_merged_card_segment(bot, image_datas: list[bytes],
 
     返回 ``(message, btn_labels)``；任一素材上传失败抛
     :class:`media_asset.MaterialUploadError`，由 send() 捕获降级回两条发送。
+
+    第四次修改（零按钮）：单档卡/非口令的 ``make_keyboard`` 返 ``(None,())``，
+    此时**只发内嵌图片的 markdown 段、不挂空 keyboard**（空 keyboard 会被平台以
+    40034011 拒收，且正是「去掉自己+主菜单」后单档卡必然遇到的路径）。有按钮才
+    在同段追加 keyboard，维持「图片+按钮一条」的既有语义。
     """
     from .media_asset import ensure_material, markdown_image  # noqa: PLC0415
     from .qq_keyboard import make_keyboard  # noqa: PLC0415
@@ -124,7 +133,8 @@ async def _build_merged_card_segment(bot, image_datas: list[bytes],
         parts.append(markdown_image(mat["url"], mat["width"], mat["height"]))
     seg = _QQMessage()
     seg += _QQSegment.markdown("\n".join(parts))  # 合法 markdown content（图片）
-    seg += _QQSegment.keyboard(kb_model)          # 同段挂按钮，平台 msg_type=2
+    if kb_model is not None and btns:              # 有按钮才挂，零按钮绝不发空 keyboard
+        seg += _QQSegment.keyboard(kb_model)       # 同段挂按钮，平台 msg_type=2
     return seg, [b.label for b in btns]
 
 
@@ -347,9 +357,21 @@ class OfficialChannel(Channel):
             or (out.text or "").strip().split("\n")[0]
         )
 
-        # ---- 图片 + 按钮合一（默认开；失败降级两条）----
+        # 第四次修改：先判「该口令是否有同卡其他档位按钮」。单档卡/非口令/
+        # 市价裸口令去掉自己+主菜单后是**零按钮**——此时绝不能走「图片+按钮合并」
+        # （会上传素材换 qqbot-media 却挂空 keyboard，或下发空 rows 被 40034011 拒）。
+        # 零按钮直接走下面的图片独立段（msg_type=7 富媒体），用户只看到干净的图片卡。
+        try:
+            from .qq_keyboard import buttons_for as _buttons_for  # noqa: PLC0415
+            has_buttons = bool(btn_cmd) and bool(_buttons_for(btn_cmd))
+        except Exception as e:  # noqa: BLE001 — 判不出就当无按钮，宁可少发按钮不阻断图片
+            log.warning(jlog("official_has_buttons_failed", error=type(e).__name__,
+                             cmd=btn_cmd))
+            has_buttons = False
+
+        # ---- 图片 + 按钮合一（默认开；失败降级两条；零按钮时跳过）----
         merged_done = False
-        if _IMAGE_BUTTON_MERGE and image_datas and btn_cmd:
+        if _IMAGE_BUTTON_MERGE and image_datas and btn_cmd and has_buttons:
             try:
                 merged_seg, btn_labels = await _build_merged_card_segment(
                     bot, image_datas, btn_cmd, QQMessage, QQSegment,
@@ -369,10 +391,11 @@ class OfficialChannel(Channel):
                 m = QQMessage()
                 m += QQSegment.file_image(data, file_name="image.png")
                 segments.append((m, "image"))
-            # 按钮走 markdown+keyboard（msg_type=2）独立段
-            btn_seg, btn_labels = _build_button_segment(btn_cmd, QQMessage, QQSegment)
-            if btn_seg is not None:
-                segments.append((btn_seg, "keyboard"))
+            # 按钮走 markdown+keyboard（msg_type=2）独立段；零按钮卡不发这段。
+            if has_buttons:
+                btn_seg, btn_labels = _build_button_segment(btn_cmd, QQMessage, QQSegment)
+                if btn_seg is not None:
+                    segments.append((btn_seg, "keyboard"))
 
         if not segments:
             return {"ok": True, "skipped": True}
