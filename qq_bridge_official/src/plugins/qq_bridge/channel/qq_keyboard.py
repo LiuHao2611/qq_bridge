@@ -1,33 +1,37 @@
 # -*- coding: utf-8 -*-
-"""QQ 官方通道「消息按钮键盘」生成器（仅官方副本，2026-11-11 全部重做）。
+"""QQ 官方通道「消息按钮键盘」生成器（仅官方副本，2026-11-11 第三次返工）。
 
-## 为什么全部重做（第二次返工）
+## 为什么第三次返工（用户「每张卡只挂对应功能按钮」）
 
-上一版手工维护 ``_GROUPS``(130+ 键) + ``_ALIASES``，测试又从同一批词表抽词去
-验这张手工表 —— 「自己考自己」。结果：
-  * 编造别名 ``fhelp`` / ``w M`` 混进按钮 data，源码里根本不存在，点了静默；
-  * 错误映射 ``"终幕": "信条"``，与 _handle:1960/1963 两个独立分支冲突；
-  * 15 个只在分发函数体出现、词表/HELP 都没登记的真实口令 100% 漏检。
+第二次返工做到「零编造 + 全量覆盖」，但 ``buttons_for`` 用 family/domain 挑
+邻居、同族不足 3 个就用 ``_POPULAR`` 全局高频词补齐 → 真实群截图里**每张卡都
+长成同一组**「赏金/钢路/钢铁/裂隙/主菜单」，是全局导航而非这张卡自己的下钻。
+用户明确：「裂隙卡下面有钢铁裂隙/普通裂隙，市价卡下面有满级/0级，举一反三，
+每个功能每个卡片都加上对应功能按钮」。
 
-## 本版设计：零手工口令/别名表，唯一事实源来自源码 AST
+## 本版设计：卡片级档位 + 市价带参 rank，两条 AST 事实源，零手工
 
-按钮依据全部由 :mod:`command_inventory` 从 game_tools 分发源码 AST 派生：
-  * ``inventory.commands``  —— 160 个真实出卡口令（按钮 data 的合法全集）
-  * ``inventory.families``  —— 69 个别名族（每个 ``if cmd in (...)`` 最小分支）
-  * ``inventory.domain_of`` —— 每个口令的出卡域（同分支的 _send_*/warframe.* 调用）
+* :mod:`command_inventory` —— 160 个真实出卡口令（button data 零编造全集基准）；
+* :mod:`card_buttons` —— 从 ``_handle`` 派生的「出卡函数 → 该卡所有档位」+
+  市价口令集 + ``_parse_mod_rank`` 的 rank token 白名单（满级/R0）。
 
-``buttons_for(P)`` 规则（机械、无人工分类，天然不遗漏不编造）：
-  1. primary = P 自己（点了回到自己 → 终幕≠信条天然成立，无需任何别名映射）；
-  2. 邻居 = 同 family 别名（取 canonical）+ 同 domain 其它 family 的 canonical，
-     补足到 3-4 个，全部是真实出卡口令；
-  3. 末位 = 主菜单「帮助」（真实口令）；
-  4. P 不在 inventory.commands（主流程斜杠 / AI 闲聊 / 空）→ GENERIC 通用入口，
-     data 仍全部取自 inventory.commands。
+``buttons_for(text)`` 规则：
+  1. **档位族卡**（如裂隙/赏金/信条/终幕/紫卡趋势…）：按钮 = 该卡的全部档位
+     canonical（裂隙卡→裂隙|普通裂隙|钢铁裂隙；赏金卡→赏金|钢铁赏金），primary
+     恒为当前口令自己。绝不再用 _POPULAR 塞无关全局词。
+  2. **市价卡带物品名**（如 ``wm 绝路``）：primary=当前完整口令 + 派生两个带参
+     rank 按钮 ``wm 绝路 满级`` / ``wm 绝路 R0``（data 携带物品名，点了才出对应
+     卡）+ 主菜单。rank token 只从 ``_parse_mod_rank`` 真实 return 字面量取。
+  3. **单档卡 / 兜底卡**（警报/仲裁表/资料卡…）：按钮 = 自己 + 主菜单（无邻居可
+     下钻时不硬凑）。
+  4. **非口令输入**（斜杠/闲聊/空）→ GENERIC 通用入口，data 全部 ∈ commands。
 
-**硬不变量**：任何按钮的 ``cmd`` 都 ∈ ``inventory.commands``。这条由构造方式
-保证（primary 来自归一化后校验通过的口令，邻居来自 family/domain，GENERIC 是
-写死的真实口令且测试会校验它们都在全集里），并由 tests/test_qq_keyboard.py
-的「零编造」守门反向设防（注入一个假 data 立即 FAIL）。
+**硬不变量**：任何按钮 data 必须满足二者之一——
+  (a) ∈ ``inventory.commands``（真实零参口令）；或
+  (b) 是合法带参串 ``<市价口令> <物品> <rank>``：首词 ∈ card_buttons.market_cmds、
+      末词 ∈ card_buttons.rank_tokens、中间物品非空、且首词 ∈ commands。
+由构造方式保证，并由 tests/test_qq_card_buttons.py 的「零编造 + 跨卡错位」守门
+反向设防（注入假 rank / 把赏金按钮塞裂隙卡 立即 FAIL）。
 
 腾讯平台约束：action.type=1 回调、permission.type=2 所有人可点、label≤10、
 每行≤5、行数≤5；keyboard 走 msg_type=2，作为图片卡片之后追加的独立消息。
@@ -38,12 +42,14 @@ from dataclasses import dataclass
 
 try:  # 正常包内 import
     from .command_inventory import get_inventory
+    from .card_buttons import get_card_inventory
 except ImportError:  # 单文件直载（离线单测 `_load()`）时，同目录兜底
     import sys as _sys
     from pathlib import Path as _Path
 
     _sys.path.insert(0, str(_Path(__file__).resolve().parent))
     from command_inventory import get_inventory  # type: ignore[no-redef]
+    from card_buttons import get_card_inventory  # type: ignore[no-redef]
 
 
 @dataclass(frozen=True)
@@ -60,13 +66,6 @@ _MENU = Btn("主菜单", _MENU_CMD)
 # GENERIC：主流程斜杠命令 / AI 闲聊 / 空口令的通用入口。每项都必须真实出卡，
 # 测试会断言 GENERIC 里每个 cmd ∈ inventory.commands（防编造）。
 _GENERIC_CMDS = ("赏金", "裂隙", "市价", "抽签")
-
-# 展示优先级：同 domain 邻居里，优先挑这些「高频入口」，让按钮更实用；
-# 它们全部是真实口令，仅影响排序，不影响「是否覆盖/是否编造」。
-_POPULAR = (
-    "帮助", "赏金", "裂隙", "市价", "紫卡", "仲裁", "突击", "入侵", "警报",
-    "抽签", "黄历", "wiki", "战甲", "配队", "计划", "订阅列表", "签到",
-)
 
 
 def normalize_cmd(text: str) -> str:
@@ -95,14 +94,64 @@ def _display(cmd: str) -> str:
     return cmd[:10]
 
 
-def buttons_for(text: str) -> tuple[Btn, ...]:
-    """按当前回复所属口令取按钮组；绝不返回空，任何输入都有按钮。
+def _rank_label(token: str) -> str:
+    """rank token → 展示文字。满级→满级、R0→0级（用户口径），其余原样。"""
+    return {"满级": "满级", "R0": "0级"}.get(token, token[:10])
 
-    派生逻辑见模块 docstring。返回元组第一个恒为 primary（当前口令自己，或
-    GENERIC 的第一个入口），末位恒为主菜单。所有 ``Btn.cmd`` ∈ inventory.commands。
+
+def _rank_button_data(head: str, rest: str) -> tuple[list[str], list[str]]:
+    """市价卡带物品名时派生带参 rank 按钮的 (data 列表, label 列表)。
+
+    ``head`` 是市价口令（如 ``wm``/``市价``，已归一到 inventory 真实口令），
+    ``rest`` 是物品名（可能已带 rank token，先剥离）。返回 ``head <物品> <rank>``
+    形式的完整口令串——点击后 ``_match_natural`` 最长前缀切成 cmd=market、arg=
+    ``<物品> <rank>`` → ``market_text`` 的 ``_parse_mod_rank`` 正确出满级/0级卡。
+
+    只在确认「物品名非空」时派生；否则返回空（市价裸口令/分类不挂 rank 按钮）。
+    注意：满级只对 MOD 有效（market_text 内 ``if not is_mod: return 不是 MOD``），
+    普通物品点了会给功能提示，不是静默——这是业务层既有语义，按钮只提供下钻入口。
     """
     inv = get_inventory()
-    head = normalize_cmd(text)
+    card = get_card_inventory()
+    # 归一到 inventory 里真实口令（大小写），并确认是市价口令
+    market = next((c for c in inv.commands if c.lower() == head.lower()), "")
+    if not market or market not in card.market_cmds:
+        return [], []
+    # 剥离物品名里已有的 rank 写法（避免「wm 绝路 满级」/「wm 0级 绝路」再挂
+    # 按钮时 rank 重复堆叠）。正则逐字节来自 warframe._MOD_RANK_PATTERNS_*，
+    # 取组规则（END→group1 / START→lastgroup）由 card_buttons 按源码列表名派生，
+    # 与真实 _parse_mod_rank 完全同源，零手工 token。
+    import re as _re
+    item = (rest or "").strip()
+    for pattern, clean_group in card.rank_strip_rules:
+        try:
+            m = _re.compile(pattern, _re.I).match(item)
+        except _re.error:
+            continue
+        if not m:
+            continue
+        idx = 1 if clean_group == "first" else (m.lastindex or 1)
+        if 1 <= idx <= m.lastindex:
+            cleaned = (m.group(idx) or "").strip()
+            if cleaned:
+                item = cleaned
+                break
+    if not item:
+        return [], []
+    data = ["%s %s %s" % (market, item, tok) for tok in card.rank_tokens]
+    labels = [_rank_label(tok) for tok in card.rank_tokens]
+    return data, labels
+
+
+def buttons_for(text: str) -> tuple[Btn, ...]:
+    """按当前回复所属卡取「对应功能按钮」；绝不返回空。
+
+    规则见模块 docstring：档位族卡→该卡全部档位；市价卡带物品名→+带参 rank；
+    单档/兜底卡→自己+主菜单；非口令→GENERIC。所有 data 满足零编造不变量(a)/(b)。
+    """
+    inv = get_inventory()
+    raw = (text or "").strip()
+    head = normalize_cmd(raw)
     # 精确命中优先；英文大小写不敏感兜底（如 WF/wf、WM/wm）
     cmd = head if _is_real(head) else next(
         (c for c in inv.commands if c.lower() == head.lower()), ""
@@ -117,41 +166,37 @@ def buttons_for(text: str) -> tuple[Btn, ...]:
 
     inv_cmd = next((c for c in inv.commands if c.lower() == cmd.lower()), cmd)
     primary = Btn(_display(inv_cmd), inv_cmd, True)
+    card = get_card_inventory()
 
-    # 候选邻居：同 family 别名（归一到 canonical）+ 同 domain 其它 family canonical
-    family_of = inv.family_of
-    canon = family_of.get(inv_cmd, inv_cmd)
-    own = next((f for f in inv.families if f.canonical == canon), None)
-    # 用专属 family.domain（如 _send_tenet），不用 domain_of（可能被 GUIDE_TITLES
-    # broad 兜底污染成 _send_guide，导致「信条」错配到养成/副本/功能）。
-    dom = own.domain if own else ""
-    candidates: list[str] = []
-    for fam in inv.families:
-        if fam.canonical == canon or inv_cmd in fam.aliases:
-            continue
-        if fam.canonical in candidates:
-            continue
-        same_family = inv_cmd in fam.aliases
-        same_domain = bool(dom) and fam.domain == dom and dom not in ("guide_fallback", "")
-        if same_family or same_domain:
-            candidates.append(fam.canonical)
+    # 市价卡带物品名优先（wm 绝路 / 市价 延伸 满级 …）：档位族里没有市价卡，
+    # 故不会与下面「档位族命中」冲突；但「信条」既是档位口令又在 market_cmds
+    # （_wf_dispatch 信条查市价），所以档位族命中时优先按档位卡处理。
+    slots = card.slots_for(inv_cmd)
+    if len(slots) <= 1 and inv_cmd in card.market_cmds:
+        rest = raw
+        # 去掉前缀符号 + 口令首词，取剩余物品名
+        while rest and rest[0] in "#＃/":
+            rest = rest[1:].strip()
+        parts = rest.split()
+        item_rest = " ".join(parts[1:]) if parts else ""
+        rank_data, rank_labels = _rank_button_data(inv_cmd, item_rest)
+        if rank_data:
+            return (primary,) + tuple(
+                Btn(lbl, d, False) for d, lbl in zip(rank_data, rank_labels)
+            ) + (_MENU,)
 
-    # 排序： Popular 优先 → 短词优先，保证同输入结果稳定（纯函数、并发安全）
-    candidates.sort(key=lambda c: (
-        0 if c in _POPULAR else 1,
-        len(c), c,
-    ))
-    # 补足：若同族/同域不足 3 个，用全站高频真实口令补齐（仍 ∈ commands）
-    for c in _POPULAR:
-        if len(candidates) >= 3:
-            break
-        if c != inv_cmd and _is_real(c) and c not in candidates and c != _MENU_CMD:
-            candidates.append(c)
+    # 档位族卡：按钮 = 该卡全部档位 canonical（含自己），primary 恒为自己。
+    # 单档卡（slots 只有自己）自然退化成「自己 + 主菜单」，不硬凑全局词。
+    if len(slots) > 1:
+        siblings = tuple(
+            Btn(c, c, primary=(c.lower() == inv_cmd.lower()))
+            for c in slots if c.lower() != inv_cmd.lower()
+        )
+        # 平台每行≤5：primary + 最多 3 档位 + 主菜单 = 5
+        return (primary,) + siblings[:3] + (_MENU,)
 
-    neighbors = tuple(
-        Btn(_display(c), c, False) for c in candidates[:3]
-    )
-    return (primary,) + neighbors + (_MENU,)
+    # 单档 / 兜底卡：只自己 + 主菜单
+    return (primary, _MENU)
 
 
 #: 按钮卡片引导 markdown：QQ 官方 msg_type=2 是唯一支持「消息按钮」的类型，
