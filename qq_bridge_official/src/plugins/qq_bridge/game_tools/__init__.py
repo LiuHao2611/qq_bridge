@@ -368,6 +368,50 @@ def _pop_riven_full_wait(event: MessageEvent) -> bool:
     return True
 
 
+def _riven_cache_put(event: MessageEvent, data: bytes) -> None:
+    """缓存「当前这张紫卡原图」，供结果图上的「全面分析」按钮点击时服务端直出。
+
+    2026-11-11 第 7 次修改（用户「别让我重新发紫卡，点全面分析后直接重新当前紫卡，
+    输出全面分析卡片」）。key 用 ``_riven_wait_key``：发图事件与按钮伪事件经同一
+    ``OfficialLikeEvent`` + ``pseudo_id`` 派生，两侧逐字节同源。地基已验
+    nonebot-adapter-qq 1.7.2 真源码：群消息 ``session_id`` =
+    ``group_{group_openid}_{author.member_openid}``、群按钮交互 =
+    ``group_{group_openid}_{group_member_openid}``，同一公式同一 openid，
+    故 ``author.member_openid ≡ group_member_openid``，缓存必然命中，天然跨群/跨人隔离。
+
+    缓存是**增强**：懒导入 + 全兜底，写入失败 / 模块缺失 / NapCat 通道（无按钮回调）
+    都只记日志，绝不阻断已经成功的紫卡分析出卡。
+    """
+    try:
+        from ..channel import riven_cache  # 懒导入：纯标准库，桩环境缺模块也不影响主链路
+        ok = riven_cache.put(_riven_wait_key(event), data)
+        _flog.info(_jlog("gt_riven_cache_put", ok=ok,
+                         user_id=getattr(event, "user_id", 0),
+                         group_id=getattr(event, "group_id", 0),
+                         bytes=len(data or b"")))
+    except Exception as e:  # noqa: BLE001 — 缓存绝不拖垮已成功的紫卡分析卡
+        logger.warning(f"gt_riven_cache_put_failed: {type(e).__name__}: {e}")
+
+
+def _riven_cache_get(event: MessageEvent) -> bytes | None:
+    """取出并**消费**「当前这张紫卡原图」；无缓存 / 过期 / 异常一律返回 None。
+
+    None → 调用方回退到老「预约 → 再发图」链路（用户先手打口令、或隔太久才点按钮）。
+    """
+    try:
+        from ..channel import riven_cache
+        data = riven_cache.get(_riven_wait_key(event))
+        if data:
+            _flog.info(_jlog("gt_riven_cache_hit",
+                             user_id=getattr(event, "user_id", 0),
+                             group_id=getattr(event, "group_id", 0),
+                             bytes=len(data)))
+        return data
+    except Exception as e:  # noqa: BLE001 — 缓存失败回退老预约，记日志不静默吞
+        logger.warning(f"gt_riven_cache_get_failed: {type(e).__name__}: {e}")
+        return None
+
+
 def _split_game(arg: str) -> tuple[str, str]:
     for kw, g in _GAME_ALIAS.items():
         if kw in arg:
@@ -1784,6 +1828,12 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
                         logger.warning(f"game_tools_riven_queue_msg_failed: {type(_e).__name__}: {_e}")
                     try:
                         rv, _card = await riven.riven_img_analyze_full(data)
+                        # 2026-11-11 第 7 次修改：分析卡成功产出后，缓存当前紫卡原图，
+                        # 供结果图「全面分析」按钮点击时服务端直接复用出全面分析卡。
+                        # 必须在 _send_guide(发分析卡+挂按钮) 之前写好，确保用户一点按钮
+                        # 缓存已就绪；解析失败(_card=None)不缓存，避免脏数据。写入全兜底。
+                        if _card:
+                            _riven_cache_put(event, data)
                         await _send_guide(bot, event, "星际战甲·紫卡评估", rv,
                                           card_data=_card)
                     except Exception as _e:  # noqa: BLE001 — 显式报错，绝不静默
@@ -1813,9 +1863,39 @@ async def _handle(bot: Bot, event: MessageEvent) -> None:
     if not text:
         return
 
-    # 「紫卡全面」预约：必须放在 _match_natural 之前，否则「紫卡全面分析」
+    # 「紫卡全面」/「全面分析」：必须放在 _match_natural 之前，否则「紫卡全面分析」
     # 会被更短的「紫卡」前缀吞掉 → cmd=紫卡 arg=全面分析 → 跑去查市价。
+    # 2026-11-11 第 7 次修改：服务端缓存「当前紫卡原图」后，点「全面分析」按钮
+    # （button_data=真实口令「全面分析」→ 伪事件 text 命中本分支）可**直接复用当前
+    # 紫卡**出全面分析卡，不再要求用户重发截图。缓存未命中/过期（用户先手打口令、
+    # 或隔太久才点、或发的是 NapCat 无按钮通道）才回退到老「预约 → 再发图」链路。
     if text in _FULL_WAIT_WORDS:
+        _cached = _riven_cache_get(event)
+        if _cached:
+            # 命中当前紫卡：重新 OCR（与发图链路同一 _parse_ocr，零编造）→ 直接出 655×1920
+            # 全面分析卡。_send_riven_full_parsed 自造 ctx 不含哨兵 → 该卡零按钮。
+            _flog.info(_jlog("gt_riven_full_cache_direct",
+                             user_id=getattr(event, "user_id", 0),
+                             group_id=getattr(event, "group_id", 0),
+                             bytes=len(_cached)))
+            try:
+                _parsed = await asyncio.wait_for(
+                    riven.riven_img_parse(_cached), timeout=60.0)
+                if _parsed:
+                    await _send_riven_full_parsed(bot, event, _parsed)
+                else:
+                    await bot.send(event, "没识别出紫卡内容，换张清晰点的截图试试～"
+                                          "（本卡不编造词条数值）")
+            except Exception as _e:  # noqa: BLE001 — 显式报错，绝不静默吞
+                logger.warning(f"gt_riven_full_cache_direct_failed: "
+                               f"{type(_e).__name__}: {_e}")
+                try:
+                    await bot.send(event, "紫卡全面分析失败：%s: %s"
+                                   % (type(_e).__name__, str(_e)[:120]))
+                except Exception:  # noqa: BLE001
+                    pass
+            return
+        # 缓存未命中/过期 → 老兜底：预约下一张纯图走真实 OCR 全量分析卡。
         _set_riven_full_wait(event)
         try:
             await bot.send(event, "已登记紫卡全面分析，请直接发送紫卡截图～"

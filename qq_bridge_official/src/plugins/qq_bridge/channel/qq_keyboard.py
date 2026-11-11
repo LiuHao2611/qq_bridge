@@ -207,8 +207,9 @@ def buttons_for(text: str) -> tuple[Btn, ...]:
     # 紫卡分析**结果图专属**单按钮。只用内部哨兵命中，绝不匹配真实文本口令，
     # 故普通「全面分析」「紫卡分析」文本仍零按钮（预约口令不自挂按钮），
     # 只有 game_tools riven_analysis 出图分支显式注入该哨兵时才挂。
-    # 按钮 cmd=「全面分析」（inventory 真实口令）→ 点击走既有预约→再发图
-    # → _send_riven_full_parsed 出 655×1920 完整卡；该卡 ctx 无哨兵 → 零按钮。
+    # 按钮 cmd=「全面分析」（inventory 真实口令）→ 点击命中服务端「当前紫卡
+    # 原图」缓存 → 直接 _send_riven_full_parsed 出 655×1920 完整卡（无需重发图）；
+    # 缓存未命中/过期才回退老「预约→再发图」。该卡 ctx 无哨兵 → 零按钮。
     if (text or "").strip() == _RIVEN_ANALYSIS_SENTINEL:
         label, cmd = _RIVEN_FULL_BTN
         return (Btn(label, cmd, False),)
