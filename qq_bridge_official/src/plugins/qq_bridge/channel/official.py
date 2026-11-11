@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -28,6 +29,12 @@ from .base import Channel, Outgoing, make_ctx, current_official_ctx
 from .limiter import official_limiter
 
 log = get_logger()
+
+#: 图片+按钮合并成一条（2026-11-11 用户「图片要和按钮一起发」）。
+#: 默认开；设 OFFICIAL_IMAGE_BUTTON_MERGE=false 可一键回退到「图片条+按钮条」两条。
+_IMAGE_BUTTON_MERGE = os.getenv("OFFICIAL_IMAGE_BUTTON_MERGE", "true").strip().lower() not in (
+    "false", "0", "no", "off",
+)
 
 #: 官方通道身份前缀：与 NapCat 的 "u:%d"/"g:%d" 明确区分，避免串号
 USER_PREFIX = "official:u:"
@@ -94,6 +101,31 @@ def _build_button_segment(cmd: str, _QQMessage, _QQSegment):
         log.warning(jlog("official_keyboard_build_failed", error=type(e).__name__,
                          detail=str(e)[:160], cmd=cmd))
         return None, []
+
+
+async def _build_merged_card_segment(bot, image_datas: list[bytes],
+                                     cmd: str, _QQMessage, _QQSegment):
+    """把「一张图 + 多个按钮」合成**一条** msg_type=2 markdown 消息。
+
+    图片字节先经素材管理 API 换成 ``qqbot-media://`` 引用，内嵌进 markdown
+    content（``![ #宽px #高px](url)``），再与 keyboard 同段。这样图片与按钮
+    在用户端是同一条消息（2026-11-11 用户「一个口令一张图+多个按钮一起发」）。
+
+    返回 ``(message, btn_labels)``；任一素材上传失败抛
+    :class:`media_asset.MaterialUploadError`，由 send() 捕获降级回两条发送。
+    """
+    from .media_asset import ensure_material, markdown_image  # noqa: PLC0415
+    from .qq_keyboard import make_keyboard  # noqa: PLC0415
+
+    kb_model, btns = make_keyboard(cmd)
+    parts: list[str] = []
+    for i, data in enumerate(image_datas):
+        mat = await ensure_material(bot, data, file_name="card_%d.png" % i)
+        parts.append(markdown_image(mat["url"], mat["width"], mat["height"]))
+    seg = _QQMessage()
+    seg += _QQSegment.markdown("\n".join(parts))  # 合法 markdown content（图片）
+    seg += _QQSegment.keyboard(kb_model)          # 同段挂按钮，平台 msg_type=2
+    return seg, [b.label for b in btns]
 
 
 def pseudo_id(key: str) -> int:
@@ -271,10 +303,14 @@ class OfficialChannel(Channel):
         group_key = str(ctx.get("group_key") or "")
         is_group = group_key.startswith(GROUP_PREFIX)
 
-        # ---- 组装待发段（文本 / 图片 / 视频）----
-        # 2026-11-11 起每项为 (seg, kind)：kind ∈ {text, image, video, keyboard}，
-        # 仅用于日志与额度策略；发送一律 message=seg，适配器按段内容定 msg_type。
+        # ---- 组装待发段（文本 / 图片 / 视频 / 按钮）----
+        # 2026-11-11 每项为 (seg, kind)：kind ∈ {text, image, video, keyboard,
+        # merged_card}，仅用于日志与额度策略；发送一律 message=seg。
+        # 「一个口令一张图 + 多个按钮一起发」：若有图片字节，优先把图片经素材
+        # 管理 API 换成 qqbot-media:// 引用、内嵌 markdown 并与 keyboard 同段
+        # （msg_type=2），用户端就是**一条**消息；失败则降级回「图片条 + 按钮条」。
         segments: list[tuple] = []
+        btn_labels: list[str] = []
         if out.text:
             seg = QQMessage()
             if out.at_user and is_group:
@@ -284,21 +320,17 @@ class OfficialChannel(Channel):
             seg += QQSegment.text(out.text)
             segments.append((seg, "text"))
 
+        # 先把所有图片字节收齐（不再逐个 append file_image 段，交给合并逻辑决定）
+        image_datas: list[bytes] = []
         for url in out.image_urls or []:
             data = await _download(url)
             if not data:
                 log.warning(jlog("official_image_download_empty", trace_id=ctx.get("trace_id", "")))
                 continue
-            m = QQMessage()
-            m += QQSegment.file_image(data, file_name="image.png")
-            segments.append((m, "image"))
-
+            image_datas.append(data)
         for data in out.images or []:
-            if not data:
-                continue
-            m = QQMessage()
-            m += QQSegment.file_image(data, file_name="image.png")
-            segments.append((m, "image"))
+            if data:
+                image_datas.append(data)
 
         if out.video:
             data = await _download(out.video) if out.video.startswith("http") else b""
@@ -307,27 +339,52 @@ class OfficialChannel(Channel):
                 m += QQSegment.file_video(data, file_name="video.mp4")
                 segments.append((m, "video"))
 
-        if not segments:
-            return {"ok": True, "skipped": True}
-
-        # ---- 追加「快捷命令按钮」消息（2026-11-11，全量口令卡片统一带按钮）----
-        # 收敛点：所有官方发送都过这里，一处挂钩 = 全量 warframe/二游/小游戏/计划
-        # 回复卡片自动带按钮，warframe 两个大文件零改动。
-        # btn_cmd 优先取 Outgoing 显式字段，其次取 ctx（warframe 适配器/主流程入口
-        # 可把当前口令塞进 ctx["keyboard_cmd"]）；两者都无则按 out.text 首词兜底。
+        # btn_cmd 优先取 Outgoing 显式字段，其次取 ctx（warframe/主流程入口注入），
+        # 否则按 out.text 首词兜底。
         btn_cmd = str(
             out.keyboard_cmd
             or ctx.get("keyboard_cmd", "")
             or (out.text or "").strip().split("\n")[0]
         )
-        btn_seg, btn_labels = _build_button_segment(btn_cmd, QQMessage, QQSegment)
-        if btn_seg is not None:
-            segments.append((btn_seg, "keyboard"))
+
+        # ---- 图片 + 按钮合一（默认开；失败降级两条）----
+        merged_done = False
+        if _IMAGE_BUTTON_MERGE and image_datas and btn_cmd:
+            try:
+                merged_seg, btn_labels = await _build_merged_card_segment(
+                    bot, image_datas, btn_cmd, QQMessage, QQSegment,
+                )
+                segments.append((merged_seg, "merged_card"))
+                merged_done = True
+                log.info(jlog("official_image_button_merged", images=len(image_datas),
+                              cmd=btn_cmd, trace_id=ctx.get("trace_id", "")))
+            except Exception as e:  # noqa: BLE001 — 素材失败降级，不吞错（记 warning）
+                log.warning(jlog("official_merge_fallback_two_messages",
+                                 error=type(e).__name__, detail=str(e)[:160],
+                                 images=len(image_datas), cmd=btn_cmd))
+
+        if not merged_done:
+            # 降级路径（或本就没有图片/口令）：图片走 msg_type=7 富媒体独立段
+            for data in image_datas:
+                m = QQMessage()
+                m += QQSegment.file_image(data, file_name="image.png")
+                segments.append((m, "image"))
+            # 按钮走 markdown+keyboard（msg_type=2）独立段
+            btn_seg, btn_labels = _build_button_segment(btn_cmd, QQMessage, QQSegment)
+            if btn_seg is not None:
+                segments.append((btn_seg, "keyboard"))
+
+        if not segments:
+            return {"ok": True, "skipped": True}
 
         ref = ctx.get("reply_ref") or {}
         ref_id = str(ref.get("msg_id") or "")
+        # 2026-11-11 修 40034105：按钮点击 INTERACTION_CREATE 没有原消息 msg_id，
+        # 官方给的是 event_id（INTERACTION_CREATE:<uuid>），必须用它做被动回复。
+        # 有 msg_id（普通消息）或 event_id（按钮/事件回访）任一即可被动回复。
+        ref_event_id = str(ref.get("event_id") or "")
         ref_ts = float(ref.get("ts") or 0)
-        passive_ok = bool(ref_id) and (
+        passive_ok = (bool(ref_id) or bool(ref_event_id)) and (
             (time.time() - ref_ts) < max(1, int(Config.OFFICIAL_PASSIVE_MAX_AGE))
         )
 
@@ -353,20 +410,27 @@ class OfficialChannel(Channel):
                     break
             t0 = time.time()
             try:
+                # 官方要求 msg_id 与 event_id「二选一」，且 exclude_none 不排空串：
+                # 必须把空串归一为 None，否则按钮场景 (msg_id="", event_id=xxx)
+                # 会同时带两个字段被平台拒。用 `or None` 归一。
+                passive_msg_id = (ref_id or None) if use_passive else None
+                passive_event_id = (ref_event_id or None) if use_passive else None
                 if is_group:
                     ret = await bot.send_to_group(
                         group_openid=group_key[len(GROUP_PREFIX):],
                         message=seg,
-                        msg_id=ref_id if use_passive else None,
+                        msg_id=passive_msg_id,
                         msg_seq=(i + 1) if use_passive else None,
+                        event_id=passive_event_id,
                     )
                 else:
                     openid = str(ctx.get("user_key", "")).replace(USER_PREFIX, "")
                     ret = await bot.send_to_c2c(
                         openid=openid,
                         message=seg,
-                        msg_id=ref_id if use_passive else None,
+                        msg_id=passive_msg_id,
                         msg_seq=(i + 1) if use_passive else None,
+                        event_id=passive_event_id,
                     )
             except Exception as e:  # noqa: BLE001 — 记全后返回原因，不静默吞（CLOSE-02）
                 log.error(jlog(
@@ -391,7 +455,8 @@ class OfficialChannel(Channel):
                 kind=seg_kind,
                 duration_ms=int((time.time() - t0) * 1000),
                 msg_id=sent[-1],
-                **( {"buttons": ",".join(btn_labels)} if seg_kind == "keyboard" else {} ),
+                **( {"buttons": ",".join(btn_labels)}
+                    if seg_kind in ("keyboard", "merged_card") else {} ),
             ))
 
         if not sent:

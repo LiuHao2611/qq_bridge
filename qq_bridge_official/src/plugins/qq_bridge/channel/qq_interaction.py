@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from ..config import get_logger, jlog
@@ -116,22 +117,30 @@ def is_interaction_event(event: QQEvent) -> bool:
 
 
 async def _ack_interaction(bot: Any, event: Any) -> None:
-    """尽力在 3 秒内 ack 平台交互（若适配器暴露对应 API）；失败只记日志。"""
+    """在 3 秒内 ack 平台交互（PUT /interactions/{id}）；失败记日志不静默吞。
+
+    ⚠️ 2026-11-11 真实群实测踩坑：nonebot-adapter-qq 1.7.2 的
+    ``Bot.put_interaction(interaction_id, code)`` 的 ``code`` 是**必填**
+    关键字参数（``Literal[0..5]``）。旧代码只传 ``interaction_id`` →
+    抛 ``TypeError: missing 1 required keyword-only argument: 'code'`` →
+    ACK 从未发出 → 客户端显示「请求第三方失败」。``code=0`` = 回执成功。
+    """
     iid = str(getattr(event, "id", "") or "")
     if not iid:
+        log.warning(jlog("official_interaction_ack_no_id"))
         return
-    # nonebot-adapter-qq 1.7.2 的 ack 形态随版本不同，逐个尝试、都不支持则跳过。
-    for name in ("put_interaction", "respond_interaction", "ack_interaction"):
-        fn = getattr(bot, name, None)
-        if callable(fn):
-            try:
-                await fn(interaction_id=iid)
-                return
-            except Exception as e:  # noqa: BLE001
-                log.warning(jlog("official_interaction_ack_failed", api=name,
-                                 error=type(e).__name__, detail=str(e)[:120]))
-                return
-    log.info(jlog("official_interaction_ack_unsupported", note="no ack api in adapter; send still proceeds"))
+    fn = getattr(bot, "put_interaction", None)
+    if not callable(fn):
+        # 1.7.2 已有 put_interaction；若换成没有该 API 的适配器，记全后仍继续发业务
+        log.warning(jlog("official_interaction_ack_unsupported",
+                         note="adapter has no put_interaction; send still proceeds"))
+        return
+    try:
+        await fn(interaction_id=iid, code=0)
+        log.info(jlog("official_interaction_ack_ok", interaction_id=iid[:16]))
+    except Exception as e:  # noqa: BLE001 — ACK 失败不阻断业务回复
+        log.warning(jlog("official_interaction_ack_failed", api="put_interaction",
+                         error=type(e).__name__, detail=str(e)[:160]))
 
 
 async def handle_interaction(bot: QQBot, event: QQEvent) -> None:  # type: ignore[valid-type]
@@ -167,6 +176,13 @@ async def handle_interaction(bot: QQBot, event: QQEvent) -> None:  # type: ignor
     from .base import make_ctx  # noqa: PLC0415
     from .official import GROUP_PREFIX, USER_PREFIX  # noqa: PLC0415
 
+    # 2026-11-11 修复 40034105「主动消息失败，无权限」：INTERACTION_CREATE
+    # 没有原消息 msg_id，旧代码塞 event.id 当 msg_id 且 ts=0 → passive_ok=False
+    # → 按钮触发的回复走主动消息 → 个人主体无主动发言权限被拒。官方正确做法：
+    # 用交互事件自带的 event_id（形如 INTERACTION_CREATE:<uuid>）做**被动回复**，
+    # 适配器 send_to_group/send_to_c2c 原生支持 event_id 参数（透传给
+    # POST /v2/groups/{openid}/messages）。事件 id 不是 msg_id，不再误填。
+    event_id = str(getattr(event, "event_id", "") or "")
     full_ctx = make_ctx(
         OFFICIAL,
         user_key=USER_PREFIX + member_openid,
@@ -176,7 +192,11 @@ async def handle_interaction(bot: QQBot, event: QQEvent) -> None:  # type: ignor
         self_id=str(getattr(bot, "self_id", "") or ""),
         is_group=True,
         at_bot=True,
-        reply_ref={"msg_id": str(getattr(event, "id", "") or ""), "ts": 0},
+        reply_ref={
+            "event_id": event_id,   # 被动回复凭据（按钮点击的官方正确通道）
+            "msg_id": "",            # 交互事件无原消息 msg_id，不再误填
+            "ts": time.time(),      # 让 passive_ok=True，走被动回复不占主动额度
+        },
     )
     pseudo = _PseudoMessageEvent(
         cmd=cmd, group_openid=group_openid, member_openid=member_openid,
