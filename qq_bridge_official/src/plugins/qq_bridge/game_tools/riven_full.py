@@ -50,12 +50,23 @@ _MOD_NAMES = [
     "黄蜂蛰刺", "弹头扩散", "持续火力 Prime", "当前紫卡",
 ]
 
+# 紫卡最多 4 条词条（Warframe 规则：3正1负 / 2正1负 等）。旧实现写死 [:3]
+# 把第 4 条（通常是诅咒负词条）整条丢掉——2026-11-11 用户图1/图2 对照根因之一。
+# 模板 stats 区对 4 条走紧凑行距（见 pic/templates/riven_full.py），融合表本就 4 行。
+_MAX_STATS = 4
+
 _HONEST_HINT = "高低值以对应倾向的均值为基准，正常范围为±10%（卡面取整可能略有偏差）。"
 _NEED_SHOT = "需紫卡截图"
 
 
 def _mod_assets() -> list[dict]:
-    """8 张 MOD 缩略卡：优先用参考卡像素裁切资产；缺失时只留名称（模板画占位卡框）。"""
+    """**仅参考卡版式样例**用：8 张 MOD 缩略卡（参考卡逐像素裁切的枪卡图）。
+
+    ⚠️ 只服务 ``reference_sample()``（sample=True，脚注标「版式样例·非实时数据」）
+    复刻参考卡版式。生产出卡（``riven_full_data``）**禁止**走这里——旧实现把所有
+    武器都套这 8 张写死枪卡，近战武器因此显示「深层冷冻/病原弹头」（用户图1
+    「配卡完全不符合这个武器」根因，2026-11-11）。生产统一走 ``_build_mods``。
+    """
     out = []
     for r in range(2):
         for c in range(4):
@@ -63,6 +74,93 @@ def _mod_assets() -> list[dict]:
             out.append({"name": _MOD_NAMES[r * 4 + c],
                         "image": str(p) if p.is_file() else None})
     return out
+
+
+#: riven_disp.json 的 7 类 type → riven_card 唯一真配卡表键。
+#: 配卡**名称**一律从 ``riven_card._BUILD`` / ``_MELEE_BUILD`` 派生，这里只做类型归类，
+#: 绝不在此另抄一份 MOD 名（事实源单一，防手工表漂移）。
+#: 归类依据：Zaw=近战、Kitgun=手枪、Archgun=枪械（按步枪通用 DPS 桶）。
+_TYPE_TO_BUILD = {
+    "Melee": "melee", "Zaw": "melee",
+    "Pistol": "Pistol", "Kitgun": "Pistol",
+    "Rifle": "Rifle", "Archgun": "Rifle",
+    "Shotgun": "Shotgun",
+}
+_BUILD_LABEL = {
+    "melee": "基于击杀效率配卡 · 近战通用",
+    "Pistol": "基于击杀效率配卡 · 手枪通用",
+    "Rifle": "基于击杀效率配卡 · 步枪通用",
+    "Shotgun": "基于击杀效率配卡 · 霰弹通用",
+}
+_NEED_SHOT_BUILD = "基于击杀效率配卡（需紫卡截图确认武器类型）"
+
+
+def _build_key(wtype: str | None) -> str:
+    """riven_disp type → riven_card 配卡表键；未知/缺失返回空串（不套枪卡）。"""
+    return str(_TYPE_TO_BUILD.get((wtype or "").strip(), "") or "")
+
+
+def _build_mods(wtype: str | None) -> list[dict]:
+    """按武器类型从 ``riven_card`` 唯一真配卡表派生 8 格配卡（生产出卡唯一出口）。
+
+    纪律：
+      * 卡名只来自 ``riven_card._BUILD`` / ``_MELEE_BUILD``，本模块零手工卡名；
+      * ``image`` 一律 ``None``——资产目录只有参考卡那 8 张**枪卡**像素图，给近战/
+        正确类型卡贴枪卡图等于张冠李戴（制造新错配）；模板对 ``image=None``
+        画占位卡框 + 真名，诚实且可读；
+      * 未知/缺失 type（如仅给武器名、无 OCR）返回 8 格「需紫卡截图」，
+        **绝不默认套 Rifle 枪卡**——没真实类型就不假装给出针对该武器的配卡。
+    """
+    key = _build_key(wtype)
+    if not key:
+        return [{"name": _NEED_SHOT, "image": None} for _ in range(8)]
+    from . import riven_card as rc
+    names = list(rc._MELEE_BUILD) if key == "melee" else list(rc._BUILD[key])
+    out = [{"name": n, "image": None} for n in names]
+    out.append({"name": "当前紫卡", "image": None})
+    return out[:8]
+
+
+def _build_label(wtype: str | None) -> str:
+    """配卡区标题口径随真实武器类型变化；未知类型如实标「需截图」。"""
+    return _BUILD_LABEL.get(_build_key(wtype), _NEED_SHOT_BUILD)
+
+
+def _wtype_from_name(name: str) -> str:
+    """武器名（中文/英文）→ riven_disp.json 的 type（唯一同源事实源）。
+
+    只读复用 ``riven._load_riven_data()`` / ``riven._RIVEN['disp']``（与
+    ``rank_eligibility`` 复用 ``warframe._wf_dict`` 同类做法，riven.py 零改）。
+    容器真探针（2026-11-11）确认：绝路→Rifle、沙皇→Rifle、Coda Motovore→Melee、
+    阿利乌双枪→Pistol 均精确命中；战甲名/外号查不到则落空串→诚实占位，绝不猜类型。
+    ⚠️ 不可用 ``warframe._resolve_riven_weapon`` 的 slug 反查 disp 表——两套 key
+    体系不同源（slug ``coda-motovore`` ≠ disp key ``Coda Motovore``）。
+    """
+    n = (name or "").strip().lower().replace(" ", "").replace("·", "")
+    if not n:
+        return ""
+    try:
+        from . import riven as _riven
+        _riven._load_riven_data()
+        disp = _riven._RIVEN.get("disp") or {}
+    except Exception:  # noqa: BLE001 — 加载失败落空串，不编造类型
+        return ""
+
+    def norm(s: str) -> str:
+        return (s or "").strip().lower().replace(" ", "").replace("·", "")
+
+    # 1) 官方中文名精确（disp 表自带 zh，最可靠）
+    for rec in disp.values():
+        if norm(rec.get("zh")) == n:
+            return str(rec.get("type") or "")
+    # 2) 英文 key 精确
+    for k, rec in disp.items():
+        if norm(k) == n:
+            return str(rec.get("type") or "")
+    # 3) 包含匹配：仅当所有命中指向**同一 type** 才采信（防「绝」命中一堆武器乱套）
+    hits = {str(rec.get("type") or "") for k, rec in disp.items()
+            if n and (n in norm(k) or n in norm(rec.get("zh"))) and rec.get("type")}
+    return next(iter(hits)) if len(hits) == 1 else ""
 
 
 def _disp_filled(disp: float) -> int:
@@ -140,10 +238,13 @@ def riven_full_data(weapon: str | None = None, parsed: dict | None = None,
     :param market: ``riven_card.fetch_market_for_card(parsed)`` 的真实市场快照
         （**必填**：``build_card_data`` 2026-11-04 改为必填位置参数，漏传直接 TypeError）。
         缺省时退回可见失败态，不让卡面静默假装无数据。
-    :param mods: 真实配卡 MOD 列表（[{name,image}]）；缺省用参考卡像素裁切资产。
+    :param mods: 真实配卡 MOD 列表（[{name,image}]）；缺省时按 ``parsed["type"]``
+        从 ``riven_card`` 唯一真配卡表派生（2026-11-11 模块 E）；只有显式传值才覆盖。
     """
     from . import riven_price
     observed = riven_price.observed_text((market or {}).get("ts"))
+    # 模块 E：配卡/标题在下方武器名解析后按真实武器类型统一派生（见「配卡」块）。
+    # base 里先放中性占位，避免任何路径漏判回落到写死枪卡。
     base: dict = {
         "status": "ok",
         "sample": False,
@@ -162,8 +263,10 @@ def riven_full_data(weapon: str | None = None, parsed: dict | None = None,
             {"label": "综合评分", "value": "—", "label_color": "red"},
         ],
         "observed": observed,
-        "build_title": "基于击杀效率配卡",
-        "mods": mods if mods is not None else _mod_assets(),
+        # 中性占位：下方「模块 E 配卡」块按真实武器类型覆盖。绝不在这里默认 _mod_assets()
+        # （那是参考卡版式样例专用的写死枪卡，套到生产出卡=近战显示枪卡，用户图1根因）。
+        "build_title": _build_label(None),
+        "mods": _build_mods(None),
         "kill_line": [],
         "gain_line": [],
         "cmd_groups": [],
@@ -180,6 +283,15 @@ def riven_full_data(weapon: str | None = None, parsed: dict | None = None,
         w = str(parsed.get("weapon_zh") or parsed.get("weapon") or "")
     if w:
         base["weapon_zh"] = w
+
+    # ---- 模块 E：按真实武器类型派生配卡（2026-11-11「配卡完全不符合武器」根因）----
+    # 判定优先级：显式 parsed['type']（OCR 真值） > 武器名从 riven_disp.json 反查 > 未知。
+    # 未知/战甲名/外号 → _build_mods/_build_label 返回「需紫卡截图」占位，绝不套写死枪卡。
+    # 调用方显式传 mods 时尊重覆盖（事实源单一：内部只在 None 时派生，绝不手工拼卡名）。
+    _wtype = str((parsed or {}).get("type") or "").strip() or _wtype_from_name(w)
+    base["mods"] = _build_mods(_wtype) if mods is None else mods
+    base["build_title"] = _build_label(_wtype)
+
     if parsed:
         base["riven_name"] = str(parsed.get("riven_name") or "")
         base["level"] = parsed.get("rank")
@@ -214,7 +326,7 @@ def riven_full_data(weapon: str | None = None, parsed: dict | None = None,
             cd = card_data or rc.build_card_data(
                 parsed, market if market is not None else _EMPTY_MARKET)
             rows = []
-            for s in (cd.get("stats") or [])[:3]:
+            for s in (cd.get("stats") or [])[:_MAX_STATS]:
                 dev_dir = s.get("dev_dir") or ""
                 dev_mag = s.get("dev_mag") or ""
                 dev = (dev_dir + dev_mag) if (dev_dir and dev_mag) else "—"
@@ -230,7 +342,18 @@ def riven_full_data(weapon: str | None = None, parsed: dict | None = None,
                     "bar": float(s.get("bar") or 0.5),
                 })
             base["stats"] = rows
-            base["market_note"] = "*市场负面参考：" + str(cd.get("market") or "暂无")
+            # 「市场负面参考」= 推荐负面词条的同分位价差，语义字段是 recs.neg
+            # （成功态「滑暴 +91.1p/+105%…」/ 失败态「不可用（市场数据获取失败）」）。
+            # 2026-11-11 之前误取 cd["market"]（市场整体状态串），失败态会把
+            # 「获取失败（RivenMarketError: WFM 拍卖返回 NoneType 对象…）」整段
+            # 原始异常画到卡面——用户图1「市场负面参考乱写」根因。
+            # 严禁回退到 cd["market"]；recs 缺失也只给固定人话，不露异常。
+            _recs = cd.get("recs") if isinstance(cd.get("recs"), dict) else {}
+            _neg = str(_recs.get("neg") or "").strip()
+            if not _neg or any(t in _neg for t in ("RivenMarketError", "NoneType",
+                                                    "Traceback", "Exception")):
+                _neg = "不可用（市场数据暂缺或已过期）"
+            base["market_note"] = "*市场负面参考：" + _neg
             base["hint"] = str(cd.get("hint") or _HONEST_HINT)
 
             wraw = rc._weapon_raw(str(parsed.get("weapon") or wz))
@@ -240,13 +363,18 @@ def riven_full_data(weapon: str | None = None, parsed: dict | None = None,
                 base["kill_line"] = _kill_parts(
                     sim.get("ke_base"), sim.get("ke_cur"), sim.get("ke_best"))
                 base["gain_line"] = _gain_parts(sc.get("gain", 0), sc.get("gain_max", 0))
+                # 评级字母口径（2026-11-11）：sc 的三个值是 **0–100 分制**，必须用
+                # ``_letter``（85→S/65→A/50→B…）。``_grade`` 是「卡面偏差百分比」口径
+                # （p=(10+d)/20），把 0–100 分喂进去会把 11/62/81/100 **全变 S**——
+                # 用户图1「伤害分/市场分/综合评分 全 S」根因。`_grade` 在 build_card_data
+                # 里传 dev（偏差百分比）是正确用法，两者不可混用。
                 base["scores"] = [
                     {"label": "伤害分", "value": "%.1f (%s)" % (
-                        sc.get("dmg", 0), rc._grade(sc.get("dmg", 0))), "label_color": "gray"},
+                        sc.get("dmg", 0), rc._letter(sc.get("dmg", 0))), "label_color": "gray"},
                     {"label": "市场分", "value": "%.1f (%s)" % (
-                        sc.get("mkt", 0), rc._grade(sc.get("mkt", 0))), "label_color": "gray"},
+                        sc.get("mkt", 0), rc._letter(sc.get("mkt", 0))), "label_color": "gray"},
                     {"label": "综合评分", "value": "%.1f (%s)" % (
-                        sc.get("total", 0), rc._grade(sc.get("total", 0))), "label_color": "red"},
+                        sc.get("total", 0), rc._letter(sc.get("total", 0))), "label_color": "red"},
                 ]
         except Exception as e:  # noqa: BLE001 — 模型失败如实标注，不编数
             logger.warning(f"riven_full_model_failed: {type(e).__name__}: {e}")
@@ -273,7 +401,7 @@ def _fusion_from_stats(stats: list[dict]) -> list[dict]:
     与**该词条真实区间**，价格/收益一律不编造。
     """
     out = []
-    for i, s in enumerate(stats[:3]):
+    for i, s in enumerate(stats[:_MAX_STATS]):
         out.append({
             "state": "可融合" if i == 0 else "可锁定",
             "pair": s["name"], "pair_color": "red" if s.get("neg") else "gray",

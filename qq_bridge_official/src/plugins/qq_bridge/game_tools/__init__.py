@@ -31,6 +31,20 @@ except Exception:  # noqa: BLE001 — 加载失败退化为 nonebot logger
 
 from . import atlas, data, games, riven, warframe, wiki
 from .. import planstore, queue  # 生图计划（草稿）查看（2026-09-28 新增）
+
+# 紫卡词条中文别名补丁（2026-11-11）：只补卡面/旧名 aliases，零改生成物与 riven.py。
+# 必须在任何 OCR/出卡路径之前 install；ensure() 幂等，重复导入无副作用。
+# 防御式导入：补丁层是「增强」，绝不能成为整个 game_tools 包加载的硬依赖——
+# 部分离线守门用假包/隔离 spec 加载本文件（相对 import 不稳定），失败时只跳过补丁、
+# 不阻断包加载（生产环境正常生效；补丁正确性由 test_qq_riven_alias_patch.py 独立守门）。
+try:
+    from . import riven_alias_patch as _riven_alias_patch
+    _riven_alias_patch.ensure()
+except Exception as _e:  # noqa: BLE001
+    try:
+        logger.warning("riven_alias_patch_skip: %s: %s" % (type(_e).__name__, _e))
+    except Exception:  # noqa: BLE001
+        pass
 # AI 模式（2026-10-19）：本模块是独立 matcher，与主流程并行收消息，
 # 必须自己判断「本会话是否开着大模型陪聊」——否则群里一句话被双重回复
 # （线上实测：AI 陪聊 + "hi" 误触 Rhino 卡）。

@@ -354,11 +354,19 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
 
     c.line((P(45), P(218), P(R - 16), P(218)), fill=C_CARD_BD, width=max(1, P(1)))
 
-    # 3 行词条
+    # 词条行：最多 4 条（Warframe 3正1负等）。3 条沿用原行距（参考卡像素级回归
+    # 零影响）；4 条才用紧凑行距，把第 4 条塞进 stats 卡片（y=168..484），
+    # 最后一行 bar y=383 距下方市场负面参考 y=412 仍有净空。
     stats = list(data.get("stats") or [])
-    row_base = [258.0, 307.0, 357.0]
-    bar_y = [265.0, 314.0, 363.0]
-    for i in range(3):
+    if len(stats) >= 4:
+        row_base = [250.0, 292.0, 334.0, 376.0]
+        bar_y = [257.0, 299.0, 341.0, 383.0]
+        n_rows = 4
+    else:
+        row_base = [258.0, 307.0, 357.0]
+        bar_y = [265.0, 314.0, 363.0]
+        n_rows = 3
+    for i in range(n_rows):
         st = stats[i] if i < len(stats) else None
         yb, ybar = row_base[i], bar_y[i]
         if not st:
@@ -443,12 +451,16 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
                   fill=dot_col)
         T(38 + 26, py0 + 23, state, 17, dot_col, "bold")
         # 第一列第二行文字 / 同行右侧文字
+        # 长词条名（如「滑行攻击暴击几率」8 字）必须按可用宽缩放，否则越过第二列
+        # 起点 x=221 与融合结果重叠（2026-11-11 第 4 行填满后实测暴露）。
         pair = str(fr.get("pair") or "")
         pcol = C_RED if fr.get("pair_color") == "red" else (C_GRAY if fr.get("pair_color") == "gray" else C_DARK)
         if i == 0:
-            T(38, rt + 60, pair, 19, pcol, "bold")
+            T(38, rt + 60, pair, fit(pair, 221 - 38 - 8, "bold", hi=19), pcol, "bold")
         else:
-            T(38 + pw2 + 12, rt + 44, pair, 19, pcol, "bold")
+            pair_x = 38 + pw2 + 12
+            T(pair_x, rt + 44, pair,
+              fit(pair, max(24, 221 - pair_x - 8), "bold", hi=19), pcol, "bold")
         # 第二列：融合结果（多色混排）
         parts = [(str(p), C_ORANGE if col == "orange" else (C_GRAY if col == "gray" else C_PURPLE))
                  for p, col in (fr.get("result_parts") or [])]
