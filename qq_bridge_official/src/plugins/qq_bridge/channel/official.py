@@ -69,20 +69,26 @@ def _import_qq():
 
 
 def _build_button_segment(cmd: str, _QQMessage, _QQSegment):
-    """把当前口令变成一条「快捷命令按钮」消息段（带 keyboard）。
+    """把当前口令变成一条「快捷命令按钮」消息段（markdown + keyboard 同段）。
 
     返回 ``(message, btn_labels)`` 或 ``(None, [])``（口令为空/构造失败时降级不放按钮，
     绝不让按钮拖垮主卡片发送）。button 走 msg_type=2，与图片(msg_type=7)互斥，
     因此作为**独立的一条消息**在图片卡片之后发。
+
+    2026-11-11 修复 40034011「无效 markdown content」：QQ 官方要求消息按钮只能
+    挂在 msg_type=2 的 **markdown 消息**上（官方文档「发送带有按钮的消息」）。
+    适配器 send_to_group 见 markdown 或 keyboard 都会置 msg_type=2，但只有
+    keyboard、没有 markdown 时平台因缺合法 content 返回 40034011 —— 真实群实测
+    三次主图成功、三次按钮段全被拒。故按钮段必须 markdown + keyboard 同段；
+    markdown 段构造收敛在 qq_keyboard.make_button_message（可单测/可注入）。
     """
     if not cmd:
         return None, []
     try:
-        from .qq_keyboard import make_keyboard  # noqa: PLC0415
+        from .qq_keyboard import make_button_message, make_keyboard  # noqa: PLC0415
 
         kb_model, btns = make_keyboard(cmd)
-        seg = _QQMessage()
-        seg += _QQSegment.keyboard(kb_model)
+        seg = make_button_message(kb_model, _QQMessage, _QQSegment)
         return seg, [b.label for b in btns]
     except Exception as e:  # noqa: BLE001 — 按钮是增强项，失败只记日志不阻断发送
         log.warning(jlog("official_keyboard_build_failed", error=type(e).__name__,

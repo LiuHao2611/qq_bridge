@@ -43,7 +43,12 @@ from src.game_mode import get_mode, set_mode, register_keywords
 
 
 def _mode_is(game: str):
-    async def _r(event) -> bool:
+    # 官方副本 adapter 隔离（2026-11-11）：event 必须注解为 NapCat/OneBot V11
+    # 具体类型，否则官方全量群消息(GroupMessageCreateEvent，无 user_id)会进入本
+    # rule 并执行 event.user_id → AttributeError → 每条官方消息刷 Rule check
+    # failed ERROR。注解后官方事件在依赖注入阶段 TypeMisMatch → Rule.__call__
+    # 静默置 False；NapCat 的 MessageEvent 实例照常通过，行为不变。
+    async def _r(event: MessageEvent) -> bool:
         return (await get_mode(str(event.user_id))) == game
     return _r
 

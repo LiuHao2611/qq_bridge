@@ -154,6 +154,35 @@ def buttons_for(text: str) -> tuple[Btn, ...]:
     return (primary,) + neighbors + (_MENU,)
 
 
+#: 按钮卡片引导 markdown：QQ 官方 msg_type=2 是唯一支持「消息按钮」的类型，
+#: 且要求同时有合法 markdown.content；纯 keyboard 会被平台以
+#: 40034011「无效 markdown content」拒绝（2026-11-11 真实群实测）。
+#: 用自定义 content（非 template_id）→ 个人主体无需申请 Markdown 模板权限
+#: （官方错误码 304036/40034127 仅针对模板方式）。单行标准标题语法，规避
+#: 模板参数换行限制，对齐官方文档「Markdown + 键盘消息」请求示例。
+BUTTON_MARKDOWN = "## 快捷指令"
+
+
+def make_button_message(kb_model, QQMessage, QQSegment):
+    """把 keyboard 模型包成「markdown + keyboard 同段」的官方消息段。
+
+    * 官方协议：消息按钮 keyboard 只能挂在 msg_type=2 的 markdown 消息上，
+      故必须先放一段合法 markdown content，再放 keyboard；
+    * 适配器 1.7.2 实测：markdown/keyboard 段**不会**被 extract_content 提取
+      成 content（它只取 text/emoji/mention_*），最终 payload =
+      {msg_type:2, markdown, keyboard}，content 为空，满足「传 markdown 后
+      content/ark 必须全为空」，不会触发 22006；
+    * 依赖注入 QQMessage/QQSegment，本函数自身不 import nonebot → 宿主可用
+      假段单测「先 markdown 后 keyboard」的调用序列，容器可用真段测最终结构。
+
+    返回构造好的 ``QQMessage``（供 official.py::_build_button_segment 调用）。
+    """
+    seg = QQMessage()
+    seg += QQSegment.markdown(BUTTON_MARKDOWN)
+    seg += QQSegment.keyboard(kb_model)
+    return seg
+
+
 def make_keyboard(text: str):
     """根据当前口令文本构造 ``MessageKeyboard``（供 official.py::send 调用）。
 
