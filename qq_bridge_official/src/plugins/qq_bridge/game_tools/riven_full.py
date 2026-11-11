@@ -17,6 +17,8 @@
 """
 from __future__ import annotations
 
+import io
+import json
 import logging
 from pathlib import Path
 
@@ -45,39 +47,81 @@ FULL_SOURCE = (
 
 MOD_ASSET_DIR = Path(__file__).resolve().parents[1] / "pic" / "templates" / "riven_full_assets"
 
-#: 生产配卡真图目录：图2 近战病毒切割重击流 7 张**横版** MOD 卡（370×185，
-#: 真 DE 立绘 + 稀有度卡框 + 中文名，2026-11-12 由 tools/gen_mod_cards.py 离线预生成，
-#: 纯本地零外呼）。文件名 = WFM riven en slug。运行期只读盘，不合成、不外呼。
-_MOD_WIDE_DIR = MOD_ASSET_DIR / "mods"
-#: 中文卡名 → 横版真图文件名（**映射，不是卡名表**：卡名唯一事实源仍是
-#: riven_card._MELEE_BUILD，这里只回答「这张真表里的卡，配哪张图」）。
-#: 键与 _MELEE_BUILD 逐字一致；缺图（如枪械表 / 当前紫卡）→ 诚实走占位框。
-_MELEE_MOD_IMAGE = {
-    "热病打击 Prime": "primed_fever_strike.png",
-    "北风": "north_wind.png",
-    "邪恶蓄力": "corrupt_charge.png",
-    "震波": "seismic_wave.png",
-    "肉碾虫 巨颚": "carnis_mandible.png",
-    "牺牲 斩铁": "sacrificial_steel.png",
-    "肢解": "organ_shatter.png",
-}
+#: 第 8 格「当前紫卡」固定用原始母版 `mod_1_3.png`（紫色星标 + 「当前紫卡」字样，
+#: 2026-11-12 用户明确认可的效果）。**唯一**固定资产：紫卡是当前这张、不随武器类型变，
+#: 无法由 MOD 数据表合成，故用母版。其余 MOD 卡一律**运行时实时生成 + 缓存**
+#: （见 :func:`_live_mod_image`），禁止把卡图当静态资产硬编码进仓库——
+#: 用户 2026-11-12 明确：「其他 mod 都是实时获取或者从缓存拿，禁止硬编码」。
+_CURRENT_RIVEN_IMAGE = MOD_ASSET_DIR / "mod_1_3.png"
+
+#: 数据源根（与 ``tools/gen_mod_cards.py`` 同款；宿主/容器 ``/app`` 通用）。
+#: 容器由 ``./data:/app/data`` 挂载，DE 立绘缓存 2160 张 + Mods.json 运行期恒可用。
+_DATA_DIR = Path(__file__).resolve().parents[4] / "data"
+_MOD_FULL_JSON = _DATA_DIR / "warframe_items" / "mod_full.json"
+
+#: 横版 MOD 卡**内存缓存**（同 ``build_card.py::_MOD_CARD_CACHE`` 范式）：
+#: {中文卡名 → PNG bytes}。渲染线程内同一次/多次出卡复用，绝不重复合成、绝无磁盘静态资产。
+_LIVE_MOD_CACHE: dict[str, bytes] = {}
+#: zh→en 反查缓存（从 mod_full.json 事实源派生，零手工映射）。
+_ZH_TO_EN: dict[str, str] | None = None
 
 
-def _mod_image(name: str) -> str | None:
-    """真实配卡名 → 已落盘的横版 MOD 卡图路径；无真图返回 None（模板画占位框）。
+def _zh_to_en_from_mod_full() -> dict[str, str]:
+    """从 ``mod_full.json`` 事实源反查「中文卡名 → 英文小写名」（零硬编码映射）。
 
-    * 只查本地 ``_MOD_WIDE_DIR``，绝不发起网络请求（渲染线程安全）；
-    * 文件缺失/损坏返回 None，绝不编造图片；
-    * 卡名来源由调用方（``_build_mods``）保证来自 riven_card 真表。
+    ``mod_full.json`` 结构 ``{en_lower: {zh, type, rarity, polarity, drain, max:[...]}}``。
+    运行期只读盘一次并缓存；文件缺失/损坏返回空 dict，调用方诚实降级 None。
     """
-    fn = _MELEE_MOD_IMAGE.get((name or "").strip())
-    if not fn:
-        return None
-    p = _MOD_WIDE_DIR / fn
+    global _ZH_TO_EN
+    if _ZH_TO_EN is not None:
+        return _ZH_TO_EN
+    out: dict[str, str] = {}
     try:
-        return str(p) if p.is_file() and p.stat().st_size > 500 else None
-    except OSError:
+        mp = json.loads(_MOD_FULL_JSON.read_text(encoding="utf-8")).get("map", {})
+        for en, v in mp.items():
+            zh = str((v or {}).get("zh") or "").strip()
+            if zh and zh not in out:
+                out[zh] = en.lower()
+    except Exception as e:  # noqa: BLE001 — 事实源缺失只降级，不崩、不编造
+        logger.warning("riven_full_mod_full_load_failed: %s: %s", type(e).__name__, e)
+    _ZH_TO_EN = out
+    return out
+
+
+def _live_mod_image(name: str) -> io.BytesIO | None:
+    """真实配卡名 → **运行时实时合成**的横版 MOD 卡（io.BytesIO），内存缓存复用。
+
+    管线（与 ``build_card.py::_mod_card`` 同款、零外呼）：
+      中文卡名 →（mod_full.json 事实源反查）→ 英文小写名
+      → ``tools.gen_mod_cards.render_mod_card_wide(en)`` 用真 DE 立绘 + 稀有度卡框
+        实时合成 370×185 深色满幅金属边框卡 → 缓存 bytes → ``io.BytesIO``。
+
+    * **禁止静态资产**：不读、不写、不交付任何 ``mods/*.png``；
+    * 合成失败/数据源缺失 → 返回 None，模板诚实画占位框 + 真名，绝不编造；
+    * 卡名来源由调用方（``_build_mods``）保证来自 ``riven_card`` 真表；
+    * 返回**新** BytesIO（缓存的是不可变 bytes），规避指针复位问题。
+    """
+    zh = (name or "").strip()
+    if not zh:
         return None
+    if zh not in _LIVE_MOD_CACHE:
+        en = _zh_to_en_from_mod_full().get(zh)
+        if not en:
+            _LIVE_MOD_CACHE[zh] = b""
+            return None
+        try:
+            import sys as _sys
+            _root = str(Path(__file__).resolve().parents[4])
+            if _root not in _sys.path:
+                _sys.path.insert(0, _root)
+            from tools.gen_mod_cards import render_mod_card_wide  # type: ignore
+            raw = render_mod_card_wide(en)
+            _LIVE_MOD_CACHE[zh] = raw or b""
+        except Exception as e:  # noqa: BLE001 — 单卡失败不拖垮整张，诚实降级
+            logger.warning("riven_full_live_mod_failed: %s: %s", type(e).__name__, e)
+            _LIVE_MOD_CACHE[zh] = b""
+    raw = _LIVE_MOD_CACHE.get(zh) or b""
+    return io.BytesIO(raw) if len(raw) > 500 else None
 
 # 参考卡实测的 8 张 MOD 缩略图（前景内容，非背景花纹），由参考卡逐像素裁切
 _MOD_NAMES = [
@@ -140,10 +184,14 @@ def _build_mods(wtype: str | None) -> list[dict]:
 
     纪律：
       * 卡名只来自 ``riven_card._BUILD`` / ``_MELEE_BUILD``，本模块零手工卡名；
-      * ``image`` = :func:`_mod_image` 查本地预生成的**横版真图**：图2 近战重击流
-        7 张已离线备好（真 DE 立绘 + 卡框，零外呼）；其余（枪械表 / 当前紫卡）
-        暂无真图时返回 None，模板诚实画占位框 + 真名，**绝不张冠李戴贴错枪卡图**
-        （2026-11-12 前写死 image=None 导致 8 格全纯黑，用户投诉「敷衍」，故修）；
+      * ``image`` = :func:`_live_mod_image` **运行时实时合成 + 内存缓存**的横版
+        MOD 卡（zh→en 从 mod_full.json 事实源反查 → render_mod_card_wide 用真 DE
+        立绘 + 稀有度卡框实时出 370×185 深色满幅金属边框卡，零外呼、零静态资产）。
+        **任何**武器类型的真表卡都能实时出图（不再只有近战 7 张有图）；合成失败
+        才返回 None 走占位框 + 真名，**绝不张冠李戴**；
+      * 第 8 格「当前紫卡」是**唯一**固定资产：用母版 ``mod_1_3.png``（紫色星标，
+        用户认可）。它不随武器类型变、无法由 MOD 数据表合成——「当前紫卡」对该
+        武器恒成立，故保留母卡；其余 MOD 禁静态硬编码（用户 2026-11-12 明确）；
       * 未知/缺失 type（如仅给武器名、无 OCR）返回 8 格「需紫卡截图」，
         **绝不默认套 Rifle 枪卡**——没真实类型就不假装给出针对该武器的配卡。
     """
@@ -152,8 +200,9 @@ def _build_mods(wtype: str | None) -> list[dict]:
         return [{"name": _NEED_SHOT, "image": None} for _ in range(8)]
     from . import riven_card as rc
     names = list(rc._MELEE_BUILD) if key == "melee" else list(rc._BUILD[key])
-    out = [{"name": n, "image": _mod_image(n)} for n in names]
-    out.append({"name": "当前紫卡", "image": None})  # 当前紫卡=动态，无预生成真图
+    out = [{"name": n, "image": _live_mod_image(n)} for n in names]
+    riven_img = str(_CURRENT_RIVEN_IMAGE) if _CURRENT_RIVEN_IMAGE.is_file() else None
+    out.append({"name": "当前紫卡", "image": riven_img})
     return out[:8]
 
 

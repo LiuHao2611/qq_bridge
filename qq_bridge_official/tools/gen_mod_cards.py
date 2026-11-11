@@ -623,32 +623,42 @@ def _wide_frame(tier: str, part: str) -> Image.Image | None:
     return im.crop(b) if b else None
 
 
-#: 横版卡圆角半径（370×185，参考图四角圆润但不夸张，≈宽 4.3%）
-WIDE_CARD_RADIUS = 16
-#: 沿圆角轮廓的稀有度描边宽度（让「每种类型边框不一样」一眼可辨）
+#: 横版卡金属描边宽度（沿四边收边，让「每种类型边框不一样」一眼可辨）
 WIDE_EDGE_WIDTH = 3
-#: 稀有度 → 整卡轮廓描边色（比 TIER_COLOR 更饱和，贴近游戏内卡框金属色）
+#: 稀有度 → 整卡金属边框描边色（复刻参考卡 8 张母版的蓝/金/紫金属收边）。
+#: 母版四边**不是深色裸边**而是金属色收边——这正是「深色满幅却不露黑边」的关键。
 WIDE_EDGE_COLOR = {
     "Bronze": (176, 126, 104),      # 铜/陶土（Common）
-    "Silver": (188, 208, 224),      # 冷银（Uncommon）
-    "Gold": (226, 183, 82),         # 暖金（Rare）
+    "Silver": (188, 208, 224),      # 冷银蓝（Uncommon）—— 母版「深层冷冻」冷蓝银
+    "Gold": (226, 183, 82),         # 暖金（Rare）—— 母版「致命洪流」暖金
     "Legendary": (245, 214, 120),   # 传奇白金偏金（Legendary）—— 与冷银明确拉开
     "Galvanized": (150, 214, 230),  # 镀层/青
     "Amalgam": (170, 226, 190),     # 融合/青绿
-    "Omega": (172, 131, 213),       # 紫
+    "Omega": (172, 131, 213),       # 紫（当前紫卡）
+}
+#: 稀有度 → 整卡色调浸染（复刻母版「深色满幅 + 按类型整卡异色」的质感）。
+#: 立绘压暗后与本色做软光混合：Silver 冷蓝 / Gold 暖金棕 / Bronze 铜棕 /
+#: Legendary 冷白金 / Omega 深紫。用户 2026-11-12 明确要的这个效果。
+WIDE_TINT_COLOR = {
+    "Bronze": (48, 40, 34),
+    "Silver": (30, 44, 62),
+    "Gold": (58, 48, 26),
+    "Legendary": (46, 52, 66),
+    "Galvanized": (26, 52, 58),
+    "Amalgam": (32, 52, 44),
+    "Omega": (46, 30, 62),
 }
 
 
-def _card_outline_mask(w: int, h: int, radius: int = WIDE_CARD_RADIUS) -> Image.Image:
-    """L 模式圆角矩形轮廓 mask：卡面内=255、框外=0。
+def _wide_fill(base: Image.Image, tint: tuple[int, int, int]) -> None:
+    """把立绘底按稀有度色调浸染（软光近似：正片叠底提暗 + 加色 tint）。
 
-    这是「黑边」根因的正解 —— 立绘铺满整块矩形后，用本 mask 把框外 alpha
-    清零，贴图时（模板 `c.paste(im, ..., im)`）框外露出浅色底，不再是不透明深色。
+    复刻母版「深色满幅但整卡有类型色」：立绘细节保留，整体压到冷蓝/暖金等
+    稀有度色系，绝不做成浅灰白或透明感。
     """
-    m = Image.new("L", (w, h), 0)
-    d = ImageDraw.Draw(m)
-    d.rounded_rectangle((0, 0, w - 1, h - 1), radius=radius, fill=255)
-    return m
+    layer = Image.new("RGBA", base.size, tint + (255,))
+    base.alpha_composite(layer)
+
 
 
 def render_mod_card_wide(english_lower: str, force: bool = False) -> bytes | None:
@@ -679,17 +689,19 @@ def render_mod_card_wide(english_lower: str, force: bool = False) -> bytes | Non
     name_zh = mf.get("zh") or mod.get("name") or key
     tier = _tier_of(mod)
     color = TIER_COLOR.get(tier, (255, 255, 255))
-
-    # 圆角轮廓 mask：卡面内=255、框外=0（去黑边根因）
-    outline = _card_outline_mask(W, H)
     edge_color = WIDE_EDGE_COLOR.get(tier, (198, 214, 226))
+    tint = WIDE_TINT_COLOR.get(tier, (38, 44, 56))
 
-    # base 只在圆角轮廓内不透明；框外恒透明，贴图时露出卡片浅底而非深色矩形。
-    base = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    # 2026-11-12 定稿（用户「我就要之前那个效果，别再乱改了」）：复刻项目原始
+    # 8 张母版 mod_0_0…mod_1_3 的质感——**深色满幅卡面 + 按稀有度整卡异色 +
+    # 四边金属边框收边 + 右上梯形耗能标签 + 底部等级点 + 当前紫卡紫色星标**。
+    # 与第19轮「圆角透明 + 浅灰白框」方向彻底相反：母版四角 alpha=255 不透明，
+    # 边缘是**金属色收边**而非深色裸矩形，所以贴到浅底既不露「黑边」又是游戏卡质感。
+    # base 恒 370×185 全幅不透明。
+    base = Image.new("RGBA", (W, H), tint + (255,))
 
-    # 1) 立绘：cover 铺满 → 灰度混合 → 压暗 → 蓝灰 tint（与横版卡框的冷调统一）
+    # 1) 立绘：cover 铺满 → 灰度混合 → 压暗 → 按稀有度色调浸染（深色满幅，非浅灰）
     tl = _ensure_de_manifest().get(un)
-    art_ok = False
     if tl:
         p = ART / Path(tl.split("!", 1)[0]).name
         if p.exists():
@@ -702,40 +714,29 @@ def render_mod_card_wide(english_lower: str, force: bool = False) -> bytes | Non
                 art = art.crop((l, t, l + W, t + H))
                 gray = ImageOps.grayscale(art).convert("RGB")
                 art = Image.blend(art, gray, 0.45)
-                art = _shade(art, 0.45).convert("RGB")
-                art = Image.blend(art, Image.new("RGB", (W, H), (28, 38, 52)), 0.32)
-                base.paste(art, (0, 0))
-                art_ok = True
+                art = _shade(art, 0.52).convert("RGBA")
+                # 立绘以半透明叠到稀有度色底上：保留纹理，整卡压到冷蓝/暖金等色系
+                art.putalpha(150)
+                base.alpha_composite(art)
+                # 再铺一层稀有度色做整卡浸染，确保深色满幅、色调统一
+                veil = Image.new("RGBA", (W, H), tint + (96,))
+                base.alpha_composite(veil)
             except Exception:  # noqa: BLE001
                 pass
-    if not art_ok:
-        base.paste(Image.new("RGB", (W, H), (40, 44, 52)), (0, 0))
-
-    # 1b) 把整块矩形裁成圆角轮廓：框外 alpha=0。这一步是「黑边 → 无黑边」的关键。
-    base.putalpha(outline)
-
-    # 1c) 沿圆角轮廓描稀有度色边（每种类型/稀有度边框不同，且一眼可辨）。
-    edge = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    ed = ImageDraw.Draw(edge)
-    ed.rounded_rectangle(
-        (0, 0, W - 1, H - 1), radius=WIDE_CARD_RADIUS,
-        outline=edge_color + (255,), width=WIDE_EDGE_WIDTH,
-    )
-    base.alpha_composite(edge)
 
     draw = ImageDraw.Draw(base)
 
-    # 2) 卡名（粗体，1px 黑影，不描边 —— 描边会糊住横版卡的小字）
+    # 2) 卡名（粗体，1px 黑影）—— 母版为居中白字，深色卡面上高对比
     fs = 32
     fname = _font(fs, bold=True)
     while fs > 20 and draw.textlength(name_zh, font=fname) > W * 0.72:
         fs -= 2
         fname = _font(fs, bold=True)
-    ny = int(H * 0.55)
+    ny = int(H * 0.54)
     draw.text((W / 2 + 1, ny + 1), name_zh, font=fname, fill=(0, 0, 0), anchor="mm")
-    draw.text((W / 2, ny), name_zh, font=fname, fill=(232, 228, 220), anchor="mm")
+    draw.text((W / 2, ny), name_zh, font=fname, fill=(236, 232, 224), anchor="mm")
 
-    # 3) 顶框：横版 FrameTop 按宽等比贴顶
+    # 3) 顶框：横版 FrameTop 按宽等比贴顶（真实 DE 金属翼尖）
     top = _wide_frame(tier, "FrameTop")
     if top is not None:
         th = max(1, int(top.height * W / top.width))
@@ -747,7 +748,18 @@ def render_mod_card_wide(english_lower: str, force: bool = False) -> bytes | Non
         bh = max(1, int(bot.height * W / bot.width))
         base.alpha_composite(bot.resize((W, bh), Image.LANCZOS), (0, H - bh))
 
-    # 5) 右上角：满级耗能（紫卡 ???）+ 极性
+    # 5) 四边金属描边收边（沿整卡外沿）：让边缘是**金属色**而非深色裸边，
+    #    这是「深色满幅却不露黑边」的关键，也是母版四边被金属框包住的效果。
+    edge = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ed = ImageDraw.Draw(edge)
+    ed.rectangle((0, 0, W - 1, H - 1), outline=edge_color + (235,), width=WIDE_EDGE_WIDTH)
+    # 内圈再压一道暗边，模拟金属框的立体高光/厚度（母版边框非纯平涂）
+    ed.rectangle((WIDE_EDGE_WIDTH, WIDE_EDGE_WIDTH,
+                  W - 1 - WIDE_EDGE_WIDTH, H - 1 - WIDE_EDGE_WIDTH),
+                 outline=(0, 0, 0, 90), width=1)
+    base.alpha_composite(edge)
+
+    # 6) 右上角：梯形耗能标签 + 极性（复刻母版右上斜角小标签）
     drain = mod.get("baseDrain")
     fl_raw = mod.get("fusionLimit")
     fusion = int(fl_raw) if isinstance(fl_raw, int) else 0
@@ -763,34 +775,33 @@ def render_mod_card_wide(english_lower: str, force: bool = False) -> bytes | Non
     dw = draw.textlength(dstr, font=fnum)
     gsz = 22
     total = dw + (gsz if glyph else 0) + 6
-    x0 = W - total - 10
-    if tier == "Omega":                                    # 紫框上黑描边保证可读
-        draw.text((x0 + dw / 2 + 1, 19), dstr, font=fnum, fill=(0, 0, 0), anchor="mm")
-    draw.text((x0 + dw / 2, 18), dstr, font=fnum, fill=(240, 240, 240), anchor="mm")
+    x0 = W - total - 12
+    # 梯形深色标签底（右上斜角），让耗能数字在亮金属顶框上也清晰
+    tag = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    td = ImageDraw.Draw(tag)
+    td.polygon([(int(x0 - 8), 4), (W - 4, 4), (W - 4, 34), (int(x0 - 2), 34)],
+               fill=(8, 10, 14, 205))
+    base.alpha_composite(tag)
+    draw = ImageDraw.Draw(base)
+    draw.text((x0 + dw / 2, 18), dstr, font=fnum, fill=(244, 244, 246), anchor="mm")
     if glyph is not None:
         gimg = _tint(glyph, (235, 238, 245)).resize((gsz, gsz), Image.LANCZOS)
         base.alpha_composite(gimg, (int(x0 + dw + 6), 18 - gsz // 2))
 
-    # 6) 等级点（官方 RankSlot；紫卡不显示）
+    # 7) 底部等级点（官方 RankSlot；按稀有度着色；紫卡不显示）
     if tier != "Omega" and fusion > 0:
         n = min(10, fusion)
         slot = Image.open(str(FRAMES / "RankSlotActive.png")).convert("RGBA")
         slot = slot.resize((9, 9), Image.LANCZOS)
-        if tier in ("Gold", "Legendary"):
-            slot = _tint(slot, color)
+        slot = _tint(slot, edge_color)
         sy = H - 14
         sx = (W - (n * 12 - 3)) // 2
         for i in range(n):
             base.alpha_composite(slot, (sx + i * 12, sy))
 
-    # 最终再套一次圆角 mask：顶/底框翼尖、卡名、耗能、等级点若越过圆角一律裁掉，
-    # 保证框外恒 alpha=0。绝不再用 `Image.new("RGB", (16,18,22))` 深色底覆盖 ——
-    # 那正是把整块透明画布糊成不透明深色矩形、贴到浅色卡面露「黑边」的根因。
-    # Image.composite(a, b, outline)：轮廓内取 a(base.alpha)，轮廓外取 b(全 0)。
-    final_alpha = Image.composite(base.split()[3], Image.new("L", (W, H), 0), outline)
-    base.putalpha(final_alpha)
+    # 满幅不透明输出：四角 alpha=255（复刻母版）。绝不再用框外透明 mask / 圆角裁切。
     buf = io.BytesIO()
-    base.save(buf, format="PNG")  # RGBA 直出，框外透明
+    base.convert("RGB").save(buf, format="PNG")  # RGB 直出=全幅不透明，无透明圆角
     return buf.getvalue()
 
 

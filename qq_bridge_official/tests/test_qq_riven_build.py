@@ -9,9 +9,18 @@
      riven_full.py 不得再写一份手工卡名；**每个卡名必须在 mod_full.json 的 zh
      字段精确命中**（2026-11-12 加：旧「暗病打击 Prime/肉瘤 巨颚」是凭译名猜的、
      事实源里根本不存在，用户投诉「配卡不符合武器」的深层根因）；
-  2. ``image`` 对**已备真图的近战重击流 7 张**必须指向离线横版真卡
-     （riven_full_assets/mods/*.png，370×185，零外呼）；无真图（枪械表/当前紫卡）
-     → 诚实 None 走占位框，**绝不张冠李戴**贴参考卡那 8 张枪卡图；
+  2. ``image`` 对前 N 张配卡 MOD **运行时实时合成 + 内存缓存**
+     （``_live_mod_image``：zh→en 由 mod_full.json 事实源反查 → render_mod_card_wide
+     用真 DE 立绘 + 稀有度卡框出 370×185 深色满幅金属边框卡，零外呼、零静态资产）；
+     **禁止静态 PNG 硬编码**（用户 2026-11-12 明确「其他 mod 实时获取或从缓存拿，
+     禁止硬编码」）——磁盘不得有 riven_full_assets/mods/*.png 交付、源码不得有
+     _MELEE_MOD_IMAGE 卡图映射；合成失败诚实 None 走占位框，绝不张冠李戴；
+  2b. 第 8 格「当前紫卡」是**唯一**固定资产：母版 mod_1_3.png（紫色星标，用户认可），
+     紫卡无法由 MOD 数据表合成、不随武器变，故保留；其余参考样例母版不交付；
+  2c. 横版真卡视觉（2026-11-12 用户「我就要之前那个深色效果，别再乱改了」）：
+     **深色满幅不透明（四角 alpha=255）+ 四边金属色收边（非深色裸边/黑边）+
+     稀有度分档边框色 + 右上梯形耗能标签 + 底部等级点**。严禁退回第19轮
+     「圆角透明 + 浅灰白框 + 框外 alpha=0」方向。；
   3. 类型未知/战甲名/外号 → 全部「需紫卡截图」占位，绝不默认套 Rifle 枪卡；
   4. 图损坏/缺失 → 模板等比 contain 贴真图失败时回落占位框，不崩、不编造。
 
@@ -29,6 +38,10 @@ import types
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
+# 数据层 _live_mod_image 会 lazy `from tools.gen_mod_cards import render_mod_card_wide`，
+# 需项目根在 sys.path（宿主/容器通用）。gen_mod_cards 只依赖标准库 + Pillow，无 nonebot/httpx。
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 _DATA = _REPO / "src" / "plugins" / "qq_bridge" / "game_tools" / "riven_full.py"
 _CARD = _REPO / "src" / "plugins" / "qq_bridge" / "game_tools" / "riven_card.py"
 
@@ -132,17 +145,30 @@ def section_a_static():
     handmade = [s for s in bm_strings if any(g in s for g in _GUN_ONLY + _MELEE_ONLY)]
     ok(not handmade, "A5 _build_mods 零手工卡名", "handmade=%s" % handmade[:3])
 
-    # A6 image 走 _mod_image 查本地真图（2026-11-12：不再写死 None）
-    ok("_mod_image(" in bm_src, "A6 _build_mods 用 _mod_image 查真图")
-    ok('_mod_image(n)' in bm_src.replace(" ", ""),
-       "A7 _build_mods 逐卡查图（非全 None）")
-    # A7b _mod_image 只读本地盘、零外呼
-    f_mi = _fn(tree, "_mod_image")
-    mi_src = ast.get_source_segment(src, f_mi) or "" if f_mi else ""
-    ok(f_mi is not None and "_MOD_WIDE_DIR" in mi_src, "A7c _mod_image 读本地资产目录")
-    ok(not any(x in mi_src for x in ("httpx", "urlopen", "requests", "http://", "https://")),
-       "A7d _mod_image 零网络外呼")
-    ok("is_file()" in mi_src and "None" in mi_src, "A7e _mod_image 缺图诚实返回 None")
+    # A6 image 走 _live_mod_image **运行时实时合成**（2026-11-12 架构收敛：禁静态资产）
+    ok("_live_mod_image(" in bm_src, "A6 _build_mods 用 _live_mod_image 实时合成")
+    ok('_live_mod_image(n)' in bm_src.replace(" ", ""),
+       "A7 _build_mods 逐卡实时出图（非全 None、非查静态路径）")
+    # 只看执行代码的标识符节点（docstring 里「不再引用 _MELEE_MOD_IMAGE」说明不算）
+    bm_names = {n.id for n in ast.walk(f_bm) if isinstance(n, ast.Name)}
+    ok("_mod_image" not in bm_names and "_MELEE_MOD_IMAGE" not in bm_names,
+       "A7b _build_mods 执行代码不再引用任何静态卡图映射")
+    # A7c~A7e _live_mod_image：实时合成 + 内存缓存 + 事实源反查 + 零外呼 + 诚实降级
+    f_lm = _fn(tree, "_live_mod_image")
+    lm_src = ast.get_source_segment(src, f_lm) or "" if f_lm else ""
+    ok(f_lm is not None and "_LIVE_MOD_CACHE" in lm_src,
+       "A7c _live_mod_image 用内存缓存（实时获取或从缓存拿）")
+    ok("render_mod_card_wide" in lm_src and "_zh_to_en_from_mod_full" in lm_src,
+       "A7d _live_mod_image 事实源反查 en + 真生成器实时合成")
+    ok(not any(x in lm_src for x in ("httpx", "urlopen", "requests", "http://", "https://")),
+       "A7e _live_mod_image 零网络外呼")
+    ok("return None" in lm_src and "b\"\"" in lm_src,
+       "A7f _live_mod_image 合成失败诚实返回 None")
+    # A7g 事实源反查函数从 mod_full.json 派生、缓存，零手工 zh→en 映射
+    f_z2e = _fn(tree, "_zh_to_en_from_mod_full")
+    z2e_src = ast.get_source_segment(src, f_z2e) or "" if f_z2e else ""
+    ok(f_z2e is not None and "mod_full.json" in z2e_src and "_ZH_TO_EN" in z2e_src,
+       "A7g zh→en 由 mod_full.json 事实源反查并缓存（零硬编码映射）")
 
     # A8 生产装配用 _build_mods/_build_label，不再回落 _mod_assets
     rfd_src = ast.get_source_segment(src, f_rfd) or ""
@@ -191,34 +217,41 @@ def section_a_static():
     ok(not any(x in (melee_build or []) for x in ("暗病打击 Prime", "肉瘤 巨颚")),
        "A15 旧凭译名猜的错卡名已全部移除")
 
-    # A16 真图资产齐备 + 尺寸 370×185 + 映射键与真表对齐
-    import re as _re
-    img_map = None
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for tgt in node.targets:
-                if isinstance(tgt, ast.Name) and tgt.id == "_MELEE_MOD_IMAGE":
-                    try:
-                        img_map = ast.literal_eval(node.value)
-                    except Exception:
-                        pass
-    ok(isinstance(img_map, dict) and set(img_map or {}) == set(melee_build or []),
-       "A16 映射键与 _MELEE_BUILD 逐字对齐",
-       "diff=%r" % ((set(melee_build or []) ^ set((img_map or {}).keys())),))
-    from PIL import Image as _Image
-    bad_img = []
-    for zh, fn in (img_map or {}).items():
-        p = _MOD_WIDE / fn
-        if not p.is_file() or p.stat().st_size <= 500:
-            bad_img.append((fn, "missing/small"))
-            continue
-        try:
-            im = _Image.open(p)
-            if im.size != (370, 185):
-                bad_img.append((fn, im.size))
-        except Exception as e:  # noqa: BLE001
-            bad_img.append((fn, type(e).__name__))
-    ok(not bad_img, "A17 7 张横版真图齐备且为 370×185", "bad=%r" % bad_img[:4])
+    # A16 静态资产彻底清除（用户「禁止硬编码」）：源码无 _MELEE_MOD_IMAGE /
+    # _MOD_WIDE_DIR / mods/*.png 交付路径；磁盘 mods/ 目录无任何 PNG。
+    top_assigns = {tgt.id: node.value for node in tree.body
+                   if isinstance(node, ast.Assign)
+                   for tgt in node.targets if isinstance(tgt, ast.Name)}
+    ok("_MELEE_MOD_IMAGE" not in top_assigns and "_MOD_WIDE_DIR" not in top_assigns,
+       "A16 源码无静态卡图映射 _MELEE_MOD_IMAGE / _MOD_WIDE_DIR")
+    # 只看执行代码的字符串常量（docstring/注释里「禁止 mods/*.png」说明不算）。
+    # 排除各 docstring 后收集全模块 string 常量，判断无静态交付路径字面。
+    doc_ids = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            b = getattr(n, "body", None)
+            if b and isinstance(b[0], ast.Expr) and isinstance(b[0].value, ast.Constant) \
+                    and isinstance(b[0].value.value, str):
+                doc_ids.add(id(b[0].value))
+    code_strings = {n.value for n in ast.walk(tree)
+                    if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                    and id(n) not in doc_ids}
+    static_paths = [s for s in code_strings
+                    if ("mods/" in s and s.rstrip().endswith(".png"))
+                    or s in ("primed_fever_strike.png", "north_wind.png")]
+    ok(not static_paths, "A17 执行代码无 mods/*.png 静态交付路径",
+       "paths=%r" % static_paths[:4])
+    stray = list(_MOD_WIDE.glob("*.png")) if _MOD_WIDE.is_dir() else []
+    ok(not stray, "A17b 磁盘 mods/ 目录无静态 PNG（已删静态资产）",
+       "stray=%r" % [p.name for p in stray][:4])
+    # 唯一固定资产 = 母卡 mod_1_3.png；.gitignore 须精确放行它、且不再放行 mods/
+    gi = (_REPO / ".gitignore").read_text(encoding="utf-8")
+    ok("!src/plugins/qq_bridge/pic/templates/riven_full_assets/mod_1_3.png" in gi,
+       "A17c .gitignore 精确放行唯一母卡 mod_1_3.png")
+    ok("riven_full_assets/mods/*.png" not in gi,
+       "A17d .gitignore 不再放行 mods/*.png（禁静态资产交付）")
+    ok((_REPO / "src/plugins/qq_bridge/pic/templates/riven_full_assets/mod_1_3.png").is_file(),
+       "A17e 母卡 mod_1_3.png 实物存在")
     ok(len(list(_MELEE_IMG_SLUG)) == 7, "A18 基准 en slug 7 张")
 
 
@@ -244,13 +277,28 @@ def section_b_behavior():
         names = [m["name"] for m in mods]
         ok(names[:len(melee)] == list(melee), "B2 %s 配近战真表" % t, names[0])
         ok(not any(g in names for g in _GUN_ONLY), "B3 %s 无枪卡混入" % t)
-        # B4 前 7 张近战卡必须有真图路径且文件存在（2026-11-12：不再是纯黑占位）
-        real_imgs = [m["image"] for m in mods[:7]]
-        ok(all(p and Path(p).is_file() for p in real_imgs if isinstance(p, str))
-           and all(isinstance(p, str) for p in real_imgs),
-           "B4 %s 前 7 张 image 指向真图" % t,
-           "paths=%d" % sum(1 for p in real_imgs if isinstance(p, str)))
-        ok(mods[7]["image"] is None, "B4b %s 第 8 格当前紫卡诚实无图" % t)
+        # B4 前 7 张近战卡必须是**运行时实时合成**的 BytesIO 真图（370×185 深色满幅），
+        # 不再是静态 PNG 路径（2026-11-12 架构收敛：禁静态资产、实时获取/缓存）。
+        from PIL import Image as _Image
+        import io as _io
+        live = [m["image"] for m in mods[:7]]
+        good = []
+        for b in live:
+            if not isinstance(b, _io.BytesIO):
+                good.append(False); continue
+            try:
+                im = _Image.open(b); im.load()
+                good.append(im.size == (370, 185) and len(b.getvalue()) > 500)
+            except Exception:  # noqa: BLE001
+                good.append(False)
+        ok(all(good), "B4 %s 前 7 张为运行时实时 BytesIO 真图" % t,
+           "good=%d/7" % sum(good))
+        # B4b 第 8 格「当前紫卡」= 唯一固定资产母版 mod_1_3.png（紫色星标）。
+        riven_img = mods[7]["image"]
+        ok(isinstance(riven_img, str) and Path(riven_img).is_file()
+           and Path(riven_img).name == "mod_1_3.png",
+           "B4b %s 第 8 格当前紫卡→母版紫卡星标 mod_1_3.png" % t,
+           "image=%r" % riven_img)
         ok(len(mods) == 8, "B5 %s 配卡 8 格" % t, "n=%d" % len(mods))
 
     # B6 手枪（含 Kitgun）
@@ -332,14 +380,22 @@ def section_c_injection():
 
 
 def section_d_frame():
-    """D. 黑边 / 稀有度边框守门（防再犯 2026-11-12 用户「配卡还是有黑边，
-    每种类型 mod 边框都不一样，严格按参考图」）。
+    """D. 深色满幅 + 金属边框收边守门（防再犯 2026-11-12 两次纠正）。
 
-    守的是用户肉眼可见的形态：卡框外透明（无深色矩形黑边）、圆角、每张按
-    Common/Bronze→Uncommon/Silver→Rare/Gold→Legendary 出**不同色**边框。
+    第一次（第19轮）我曾把「深色满幅」误判为黑边、改成框外透明 + 浅灰白圆角框，
+    用户随即否定：「不对，你看你之前做的这个效果，我就要这个，你别再乱改了」，
+    并在 AskUserQuestion 明确「只换质感，保留按武器配」。
+
+    守的是用户认可的原始母版 `mod_0_0…mod_1_3` 肉眼可见形态：
+      * **深色满幅不透明**：四角 alpha=255（不是框外透明圆角）；
+      * **四边金属色收边**：四边中点取样必须是金属色（非深色裸边/黑边），且
+        Bronze/Silver/Gold/Legendary 至少 3 种不同色（每种类型边框不一样）；
+      * **整卡深色**：中心与四角均为深色（非浅灰白透明感）；
+      * 生成源码不得再用框外透明 mask / 圆角裁切 / 深色 RGB 底覆盖。
     """
-    print("== D. 黑边 / 稀有度边框：框外透明 + 每档边框不同 ==")
+    print("== D. 深色满幅 + 金属边框收边 + 稀有度分档（非透明浅灰，运行时实时合成）==")
     from PIL import Image as _Image
+    import io as _io
     # 档位事实源：由 Mods.json 的 rarity 经 RARITY_TIER 派生（不 import 生产模块，
     # 只读 JSON 复刻映射，避免测试与生成器同实现同源而失去独立性）。
     import json as _json
@@ -347,61 +403,93 @@ def section_d_frame():
                     "rare": "Gold", "legendary": "Legendary"}
     _mods = _json.loads((_REPO / "data" / "warframe_items" / "Mods.json").read_text(encoding="utf-8"))
     _mod_full = _json.loads(_MOD_FULL.read_text(encoding="utf-8"))
-    # uniqueName 末段 → rarity；再由 mod_full 的 zh 落到本 7 张
-    _rarity_by_un = {m.get("uniqueName"): (m.get("rarity") or "common").lower()
-                     for m in _mods if isinstance(m, dict)}
-    _tier_by_zh = {}
-    for _v in (_mod_full.get("map") or {}).values():
-        _zh = str((_v or {}).get("zh") or "").strip()
-        # mod_full 的 key 是 en 小写名，唯一名映射需 en→uniqueName；此处只用 zh→rarity 反查，
-        # 通过 Mods.json 的 name 对齐（见下）。
-        if _zh:
-            _tier_by_zh[_zh] = None
     _rarity_by_name = {str(m.get("name") or "").lower(): (m.get("rarity") or "common").lower()
                        for m in _mods if isinstance(m, dict)}
+    _tier_by_zh = {}
     for _k, _v in (_mod_full.get("map") or {}).items():
         _zh = str((_v or {}).get("zh") or "").strip()
         if _zh and _k in _rarity_by_name:
             _tier_by_zh[_zh] = _RARITY_TIER.get(_rarity_by_name[_k], "Bronze")
-    tier_by_zh = {k: v for k, v in _tier_by_zh.items() if v}
-    corner_alpha, center_alpha, transparent_ratio = [], [], []
-    edge_pixels = {}
-    for slug in _MELEE_IMG_SLUG:
-        p = _MOD_WIDE / (slug + ".png")
-        im = _Image.open(p).convert("RGBA")
+    tier_by_zh = _tier_by_zh
+
+    # 运行时实时合成的 7 张（zh 名称来自 _MELEE_BUILD 真表，卡图由 _live_mod_image 产出）
+    full, _card = _load_isolated()
+    zhs = list(_card._MELEE_BUILD)
+
+    def _is_dark(c):
+        return max(c[:3]) < 110          # 深色：三通道最大值都偏暗
+
+    def _is_metal(c):
+        # 金属色：足够亮/饱和（R/G/B 至少一通道 ≥130），且非纯白透明底的浅灰
+        return max(c[:3]) >= 130
+
+    corner_alpha = []
+    edge_samples = {}                     # zh → 四边中点 RGB
+    opaque_ratio, dark_ratio, white_ratio = [], [], []
+    live_ok = []
+    for zh in zhs:
+        bio = full._live_mod_image(zh)     # 运行时实时合成（内存缓存），零静态资产
+        if not isinstance(bio, _io.BytesIO):
+            live_ok.append((zh, "no BytesIO")); continue
+        try:
+            im = _Image.open(bio).convert("RGBA"); im.load()
+        except Exception as e:  # noqa: BLE001
+            live_ok.append((zh, type(e).__name__)); continue
+        live_ok.append((zh, "OK" if im.size == (370, 185) else str(im.size)))
         w, h = im.size
         a = im.split()[3]
         corners = [a.getpixel(pt) for pt in ((0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1))]
-        corner_alpha.append((slug, corners))
-        center_alpha.append((slug, a.getpixel((w // 2, h // 2))))
-        # 框外透明占比：alpha==0 的像素比例（圆角 + 四边留白应 > 3%）
+        corner_alpha.append((zh, corners))
         hist = a.histogram()
-        transparent_ratio.append((slug, hist[0] / (w * h)))
-        # 取左/右边中点的描边色（避开顶/底框中央的深色徽记，取样更纯粹）
-        edge_pixels[slug] = (im.getpixel((1, h // 2))[:3], im.getpixel((w - 2, h // 2))[:3])
+        opaque_ratio.append((zh, hist[255] / (w * h)))
+        # 深色/亮白像素占比：整卡形态判据，对卡名/翼尖/框高光等局部取样点不敏感。
+        px = list(im.convert("RGB").getdata())
+        n = len(px)
+        dark_ratio.append((zh, sum(1 for c in px if max(c) < 110) / n))
+        white_ratio.append((zh, sum(1 for c in px if min(c) > 200) / n))
+        # 四边中点（金属描边取样）：上/下/左/右
+        edge_samples[zh] = (im.getpixel((w // 2, 0))[:3],
+                            im.getpixel((w // 2, h - 1))[:3],
+                            im.getpixel((0, h // 2))[:3],
+                            im.getpixel((w - 1, h // 2))[:3])
+    ok(all(s == "OK" for _, s in live_ok) and len(live_ok) == 7,
+       "D0 7 张卡运行时实时合成为 370×185 BytesIO 真图", "r=%r" % live_ok)
+    # 缓存命中：同一卡第二次调用命中 _LIVE_MOD_CACHE、bytes 相同（不重复合成）
+    b1 = full._live_mod_image(zhs[0]); b2 = full._live_mod_image(zhs[0])
+    ok(isinstance(b1, _io.BytesIO) and isinstance(b2, _io.BytesIO)
+       and b1.getvalue() == b2.getvalue() and len(full._LIVE_MOD_CACHE) >= 7,
+       "D0b 内存缓存命中（同卡二次 bytes 相同、缓存≥7）",
+       "cache=%d" % len(full._LIVE_MOD_CACHE))
 
-    bad_corner = [s for s, c in corner_alpha if any(v != 0 for v in c)]
-    ok(not bad_corner, "D1 7 张卡四角 alpha=0（无深色矩形黑边）", "bad=%r" % bad_corner)
-    bad_center = [s for s, v in center_alpha if v != 255]
-    ok(not bad_center, "D2 7 张卡面中心不透明（未被掏空）", "bad=%r" % bad_center)
-    # 圆角 R=16/370×185 时框外透明占比约 0.36%（浅圆角、卡面几乎满幅，贴近参考图）。
-    # 下界 0.2% 证明圆角真实生效（非仅抠 4 个像素），上界 10% 防整卡被误掏空。
-    bad_ratio = [(s, round(r, 4)) for s, r in transparent_ratio if not (0.002 < r < 0.10)]
-    ok(not bad_ratio, "D3 框外透明占比 ∈(0.2%,10%)（圆角生效且卡面未被掏空）", "bad=%r" % bad_ratio)
+    # D1 深色满幅：四角 alpha=255（严禁框外透明圆角）
+    bad_corner = [s for s, c in corner_alpha if any(v != 255 for v in c)]
+    ok(not bad_corner, "D1 7 张卡四角 alpha=255（深色满幅，非透明圆角）", "bad=%r" % bad_corner)
+    # D1b 满幅不透明占比 ≈100%（防整卡被掏空成透明贴纸）
+    bad_opaque = [(s, round(r, 3)) for s, r in opaque_ratio if r < 0.99]
+    ok(not bad_opaque, "D1b 7 张卡不透明像素占比 ≥99%（满幅）", "bad=%r" % bad_opaque)
+    # D2 整卡深色满幅（深色像素占比 ≥55%，母版实测 0.65~0.82）：对卡名/翼尖局部
+    # 取样不敏感，精确区分「深色游戏卡」vs 第19轮「浅灰白透明贴纸」。
+    bad_dark = [(s, round(r, 3)) for s, r in dark_ratio if r < 0.55]
+    ok(not bad_dark, "D2a 7 张卡深色像素占比 ≥55%（深色满幅，非浅灰白）", "bad=%r" % bad_dark)
+    bad_white = [(s, round(r, 3)) for s, r in white_ratio if r > 0.20]
+    ok(not bad_white, "D2b 7 张卡亮白像素占比 <20%（非浅底/透明贴纸）", "bad=%r" % bad_white)
+    # D3 四边金属色收边（非深色裸边=黑边）：每张卡四边中点至少 3/4 是金属色
+    bad_edge = []
+    for slug, cs in edge_samples.items():
+        metal = sum(1 for c in cs if _is_metal(c))
+        if metal < 3:
+            bad_edge.append((slug, cs))
+    ok(not bad_edge, "D3 7 张卡四边金属色收边（每卡≥3/4 边为金属色，无深色裸边）",
+       "bad=%r" % bad_edge)
 
-    # D4 边框色：同档一致、跨档不同。用描边取样，Bronze/Silver/Gold/Legendary 至少 3 种色。
-    slug_to_zh = {"primed_fever_strike": "热病打击 Prime", "north_wind": "北风",
-                  "corrupt_charge": "邪恶蓄力", "seismic_wave": "震波",
-                  "carnis_mandible": "肉碾虫 巨颚", "sacrificial_steel": "牺牲 斩铁",
-                  "organ_shatter": "肢解"}
+    # D4 稀有度分档边框色 ≥3 种（每种类型边框不一样），档位由事实源派生
     tier_samples = {}
-    for slug, (top, bot) in edge_pixels.items():
-        zh = slug_to_zh[slug]
+    for zh, cs in edge_samples.items():
         tier = tier_by_zh.get(zh)
         ok(tier is not None, "D4a %s 稀有度档位可由事实源派生" % zh, "tier=%r" % tier)
         if tier:
-            tier_samples.setdefault(tier, []).extend((top, bot))
-    # 每档取平均色，比较档间欧氏距离
+            tier_samples.setdefault(tier, []).extend(cs)
+
     def _avg(cs):
         return tuple(sum(c[i] for c in cs) // len(cs) for i in range(3))
     tier_avg = {t: _avg(cs) for t, cs in tier_samples.items()}
@@ -409,21 +497,40 @@ def section_d_frame():
     ok(len(distinct) >= 3, "D4 稀有度边框色 >=3 种（每种类型边框不同）",
        "tier_avg=%r" % {t: c for t, c in tier_avg.items()})
 
-    # D5 生成源码不得再用深色 RGB 底覆盖（黑边根因），必须 RGBA 直出 + 圆角 mask
+    # D5 生成源码：必须深色满幅 + 金属收边，严禁框外透明 mask / 圆角裁切 / 深底覆盖
     gen_src = (_REPO / "tools" / "gen_mod_cards.py").read_text(encoding="utf-8")
     fn = _fn(ast.parse(gen_src), "render_mod_card_wide")
     fn_src = ast.get_source_segment(gen_src, fn) or ""
+    no_transparent_mask = ("_card_outline_mask" not in fn_src
+                           and "Image.composite(base" not in fn_src)
     no_dark_base = "Image.new(\"RGB\", (W, H), (16, 18, 22))" not in fn_src
-    has_rgba_out = ".save(buf, format=\"PNG\")" in fn_src and "base.save" in fn_src
-    has_mask = "_card_outline_mask" in fn_src and "putalpha" in fn_src
-    ok(no_dark_base, "D5a 生成函数已删除深色 RGB 底覆盖（黑边根因）")
-    ok(has_rgba_out and has_mask, "D5b 生成函数 RGBA 直出 + 圆角 mask",
-       "rgba=%s mask=%s" % (has_rgba_out, has_mask))
+    full_bleed = "Image.new(\"RGBA\", (W, H), tint + (255,))" in fn_src
+    metal_edge = "ed.rectangle" in fn_src and "edge_color + (235,)" in fn_src
+    rgb_out = "base.convert(\"RGB\").save" in fn_src
+    ok(no_transparent_mask, "D5a 生成函数已删除框外透明 mask / 圆角裁切")
+    ok(no_dark_base, "D5b 生成函数无深色 RGB 底覆盖")
+    ok(full_bleed and rgb_out, "D5c 深色满幅底 + RGB 全幅不透明输出",
+       "full_bleed=%s rgb_out=%s" % (full_bleed, rgb_out))
+    ok(metal_edge, "D5d 生成函数沿四边画金属色描边收边")
 
-    # D6 注入反证：把旧「深底覆盖」写法塞回 D5a 判据，必须被抓到（守门非摆设）
-    injected = fn_src + "\n    out_img = Image.new(\"RGB\", (W, H), (16, 18, 22))\n"
-    ok("Image.new(\"RGB\", (W, H), (16, 18, 22))" in injected,
-       "D6 注入旧深底覆盖写法被 D5a 判据抓到（反证守门有效）")
+    # D6 注入反证：把旧「框外透明圆角」写法塞进 D5a 的判据输入，必须仍被判失败
+    # （证明 D5a 不是摆设：一旦有人把透明 mask 加回，no_transparent_mask 会翻 False）。
+    injected = fn_src + "\n    base.putalpha(_card_outline_mask(W, H))\n"
+    injected_passes = ("_card_outline_mask" not in injected
+                       and "Image.composite(base" not in injected)
+    ok(no_transparent_mask and not injected_passes,
+       "D6 注入旧框外透明圆角写法被 D5a 判据抓到（反证守门有效）")
+
+    # D7 当前紫卡母版：第 8 格固定用 mod_1_3.png（紫色星标），且四角满幅不透明
+    riven_p = _MOD_WIDE.parent / "mod_1_3.png"
+    ok(riven_p.is_file(), "D7a 当前紫卡母版 mod_1_3.png 存在", str(riven_p))
+    if riven_p.is_file():
+        rim = _Image.open(riven_p).convert("RGBA")
+        ra = rim.split()[3]
+        rcorners = [ra.getpixel(pt) for pt in ((0, 0), (rim.width - 1, 0),
+                                               (0, rim.height - 1), (rim.width - 1, rim.height - 1))]
+        ok(all(v == 255 for v in rcorners), "D7b 紫卡星标母版四角满幅不透明（非透明贴纸）",
+           "corners=%r" % rcorners)
 
 
 def melee_build_from_card() -> list:

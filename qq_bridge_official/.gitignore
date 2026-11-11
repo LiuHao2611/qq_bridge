@@ -68,9 +68,13 @@ _backup_*/
 # （自制资产，build 不覆盖，见同目录 README.md），不是调试截图；缺图 gate(strict) 会硬拦。
 !src/plugins/qq_bridge/pic/templates/assets/checkin_gold/*.png
 
-# ===== 紫卡全面分析卡配卡真图：必需的**源码资产**，随代码交付 =====
-# 同样被根 `*.png` 命中，按子目录精确放行。7 张 370x185 横版 MOD 卡（图2 近战
-# 病毒切割重击流：热病打击 Prime/北风/邪恶蓄力/震波/肉碾虫 巨颚/牺牲 斩铁/肢解），
-# 2026-11-12 由 tools/gen_mod_cards.py 用本地 DE 立绘离线合成（真卡框+真立绘+中文名，
-# 零外呼），运行期只读盘贴真图，替代旧的纯黑占位框。不是调试截图；缺图配卡区降级占位。
-!src/plugins/qq_bridge/pic/templates/riven_full_assets/mods/*.png
+# ===== 紫卡全面分析卡：仅「当前紫卡」母卡随代码交付 =====
+# 用户 2026-11-12 明确「其他 mod 都是实时获取或者从缓存拿，禁止硬编码」：
+#   * 前 N 张配卡 MOD 卡图一律运行期由 tools/gen_mod_cards.py::render_mod_card_wide
+#     用真 DE 立绘 + 稀有度卡框**实时合成 + 内存缓存**（riven_full.py::_live_mod_image），
+#     不落盘、不作为静态资产交付、不硬编码卡图映射；zh→en 由 mod_full.json 事实源反查。
+#   * 唯一固定资产 = 第 8 格「当前紫卡」母版 mod_1_3.png（紫色星标）：紫卡是当前这张、
+#     不随武器类型变、无法由 MOD 数据表合成，故精确放行这一张。
+#   * 其余 7 张参考样例母版 mod_0_0..mod_1_2 只服务 reference_sample() 版式夹具，
+#     不进交付（继续被根 `*.png` 忽略），容器 COPY src 带上仅供本地/容器视觉守门。
+!src/plugins/qq_bridge/pic/templates/riven_full_assets/mod_1_3.png
