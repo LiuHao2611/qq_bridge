@@ -67,3 +67,10 @@ _backup_*/
 # 离线镀金（CC BY 4.0）+ 1 枚 coins.png 是本项目 AI 生成的电影级写实单枚金币
 # （自制资产，build 不覆盖，见同目录 README.md），不是调试截图；缺图 gate(strict) 会硬拦。
 !src/plugins/qq_bridge/pic/templates/assets/checkin_gold/*.png
+
+# ===== 紫卡全面分析卡配卡真图：必需的**源码资产**，随代码交付 =====
+# 同样被根 `*.png` 命中，按子目录精确放行。7 张 370x185 横版 MOD 卡（图2 近战
+# 病毒切割重击流：热病打击 Prime/北风/邪恶蓄力/震波/肉碾虫 巨颚/牺牲 斩铁/肢解），
+# 2026-11-12 由 tools/gen_mod_cards.py 用本地 DE 立绘离线合成（真卡框+真立绘+中文名，
+# 零外呼），运行期只读盘贴真图，替代旧的纯黑占位框。不是调试截图；缺图配卡区降级占位。
+!src/plugins/qq_bridge/pic/templates/riven_full_assets/mods/*.png

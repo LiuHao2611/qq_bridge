@@ -45,6 +45,40 @@ FULL_SOURCE = (
 
 MOD_ASSET_DIR = Path(__file__).resolve().parents[1] / "pic" / "templates" / "riven_full_assets"
 
+#: 生产配卡真图目录：图2 近战病毒切割重击流 7 张**横版** MOD 卡（370×185，
+#: 真 DE 立绘 + 稀有度卡框 + 中文名，2026-11-12 由 tools/gen_mod_cards.py 离线预生成，
+#: 纯本地零外呼）。文件名 = WFM riven en slug。运行期只读盘，不合成、不外呼。
+_MOD_WIDE_DIR = MOD_ASSET_DIR / "mods"
+#: 中文卡名 → 横版真图文件名（**映射，不是卡名表**：卡名唯一事实源仍是
+#: riven_card._MELEE_BUILD，这里只回答「这张真表里的卡，配哪张图」）。
+#: 键与 _MELEE_BUILD 逐字一致；缺图（如枪械表 / 当前紫卡）→ 诚实走占位框。
+_MELEE_MOD_IMAGE = {
+    "热病打击 Prime": "primed_fever_strike.png",
+    "北风": "north_wind.png",
+    "邪恶蓄力": "corrupt_charge.png",
+    "震波": "seismic_wave.png",
+    "肉碾虫 巨颚": "carnis_mandible.png",
+    "牺牲 斩铁": "sacrificial_steel.png",
+    "肢解": "organ_shatter.png",
+}
+
+
+def _mod_image(name: str) -> str | None:
+    """真实配卡名 → 已落盘的横版 MOD 卡图路径；无真图返回 None（模板画占位框）。
+
+    * 只查本地 ``_MOD_WIDE_DIR``，绝不发起网络请求（渲染线程安全）；
+    * 文件缺失/损坏返回 None，绝不编造图片；
+    * 卡名来源由调用方（``_build_mods``）保证来自 riven_card 真表。
+    """
+    fn = _MELEE_MOD_IMAGE.get((name or "").strip())
+    if not fn:
+        return None
+    p = _MOD_WIDE_DIR / fn
+    try:
+        return str(p) if p.is_file() and p.stat().st_size > 500 else None
+    except OSError:
+        return None
+
 # 参考卡实测的 8 张 MOD 缩略图（前景内容，非背景花纹），由参考卡逐像素裁切
 _MOD_NAMES = [
     "深层冷冻", "病原弹头", "致命洪流", "火焰装填 Prime",
@@ -106,9 +140,10 @@ def _build_mods(wtype: str | None) -> list[dict]:
 
     纪律：
       * 卡名只来自 ``riven_card._BUILD`` / ``_MELEE_BUILD``，本模块零手工卡名；
-      * ``image`` 一律 ``None``——资产目录只有参考卡那 8 张**枪卡**像素图，给近战/
-        正确类型卡贴枪卡图等于张冠李戴（制造新错配）；模板对 ``image=None``
-        画占位卡框 + 真名，诚实且可读；
+      * ``image`` = :func:`_mod_image` 查本地预生成的**横版真图**：图2 近战重击流
+        7 张已离线备好（真 DE 立绘 + 卡框，零外呼）；其余（枪械表 / 当前紫卡）
+        暂无真图时返回 None，模板诚实画占位框 + 真名，**绝不张冠李戴贴错枪卡图**
+        （2026-11-12 前写死 image=None 导致 8 格全纯黑，用户投诉「敷衍」，故修）；
       * 未知/缺失 type（如仅给武器名、无 OCR）返回 8 格「需紫卡截图」，
         **绝不默认套 Rifle 枪卡**——没真实类型就不假装给出针对该武器的配卡。
     """
@@ -117,8 +152,8 @@ def _build_mods(wtype: str | None) -> list[dict]:
         return [{"name": _NEED_SHOT, "image": None} for _ in range(8)]
     from . import riven_card as rc
     names = list(rc._MELEE_BUILD) if key == "melee" else list(rc._BUILD[key])
-    out = [{"name": n, "image": None} for n in names]
-    out.append({"name": "当前紫卡", "image": None})
+    out = [{"name": n, "image": _mod_image(n)} for n in names]
+    out.append({"name": "当前紫卡", "image": None})  # 当前紫卡=动态，无预生成真图
     return out[:8]
 
 

@@ -454,20 +454,22 @@ _BUILD = {
     "Shotgun": ["地狱火 Prime", "镀层 地狱", "凶残 Prime", "炽炎",
                 "镀层 巧艺", "寒冰之握", "撕碎 Prime"],
 }
-#: 近战通用「病毒 + 切割 + 重击」配卡（2026-11-11 全量对齐图2 Rabbit 参考卡）。
-#: 7 张主卡（末格「当前紫卡」由 riven_full._build_mods 追加），逐字取自图2 原图，
-#: 每张都在灰机 Wiki《近战MOD·常规》分类表内核对过角色：
-#:   暗病打击 Prime / 北风      → 武器属性伤害（冰+毒=病毒，放大生命伤害）
-#:   肉瘤 巨颚(肉碾虫巨颚)      → 切割伤害 + 触发几率（流血绕过护甲）
-#:   牺牲 斩铁                  → 暴击几率 + 派系伤害（重击暴击核心）
-#:   肢解(并合肢解→重击准备速度)→ 暴击伤害
-#:   邪恶蓄力                   → 连击持续时间 + 初始连击（重击启动）
-#:   震波                       → Madurai 技法（近战范围清怪）
+#: 近战通用「病毒 + 切割 + 重击」配卡（2026-11-11 全量对齐图2 Rabbit 参考卡，
+#: 2026-11-12 修正两处卡名——旧名按译名猜、mod_full.json 事实源里根本不存在）。
+#: 7 张主卡（末格「当前紫卡」由 riven_full._build_mods 追加），顺序逐格对齐图2 原图，
+#: 每张卡名都可在 data/warframe_items/mod_full.json 的 zh 字段精确命中：
+#:   热病打击 Prime(primed fever strike) / 北风(north wind) → 冰+毒=病毒，放大生命伤害
+#:   邪恶蓄力(corrupt charge)            → 连击持续时间 + 初始连击（重击启动）
+#:   震波(seismic wave)                  → Madurai 技法（近战范围清怪）
+#:   肉碾虫 巨颚(carnis mandible)        → 切割伤害 + 触发几率（流血绕过护甲）
+#:   牺牲 斩铁(sacrificial steel)        → 暴击几率 + 派系伤害（重击暴击核心）
+#:   肢解(organ shatter)                 → 暴击伤害
+#: 卡名真值事实源 = mod_full.json；配图 = riven_full_assets/mods/<en_slug>.png（离线真卡）。
 #: 旧表「压迫 Prime/热毒 Prime/渴血/泣血/角斗 威力/粉碎者/触手 Prime」属纯状态流，
 #: 与图2 的病毒切割重击流不符，整表替换。仍为「近战通用」表：不同近战武器按此
 #: 套路出卡，不对单武器硬编码（避免又制造「一类武器写死一张表」的新错配）。
-_MELEE_BUILD = ["暗病打击 Prime", "北风", "邪恶蓄力", "震波",
-                "肉瘤 巨颚", "牺牲 斩铁", "肢解"]
+_MELEE_BUILD = ["热病打击 Prime", "北风", "邪恶蓄力", "震波",
+                "肉碾虫 巨颚", "牺牲 斩铁", "肢解"]
 
 
 def _weapon_raw(name: str) -> dict | None:
@@ -726,20 +728,45 @@ def _sim(parsed: dict, w: dict) -> dict:
 # 市场（2026-11-04 22:25 重写：按武器真实拍卖聚合 + 按词条分组推荐）
 # ---------------------------------------------------------------------------
 def _weapon_slug(parsed: dict) -> str:
-    """紫卡武器名 → WFM riven slug。
+    """紫卡武器名 → WFM **拍卖接口**用的 riven slug（下划线族名，如 ``coda_motovore``）。
 
-    ⚠️ 中文武器名在 WFM riven 列表里常缺（实测「冷冻光束步枪」被解析回中文原文），
-    因此**英文官方名优先**；解析不出 ASCII slug 时显式报错，绝不拿中文串当 slug 查。
+    2026-11-12 根因修复（用户图2 Coda Motovore 市场两盒空）：
+    旧实现走 ``warframe._resolve_riven_weapon`` 拼出**连字符** slug（``coda-motovore``），
+    那是普通物品库 / disp 表的 key 体系；WFM ``/v1/auctions/search`` 的
+    ``weapon_url_name`` 是**另一套下划线族名**（``coda_motovore``），连字符形态恒定
+    返回 ``400 app.auctions.errors.item_not_exist``（真网络矩阵坐实：同参数 ``rubico``
+    200/106KB、``coda_motovore`` 200/107KB、``coda-motovore`` 400）。
+
+    修法（**通用、零特例**）：唯一权威事实源 = ``riven_trend.resolve_weapon``，它读
+    ``data/warframe_items/riven_wfm_slugs.json``（414 条 en→下划线 slug），中文名先经
+    ``warframe._resolve_weapon`` 拿官方英文名、再逐段去 Prime/Wraith 等后缀匹配族名
+    （WFM 紫卡只挂基础族名，如 ``Rubico Prime``→``rubico``）。该函数已被 trend 模块
+    生产验证。仅当它解析不出（别称/新武器未收录）时，才退回旧逻辑并把连字符归一为
+    下划线兜底——绝不硬编码任何单把武器。解析不出 ASCII slug 显式报错，不拿中文查。
     """
     en = (parsed.get("weapon") or "").strip()
     zh = (parsed.get("weapon_zh") or "").strip()
     tried = []
+    # 1) 权威源：WFM riven slug 静态表（下划线族名，中英文通用）
+    try:
+        from . import riven_trend as _rt
+        for q in (en, zh):
+            if not q:
+                continue
+            info = _rt.resolve_weapon(q)
+            tried.append((q, (info or {}).get("slug")))
+            if info and info.get("slug") and re.fullmatch(r"[a-z0-9_]+", info["slug"]):
+                return str(info["slug"])
+    except Exception as e:  # noqa: BLE001 — 表缺失/异常 → 退回兜底，不让市场链路整体崩
+        logger.warning(f"riven_slug_trend_failed: {type(e).__name__}: {e}")
+    # 2) 兜底：旧 disp/物品库 slug，归一化连字符→下划线（WFM 拍卖只认下划线族名）
     for q in (en, zh):
         if not q:
             continue
         slug = (warframe._resolve_riven_weapon(q) or "").strip().lower()
+        slug = slug.replace("-", "_") if re.fullmatch(r"[a-z0-9_\-]+", slug) else slug
         tried.append((q, slug))
-        if slug and re.fullmatch(r"[a-z0-9_\-]+", slug):
+        if slug and re.fullmatch(r"[a-z0-9_]+", slug):
             return slug
     raise RivenMarketError(
         "无法把武器名解析成 WFM riven slug：en=%r zh=%r tried=%r" % (en, zh, tried))

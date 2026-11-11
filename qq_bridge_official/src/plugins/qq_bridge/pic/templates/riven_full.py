@@ -549,14 +549,21 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
             ok = False
             if img:
                 try:
-                    im = Image.open(img).convert("RGBA").resize(
-                        (max(1, P(x1 - x0)), max(1, P(y1 - y0))), Image.LANCZOS)
-                    c.paste(im, (P(x0), P(y0)), im)
+                    # 等比 contain 贴合（2026-11-12）：横版真卡 370×185≈2:1 与格子
+                    # 125×62≈2:1 几乎一致，等比缩放后四角卡框完整、绝不拉伸变形。
+                    bw, bh = max(1, P(x1 - x0)), max(1, P(y1 - y0))
+                    im = Image.open(img).convert("RGBA")
+                    scale = min(bw / im.width, bh / im.height)
+                    nw, nh = max(1, int(im.width * scale)), max(1, int(im.height * scale))
+                    im = im.resize((nw, nh), Image.LANCZOS)
+                    px = P(x0) + (bw - nw) // 2
+                    py = P(y0) + (bh - nh) // 2
+                    c.paste(im, (px, py), im)
                     ok = True
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001 — 图损坏/缺失 → 占位框兜底
                     ok = False
             if not ok:
-                # 占位卡框：深色底 + 名称（不编造图片）
+                # 占位卡框：深色底 + 名称（无真图时诚实占位，不编造图片）
                 c.rounded_rect((P(x0), P(y0), P(x1), P(y1)), radius=P(6),
                                fill="#1B2A3A", outline="#4A6072", width=max(1, P(1)))
                 T((x0 + x1) / 2, (y0 + y1) / 2 + 5, name, 13, C_WHITE, "bold", "ms")

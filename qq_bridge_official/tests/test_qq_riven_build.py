@@ -4,11 +4,16 @@
 防的是用户图1：给近战武器（Coda Motovore）却配了「深层冷冻/病原弹头/致命洪流」
 等**枪械** MOD，且配卡标题写死「基于击杀效率配卡」。
 
-三条铁律：
+四条铁律：
   1. 生产配卡名**只能**来自 ``riven_card._BUILD`` / ``_MELEE_BUILD``（唯一真表），
-     riven_full.py 不得再写一份手工卡名；
-  2. ``image`` 一律 None——资产目录只有参考卡 8 张枪卡图，给近战贴枪卡图=新错配；
-  3. 类型未知/战甲名/外号 → 全部「需紫卡截图」占位，绝不默认套 Rifle 枪卡。
+     riven_full.py 不得再写一份手工卡名；**每个卡名必须在 mod_full.json 的 zh
+     字段精确命中**（2026-11-12 加：旧「暗病打击 Prime/肉瘤 巨颚」是凭译名猜的、
+     事实源里根本不存在，用户投诉「配卡不符合武器」的深层根因）；
+  2. ``image`` 对**已备真图的近战重击流 7 张**必须指向离线横版真卡
+     （riven_full_assets/mods/*.png，370×185，零外呼）；无真图（枪械表/当前紫卡）
+     → 诚实 None 走占位框，**绝不张冠李戴**贴参考卡那 8 张枪卡图；
+  3. 类型未知/战甲名/外号 → 全部「需紫卡截图」占位，绝不默认套 Rifle 枪卡；
+  4. 图损坏/缺失 → 模板等比 contain 贴真图失败时回落占位框，不崩、不编造。
 
 类型归类（riven_disp.json 7 类 → riven_card 真表）：
   Melee/Zaw→近战表；Pistol/Kitgun→手枪表；Rifle/Archgun→步枪表；Shotgun→霰弹表。
@@ -30,10 +35,16 @@ _CARD = _REPO / "src" / "plugins" / "qq_bridge" / "game_tools" / "riven_card.py"
 _P = _F = 0
 _GUN_ONLY = ("深层冷冻", "病原弹头", "致命洪流", "黄蜂蛰刺",
              "弹头扩散", "持续火力 Prime", "火焰装填 Prime")
-# 图2 Rabbit 病毒切割重击流近战表（2026-11-11 全量对齐，随 _MELEE_BUILD 同步）
-_MELEE_ONLY = ("暗病打击 Prime", "北风", "邪恶蓄力", "震波", "肉瘤 巨颚", "牺牲 斩铁", "肢解")
-# 旧状态流卡名：仅用于反证「已整表替换、不再出现在近战表里」
-_OLD_MELEE = ("压迫 Prime", "热毒 Prime", "渴血", "泣血", "角斗 威力", "粉碎者", "触手 Prime")
+# 图2 Rabbit 病毒切割重击流近战表（2026-11-11 全量对齐、2026-11-12 修正两处错名）
+_MELEE_ONLY = ("热病打击 Prime", "北风", "邪恶蓄力", "震波", "肉碾虫 巨颚", "牺牲 斩铁", "肢解")
+# 旧状态流 / 旧凭译名猜的错卡名：仅用于反证「不再出现」
+_OLD_MELEE = ("压迫 Prime", "热毒 Prime", "渴血", "泣血", "角斗 威力", "粉碎者", "触手 Prime",
+              "暗病打击 Prime", "肉瘤 巨颚")
+_MOD_FULL = _REPO / "data" / "warframe_items" / "mod_full.json"
+_MOD_WIDE = _REPO / "src" / "plugins" / "qq_bridge" / "pic" / "templates" / "riven_full_assets" / "mods"
+# 图2 近战 7 张真图的 en slug（文件名，不含 .png）
+_MELEE_IMG_SLUG = ("primed_fever_strike", "north_wind", "corrupt_charge", "seismic_wave",
+                   "carnis_mandible", "sacrificial_steel", "organ_shatter")
 
 
 def ok(cond, name, detail=""):
@@ -121,11 +132,17 @@ def section_a_static():
     handmade = [s for s in bm_strings if any(g in s for g in _GUN_ONLY + _MELEE_ONLY)]
     ok(not handmade, "A5 _build_mods 零手工卡名", "handmade=%s" % handmade[:3])
 
-    # A6 image 一律 None（资产只有枪卡图，贴图=张冠李戴）
-    ok('"image": None' in bm_src or "'image': None" in bm_src,
-       "A6 _build_mods 的 image 固定 None")
-    ok(".png" not in bm_src and "MOD_ASSET_DIR" not in bm_src,
-       "A7 _build_mods 不碰任何图片资产")
+    # A6 image 走 _mod_image 查本地真图（2026-11-12：不再写死 None）
+    ok("_mod_image(" in bm_src, "A6 _build_mods 用 _mod_image 查真图")
+    ok('_mod_image(n)' in bm_src.replace(" ", ""),
+       "A7 _build_mods 逐卡查图（非全 None）")
+    # A7b _mod_image 只读本地盘、零外呼
+    f_mi = _fn(tree, "_mod_image")
+    mi_src = ast.get_source_segment(src, f_mi) or "" if f_mi else ""
+    ok(f_mi is not None and "_MOD_WIDE_DIR" in mi_src, "A7c _mod_image 读本地资产目录")
+    ok(not any(x in mi_src for x in ("httpx", "urlopen", "requests", "http://", "https://")),
+       "A7d _mod_image 零网络外呼")
+    ok("is_file()" in mi_src and "None" in mi_src, "A7e _mod_image 缺图诚实返回 None")
 
     # A8 生产装配用 _build_mods/_build_label，不再回落 _mod_assets
     rfd_src = ast.get_source_segment(src, f_rfd) or ""
@@ -151,6 +168,59 @@ def section_a_static():
     ok("riven_card._BUILD" in src or "rc._BUILD" in src,
        "A12 真表来自 riven_card._BUILD（非本地复刻）")
 
+    # A13 卡名事实源（防再犯 2026-11-12「暗病打击/肉瘤」凭译名猜的错名）：
+    # 从 riven_card.py AST 取 _MELEE_BUILD 真值，逐卡在 mod_full.json 的 zh 字段精确命中。
+    import json as _json
+    card_tree = ast.parse(_CARD.read_text(encoding="utf-8"))
+    melee_build = None
+    for node in card_tree.body:
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and tgt.id == "_MELEE_BUILD":
+                    try:
+                        melee_build = ast.literal_eval(node.value)
+                    except Exception:
+                        pass
+    ok(isinstance(melee_build, list) and len(melee_build) == 7,
+       "A13 _MELEE_BUILD 是 7 张字面量表", "val=%r" % (melee_build,))
+    mf = _json.loads(_MOD_FULL.read_text(encoding="utf-8")).get("map", {})
+    zh_set = {str((v or {}).get("zh") or "").strip() for v in mf.values()}
+    unknown = [n for n in (melee_build or []) if n not in zh_set]
+    ok(not unknown, "A14 每张近战卡名在 mod_full.json zh 精确命中",
+       "unknown=%r" % unknown)
+    ok(not any(x in (melee_build or []) for x in ("暗病打击 Prime", "肉瘤 巨颚")),
+       "A15 旧凭译名猜的错卡名已全部移除")
+
+    # A16 真图资产齐备 + 尺寸 370×185 + 映射键与真表对齐
+    import re as _re
+    img_map = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and tgt.id == "_MELEE_MOD_IMAGE":
+                    try:
+                        img_map = ast.literal_eval(node.value)
+                    except Exception:
+                        pass
+    ok(isinstance(img_map, dict) and set(img_map or {}) == set(melee_build or []),
+       "A16 映射键与 _MELEE_BUILD 逐字对齐",
+       "diff=%r" % ((set(melee_build or []) ^ set((img_map or {}).keys())),))
+    from PIL import Image as _Image
+    bad_img = []
+    for zh, fn in (img_map or {}).items():
+        p = _MOD_WIDE / fn
+        if not p.is_file() or p.stat().st_size <= 500:
+            bad_img.append((fn, "missing/small"))
+            continue
+        try:
+            im = _Image.open(p)
+            if im.size != (370, 185):
+                bad_img.append((fn, im.size))
+        except Exception as e:  # noqa: BLE001
+            bad_img.append((fn, type(e).__name__))
+    ok(not bad_img, "A17 7 张横版真图齐备且为 370×185", "bad=%r" % bad_img[:4])
+    ok(len(list(_MELEE_IMG_SLUG)) == 7, "A18 基准 en slug 7 张")
+
 
 def section_b_behavior():
     print("== B. 真行为：按类型派生正确武器配卡（隔离装配真模块） ==")
@@ -174,7 +244,13 @@ def section_b_behavior():
         names = [m["name"] for m in mods]
         ok(names[:len(melee)] == list(melee), "B2 %s 配近战真表" % t, names[0])
         ok(not any(g in names for g in _GUN_ONLY), "B3 %s 无枪卡混入" % t)
-        ok(all(m["image"] is None for m in mods), "B4 %s 全部 image=None" % t)
+        # B4 前 7 张近战卡必须有真图路径且文件存在（2026-11-12：不再是纯黑占位）
+        real_imgs = [m["image"] for m in mods[:7]]
+        ok(all(p and Path(p).is_file() for p in real_imgs if isinstance(p, str))
+           and all(isinstance(p, str) for p in real_imgs),
+           "B4 %s 前 7 张 image 指向真图" % t,
+           "paths=%d" % sum(1 for p in real_imgs if isinstance(p, str)))
+        ok(mods[7]["image"] is None, "B4b %s 第 8 格当前紫卡诚实无图" % t)
         ok(len(mods) == 8, "B5 %s 配卡 8 格" % t, "n=%d" % len(mods))
 
     # B6 手枪（含 Kitgun）
@@ -243,6 +319,31 @@ def section_c_injection():
     bad_default = "return list(rc._BUILD['Rifle'])"
     ok(bad_default.replace("rc._BUILD", "card._BUILD") not in src,
        "C3 当前源码无「未知类型默认 Rifle」坏实现")
+
+    # C4 真错误注入（2026-11-12 用户 prove-it 纪律）：把旧错名塞进 A14 的判据，
+    #     必须被「mod_full.json zh 精确命中」抓住 —— 证明这条守门不是摆设。
+    import json as _json
+    mf = _json.loads(_MOD_FULL.read_text(encoding="utf-8")).get("map", {})
+    zh_set = {str((v or {}).get("zh") or "").strip() for v in mf.values()}
+    injected_wrong = list(melee_build_from_card()) + ["暗病打击 Prime", "肉瘤 巨颚"]
+    bad = [n for n in injected_wrong if n not in zh_set]
+    ok("暗病打击 Prime" in bad and "肉瘤 巨颚" in bad,
+       "C4 注入旧错名被事实源判据抓到", "caught=%r" % bad)
+
+
+def melee_build_from_card() -> list:
+    """从 riven_card.py AST 取 _MELEE_BUILD 真值（供 C4 注入反证复用）。"""
+    import ast as _ast
+    t = _ast.parse(_CARD.read_text(encoding="utf-8"))
+    for node in t.body:
+        if isinstance(node, _ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, _ast.Name) and tgt.id == "_MELEE_BUILD":
+                    try:
+                        return list(_ast.literal_eval(node.value))
+                    except Exception:
+                        return []
+    return []
 
 
 if __name__ == "__main__":

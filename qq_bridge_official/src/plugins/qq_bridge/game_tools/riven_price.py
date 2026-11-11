@@ -89,14 +89,16 @@ def price_boxes(market: dict | None) -> tuple[dict, dict]:
     zero_txt = _as_price(zero) or "暂无"
 
     if not ok or _as_price(med) is None:
-        # 失败态：诚实写原因，不回退静态表、不写「暂无」冒充成功
-        err = str(m.get("error") or "")
+        # 失败态（2026-11-12 措辞修订）：诚实说明「该武器 WFM 暂无紫卡挂牌样本」，
+        # 不用「数据获取失败 / 接口样本不足」这种像系统故障、会被用户读成「机器人坏了/
+        # 偷懒」的措辞。绝不回退静态表、绝不编造价格冒充成功。
+        # 真失败原因只写进日志（由 fetch_market_for_card 记），不把异常串画到卡面。
         return (
             {"title": "市场价格预计", "big": _NO_MATCH,
              "sub": "零洗中位价：", "sub_val": "暂无",
-             "foot": "窗口样本不足" if not err else "数据获取失败"},
+             "foot": "该武器 WFM 暂无紫卡挂牌样本"},
             {"title": "词条价差预估", "big": _NO_ACTUAL,
-             "sub": "来源：wm市场|窗口样本不足", "foot": "模型预估 谨慎参考"},
+             "sub": "来源：wm市场|无挂牌样本", "foot": "模型预估 谨慎参考"},
         )
 
     med_i = int(round(float(med)))
