@@ -11,6 +11,11 @@
     业务侧只需拼 `MessageSegment.file_image(bytes, file_name=...)`；
     ⚠️ file_name 必须给，否则走 URL 模式（本地图会失败）。
   * 被动回复靠 msg_id + msg_seq：**群聊 5 分钟有效、每条消息最多回 5 次**；
+    🔴 且同一 msg_id 下第 N 次被动回复的 msg_seq **必须严格 == N**（适配器
+    ``Bot.send`` 维护 ``event._reply_seq += 1``，bot.py:691/706）——本模块绕过
+    Bot.send 直调 send_to_group，故由 ``passive_seq.next_msg_seq`` 按共享
+    reply_ref 跨 send 递增；重复 seq 会被平台去重拒收 ``40054005``（2026-11-11
+    紫卡分析图已渲染却「没出结果」的根因）；
   * 主动消息日上限 1000 条/群 —— 本模块用 limiter 自限，避免撞平台 40034100。
 
 日志铁律：平台调用必须记 request/response/error/duration_ms（用户要求），
@@ -27,6 +32,7 @@ import httpx
 from ..config import Config, get_logger, jlog
 from .base import Channel, Outgoing, make_ctx, current_official_ctx
 from .limiter import official_limiter
+from .passive_seq import next_msg_seq, peek_msg_seq
 
 log = get_logger()
 
@@ -414,8 +420,14 @@ class OfficialChannel(Channel):
         sent: list[str] = []
         modes: list[str] = []
         for i, (seg, seg_kind) in enumerate(segments):
-            # 每条用户消息最多被动回 5 次（平台硬限），超出转主动
-            use_passive = passive_ok and i < 5
+            # 2026-11-11 修 40054005（紫卡「没出结果」）：msg_seq 必须按共享
+            # reply_ref **跨 send 严格递增**，绝不能用段内下标 (i+1)——那样每次
+            # send 都从 1 起，同一 msg_id 下第二次 send（如紫卡「排队话术」之后的
+            # 「结果图」）重复 seq=1 → 平台去重拒收。对齐适配器 event._reply_seq
+            # 语义：同一 reply_ref 第 N 次被动回复拿 seq=N；累计 >5 转主动。
+            # 只有真正走被动的段才消耗序号（主动段不调，避免无谓推进计数）。
+            msg_seq = next_msg_seq(ref) if passive_ok else None
+            use_passive = msg_seq is not None
             if not use_passive and is_group:
                 # 按钮段是增强项：若主动额度已耗尽，跳过按钮、不阻断已发的主卡片。
                 # limiter.allow() 只读判定不增计数（计数在 add()），天然等价 dry-run。
@@ -443,7 +455,7 @@ class OfficialChannel(Channel):
                         group_openid=group_key[len(GROUP_PREFIX):],
                         message=seg,
                         msg_id=passive_msg_id,
-                        msg_seq=(i + 1) if use_passive else None,
+                        msg_seq=msg_seq,
                         event_id=passive_event_id,
                     )
                 else:
@@ -452,7 +464,7 @@ class OfficialChannel(Channel):
                         openid=openid,
                         message=seg,
                         msg_id=passive_msg_id,
-                        msg_seq=(i + 1) if use_passive else None,
+                        msg_seq=msg_seq,
                         event_id=passive_event_id,
                     )
             except Exception as e:  # noqa: BLE001 — 记全后返回原因，不静默吞（CLOSE-02）
@@ -478,6 +490,8 @@ class OfficialChannel(Channel):
                 kind=seg_kind,
                 duration_ms=int((time.time() - t0) * 1000),
                 msg_id=sent[-1],
+                msg_seq=msg_seq,
+                reply_seq=peek_msg_seq(ref),
                 **( {"buttons": ",".join(btn_labels)}
                     if seg_kind in ("keyboard", "merged_card") else {} ),
             ))

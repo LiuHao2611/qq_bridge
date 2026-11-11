@@ -47,6 +47,24 @@
 卡走「图片单独发（msg_type=7）/ 纯 markdown 图」，绝不构造空 keyboard 下发平台。
 由 tests/test_qq_button_merge.py 的零按钮守门 + 容器真 payload 反向设防。
 
+## 第五次修改（用户「战甲武器可没有等级，只有赋能和 mod 才有等级」）
+
+第四次修改给所有「市价口令 + 物品名」一律挂 ``满级 / 0级``。用户真实群反馈
+``wm 绝路``（绝路=武器 Rubico Prime）也冒出等级按钮，点了必然进 ``market_text``
+的 ``if not is_mod: return "「绝路」不是 MOD，无法按等级过滤"`` —— 按钮是错的。
+故本版对市价带参卡再加一道**物品类别资格**（:mod:`rank_eligibility`）：
+
+* ``wm <物品>`` 只有在该物品确为 **MOD 或赋能**时才派生 ``满级 / R0`` 两个带参
+  按钮；武器 / 战甲 / 部件 / 蓝图 / 紫卡 / 赋能头盔 / 未知物品一律 **零按钮**
+  → 只发图片（复用第四次修改的零按钮三层防御，绝不发空 keyboard）。
+* 资格判定**逐字节复用 business 真函数** ``warframe._resolve_url_name(item)`` →
+  slug → ``_wf_dict()["by_slug"][slug]["tags"]``，按 tags 判 ``mod``(非 ``riven_mod``)
+  / ``arcane_enhancement``。**绝不在 channel 层复刻解析、绝不手工物品表**——实测任何
+  自写简化解析都会把「狂怒=MOD」「充沛=赋能」判错，且会随 ``ITEM_ALIASES`` 漂移。
+* 因此按钮资格与 ``market_text`` 在线 ``is_mod``/``is_arcane`` 在物品类别上严格
+  同源（WM 只有 MOD/赋能订单带 ``rank`` 字段 ⇔ tags 的 ``mod``/``arcane_enhancement``）。
+* 解析/词典异常 → 保守 ``False``（少给按钮，绝不给武器误挂等级按钮）。
+
 腾讯平台约束：action.type=1 回调、permission.type=2 所有人可点、label≤10、
 每行≤5、行数≤5；keyboard 走 msg_type=2，作为图片卡片之后追加的独立消息。
 """
@@ -57,6 +75,7 @@ from dataclasses import dataclass
 try:  # 正常包内 import
     from .command_inventory import get_inventory
     from .card_buttons import get_card_inventory
+    from .rank_eligibility import can_have_rank
 except ImportError:  # 单文件直载（离线单测 `_load()`）时，同目录兜底
     import sys as _sys
     from pathlib import Path as _Path
@@ -64,6 +83,7 @@ except ImportError:  # 单文件直载（离线单测 `_load()`）时，同目�
     _sys.path.insert(0, str(_Path(__file__).resolve().parent))
     from command_inventory import get_inventory  # type: ignore[no-redef]
     from card_buttons import get_card_inventory  # type: ignore[no-redef]
+    from rank_eligibility import can_have_rank  # type: ignore[no-redef]
 
 
 @dataclass(frozen=True)
@@ -124,9 +144,12 @@ def _rank_button_data(head: str, rest: str) -> tuple[list[str], list[str]]:
     形式的完整口令串——点击后 ``_match_natural`` 最长前缀切成 cmd=market、arg=
     ``<物品> <rank>`` → ``market_text`` 的 ``_parse_mod_rank`` 正确出满级/0级卡。
 
-    只在确认「物品名非空」时派生；否则返回空（市价裸口令/分类不挂 rank 按钮）。
-    注意：满级只对 MOD 有效（market_text 内 ``if not is_mod: return 不是 MOD``），
-    普通物品点了会给功能提示，不是静默——这是业务层既有语义，按钮只提供下钻入口。
+    第五次修改（用户「战甲武器可没有等级，只有赋能和 mod 才有等级」）：剥离出
+    纯物品名后，先经 :mod:`rank_eligibility` 判**物品类别资格**——只有 MOD / 赋能
+    才派生 ``满级 / R0``；武器 / 战甲 / 部件 / 蓝图 / 紫卡 / 赋能头盔 / 未知物品
+    一律返回空（→ 市价卡零按钮、只发图片，绝不误挂等级按钮）。资格判定逐字节复用
+    business 的 ``warframe._resolve_url_name`` + ``_wf_dict`` tags，不在本层复刻解析。
+    空物品名（市价裸口令/分类）同样返回空。
     """
     inv = get_inventory()
     card = get_card_inventory()
@@ -155,6 +178,10 @@ def _rank_button_data(head: str, rest: str) -> tuple[list[str], list[str]]:
                 break
     if not item:
         return [], []
+    # 第五次修改：物品类别资格——只有 MOD / 赋能才有等级，武器/战甲/部件一律不挂。
+    # can_have_rank 内部复用 business 真函数解析 + wf_items_v2 tags，异常保守 False。
+    if not can_have_rank(item):
+        return [], []
     data = ["%s %s %s" % (market, item, tok) for tok in card.rank_tokens]
     labels = [_rank_label(tok) for tok in card.rank_tokens]
     return data, labels
@@ -167,6 +194,11 @@ def buttons_for(text: str) -> tuple[Btn, ...]:
       * 档位族卡 → 该卡全部档位**去掉当前口令自己**，无 primary、无主菜单；
       * 市价卡带物品名 → 只 ``满级/R0`` 带参按钮，无市价口令自己、无主菜单；
       * 单档卡 / 非口令 → ``()``（发送层据此只发图片、不挂空 keyboard）。
+
+    第五次修改（用户「战甲武器可没有等级，只有赋能和 mod 才有等级」）：
+      * 市价卡带物品名**且物品是 MOD / 赋能** → 才出 ``满级/R0``；
+      * 市价卡物品是武器 / 战甲 / 部件 / 蓝图 / 紫卡 / 赋能头盔 / 未知 → ``()``
+        （如 ``wm 绝路``，绝路=武器），发送层只发图片、不挂空 keyboard。
 
     所有返回按钮的 data 满足零编造不变量(a)/(b)，且恒 ``primary=False``、
     恒 ``cmd != 当前口令``、恒 ``cmd != 帮助``（三条由守门反向设防）。

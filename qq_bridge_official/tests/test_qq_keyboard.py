@@ -24,9 +24,16 @@
 * **注入验证**（prove-it 强制）：``test_injection_guards`` 把「自己」「主菜单」
   「假 data」三类错分别放回，对应守门报错，再恢复断言通过 —— 证明守门不是摆设。
 
+第五次修改（用户「战甲武器可没有等级，只有赋能和 mod 才有等级」）：市价带参卡
+只对 MOD/赋能挂 ``满级/R0``，武器/战甲/部件零按钮。本文件给 ``rank_eligibility``
+注入 business 真函数后端（读磁盘真数据），市价「有按钮」正例改用 MOD 持久力，
+「零按钮」组纳入绝路/沙皇/部件。rank 资格本身的机器全量守门由
+``test_qq_rank_eligibility.py`` 独立负责，本文件只守按钮结构与零编造。
+
 职责分工：本文件负责「真实口令全集 / 三条需求不变量 / 零编造 / 零按钮 / 关键卡
-非空」；「每张卡有哪些档位、逐卡精确举一反三不漏档」由 ``test_qq_card_buttons.py``
-的独立 ``_baseline_groups()`` 守护。两文件互不调用对方的派生函数。
+非空」；「每张卡有哪些档位」由 ``test_qq_card_buttons.py`` 的独立
+``_baseline_groups()`` 守护；「rank 资格分类」由 ``test_qq_rank_eligibility.py``
+的独立数据基准守护。三文件互不调用对方的派生函数。
 
 跑法（容器内，不开网络、不发真消息）：
   docker exec -i qq-bridge-official /opt/venv/bin/python -m pytest tests/test_qq_keyboard.py -v
@@ -35,16 +42,20 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import re
 import sys
+import types
 from pathlib import Path
 
 import importlib.util  # noqa: E402
 
 _REPO = Path(__file__).resolve().parents[1]
-_GT = _REPO / "src/plugins/qq_bridge/game_tools/__init__.py"
-_WF = _REPO / "src/plugins/qq_bridge/game_tools/warframe.py"
+_GT_DIR = _REPO / "src/plugins/qq_bridge/game_tools"
+_GT = _GT_DIR / "__init__.py"
+_WF = _GT_DIR / "warframe.py"
 _CH = _REPO / "src/plugins/qq_bridge/channel"
+_WF_ITEMS = _REPO / "data/wf_items_v2.json"
 
 
 def _load(path: Path, name: str):
@@ -56,8 +67,30 @@ def _load(path: Path, name: str):
     return mod
 
 
+def _install_rank_backend():
+    """第五次修改：给 rank_eligibility 注入 business 真函数，使 MOD/赋能市价卡能正确出
+    等级按钮（宿主/容器一致，读磁盘真数据）。rank 资格本身由
+    test_qq_rank_eligibility.py 独立机器全量守门；这里只为让本文件的「有按钮卡结构」
+    断言用真实可出按钮的 MOD 正例，而非因缺 backend 静默零按钮而空转。
+    """
+    import json
+    gt = _GT_DIR.resolve()
+    qb = types.ModuleType("qq_bridge")
+    qb.__path__ = [str(gt.parent)]
+    sys.modules["qq_bridge"] = qb
+    pkg = types.ModuleType("qq_bridge.game_tools")
+    pkg.__path__ = [str(gt)]
+    sys.modules["qq_bridge.game_tools"] = pkg
+    wf = importlib.import_module("qq_bridge.game_tools.warframe")
+    slug_tags = {it["slug"]: (it.get("tags") or [])
+                 for it in json.loads(_WF_ITEMS.read_text(encoding="utf-8"))}
+    rel = _load(_CH / "rank_eligibility.py", "rank_eligibility")
+    rel.set_backend(wf._resolve_url_name, lambda s: slug_tags.get(s) or [])
+
+
 # 实现侧（被测对象）：qq_keyboard + 它依赖的 command_inventory
 inv_mod = _load(_CH / "command_inventory.py", "command_inventory")
+_install_rank_backend()
 kb = _load(_CH / "qq_keyboard.py", "qq_keyboard")
 
 
@@ -262,6 +295,7 @@ def test_no_self_menu_primary():
     base = _independent_real_commands()
     probes = sorted(base) + [
         "wm 绝路", "市价 延伸", "WM 绝路 满级", "wm 0级 绝路", "价格 满级 延伸",
+        "wm 持久力", "wm 0级 持久力", "wm 充沛", "wm 狂怒",  # 第五次：MOD/赋能带参正例
     ] + list(_GENERIC_PROBES)
     violations = []
     for p in probes:
@@ -284,6 +318,7 @@ def test_no_fabricated_button_data():
     base_lower = {c.lower() for c in base}
     probes = sorted(base) + [
         "wm 绝路", "市价 延伸", "WM 绝路 满级", "wm 0级 绝路", "价格 满级 延伸",
+        "wm 持久力", "wm 0级 持久力", "wm 充沛", "wm 狂怒",  # 第五次：MOD/赋能带参正例
     ] + list(_GENERIC_PROBES)
     bad = set()
     for p in probes:
@@ -300,9 +335,11 @@ def test_no_fabricated_button_data():
 
 
 def test_generic_and_single_are_zero_buttons():
-    """GENERIC 输入 + 单档卡 → buttons_for == ()（去掉自己+主菜单后无可下钻）。"""
+    """GENERIC + 单档卡 + 无等级市价物品 → buttons_for == ()（无可下钻按钮）。"""
     offenders = []
-    for p in list(_GENERIC_PROBES) + list(_SINGLE_SLOT_PROBES) + ["wm", "市价"]:
+    zero = (list(_GENERIC_PROBES) + list(_SINGLE_SLOT_PROBES)
+            + ["wm", "市价", "wm 绝路", "wm 沙皇", "wm 绝路 Prime 枪管", "wm 犀牛"])
+    for p in zero:
         btns = kb.buttons_for(p)
         if btns:
             offenders.append((p, [(b.cmd, b.primary) for b in btns]))
@@ -320,8 +357,10 @@ def test_key_cards_nonempty_with_only_siblings():
 
 
 def test_zero_button_makes_none_keyboard():
-    """零按钮约定：make_keyboard 对单档/GENERIC 返 (None,())（不构造空 keyboard）。"""
-    for p in list(_GENERIC_PROBES) + list(_SINGLE_SLOT_PROBES) + ["wm", "市价"]:
+    """零按钮约定：make_keyboard 对单档/GENERIC/无等级市价物品返 (None,())（不构造空 keyboard）。"""
+    zero = (list(_GENERIC_PROBES) + list(_SINGLE_SLOT_PROBES)
+            + ["wm", "市价", "wm 绝路", "wm 沙皇", "wm 绝路 Prime 枪管"])
+    for p in zero:
         model, btns = kb.make_keyboard(p)
         assert model is None and btns == (), \
             "零按钮卡 %r 的 make_keyboard 必须返 (None,())：model=%s btns=%s" % (p, model, btns)
@@ -331,7 +370,8 @@ def test_zero_button_makes_none_keyboard():
     except ImportError:
         print("[skip] nonebot 不在宿主，真 MessageKeyboard 结构项在容器内跑")
         return
-    for p in ("裂隙", "赏金", "信条", "wm 绝路"):
+    # 第五次修改：市价「有按钮」正例用 MOD 持久力（绝路=武器已零按钮，归到零按钮组）
+    for p in ("裂隙", "赏金", "信条", "wm 持久力"):
         model, btns = kb.make_keyboard(p)
         assert isinstance(model, MessageKeyboard) and btns, "多档/市价卡 %r 应产出键盘" % p
         for row in model.content.rows:
@@ -382,7 +422,8 @@ def test_injection_guards():
     # 恢复断言：真实实现三条都过
     real = kb.buttons_for("裂隙")
     assert all(not b.primary and b.cmd != "帮助" and b.cmd != "裂隙" for b in real)
-    assert "满级X" not in " ".join(b.cmd for b in kb.buttons_for("wm 绝路"))
+    assert "满级X" not in " ".join(b.cmd for b in kb.buttons_for("wm 持久力"))
+    assert kb.buttons_for("wm 绝路") == (), "第五次修改：武器绝路应零按钮"
 
 
 if __name__ == "__main__":

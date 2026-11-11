@@ -14,11 +14,19 @@
   ② 每卡按钮 == 该卡档位**去掉当前口令自己**（不多不少、无邻卡错位、无主菜单）；
   ③ 带参串零编造：市价按钮 data 严格 `<真实市价口令> <物品> <真实rank>`
      （注入假 rank `满级X` / 假口令 `wm2` FAIL）；
-  ④ 满级/0级专属：`wm 绝路` 只出满级+R0（无市价口令自己）、data 带「绝路」、
-     重复 rank 幂等剥离；
-  ⑤ 零按钮：单档卡 / GENERIC → buttons_for==() 且 make_keyboard==(None,())。
+  ④ 满级/0级专属（第五次修改）：只有 MOD/赋能挂等级——`wm 持久力`(MOD) 出
+     `满级/R0`、data 带物品名、重复 rank 幂等剥离；`wm 绝路`(武器) 零按钮；
+  ⑤ 零按钮：单档卡 / GENERIC / 无等级市价物品 → buttons_for==() 且
+     make_keyboard==(None,())。
   注入验证 `test_injection_guards`：把自己/主菜单/假 rank/假口令放回，断言守门
   报错，恢复全绿 —— 证明守门不是摆设。
+
+第五次修改（用户「战甲武器可没有等级，只有赋能和 mod 才有等级」）：市价带参卡
+不再对**所有**物品挂 ``满级/R0``，而是经 ``rank_eligibility`` 判物品类别资格——
+只有 MOD / 赋能才挂（持久力/延伸/充沛/狂怒…），武器/战甲/部件不挂（绝路/沙皇…
+→ 零按钮）。本文件的市价正例锚点相应从「绝路」（武器，现应为零按钮）改为
+「持久力」（MOD）；rank 资格本身由 ``test_qq_rank_eligibility.py`` 独立机器全量守门，
+本文件只守「按钮接线 + 档位族 + 带参零编造」，两文件互不调用对方派生函数。
 
 跑法：python tests/test_qq_card_buttons.py（宿主纯标准库）
       docker exec -i qq-bridge-official /opt/venv/bin/python -m pytest tests/test_qq_card_buttons.py -v
@@ -26,15 +34,19 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import sys
+import types
 from pathlib import Path
 
 import importlib.util  # noqa: E402
 
 _REPO = Path(__file__).resolve().parents[1]
-_GT = _REPO / "src/plugins/qq_bridge/game_tools/__init__.py"
-_WF = _REPO / "src/plugins/qq_bridge/game_tools/warframe.py"
+_GT_DIR = _REPO / "src/plugins/qq_bridge/game_tools"
+_GT = _GT_DIR / "__init__.py"
+_WF = _GT_DIR / "warframe.py"
 _CH = _REPO / "src/plugins/qq_bridge/channel"
+_WF_ITEMS = _REPO / "data/wf_items_v2.json"
 
 
 def _load(path: Path, name: str):
@@ -45,8 +57,27 @@ def _load(path: Path, name: str):
     return mod
 
 
+def _install_rank_backend():
+    """给 rank_eligibility 注入 business 真函数（宿主/容器一致，读磁盘真数据）。"""
+    import json
+    gt = _GT_DIR.resolve()
+    qb = types.ModuleType("qq_bridge")
+    qb.__path__ = [str(gt.parent)]
+    sys.modules["qq_bridge"] = qb
+    pkg = types.ModuleType("qq_bridge.game_tools")
+    pkg.__path__ = [str(gt)]
+    sys.modules["qq_bridge.game_tools"] = pkg
+    wf = importlib.import_module("qq_bridge.game_tools.warframe")
+    slug_tags = {it["slug"]: (it.get("tags") or [])
+                 for it in json.loads(_WF_ITEMS.read_text(encoding="utf-8"))}
+    rel_mod = _load(_CH / "rank_eligibility.py", "rank_eligibility")
+    rel_mod.set_backend(wf._resolve_url_name, lambda s: slug_tags.get(s) or [])
+    return wf
+
+
 inv_mod = _load(_CH / "command_inventory.py", "command_inventory")
 cb = _load(_CH / "card_buttons.py", "card_buttons")
+_real_wf = _install_rank_backend()
 kb = _load(_CH / "qq_keyboard.py", "qq_keyboard")
 
 
@@ -258,8 +289,10 @@ def test_rank_button_no_fabrication():
     base_market = _baseline_market()
     base_ranks = _baseline_ranks()
     inv_cmds = inv_mod.build_inventory().commands
+    # 第五次修改：rank 正例用 MOD/赋能（持久力/延伸/充沛/狂怒），武器绝路零按钮
     probes = ["wm 绝路", "市价 延伸", "市场 持久力 p", "赤毒 绝路",
-              "WM 绝路 满级", "wm 绝路 R0", "价格 满级 延伸"]
+              "WM 持久力 满级", "wm 持久力 R0", "价格 满级 延伸",
+              "wm 充沛", "wm 狂怒", "wm 加速"]
     seen_rank_btn = 0
     for p in probes:
         for b in kb.buttons_for(p):
@@ -278,27 +311,36 @@ def test_rank_button_no_fabrication():
 
 
 def test_rank_exact_and_idempotent():
-    """守门④ 满级/0级专属：wm 绝路只出满级+R0（无市价口令自己/主菜单/primary）、
-    data 携带「绝路」，重复 rank 幂等剥离。"""
-    bs = kb.buttons_for("wm 绝路")
+    """守门④ 满级/0级专属（第五次修改）：只有 MOD/赋能挂等级。
+
+    * ``wm 持久力``(MOD) 恰好出 ``满级/R0``，无市价口令自己/主菜单/primary，
+      data 携带物品名「持久力」，重复 rank 幂等剥离；
+    * ``wm 绝路``(武器) 零按钮——第五次用户纠正的核心回归点。
+    """
+    bs = kb.buttons_for("wm 持久力")
     data = [b.cmd for b in bs]
-    assert "WM 绝路 满级" in data or "wm 绝路 满级" in data, \
-        "缺满级按钮（或没携带物品名绝路）：%s" % data
-    assert "WM 绝路 R0" in data or "wm 绝路 R0" in data, \
-        "缺 0级/R0 按钮（或没携带物品名绝路）：%s" % data
+    assert "WM 持久力 满级" in data or "wm 持久力 满级" in data, \
+        "缺满级按钮（或没携带物品名持久力）：%s" % data
+    assert "WM 持久力 R0" in data or "wm 持久力 R0" in data, \
+        "缺 0级/R0 按钮（或没携带物品名持久力）：%s" % data
     # 市价卡第四次修改：只这两个带参按钮，无市价口令自己、无主菜单、无 primary
     assert len(bs) == 2, "市价卡应恰好满级+R0 两个按钮：%s" % data
     for b in bs:
         assert not b.primary and b.cmd != "帮助", "市价卡残留主菜单/primary：%s" % b
         if b.label in ("满级", "0级"):
-            assert "绝路" in b.cmd, "rank 按钮没带物品名：%s" % b.cmd
+            assert "持久力" in b.cmd, "rank 按钮没带物品名：%s" % b.cmd
+    # 第五次修改：武器绝路即使带 rank 写法也零按钮（无等级资格）
+    for p in ("wm 绝路", "WM 绝路 满级", "wm 0级 绝路", "市价 绝路 R5"):
+        assert kb.buttons_for(p) == (), "无等级武器绝路不该有 rank 按钮：%r" % p
+    # 赋能充沛（arcane_enhancement）也应有等级
+    assert len(kb.buttons_for("wm 充沛")) == 2, "赋能充沛应出满级/R0"
     # 幂等：已带 rank 的输入再派生，物品名里不应残留任何源码可识别的 rank 写法
     # （包括别名 0级/未升级/零级/R0/R5/5级/max 等），否则会出现重复堆叠。
     import re as _re
     strip_rules = cb.build_card_inventory().rank_strip_rules
     assert strip_rules, "源码 rank 剥离规则为空（实现退化）"
-    for p in ("wm 绝路 满级", "市价 延伸 R0", "wm 0级 绝路",
-              "wm 未升级 绝路", "wm 绝路 R5", "wm max 绝路"):
+    for p in ("wm 持久力 满级", "市价 延伸 R0", "wm 0级 持久力",
+              "wm 未升级 持久力", "wm 持久力 R5", "wm max 持久力"):
         for b in kb.buttons_for(p):
             if b.label in ("满级", "0级"):
                 toks = b.cmd.split()
@@ -319,8 +361,10 @@ def test_structure_platform_limits():
     """
     base = _baseline_groups()
     multi = {c for modes in base.values() if len(modes) > 1 for c in modes}
-    zero = {"帮助", "", "/ai", "闲聊", "wm", "警报", "科研", "仲裁表"}
-    priced = {"wm 绝路", "市价 延伸"}
+    # 第五次修改：无等级市价物品（绝路=武器/沙皇=武器）也零按钮
+    zero = {"帮助", "", "/ai", "闲聊", "wm", "警报", "科研", "仲裁表",
+            "wm 绝路", "wm 沙皇", "wm 绝路 Prime 枪管"}
+    priced = {"wm 持久力", "市价 延伸", "wm 充沛", "wm 狂怒"}
     for p in multi:
         btns = kb.buttons_for(p)
         assert 1 <= len(btns) <= 4, "档位卡按钮数越界 %r -> %d" % (p, len(btns))
@@ -355,18 +399,20 @@ def test_structure_platform_limits():
 
 
 def test_zero_button_cards_and_market():
-    """守门⑤ 零按钮 + 市价裸口令：单档/GENERIC/裸市价 → () 且 (None,())；
-    市价带物品名 → 只满级/R0。"""
+    """守门⑤ 零按钮 + 市价裸口令：单档/GENERIC/裸市价/**无等级物品** → () 且 (None,())；
+    MOD/赋能市价带物品名 → 只满级/R0。"""
     zero = ["帮助", "", "/ai", "闲聊", "wm", "市价", "警报", "科研", "仲裁表",
-            "平原", "配卡", "词条推荐", "执政官", "紫卡融合", "紫卡全面", "角色", "模拟开卡"]
+            "平原", "配卡", "词条推荐", "执政官", "紫卡融合", "紫卡全面", "角色", "模拟开卡",
+            # 第五次修改：武器/战甲/部件无等级 → 零按钮
+            "wm 绝路", "wm 沙皇", "wm 绝路 Prime 枪管", "wm 犀牛", "市价 绝路 满级"]
     for p in zero:
         assert kb.buttons_for(p) == (), "零按钮卡产出按钮了 %r" % p
         assert kb.make_keyboard(p) == (None, ()), "零按钮卡未返 (None,()) %r" % p
-    # 市价带物品名：只两个带参 rank，无市价口令自己/主菜单
-    for p in ("wm 绝路", "市价 延伸", "WM 绝路 满级"):
+    # MOD/赋能市价带物品名：只两个带参 rank，无市价口令自己/主菜单
+    for p in ("wm 持久力", "市价 延伸", "wm 充沛", "wm 狂怒", "WM 持久力 满级"):
         data = [b.cmd for b in kb.buttons_for(p)]
         assert len(data) == 2 and all(" " in d for d in data), \
-            "市价卡应只出两个带参 rank %r -> %s" % (p, data)
+            "有等级市价卡应只出两个带参 rank %r -> %s" % (p, data)
         assert all(b.cmd != "帮助" and not b.primary for b in kb.buttons_for(p)), \
             "市价卡残留主菜单/primary %r" % p
 
@@ -418,10 +464,11 @@ def test_injection_guards():
     except AssertionError as e:
         assert "守门③未报错" not in str(e), "守门③确实没拦住假市价口令"
 
-    # 恢复断言
+    # 恢复断言（第五次修改：rank 正例用 MOD 持久力，武器绝路应零按钮）
     fissure_now = [b.cmd for b in kb.buttons_for("裂隙")]
     assert "裂隙" not in fissure_now and "帮助" not in fissure_now
-    assert "满级X" not in " ".join(b.cmd for b in kb.buttons_for("wm 绝路"))
+    assert "满级X" not in " ".join(b.cmd for b in kb.buttons_for("wm 持久力"))
+    assert kb.buttons_for("wm 绝路") == (), "恢复后武器绝路应零按钮"
 
 
 if __name__ == "__main__":

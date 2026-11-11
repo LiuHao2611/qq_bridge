@@ -216,6 +216,64 @@ def test_send_group_uses_send_to_group(patched):
     assert ("text", "你好") in msg
 
 
+def test_consecutive_sends_share_reply_ref_get_increasing_msg_seq(patched):
+    """🔴 40054005 回归（用户「紫卡分析没出结果」，2026-11-11）：
+
+    紫卡一次事件内 **send 两次**（排队话术 text → 结果图 image），共享同一个
+    ctx/reply_ref。适配器要求同一 msg_id 下第 N 次被动回复 msg_seq==N；旧实现
+    ``msg_seq=(i+1)`` 两次都从 1 起 → 平台去重拒收，图渲染成功却发不出。
+    本测试用同一 ctx 连发两条 Outgoing，断言 msg_seq 严格 1、2 不重复。
+    """
+    bot = FakeBot()
+    patched["bot"] = bot
+    ctx = _ctx_of(FakeGroupEvent())          # reply_ref.msg_seq 初始=1
+    from src.plugins.qq_bridge.channel.base import Outgoing
+
+    # 第一次 send：模拟「已加入分析队列」排队话术
+    r1 = asyncio.run(get_channel(OFFICIAL).send(ctx, Outgoing(text="已加入分析队列，稍等！")))
+    # 第二次 send：模拟「紫卡分析结果图」（共享同一 ctx/reply_ref）
+    r2 = asyncio.run(get_channel(OFFICIAL).send(ctx, Outgoing(text="分析结果图")))
+    assert r1["ok"] and r2["ok"]
+    assert len(bot.calls) == 2
+    seqs = [c[4] for c in bot.calls]
+    msg_ids = [c[3] for c in bot.calls]
+    assert seqs == [1, 2], \
+        "紫卡两次 send 的 msg_seq 必须严格递增 [1,2]，拿到 %r（重复=40054005 去重）" % seqs
+    assert msg_ids == ["msg-2", "msg-2"], "两次被动回复应引用同一 msg_id"
+    assert all(m == "passive" for m in r1["modes"] + r2["modes"])
+
+
+def test_msg_seq_counter_is_per_reply_ref_not_global(patched):
+    """不同事件（不同 reply_ref）的 msg_seq 计数必须互相独立，绝不串号。"""
+    bot = FakeBot()
+    patched["bot"] = bot
+    from src.plugins.qq_bridge.channel.base import Outgoing
+
+    ctx_a = _ctx_of(FakeGroupEvent(eid="msg-A"))
+    ctx_b = _ctx_of(FakeGroupEvent(eid="msg-B"))
+    asyncio.run(get_channel(OFFICIAL).send(ctx_a, Outgoing(text="a1")))
+    asyncio.run(get_channel(OFFICIAL).send(ctx_a, Outgoing(text="a2")))
+    asyncio.run(get_channel(OFFICIAL).send(ctx_b, Outgoing(text="b1")))
+    seqs = [c[4] for c in bot.calls]
+    assert seqs == [1, 2, 1], \
+        "msg_seq 必须按 reply_ref 独立计数（A:1,2 / B:1），拿到 %r" % seqs
+
+
+def test_msg_seq_stops_at_five_then_goes_active(patched):
+    """同一 reply_ref 被动回复累计 5 次后，第 6 条必须转主动（不撞平台 seq 上限）。"""
+    bot = FakeBot()
+    patched["bot"] = bot
+    ctx = _ctx_of(FakeGroupEvent())
+    ctx["reply_ref"]["ts"] = time.time()   # 确保在被动窗口内
+    from src.plugins.qq_bridge.channel.base import Outgoing
+
+    for _ in range(6):
+        asyncio.run(get_channel(OFFICIAL).send(ctx, Outgoing(text="x")))
+    seqs = [c[4] for c in bot.calls]
+    assert seqs[:5] == [1, 2, 3, 4, 5], "前 5 条被动 seq 应为 1..5：%r" % seqs
+    assert seqs[5] is None, "第 6 条应转主动（msg_seq=None），不得重复 seq=1：%r" % seqs
+
+
 def test_send_c2c_uses_send_to_c2c(patched):
     bot = FakeBot()
     patched["bot"] = bot
