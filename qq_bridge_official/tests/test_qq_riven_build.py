@@ -5,13 +5,16 @@
 等**枪械** MOD，且配卡标题写死「基于击杀效率配卡」。
 
 四条铁律：
-  1. 生产配卡名**只能**来自 ``riven_card._BUILD`` / ``_MELEE_BUILD``（唯一真表），
-     riven_full.py 不得再写一份手工卡名；**每个卡名必须在 mod_full.json 的 zh
-     字段精确命中**（2026-11-12 加：旧「暗病打击 Prime/肉瘤 巨颚」是凭译名猜的、
-     事实源里根本不存在，用户投诉「配卡不符合武器」的深层根因）；
-  2. ``image`` 对前 N 张配卡 MOD **运行时实时合成 + 内存缓存**
-     （``_live_mod_image``：zh→en 由 mod_full.json 事实源反查 → render_mod_card_wide
-     用真 DE 立绘 + 稀有度卡框出 370×185 深色满幅金属边框卡，零外呼、零静态资产）；
+  1. 生产配卡主路径**按具体武器真实 build**（``builds.json`` / ``build_fetch`` 的
+     ``build_mods``，每项带 en 英文字段）经 ``_build_mods_from_build`` 装配，**不是固定
+     类别表**（2026-11-12 用户推翻 c22/c23「固定一套配卡」）；固定表 ``_BUILD``/
+     ``_MELEE_BUILD`` 降级为无真实 build 时的诚实兜底，且卡名须在 mod_full.json 的 zh
+     精确命中（旧「暗病打击 Prime/肉瘤 巨颚」是凭译名猜的、事实源里根本不存在）；
+  2. ``image`` 对每张配卡 MOD **运行时实时合成 + 内存缓存**
+     （``_live_mod_image_by_en``：真实 build 的 **en 名直接**喂 render_mod_card_wide，
+     **零 zh 反查**——c22 深色占位块根因即固定表 14/28 幽灵译名反查 en 失败、render
+     压根没被调用。生成器用真 DE 立绘 + 官方横版卡框出 370×185 深色满幅金属边框卡，
+     零外呼、零静态资产；紫卡同类词条经 ``_replaced_by_riven`` 精确标「替」角标）；
      **禁止静态 PNG 硬编码**（用户 2026-11-12 明确「其他 mod 实时获取或从缓存拿，
      禁止硬编码」）——磁盘不得有 riven_full_assets/mods/*.png 交付、源码不得有
      _MELEE_MOD_IMAGE 卡图映射；合成失败诚实 None 走占位框，绝不张冠李戴；
@@ -153,17 +156,49 @@ def section_a_static():
     bm_names = {n.id for n in ast.walk(f_bm) if isinstance(n, ast.Name)}
     ok("_mod_image" not in bm_names and "_MELEE_MOD_IMAGE" not in bm_names,
        "A7b _build_mods 执行代码不再引用任何静态卡图映射")
-    # A7c~A7e _live_mod_image：实时合成 + 内存缓存 + 事实源反查 + 零外呼 + 诚实降级
-    f_lm = _fn(tree, "_live_mod_image")
+    # A7c~A7e 合成主出口 _live_mod_image_by_en：真实 build 的 en 名**直接**喂官方素材
+    # 生成器（2026-11-12 用户推翻 c22/c23 后重构）。**en 直喂、零 zh 反查**是本次根因
+    # 修复：c22 用固定类别表的幽灵译名反查 en，14/28 失败 → 模板画深色占位块。
+    f_lm = _fn(tree, "_live_mod_image_by_en")
     lm_src = ast.get_source_segment(src, f_lm) or "" if f_lm else ""
     ok(f_lm is not None and "_LIVE_MOD_CACHE" in lm_src,
-       "A7c _live_mod_image 用内存缓存（实时获取或从缓存拿）")
-    ok("render_mod_card_wide" in lm_src and "_zh_to_en_from_mod_full" in lm_src,
-       "A7d _live_mod_image 事实源反查 en + 真生成器实时合成")
+       "A7c _live_mod_image_by_en 用内存缓存（实时获取或从缓存拿）")
+    ok("render_mod_card_wide" in lm_src and "key" in lm_src
+       and "_zh_to_en_from_mod_full" not in lm_src,
+       "A7d _live_mod_image_by_en 用 en 直喂真生成器（零 zh 反查）")
     ok(not any(x in lm_src for x in ("httpx", "urlopen", "requests", "http://", "https://")),
-       "A7e _live_mod_image 零网络外呼")
+       "A7e _live_mod_image_by_en 零网络外呼")
     ok("return None" in lm_src and "b\"\"" in lm_src,
-       "A7f _live_mod_image 合成失败诚实返回 None")
+       "A7f _live_mod_image_by_en 合成失败诚实返回 None")
+    # A7h 新链路：_build_mods_from_build 用真实 build 的 en 出图 + 精确「紫卡可替」标注，
+    #      riven_full_data 接受 build_mods/build_source（不再只走固定类别表）。
+    f_bmb = _fn(tree, "_build_mods_from_build")
+    bmb_src = ast.get_source_segment(src, f_bmb) or "" if f_bmb else ""
+    ok(f_bmb is not None and "_live_mod_image_by_en" in bmb_src
+       and "_replaced_by_riven" in bmb_src and "replace" in bmb_src,
+       "A7h _build_mods_from_build 真实 build en 出图 + 紫卡可替标注")
+    f_rfd = _fn(tree, "riven_full_data")
+    rfd_src = ast.get_source_segment(src, f_rfd) or "" if f_rfd else ""
+    ok("build_mods" in rfd_src and "build_source" in rfd_src,
+       "A7i riven_full_data 接受 build_mods/build_source（真实 build 注入）")
+    # A7j _STAT_CATEGORY 排除宽泛「伤害」类别（否则全场标替、误导）；只精确同类。
+    #     检查模块级常量表**执行字面**，不看 docstring（docstring 里「伤害」说明不算）。
+    f_cat = _fn(tree, "_stat_category")  # 确认函数仍在
+    cat_node = None
+    for _n in tree.body:
+        if isinstance(_n, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "_STAT_CATEGORY" for t in _n.targets):
+            cat_node = _n.value
+            break
+        # 2026-11-12 生产 _STAT_CATEGORY 带类型标注 → ast.AnnAssign，须一并命中
+        if isinstance(_n, ast.AnnAssign) and isinstance(_n.target, ast.Name) \
+                and _n.target.id == "_STAT_CATEGORY":
+            cat_node = _n.value
+            break
+    cat_strings = _code_strings(cat_node) if cat_node else []
+    bad_cats = [s for s in cat_strings if s == "伤害"]
+    ok(f_cat is not None and cat_node is not None and not bad_cats,
+       "A7j 词条归类排除宽泛「伤害」（精确标替不误导）", "bad=%s" % bad_cats)
     # A7g 事实源反查函数从 mod_full.json 派生、缓存，零手工 zh→en 映射
     f_z2e = _fn(tree, "_zh_to_en_from_mod_full")
     z2e_src = ast.get_source_segment(src, f_z2e) or "" if f_z2e else ""

@@ -1311,6 +1311,46 @@ async def _send_riven_trend(bot: Bot, event: MessageEvent,
 # ---------------------------------------------------------------------------
 # 紫卡全面分析（2026-11-06）：655x1920 像素级复刻 Warframe Rabbit 完整分析卡
 # ---------------------------------------------------------------------------
+async def _resolve_riven_build(weapon: str) -> tuple[list[dict], str]:
+    """按**具体武器**取真实社区 build（2026-11-12 重构，供配卡区出真图）。
+
+    数据源优先级（都是「按这把武器」的真实配卡，**不是固定类别表**）：
+      1. ``builds.json`` 本地缓存（含用户/社区收录 + 之前联网抓取落库）：离线秒回；
+      2. ``build_fetch.ensure_build(weapon)`` 联网抓 ``warframe.today/weapons/<slug>``
+         的真实热门 8 张卡（返回 ``en/zh/rank/polarity``），抓到即写回 builds.json 缓存；
+      3. 都没有 → 返回空，由 riven_full_data 走「需截图」诚实占位，**绝不套固定表、不编造**。
+
+    :return: ``(mods, source)``；mods 每项带 ``en`` 英文字段（出真图的键），
+        source 是进配卡标题的可审计来源标注。
+    """
+    w = (weapon or "").strip()
+    if not w:
+        return [], ""
+    try:
+        from . import warframe as _wf
+        got = _wf.build_card_data(w)
+        if got and (got.get("set") or {}).get("mods"):
+            mods = [m for m in got["set"]["mods"] if not m.get("placeholder")]
+            src = str(((got.get("set") or {}).get("source") or {}).get("site")
+                      or (got.get("set") or {}).get("author") or "本地配卡库")
+            return mods, src
+    except Exception as e:  # noqa: BLE001 — 本地库未命中继续走联网
+        logger.warning(f"riven_build_local_miss: {type(e).__name__}: {e}")
+    # 本地未收录 → 联网抓这把武器的真实 build（已有链路，30s 超时）
+    try:
+        from .build_fetch import ensure_build
+        key = await asyncio.wait_for(ensure_build(w), timeout=30.0)
+        if key:
+            from . import warframe as _wf
+            got = _wf.build_card_data(key)
+            if got and (got.get("set") or {}).get("mods"):
+                mods = [m for m in got["set"]["mods"] if not m.get("placeholder")]
+                return mods, "warframe.today"
+    except Exception as e:  # noqa: BLE001 — 联网失败诚实空手，不编造
+        logger.warning(f"riven_build_fetch_failed weapon={w!r}: {type(e).__name__}: {e}")
+    return [], ""
+
+
 async def _send_riven_full(bot: Bot, event: MessageEvent, word: str) -> None:
     """紫卡全面分析卡：武器名 / 样例 / 空参数（登记预约）三种入口。"""
     w = (word or "").strip()
@@ -1348,7 +1388,11 @@ async def _send_riven_full(bot: Bot, event: MessageEvent, word: str) -> None:
                     timeout=15.0)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"gt_riven_full_wfm_failed: {type(e).__name__}: {e}")
-            data = riven_full_data(weapon=w, market=market)
+            # 2026-11-12 重构：按这把武器取真实社区 build（本地库/联网），
+            # 用每张卡的 en 英文字段出官方素材合成横版真卡，取代固定类别表。
+            build_mods, build_src = await _resolve_riven_build(w)
+            data = riven_full_data(weapon=w, market=market,
+                                   build_mods=build_mods, build_source=build_src)
     except Exception as e:  # noqa: BLE001 — 数据失败如实回错，不静默
         logger.warning(f"gt_riven_full_failed: {type(e).__name__}: {e}")
         try:
@@ -1394,7 +1438,11 @@ async def _send_riven_full_parsed(bot: Bot, event: MessageEvent, parsed: dict) -
                 _rc.fetch_market_for_card(parsed), timeout=15.0)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"gt_riven_full_parsed_market_failed: {type(e).__name__}: {e}")
-        data = riven_full_data(parsed=parsed, market=market)
+        # 2026-11-12 重构：按紫卡所属武器取真实社区 build，配卡区出官方素材合成横版真卡。
+        _w = str(parsed.get("weapon_zh") or parsed.get("weapon") or "")
+        build_mods, build_src = await _resolve_riven_build(_w)
+        data = riven_full_data(parsed=parsed, market=market,
+                               build_mods=build_mods, build_source=build_src)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"gt_riven_full_parsed_data_failed: {type(e).__name__}: {e}")
         try:

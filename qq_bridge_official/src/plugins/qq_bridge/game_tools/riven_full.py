@@ -30,7 +30,8 @@ _EMPTY_MARKET = {"status": "error", "error": "market 未获取", "slug": "", "sa
 
 __all__ = [
     "RivenFullError", "FULL_SOURCE", "reference_sample", "riven_full_data",
-    "full_text", "MOD_ASSET_DIR",
+    "full_text", "MOD_ASSET_DIR", "_live_mod_image_by_en",
+    "_build_mods_from_build", "_replaced_by_riven",
 ]
 
 
@@ -43,6 +44,8 @@ FULL_SOURCE = (
     "最强=该武器理论最优组合）｜市价：Warframe.Market 挂牌要价·非成交价（中位价，单位白金）"
     "｜词条价差为模型预估，谨慎参考｜WFM 不暴露 fuse，不编造融合等级市价"
     "｜融合属性清单来自 DE 官方导出，继承方式官方未公开，融合表仅列候选、数值沿用当前落点示意"
+    "｜配卡：按本武器真实社区 build（warframe.today/本地配卡库），卡图为 DE 官方立绘+官方横版卡框合成"
+    "（DE 不发布成品卡图，全平台同此），「紫卡可替」=词条同类 stat 候选标注、非精确计算"
 )
 
 MOD_ASSET_DIR = Path(__file__).resolve().parents[1] / "pic" / "templates" / "riven_full_assets"
@@ -64,6 +67,8 @@ _MOD_FULL_JSON = _DATA_DIR / "warframe_items" / "mod_full.json"
 _LIVE_MOD_CACHE: dict[str, bytes] = {}
 #: zh→en 反查缓存（从 mod_full.json 事实源派生，零手工映射）。
 _ZH_TO_EN: dict[str, str] | None = None
+#: en→zh 反查缓存（同一事实源反向；供真实 build 缺图占位框显示官方中文名）。
+_EN_TO_ZH: dict[str, str] | None = None
 
 
 def _zh_to_en_from_mod_full() -> dict[str, str]:
@@ -88,40 +93,75 @@ def _zh_to_en_from_mod_full() -> dict[str, str]:
     return out
 
 
-def _live_mod_image(name: str) -> io.BytesIO | None:
-    """真实配卡名 → **运行时实时合成**的横版 MOD 卡（io.BytesIO），内存缓存复用。
+def _en_to_zh_from_mod_full() -> dict[str, str]:
+    """``mod_full.json`` 事实源反查 en(小写) → 官方中文卡名（零硬编码）。"""
+    global _EN_TO_ZH
+    if _EN_TO_ZH is not None:
+        return _EN_TO_ZH
+    out: dict[str, str] = {}
+    try:
+        mp = json.loads(_MOD_FULL_JSON.read_text(encoding="utf-8")).get("map", {})
+        for en, v in mp.items():
+            zh = str((v or {}).get("zh") or "").strip()
+            if zh:
+                out[en.lower()] = zh
+    except Exception as e:  # noqa: BLE001
+        logger.warning("riven_full_en_to_zh_load_failed: %s: %s", type(e).__name__, e)
+    _EN_TO_ZH = out
+    return out
 
-    管线（与 ``build_card.py::_mod_card`` 同款、零外呼）：
-      中文卡名 →（mod_full.json 事实源反查）→ 英文小写名
-      → ``tools.gen_mod_cards.render_mod_card_wide(en)`` 用真 DE 立绘 + 稀有度卡框
-        实时合成 370×185 深色满幅金属边框卡 → 缓存 bytes → ``io.BytesIO``。
 
-    * **禁止静态资产**：不读、不写、不交付任何 ``mods/*.png``；
-    * 合成失败/数据源缺失 → 返回 None，模板诚实画占位框 + 真名，绝不编造；
-    * 卡名来源由调用方（``_build_mods``）保证来自 ``riven_card`` 真表；
-    * 返回**新** BytesIO（缓存的是不可变 bytes），规避指针复位问题。
+def _live_mod_image_by_en(en: str) -> io.BytesIO | None:
+    """英文小写卡名 → **运行时实时合成**的横版 MOD 真卡（io.BytesIO），内存缓存复用。
+
+    🔴 这是配卡出图的**首选出口**（2026-11-12 用户推翻 c22/c23 后重构）：
+    真实 build 链路（``builds.json`` / ``build_fetch.ensure_build``）每张卡**自带 en
+    英文字段**，直接喂给 :func:`tools.gen_mod_cards.render_mod_card_wide`，**从根上
+    绕开「中文卡名反查英文」这个唯一失败点**——c22 那 6 个深色占位块的根因就是
+    固定类别表里 14/28 个幽灵译名在 mod_full.json 反查不到，提前 return None，
+    render 根本没被调用（不是「自己画」，是降级占位框）。
+
+    ``render_mod_card_wide`` 用**官方素材**合成、零自画：DE 官方立绘
+    （``art/`` + ``de_manifest.json``）+ 2026-11-02 vendored 的 warframe.today
+    横版官方卡框（``modFrames/wide/``），内部按 ``Mods.json`` 的 rarity 自动分档，
+    带出中文名 / 满级耗能 / 极性 / 底部等级点。DE 官方不发布成品卡图（引擎内动态
+    合成），WFCD mod-generator / warframe.today / Rabbit 全走同一条「官方素材合成」，
+    这就是横版真卡的**唯一真实来源**，且一直在仓库里。
+
+    * 缓存 key = en（真实 build 的 en 字段，事实源，零手工映射）；
+    * 合成失败 / 数据源缺失 → None，模板诚实画占位框 + 真名，绝不编造；
+    * 返回**新** BytesIO（缓存不可变 bytes），规避指针复位问题。
     """
-    zh = (name or "").strip()
-    if not zh:
+    key = (en or "").strip().lower()
+    if not key:
         return None
-    if zh not in _LIVE_MOD_CACHE:
-        en = _zh_to_en_from_mod_full().get(zh)
-        if not en:
-            _LIVE_MOD_CACHE[zh] = b""
-            return None
+    if key not in _LIVE_MOD_CACHE:
         try:
             import sys as _sys
             _root = str(Path(__file__).resolve().parents[4])
             if _root not in _sys.path:
                 _sys.path.insert(0, _root)
             from tools.gen_mod_cards import render_mod_card_wide  # type: ignore
-            raw = render_mod_card_wide(en)
-            _LIVE_MOD_CACHE[zh] = raw or b""
+            raw = render_mod_card_wide(key)
+            _LIVE_MOD_CACHE[key] = raw or b""
         except Exception as e:  # noqa: BLE001 — 单卡失败不拖垮整张，诚实降级
-            logger.warning("riven_full_live_mod_failed: %s: %s", type(e).__name__, e)
-            _LIVE_MOD_CACHE[zh] = b""
-    raw = _LIVE_MOD_CACHE.get(zh) or b""
+            logger.warning("riven_full_live_mod_en_failed: %s: %s", type(e).__name__, e)
+            _LIVE_MOD_CACHE[key] = b""
+    raw = _LIVE_MOD_CACHE.get(key) or b""
     return io.BytesIO(raw) if len(raw) > 500 else None
+
+
+def _live_mod_image(name: str) -> io.BytesIO | None:
+    """中文卡名兼容入口（仅 ``reference_sample`` 旧路径用；生产走 :func:`_live_mod_image_by_en`）。
+
+    生产出卡（``_build_mods_from_build``）一律用 en 直喂，不再走 zh 反查——
+    这里保留只为不破坏历史调用；反查失败仍诚实降级 None。
+    """
+    zh = (name or "").strip()
+    if not zh:
+        return None
+    en = _zh_to_en_from_mod_full().get(zh)
+    return _live_mod_image_by_en(en) if en else None
 
 # 参考卡实测的 8 张 MOD 缩略图（前景内容，非背景花纹），由参考卡逐像素裁切
 _MOD_NAMES = [
@@ -204,6 +244,117 @@ def _build_mods(wtype: str | None) -> list[dict]:
     riven_img = str(_CURRENT_RIVEN_IMAGE) if _CURRENT_RIVEN_IMAGE.is_file() else None
     out.append({"name": "当前紫卡", "image": riven_img})
     return out[:8]
+
+
+# ---------------------------------------------------------------------------
+# 🔴 按「具体武器真实 build + 紫卡词条替换」装配配卡（2026-11-12 重构，推翻固定表）
+# ---------------------------------------------------------------------------
+#: 紫卡词条（中文名/效果行）→ 可替换的原卡类别关键词。事实源派生、零手工卡名。
+#: 社区通法（Overframe / Fandom / Reddit 多源一致）：紫卡某词条覆盖的 stat，
+#: 可由真实 build 里「提供同类 stat」的那张原卡让位。这里只做**诚实标注**
+#: （在卡名后加「·紫卡可替」），不改卡图、不换槽、不编造数值——是否是真最优
+#: 取决于玩家实际词条 roll 与极化，故只提示候选，绝不声称「一定替换」。
+_STAT_CATEGORY: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("暴击几率", ("暴击几率", "暴击率")),
+    ("暴击伤害", ("暴击伤害",)),
+    ("触发几率", ("触发几率", "触发率")),
+    ("多重射击", ("多重射击",)),
+    ("攻击速度", ("攻击速度", "攻速")),
+    # 元素按**具体元素**分档，避免「紫卡带冰」把整元素卡全标可替：
+    ("毒素", ("毒素伤害", "毒伤")),
+    ("冰冻", ("冰冻伤害", "冰伤")),
+    ("火焰", ("火焰伤害", "火伤")),
+    ("电流", ("电流伤害", "电伤")),
+)
+#: 宽泛「伤害」类 purposely **不**进类别表：基伤/近战伤害/元素伤害同桶但不可精确
+#: 判定谁让位，标了反而误导（几乎每张攻击卡都含「伤害」二字→全场「替」）。宁可不标。
+
+
+def _stat_category(text: str) -> str:
+    """中文词条名 / mod 效果行 → 精确归类（暴击/触发/多重/攻速/具体元素/空）。
+
+    只认 mod_full.json 效果行与紫卡词条名里的**事实文本**，不维护任何卡名表。
+    故意排除宽泛「伤害」——同类匹配要精确才诚实，模糊就宁可不标。
+    """
+    s = (text or "").replace(" ", "")
+    for cat, kws in _STAT_CATEGORY:
+        if any(k in s for k in kws):
+            return cat
+    return ""
+
+
+def _replaced_by_riven(mod_en: str, parsed_stats: list[dict]) -> bool:
+    """该真实 build 原卡是否被紫卡某词条覆盖（供卡名诚实标注「紫卡可替」）。
+
+    * 从 ``mod_full.json`` 派生这张 mod 的满级效果行 → 归类；
+    * 紫卡每条 stat 的 name → 归类；
+    * 同类即视为「可被紫卡覆盖的候选」（玩家可考虑让位，非强制）。
+    查不到效果行 / 归类为空 → False（不标注，绝不瞎猜）。
+    """
+    try:
+        mf = json.loads(_MOD_FULL_JSON.read_text(encoding="utf-8")).get("map") or {}
+        eff = mf.get((mod_en or "").lower()) or {}
+        lines = eff.get("max") or []
+        mod_cats = {_stat_category(str(x)) for x in lines if isinstance(x, str)}
+        mod_cats.discard("")
+        if not mod_cats:
+            return False
+        riven_cats = {_stat_category(str((s or {}).get("name") or ""))
+                      for s in (parsed_stats or [])}
+        riven_cats.discard("")
+        return bool(mod_cats & riven_cats)
+    except Exception as e:  # noqa: BLE001 — 事实源缺失只不标注，不出错
+        logger.warning("riven_full_replace_cat_failed: %s: %s", type(e).__name__, e)
+        return False
+
+
+def _build_mods_from_build(build_mods: list[dict],
+                           parsed_stats: list[dict] | None = None) -> list[dict]:
+    """按**具体武器的真实 build**装配 8 格配卡（生产出卡唯一新出口）。
+
+    :param build_mods: ``builds.json`` sets[0].mods / ``build_fetch`` 的真实 mod 列表，
+        每项 **必须带 ``en``**（英文字段，事实源），可选 ``zh``/``rank``/``note``。
+    :param parsed_stats: 紫卡 OCR 词条行（``riven_card.build_card_data`` 的 stats），
+        用于「紫卡可替」诚实标注；None 则不标注。
+
+    纪律（对齐用户 2026-11-12 定稿）：
+      * 卡**名**、卡**图**都来自真实 build 的 en 字段 → ``_live_mod_image_by_en``
+        官方素材合成横版真卡；**en 直喂，零 zh 反查**（杜绝 c22 幽灵译名深色块）；
+      * **不固定类别表**：这套卡是这把武器的真实社区 build，随武器变；
+      * 紫卡词条只做「·紫卡可替」候选标注（社区通法），不改卡图、不编数；
+      * 第 8 格固定「当前紫卡」母卡；不足 8 格用诚实占位，多余截断；
+      * 任一 mod 缺 en → 该格退化文字，**不用别的武器卡顶替**。
+    """
+    out: list[dict] = []
+    for m in (build_mods or []):
+        en = str((m or {}).get("en") or "").strip().lower()
+        if not en or (m or {}).get("placeholder"):
+            # Exilus 空槽等占位项：诚实文字，不画假卡
+            out.append({"name": str((m or {}).get("name") or "Exilus 槽"),
+                        "image": None, "note": "该来源未给出"})
+            continue
+        # 卡名（仅缺图占位框显示；真图路径下卡面中文名由生成器按 en 自动画）：
+        # 优先 build 条目的中文 name/zh，缺失则用 mod_full.json 的 en→zh 事实源，
+        # 保证联网抓取的英文条目（如 amalgam serration）也显示官方中文名。
+        zh = (str((m or {}).get("name") or "").strip()
+              or str((m or {}).get("zh") or "").strip()
+              or _en_to_zh_from_mod_full().get(en) or en)
+        replaced = _replaced_by_riven(en, parsed_stats or [])
+        out.append({"name": zh + (" ·紫卡可替" if replaced else ""),
+                    "name_plain": zh,       # 卡面/角标用清爽卡名（不含标注文字）
+                    "replace": replaced,    # 模板据此画「紫卡可替」角标（真图也可见）
+                    "image": _live_mod_image_by_en(en),
+                    "note": str((m or {}).get("note") or "")})
+    riven_img = str(_CURRENT_RIVEN_IMAGE) if _CURRENT_RIVEN_IMAGE.is_file() else None
+    out.append({"name": "当前紫卡", "image": riven_img})
+    return out[:8]
+
+
+def _build_label_for_weapon(weapon_zh: str, source: str = "") -> str:
+    """配卡区标题：标明是「按此武器真实 build」，来源可审计。"""
+    w = (weapon_zh or "").strip() or "该武器"
+    tag = (" · " + source) if source else ""
+    return "基于 %s 真实配卡%s" % (w, tag)
 
 
 def _build_label(wtype: str | None) -> str:
@@ -313,7 +464,9 @@ def _price_boxes(market: dict | None) -> tuple[dict, dict]:
 def riven_full_data(weapon: str | None = None, parsed: dict | None = None,
                     mods: list[dict] | None = None,
                     card_data: dict | None = None,
-                    market: dict | None = None) -> dict:
+                    market: dict | None = None,
+                    build_mods: list[dict] | None = None,
+                    build_source: str = "") -> dict:
     """组装「紫卡全面分析」卡数据。
 
     :param parsed: OCR 解析结果（``riven._parse_ocr`` 的返回）；有它才有真实词条行。
@@ -323,8 +476,13 @@ def riven_full_data(weapon: str | None = None, parsed: dict | None = None,
     :param market: ``riven_card.fetch_market_for_card(parsed)`` 的真实市场快照
         （**必填**：``build_card_data`` 2026-11-04 改为必填位置参数，漏传直接 TypeError）。
         缺省时退回可见失败态，不让卡面静默假装无数据。
-    :param mods: 真实配卡 MOD 列表（[{name,image}]）；缺省时按 ``parsed["type"]``
-        从 ``riven_card`` 唯一真配卡表派生（2026-11-11 模块 E）；只有显式传值才覆盖。
+    :param mods: 已装配好的配卡列表（[{name,image}]）；最高优先级，显式传值直接覆盖。
+    :param build_mods: 🔴 **具体武器的真实 build mod 原始列表**（每项带 ``en`` 英文字段，
+        来自 ``builds.json`` / ``build_fetch.ensure_build``；2026-11-12 重构）。给了它
+        就走 :func:`_build_mods_from_build` 按 en 出**官方素材合成横版真卡** + 紫卡词条
+        「可替」标注，**不再用固定类别表**；紫卡词条取自 ``parsed["stats"]``/card_data。
+    :param build_source: 真实 build 来源标注（如 ``warframe.today`` / ``本地配卡库``），
+        进配卡标题，来源可审计。
     """
     from . import riven_price
     observed = riven_price.observed_text((market or {}).get("ts"))
@@ -369,13 +527,29 @@ def riven_full_data(weapon: str | None = None, parsed: dict | None = None,
     if w:
         base["weapon_zh"] = w
 
-    # ---- 模块 E：按真实武器类型派生配卡（2026-11-11「配卡完全不符合武器」根因）----
-    # 判定优先级：显式 parsed['type']（OCR 真值） > 武器名从 riven_disp.json 反查 > 未知。
-    # 未知/战甲名/外号 → _build_mods/_build_label 返回「需紫卡截图」占位，绝不套写死枪卡。
-    # 调用方显式传 mods 时尊重覆盖（事实源单一：内部只在 None 时派生，绝不手工拼卡名）。
+    # ---- 配卡装配（2026-11-12 重构：真实 build 优先，废除固定类别表主路径）----
+    # 优先级：① 显式装配好的 mods（最高，调用方已处理）；
+    #         ② build_mods=具体武器真实 build（带 en）→ 按 en 出官方素材合成横版真卡
+    #            + 紫卡词条「可替」标注，标题标来源；**不再按武器类型套固定表**；
+    #         ③ 都没有 → 旧「需紫卡截图」诚实占位（绝不默认套 Rifle 写死枪卡）。
     _wtype = str((parsed or {}).get("type") or "").strip() or _wtype_from_name(w)
-    base["mods"] = _build_mods(_wtype) if mods is None else mods
-    base["build_title"] = _build_label(_wtype)
+    _riven_stats = list((card_data or {}).get("stats") or []) if card_data else []
+    if mods is not None:
+        base["mods"] = mods
+        base["build_title"] = _build_label(_wtype)
+    elif build_mods:
+        # 紫卡词条来源：优先 card_data.stats（含 name），其次 parsed 直取。
+        if not _riven_stats and parsed:
+            # parsed["stats"] 每项 {en, zh, value, unit, sign}；中文词条名在 zh 键。
+            _riven_stats = [{"name": str((s or {}).get("zh") or (s or {}).get("en") or "")}
+                            for s in (parsed.get("stats") or [])]
+        base["mods"] = _build_mods_from_build(build_mods, _riven_stats)
+        base["build_title"] = _build_label_for_weapon(w, build_source)
+        logger.info("riven_full_real_build weapon=%s source=%s mods=%d"
+                    % (w, build_source or "?", len(build_mods)))
+    else:
+        base["mods"] = _build_mods(_wtype)
+        base["build_title"] = _build_label(_wtype)
 
     if parsed:
         base["riven_name"] = str(parsed.get("riven_name") or "")

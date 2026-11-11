@@ -560,6 +560,15 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
                     py = P(y0) + (bh - nh) // 2
                     c.paste(im, (px, py), im)
                     ok = True
+                    # 2026-11-12「紫卡可替」角标：真实 build 卡被紫卡同类词条覆盖时，
+                    # 在卡左上角贴一个红底白字小标（避开右上耗能标签与底部等级点）。
+                    # 只在真图路径画，且不新增/遮挡卡名——替换建议可见、诚实、可审计。
+                    if (m or {}).get("replace"):
+                        tag_w, tag_h = P(20), P(13)
+                        tx, ty = P(x0) + P(2), P(y0) + P(2)
+                        c.rounded_rect((tx, ty, tx + tag_w, ty + tag_h),
+                                       radius=P(3), fill="#C0392B")
+                        T(tx + tag_w / 2, ty + tag_h / 2 + 1, "替", 9, "#FFFFFF", "bold", "ms")
                 except Exception:  # noqa: BLE001 — 图损坏/缺失 → 占位框兜底
                     ok = False
             if not ok:
