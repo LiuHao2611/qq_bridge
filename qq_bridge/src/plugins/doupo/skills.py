@@ -40,29 +40,35 @@ def _rank_tier(raw: str) -> str:
     return "普通"
 
 
+def _to_entry(rec: dict, fid: str, origin: str) -> dict:
+    """skill_book 记录 → 运行时斗技条目（唯一转换入口，本宗/通用共用）。"""
+    tier = rec["tier"]
+    novel = str(rec.get("novel") or "")
+    source = str(rec.get("source") or "")
+    return {
+        "name": rec["name"],
+        "tier": tier,
+        "faction": fid,
+        "origin": origin,                 # "本宗" / "通用" / "异火"
+        "mp": round(rec["mp"] / 100.0, 4),
+        "dmg": rec["dmg"] / 100.0,
+        "unlock": int(rec.get("unlock") or cfg.SKILL_TIER_UNLOCK[tier]),
+        "desc": rec["desc"],
+        "brief": rec.get("brief", ""),
+        "rank": rec["rank"],
+        "kind": rec["kind"],
+        "scope": rec["scope"],
+        "source": source,
+        "novel": novel,
+        "cd": rec["cd"],
+        # 「游戏自设」= 原著无据的战斗技，卡片要显式标注，不许冒充原著斗技
+        "core": ("游戏自设" in source) or ("原著无载" in novel),
+    }
+
+
 def _from_book(fid: str) -> list[dict]:
-    """从 skill_book（唯一权威表）派生某个宗门的斗技目录。"""
-    out: list[dict] = []
-    for rec in book.skills_of(fid):
-        tier = rec["tier"]
-        out.append({
-            "name": rec["name"],
-            "tier": tier,
-            "faction": fid,
-            "mp": round(rec["mp"] / 100.0, 4),
-            "dmg": rec["dmg"] / 100.0,
-            "unlock": int(rec.get("unlock") or cfg.SKILL_TIER_UNLOCK[tier]),
-            "desc": rec["desc"],
-            "brief": rec.get("brief", ""),
-            "rank": rec["rank"],
-            "kind": rec["kind"],
-            "scope": rec["scope"],
-            "source": rec["source"],
-            "novel": rec["novel"],
-            "cd": rec["cd"],
-            "core": str(rec["source"]).startswith("游戏自设"),
-        })
-    return out
+    """从 skill_book（唯一权威表）派生某个宗门的**本宗专属**斗技。"""
+    return [_to_entry(rec, fid, "本宗") for rec in book.skills_of(fid)]
 
 
 def _from_faction_strings(fid: str) -> list[dict]:
@@ -74,13 +80,17 @@ def _from_faction_strings(fid: str) -> list[dict]:
     seen: set[str] = set()
     for raw in f.get("skills", []):
         name = _skill_name(raw)
+        # 兜底路径也必须拦住典故：factions.py 的 skills 是「宗门资料」，
+        # 里面仍写着炼药/考核/丹会，绝不能因为某天 FACTION_SKILLS 缺键就把它们放回斗技池。
+        if name in book.NON_SKILL_NAMES:
+            continue
         if not name or name in seen:
             continue
         core = "[游戏核心]" in raw
         tier = "普通" if core else _rank_tier(raw)
         dmg = cfg.SKILL_BY_NAME.get(name, {}).get("dmg_mult", cfg.SKILL_TIER_DMG[tier])
         out.append({
-            "name": name, "tier": tier, "faction": fid,
+            "name": name, "tier": tier, "faction": fid, "origin": "本宗",
             "mp": cfg.SKILL_TIER_MP_FRAC[tier],
             "dmg": dmg, "unlock": cfg.SKILL_TIER_UNLOCK[tier],
             "desc": raw, "brief": _skill_name(raw), "core": core,
@@ -88,10 +98,12 @@ def _from_faction_strings(fid: str) -> list[dict]:
         seen.add(name)
     for sp in f.get("special_skills", []):
         name = sp.get("name")
+        if name in book.NON_SKILL_NAMES:
+            continue
         if not name or name in seen:
             continue
         out.append({
-            "name": name, "tier": "特殊", "faction": fid,
+            "name": name, "tier": "特殊", "faction": fid, "origin": "本宗",
             "mp": cfg.SKILL_TIER_MP_FRAC["特殊"],
             "dmg": cfg.SKILL_TIER_DMG["特殊"],
             "unlock": int(sp.get("unlock_lv", cfg.SKILL_TIER_UNLOCK["特殊"])),
@@ -102,11 +114,19 @@ def _from_faction_strings(fid: str) -> list[dict]:
 
 
 def catalog(fid: str) -> list[dict]:
-    """某个宗门的全部可学斗技（三阶）。优先取 skill_book，缺则退回 factions 字符串。"""
+    """某个宗门全部可学斗技 = 本宗专属斗技 + 通用基础斗技。
+
+    2026-11-15 梳理：炼药师公会这类宗门原著里只有 1 门本宗斗技（千焰剑罡，
+    古河在「战古河」施展），剥离炼药/考核/丹会后不能靠塞假斗技凑四槽；
+    改用 ``skill_book.COMMON_SKILLS``（原著有章句、斗技堂/拍卖会流通的基础斗技）
+    补齐，并标 ``origin="通用"``，卡片与文本都明说是通用而非本宗传承。
+    """
     fid = str(fid or "")
-    if fid in book.FACTION_SKILLS:
-        return _from_book(fid)
-    return _from_faction_strings(fid)
+    base = _from_book(fid) if fid in book.FACTION_SKILLS else _from_faction_strings(fid)
+    seen = {e["name"] for e in base}
+    common = [_to_entry(rec, "通用", "通用")
+              for rec in book.common_entries() if rec["name"] not in seen]
+    return base + common
 
 
 
@@ -146,12 +166,18 @@ def _default_pick(pool: list[dict]) -> list[str]:
 
 
 def ensure_loadout(p) -> list[str]:
-    """把 p["loadout"] 规范成 ≤4 个「已解锁且属于本宗」的技能名；空则自动配默认。"""
+    """把 p["loadout"] 规范成 ≤4 个「已解锁且属于本宗/通用」的技能名。
+
+    2026-11-15 修复：旧版只在 **list 为空** 时自动配默认，于是存档里只要还剩
+    1 个合法技（例如清理掉「丹会」后只剩「千焰剑罡」），四槽就永远只剩 1 个，
+    用户看到的就是「我的斗技怎么就剩一个了」。现在改为**不足四槽自动补满**，
+    且只补玩家没选过的技，不覆盖玩家显式上阵的选择。
+    """
     pool = learnable(p)
     names = [e["name"] for e in pool]
-    cur = [n for n in (p.get("loadout") or []) if n in names]
-    if not cur and names:
-        cur = _default_pick(pool)
+    cur = list(dict.fromkeys(n for n in (p.get("loadout") or []) if n in names))
+    if len(cur) < cfg.LOADOUT_SIZE and names:
+        cur += [n for n in names if n not in cur][:cfg.LOADOUT_SIZE - len(cur)]
     p["loadout"] = cur[:cfg.LOADOUT_SIZE]
     return p["loadout"]
 

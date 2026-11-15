@@ -226,7 +226,11 @@ def test_playable_factions_meet_minimum_bar():
     cite = re.compile(r"第[零〇一壹二两贰三叁四肆五伍六陆七柒八捌九玖十百千\d]+章「[^」]+」")
     for fid, f in F.FACTIONS.items():
         sp = f["special_skills"]; fl = f["flames"]; it = f["items"]
-        assert len(sp) >= 2, "%s 特殊斗技不足(%d)" % (fid, len(sp))
+        # 2026-11-15 梳理：炼药师公会 / 丹塔的「丹会」「大长老院表决」「丹会炼术」
+        # 是炼药界典故而非斗技，已移到 lore。旧断言「special_skills>=2」会逼着
+        # 把典故重新填回特殊斗技里，等于把错误固化 —— 改为「斗技 + 典故资料 >=2」。
+        lore = f.get("lore", ())
+        assert len(sp) + len(lore) >= 2, "%s 斗技/典故资料不足(%d)" % (fid, len(sp) + len(lore))
         assert len(it) >= 1, "%s 无特殊物品" % fid
         for e in fl:
             assert cite.search(e), "%s 异火归属缺原著章节引用: %s" % (fid, e[:40])

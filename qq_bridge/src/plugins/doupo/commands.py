@@ -390,7 +390,9 @@ async def cmd_skills(store, qq) -> str:
     pool = core.skill_pool(p)
     lo = core.loadout_entries(p)
     fac_name = p.get("faction_name") or "无宗门"
-    out = [f"📜 {fac_name} · 斗技三阶（上阵 {len(lo)}/{cfg.LOADOUT_SIZE}）"]
+    own = sum(1 for e in pool if e.get("origin") == "本宗")
+    common = sum(1 for e in pool if e.get("origin") == "通用")
+    out = [f"📜 {fac_name} · 斗技三阶（本宗 {own} / 通用 {common} · 上阵 {len(lo)}/{cfg.LOADOUT_SIZE}）"]
     for tier in cfg.SKILL_TIERS:
         rows = [e for e in pool if e["tier"] == tier and e.get("faction") != "异火"]
         if not rows:
@@ -399,7 +401,9 @@ async def cmd_skills(store, qq) -> str:
         for e in rows:
             lv = int((p.get("skills") or {}).get(e["name"], 1))
             mark = "★上阵" if e["equipped"] else ("可学" if e["unlocked"] else "🔒未解锁")
-            out.append(f"　{e['name']} Lv{lv}（lv{e['unlock']} 解锁·{mark}）")
+            tag = "〔通用〕" if e.get("origin") == "通用" else ""
+            selfmade = "〔自设〕" if e.get("core") else ""
+            out.append(f"　{tag}{selfmade}{e['name']} Lv{lv}（lv{e['unlock']} 解锁·{mark}）")
     flames = [e for e in pool if e.get("faction") == "异火"]
     if flames:
         out.append(f"〔异火技〕斗气 {int(cfg.SKILL_TIER_MP_FRAC['特殊'] * 100)}%·mp_max　收服即解锁")
@@ -408,6 +412,8 @@ async def cmd_skills(store, qq) -> str:
             out.append(f"　{e['name']}（{e.get('flame', '异火')}·{mark}）")
     out.append("")
     out.append("上阵：" + "、".join(f"{e['name']}[{e['tier']}]" for e in lo))
+    out.append("　〔通用〕= 斗技堂/拍卖会流通的基础斗技，非本宗传承；〔自设〕= 原著无载的游戏补白")
+    out.append("　炼药、丹会、品阶考核、大长老院表决等是宗门典故，不是斗技，已不在此列")
     out.append("　斗气不足将强制武器普攻（伤害大减、持续掉血）")
     out.append(f"　升一级伤害 +20%，消耗 {cfg.SKILL_UP_ITEM}；用法：升级 <技名> / 上阵 <4 技名>")
     return "\n".join(out)

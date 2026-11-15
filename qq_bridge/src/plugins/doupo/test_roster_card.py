@@ -74,15 +74,21 @@ def test_roster_covers_every_faction_skill():
 
 
 def test_only_one_equipped_still_lists_all():
-    """真实事故：玩家四槽只上阵 1 门，卡片不能因此只剩 1 行。"""
+    """真实事故：玩家四槽只上阵 1 门，卡片不能因此只剩 1 行。
+
+    2026-11-15 梳理后新增 ``ensure_loadout`` 自动补满四槽（旧版只在空列表时补，
+    导致「斗技就剩一个」）。这里同时锁住两个契约：四槽必须补满、
+    名录卡仍画全部斗技（而不是只画那 4 个上阵项）。
+    """
     p = _p()
     usable = [e["name"] for e in core.skill_pool(p) if e["unlocked"]]
     assert usable, "测试前提：本宗至少有 1 门已解锁斗技"
     core.set_loadout(p, usable[:1])
-    assert len(core.loadout_entries(p)) == 1
+    lo = core.loadout_entries(p)
+    assert len(lo) == 4, "四槽未自动补满：%s" % [e["name"] for e in lo]
     data = card.build_roster_data(p)
     assert len(data["rows"]) == len(core.skill_pool(p)), "名录卡退化成只画上阵项"
-    assert len(data["rows"]) > 1
+    assert len(data["rows"]) > len(lo), "名录卡至少要比四槽多列未上阵斗技"
 
 
 def test_locked_and_flame_skills_are_marked():

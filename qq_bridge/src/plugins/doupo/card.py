@@ -232,6 +232,9 @@ def build_skills_data(p: dict) -> dict:
     have = core.count_item(p, item)
     frac = cfg.SKILL_TIER_MP_FRAC
 
+    pool = core.skill_pool(p)
+    own = sum(1 for e in pool if e.get("origin") == "本宗")
+    common = sum(1 for e in pool if e.get("origin") == "通用")
     rows = []
     for e in core.loadout_entries(p):
         name = e["name"]
@@ -246,8 +249,11 @@ def build_skills_data(p: dict) -> dict:
             "badge": tier[0],
             "name": name,
             "lv": lv, "max": mx, "maxed": maxed,
-            # 卡片只有两行位：放「短释」；完整说明走 斗技详情 / 图鉴文档
-            "desc": f"[{tier}] 斗气 {int(frac[tier] * 100)}%·mp_max ｜ {e.get('brief') or e.get('desc', '')}",
+            # 卡片只有两行位：放「来源 + 斗气 + 短释」；完整说明走 斗技详情
+            # 2026-11-15 梳理后必须标清「本宗 / 通用 / 异火 / 游戏自设」，
+            # 免得再把炼药大会之类的东西混进斗技卡。
+            "desc": (f"[{tier}] {_origin_mark(e)} 斗气 {int(frac[tier] * 100)}%·mp_max ｜ "
+                     f"{e.get('brief') or e.get('desc', '')}"),
             "base_mult": round(base_mult, 2),
             "cur_mult": round(cur_mult, 2),
             "next_mult": round(next_mult, 2),
@@ -261,12 +267,23 @@ def build_skills_data(p: dict) -> dict:
     fac_name = p.get("faction_name") or "无宗门"
     return {
         "icon": "bolt", "title": "斗技",
-        "subtitle": f"{fac_name} · 三阶斗技 · 四槽上阵（{len(rows)}/{cfg.LOADOUT_SIZE}）",
+        "subtitle": (f"{fac_name} · 本宗 {own} 门 / 通用 {common} 门 · "
+                     f"四槽上阵（{len(rows)}/{cfg.LOADOUT_SIZE}）"),
         "item": item, "item_count": have,
         "formula": "伤害口径：(力量×0.5 + 斗气×1.5) × 阶倍率 ×(1+0.2/级) × 暴击期望（未计目标防御）",
         "rows": rows,
-        "tip": f"用法：上阵 <4技名> · 斗气不足转武器普攻 · 现有 {item} ×{have}",
+        "tip": (f"通用=斗气大陆流通的基础斗技，非本宗传承 ｜ 上阵 <4技名> ｜ "
+                f"现有 {item} ×{have}"),
     }
+
+
+def _origin_mark(e: dict) -> str:
+    """斗技来源标记：一眼分清本宗传承 / 通用基础 / 异火技 / 游戏自设。"""
+    origin = e.get("origin") or "本宗"
+    mark = {"本宗": "〔本宗〕", "通用": "〔通用〕", "异火": "〔异火〕"}.get(origin, f"〔{origin}〕")
+    if e.get("core"):
+        mark += "〔自设〕"
+    return mark
 
 
 def build_roster_data(p: dict) -> dict:
@@ -289,7 +306,7 @@ def build_roster_data(p: dict) -> dict:
             "可学" if unlocked else f"未解锁 lv{e.get('unlock', '?')}")
         lv = max(1, min(5, int(sk.get(name, 1))))
         frac = int(cfg.SKILL_TIER_MP_FRAC.get(e["tier"], 0.2) * 100)
-        sub = f"{e.get('rank', '')} · {e.get('kind', '')} · 斗气 {frac}%"
+        sub = f"{_origin_mark(e)}{e.get('rank', '')} · {e.get('kind', '')} · 斗气 {frac}%"
         if e.get("flame"):
             sub = f"异火技〔{e['flame']}〕 · " + sub
         brief = str(e.get("brief") or e.get("desc") or "")
@@ -304,11 +321,14 @@ def build_roster_data(p: dict) -> dict:
         })
     fac_name = p.get("faction_name") or "无宗门"
     on = sum(1 for e in pool if e.get("equipped"))
+    own = sum(1 for e in pool if e.get("origin") == "本宗")
+    common = sum(1 for e in pool if e.get("origin") == "通用")
     return {
         "icon": "bolt", "title": "本宗斗技",
-        "subtitle": f"{fac_name} · 共 {len(rows)} 门 · 上阵 {on}/{cfg.LOADOUT_SIZE}",
+        "subtitle": (f"{fac_name} · 共 {len(rows)} 门（本宗 {own} / 通用 {common}） · "
+                     f"上阵 {on}/{cfg.LOADOUT_SIZE}"),
         "rows": rows,
-        "tip": "斗技详情 <技名> 看全文与原著出处 ｜ 上阵 <4技名> 调整四槽",
+        "tip": "〔通用〕为斗技堂流通基础斗技，非本宗传承 ｜ 斗技详情 <技名> 看原著出处",
     }
 
 

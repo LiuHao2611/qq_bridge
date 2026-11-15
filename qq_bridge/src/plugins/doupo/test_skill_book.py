@@ -193,28 +193,42 @@ def test_every_entry_has_short_brief():
 # ---------------------------------------------------------------------------
 # 4. 可用性：四槽凑得满、进池即可学
 # ---------------------------------------------------------------------------
+def _runtime_pool(fid: str) -> list[str]:
+    """运行时斗技目录 = 本宗专属 + 通用基础斗技（与 skills.catalog 同源，去重）。
+
+    2026-11-15 梳理后 ``FACTION_SKILLS`` 只放**本宗专属**，炼药师公会这类
+    原著里只有 1 门真斗技的宗门靠 COMMON_SKILLS 补齐四槽，不再塞炼药事务凑数。
+    """
+    own = list(book.FACTION_SKILLS.get(fid, ()))
+    return own + [n for n in book.COMMON_SKILLS if n not in own]
+
+
 def test_every_faction_has_at_least_four_skills():
-    short = [(fid, len(ns)) for fid, ns in book.FACTION_SKILLS.items() if len(ns) < 4]
-    assert not short, "以下宗门斗技不足 4 门，连目录都凑不齐：%s" % short
+    short = [(fid, len(_runtime_pool(fid))) for fid in book.FACTION_SKILLS
+             if len(_runtime_pool(fid)) < 4]
+    assert not short, "以下宗门运行时斗技不足 4 门，四槽凑不满：%s" % short
 
 
-#: 原著里斗技本来就少的门派，进池等级凑不满四槽是**数据真实性的代价**，不是 bug。
-#: （都只有 3 门普通/低阶技；慕兰谷更是只有 2 门兽人族族技 + 2 门地阶镇派绝学）
-SHORT_LOADOUT_OK = {"sherenzu", "duzong", "lianyao_gonghui", "mulangu"}
+def _learnable_at(fid: str, lv: int) -> list[dict]:
+    """进池等级可学斗技 = 本宗 + 通用（与 skills.learnable 同口径）。"""
+    rows = [book.SKILL_BOOK[n] for n in _runtime_pool(fid) if n in book.SKILL_BOOK]
+    return [r for r in rows if int(r["unlock"]) <= lv]
 
 
 def test_low_skill_factions_may_have_short_loadout():
-    """门规：除上述 4 派外，其余门派进池等级必须能凑满四槽；4 派也必须 ≥1 门。"""
+    """2026-11-15 改为：所有宗门进池等级都能凑满四槽，且四槽不该再缩水。
+
+    旧断言允许 4 派「凑不满四槽」，结果逼着当初往宗门里塞炼药/考核/丹会
+    这类非斗技凑数（用户截图里那张四槽卡就是这么来的）。现在由
+    ``skills.ensure_loadout`` 自动补满，本测试改为锁住这个新契约。
+    """
     fac = _load_factions()
     bad = []
     for fid in book.FACTION_SKILLS:
         base = fac.POOL_UNLOCK.get(fac.FACTIONS[fid].get("pool"), 1)
-        learn = [r for r in book.skills_of(fid) if int(r["unlock"]) <= base]
-        if not learn:
-            bad.append("%s 一门都学不到" % fid)
-            continue
-        if len(learn) < 4 and fid not in SHORT_LOADOUT_OK:
-            bad.append("%s 只有 %d 门可上阵（不在豁免名单）" % (fid, len(learn)))
+        learn = _learnable_at(fid, base)
+        if len(learn) < 4:
+            bad.append("%s 进池 lv%d 只有 %d 门可学" % (fid, base, len(learn)))
     assert not bad, "；".join(bad)
 
 
@@ -223,8 +237,7 @@ def test_every_faction_learnable_at_pool_unlock():
     bad = []
     for fid, f in fac.FACTIONS.items():
         base = fac.POOL_UNLOCK.get(f.get("pool"), 1)
-        rows = book.skills_of(fid)
-        if not any(int(r["unlock"]) <= base for r in rows):
+        if not _learnable_at(fid, base):
             bad.append("%s（进池 lv%d）" % (fid, base))
     assert not bad, "进池等级无斗技可学：%s" % bad
 
@@ -232,9 +245,12 @@ def test_every_faction_learnable_at_pool_unlock():
 def test_three_tiers_all_present():
     tiers = {r["tier"] for r in book.SKILL_BOOK.values()}
     assert tiers == {"普通", "高阶", "特殊"}, "三阶不全：%s" % sorted(tiers)
+    # 2026-11-15：剥离的 35 条典故里大半是「秘法/特殊阶」（丹会、表决、护族大阵、
+    # 吞噬血脉延续…），特殊阶从 ~30 门降到 7 门是梳理的正确结果，不是数据缩水。
+    # 原著里特殊阶本就稀少，阈值从 10 调到 5；同时锁住「三阶齐全」不放松。
     for t in ("普通", "高阶", "特殊"):
         n = sum(1 for r in book.SKILL_BOOK.values() if r["tier"] == t)
-        assert n >= 10, "%s 阶只有 %d 门，太少" % (t, n)
+        assert n >= 5, "%s 阶只有 %d 门，太少" % (t, n)
 
 
 # ---------------------------------------------------------------------------
