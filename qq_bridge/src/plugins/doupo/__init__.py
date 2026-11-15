@@ -277,9 +277,18 @@ async def _(event: MessageEvent):
     qq = str(event.user_id)
     # 纯文本兜底（commands.cmd_skills 即数据源，与图片同源）
     msg = await commands.cmd_skills(store, qq)
-    # 「斗技 全部」→ 强制纯文本全列表：卡片只画四槽上阵项，
-    # 要看本宗全部斗技（含未解锁、异火技）必须走文本，别让用户以为只剩几个。
+    # 「斗技 全部」→ 本宗斗技名录卡（全部斗技，含未解锁 / 异火技）。
+    # 基本固定的名录内容必须出卡片；只有渲染异常才降级纯文本。
     if any(k in _plain(event) for k in ("全部", "列表", "所有")):
+        roster = None
+        try:
+            p = await store.get_player(qq)
+            if p:
+                roster = await card.render_roster(p)
+        except Exception as e:
+            logger.warning("斗破本宗斗技名录卡渲染异常，降级纯文本：%s: %s", type(e).__name__, e)
+        if roster:
+            await skills_cmd.finish(MessageSegment.image(roster))
         await skills_cmd.finish(msg)
         return
     # 优先发自绘列表卡；任何异常都降级为上面的纯文本（绝不丢消息）
