@@ -14,6 +14,7 @@ import time
 
 from . import config as cfg
 from . import core
+from . import factions as fac
 
 NOT_ENTERED = "你尚未踏入斗气大陆，发送「入道」开启征程。"
 
@@ -36,6 +37,19 @@ def _fmt(n) -> str:
     return str(n)
 
 
+def _chance_lines(ch: dict | None) -> list[str]:
+    """把任务途中触发的机遇拼成回复末尾独立小段。
+
+    单独成段，不塞进战报/炼丹的语义行里，避免严格验收把机遇文案误判成
+    口令本身的失败提示；也方便玩家一眼看出「这不是任务奖励，是路上撞见的」。
+    """
+    if not ch:
+        return []
+    mark = {"good": "🍀", "bad": "⚡", "neutral": "🔎"}.get(ch.get("tone"), "✦")
+    return ["", f"{mark} 机遇 · {ch['name']}",
+            f"　{ch['text']}", f"　结算：{ch['gain']}"]
+
+
 # ---------------------------------------------------------------------------
 # 菜单（口令总览）
 # ---------------------------------------------------------------------------
@@ -43,19 +57,22 @@ def _fmt(n) -> str:
 MENU_GROUPS = (
     ("入门 · 建立角色", (
         ("斗破菜单", "就是这条，随时回来看全部口令"),
-        ("入道", "创建角色：一星斗者，赠 10000 金币 + 玄重尺 + 回灵丹×5"),
+        ("入道", "创建角色：斗之气一段，赠 10000 金币 + 玄重尺 + 回灵丹×5"),
         ("人物", "人物面板：境界星级 / 炼药师品阶 / 六维属性 / 装备"),
         ("帮助", "玩法细则：伤害、强化、炼药、异火、斗帝，全部数值"),
     )),
     ("修炼 · 涨修为升境界", (
         ("修炼", "结算离线修为（每分钟自动 +6，陨落心炎每级 +50%）"),
-        ("突破", "修为满时晋升一星；28 级冲斗帝看机缘"),
+        ("突破", "修为满时晋升一星；102 级九星斗圣冲斗帝看机缘"),
         ("战斗", "随机遭遇一只同阶妖兽，回合制结算"),
     )),
     ("养成 · 变强", (
         ("强化", "强化玄重尺：十级蜕变为异火恒古尺（2000/2000/1000/1200）"),
-        ("斗技", "看 4 门斗技，快捷键 1/3/7/9"),
+        ("斗技", "看本门三阶斗技（普通 / 高阶 / 特殊）与当前四槽，卡片含完整说明/出处/原著"),
         ("升级 龙吟碎", "用焚血散升斗技，每级伤害 +20%"),
+        ("上阵 技1 技2 技3 技4", "四槽自由搭配，三阶（普通/高阶/特殊）可混搭"),
+        ("宗门", "看本门与可转宗门（进阶池 lv40 / 隐世池 lv90）"),
+        ("转宗 迦南学院", "改换门庭，重配四槽（不发该派入道物品）"),
         ("异火", "看 5 种异火与进度"),
         ("养火 青莲地心火", "用药渣喂养异火（炼药失败会出药渣）"),
     )),
@@ -68,7 +85,7 @@ MENU_GROUPS = (
         ("背包", "包裹（24 格）"),
     )),
     ("任务 · 江湖", (
-        ("任务", "看主线进度与当前支线"),
+        ("任务", "看主线进度与当前支线；途中概率触发机遇"),
         ("接任务", "随机接一条支线"),
         ("交任务", "支线达标后结算"),
         ("领主线", "主线达标后结算，推进章节"),
@@ -104,7 +121,7 @@ def cmd_help() -> str:
         "📘 斗破玩法细则",
         "",
         "【属性】力量=普攻，斗气=技能，敏捷→暴击+闪避，防御=减伤，体力=血量",
-        "  成长：值 = 基础×10 + 阶²×基础×10 + 基础×等级，阶 =(等级-1)/9",
+        "  成长：值 = 基础×10 + 阶²×基础×10 + 基础×等级，阶 = 大境界序号（斗之气 0 → 斗帝 12）",
         "  暴击% = 10 + (敏捷+30)/100，闪避% = 5 + (敏捷+20)/200",
         "",
         "【伤害】我方 = 攻击 × 800/(800+敌防)，暴击 ×1.5",
@@ -119,9 +136,30 @@ def cmd_help() -> str:
         "【异火】青莲地心火 斗气槽+25%/级；陨落心炎 经验+50%/级；",
         "  三千焱炎火 吸血+2%/级；净莲妖火 暴击闪避+10%/级；帝炎 斗帝专属",
         "",
-        "【斗帝】28 级斗圣巅峰冲 29 级：成功率 = 30% + 机缘/2000，帝炎 100%",
+        "【斗帝】102 级九星斗圣冲 103 级：成功率 = 30% + 机缘/2000，帝炎 100%",
+        "",
+        "【斗技】三阶四槽：",
+        "  阶位分三档 —— 普通（黄阶/玄阶）· 高阶（地阶/天阶）· 特殊（秘法/血脉/体质/异火）",
+        "  上阵最多 4 门，三阶任意搭配（后期可四门全特殊）",
+        "  战斗与掠夺每回合在「已上阵且斗气够」的技里随机放一门",
+        "  斗气按阶扣：普通 20% ｜ 高阶 34% ｜ 特殊 50%（占 mp_max）",
+        "  斗气不够放任何一门 → 强制武器普攻，伤害大减且持续掉血",
+        "  升一级伤害 +20%（耗焚血散，最高 5 级）；同名技跨宗共享等级",
+        "  解锁按原著阶位：黄/玄 lv1 ｜ 地阶 20/30/40 ｜ 天阶 50/60/70 ｜ 秘法 40 ｜ 体质血脉 50 ｜ 异火 60",
+        "  完整说明（施展流程 + 数值 + 出处 + 原著章句）已并入「斗技」卡片，无需单独口令",
+        "",
+        "【宗门】入道按 QQ 定种子随机分宗，不可重掷：",
+        "  新手池 8 派 lv1 可进 ｜ 进阶池 11 派 lv40 ｜ 隐世池 6 派 lv90",
+        "  转宗价 = 3000 + 等级×200 金币；只换师门并重配四槽，",
+        "  不发该派入道物品；已升的技能等级按技名保留（转回去还在）",
+        "  少数门派原著斗技就少（蛇人族 / 毒宗 / 炼药师公会各 3 门、慕兰谷 2 门），",
+        "  进池时四槽填不满属正常，随等级解锁会补齐",
         "",
         "【挂机】每分钟自动 +6 修为，不登录也涨，不强制打卡。",
+        "",
+        "【机遇】推进任务进度时有 22% 概率撞见原版随机事件。",
+        "  天降炎星石 / 张大善人 / 神秘老者索丹 / 有奖竞猜 / 时空风暴…",
+        "  也有劫匪、深渊、女大王等破财事；金币不够时对方嫌你穷，不会倒扣。",
     ]
     return "\n".join(lines)
 
@@ -229,7 +267,17 @@ async def cmd_break(store, qq) -> str:
     if res.get("reason") == "tiandi_fail":
         return (f"💥 冲击斗帝失败（成功率 {int(res['rate'] * 100)}%）！\n"
                 "斗气倒灌，修为折损。多积机缘（支线任务 / 九幽散）再来。")
-    return f"✨ 突破成功！晋入【{res['name']}】。气血斗气已满。"
+    # 文案把起点终点一起写清楚（用户 2026-11-14：「三星晋升到一星…这顺序不对」）。
+    # 九星制下境界内是 三星→四星 这种正常递增，只有跨大境界才会星数归零，
+    # 所以跨境界用「境界突破」措辞明确告知「这是换大境界，不是掉星」：
+    #   同境界：突破成功！由【三星斗师】晋入【四星斗师】
+    #   跨境界：境界突破！由【九星斗者】晋入【一星斗师】
+    old_name = cfg.full_realm(lv)
+    new_lv = int(p.get("lv", lv))
+    new_name = res.get("name") or cfg.full_realm(new_lv)
+    if cfg.realm_name(new_lv) != cfg.realm_name(lv):
+        return f"✨ 境界突破！由【{old_name}】晋入【{new_name}】。气血斗气已满。"
+    return f"✨ 突破成功！由【{old_name}】晋入【{new_name}】。气血斗气已满。"
 
 
 # ---------------------------------------------------------------------------
@@ -250,9 +298,15 @@ async def cmd_fight(store, qq) -> str:
     mon = core.monster_scaled(p, core.pick_monster(p))
     res = core.fight(p, mon)
     p["last_fight"] = now
+    chance = None
     if res["win"]:
-        core.task_progress(p, "kill", 1)
-        core.main_progress(p, "kill", 1)
+        # 一次动作只走一个统一入口：推进支线+主线，并在途中掷**一次**机遇。
+        # 打怪掉落的药材同时推进 herb 类任务（原支线「药农之托」就是采药）。
+        kinds = {"kill": 1}
+        herb_n = sum(int(c) for n, c in (res.get("drops") or []) if n in cfg.HERB_NAMES)
+        if herb_n > 0:
+            kinds["herb"] = herb_n
+        chance = core.advance_task(p, kinds)
     await store.put_player(p)
 
     # 战报：只取前 3 回合 + 末回合，避免刷屏
@@ -281,6 +335,7 @@ async def cmd_fight(store, qq) -> str:
     lv = int(p["lv"])
     if core.can_level(p):
         lines.append(f"⬆️ 修为已满（{cfg.full_realm(lv)}），发送「突破」晋升")
+    lines.extend(_chance_lines(chance))
     return "\n".join(lines)
 
 
@@ -305,6 +360,7 @@ async def cmd_enhance(store, qq) -> str:
         f"本次强化需要 {pv['cost']} 块炎星石（现有 {core.count_item(p, '炎星石')}）",
     ]
     res = core.enhance(p)
+    chance = core.advance_task(p, "weapon", 1) if res.get("ok") else None
     await store.put_player(p)
     if not res.get("ok"):
         head.append("❌ 炎星石不足，无法强化。")
@@ -317,6 +373,7 @@ async def cmd_enhance(store, qq) -> str:
         head.append("　力量 2000　敏捷 2000　斗气 1000　防御 1200")
     else:
         head.append(f"　现为 {res['display']} 级")
+    head.extend(_chance_lines(chance))
     return "\n".join(head)
 
 
@@ -327,16 +384,94 @@ async def cmd_skills(store, qq) -> str:
     p = await _player(store, qq)
     if not p:
         return NOT_ENTERED
-    sk = p.get("skills") or {}
-    out = ["📜 斗技（快捷键 1/3/7/9）"]
-    for s in cfg.SKILLS:
-        lv = int(sk.get(s["name"], 1))
-        bar = "●" * lv + "○" * (s["max"] - lv)
-        out.append(f"　[{s['key']}] {s['name']}　{bar} {lv}/{s['max']}")
+    pool = core.skill_pool(p)
+    lo = core.loadout_entries(p)
+    fac_name = p.get("faction_name") or "无宗门"
+    out = [f"📜 {fac_name} · 斗技三阶（上阵 {len(lo)}/{cfg.LOADOUT_SIZE}）"]
+    for tier in cfg.SKILL_TIERS:
+        rows = [e for e in pool if e["tier"] == tier]
+        if not rows:
+            continue
+        out.append(f"〔{tier}〕斗气 {int(cfg.SKILL_TIER_MP_FRAC[tier] * 100)}%·mp_max")
+        for e in rows:
+            lv = int((p.get("skills") or {}).get(e["name"], 1))
+            mark = "★上阵" if e["equipped"] else ("可学" if e["unlocked"] else "🔒未解锁")
+            out.append(f"　{e['name']} Lv{lv}（lv{e['unlock']} 解锁·{mark}）")
     out.append("")
-    out.append("　升一级伤害 +20%，消耗 " + cfg.SKILL_UP_ITEM)
-    out.append(f"　现有 {cfg.SKILL_UP_ITEM} ×{core.count_item(p, cfg.SKILL_UP_ITEM)}")
-    out.append("　用法：升级 龙吟碎")
+    out.append("上阵：" + "、".join(f"{e['name']}[{e['tier']}]" for e in lo))
+    out.append("　斗气不足将强制武器普攻（伤害大减、持续掉血）")
+    out.append(f"　升一级伤害 +20%，消耗 {cfg.SKILL_UP_ITEM}；用法：升级 <技名> / 上阵 <4 技名>")
+    return "\n".join(out)
+
+
+async def cmd_faction(store, qq, args) -> str:
+    """宗门：查看本门与可转宗门；`转宗 <宗门名>` 改换门庭。
+
+    为什么要有转宗：入道只能进新手池 8 派，进阶池（lv40）与隐世池（lv90）
+    共 17 派的斗技没有转宗就永远见不到。
+    """
+    p = await _player(store, qq)
+    if not p:
+        return NOT_ENTERED
+    POOL_CN = {"starter": "新手池", "advanced": "进阶池", "hidden": "隐世池"}
+    name = p.get("faction_name") or "无宗门"
+    lv = int(p.get("lv", 1))
+    key = (args or "").strip()
+
+    if key:
+        res = core.change_faction(p, key)
+        if not res.get("ok"):
+            r = res.get("reason")
+            if r == "same":
+                return f"你已在【{res['name']}】，无需转宗。"
+            if r == "gold":
+                return (f"❌ 转宗需 {res['need']:,} 金币，你有 {res['have']:,}。\n"
+                        f"　（境界越高，越难改换门庭）")
+            if r == "nopool":
+                return "当前境界还没有可转的宗门。"
+            if r == "notfound":
+                return ("当前境界没有这个宗门。可转："
+                        + "、".join(res.get("options") or ["（无）"]))
+            return "转宗失败，请检查宗门名。"
+        await store.put_player(p)
+        return (f"🏯 已转投【{res['name']}】（原【{res['old']}】），耗 {res['cost']:,} 金币。\n"
+                f"　四槽已按新门重配：" + "、".join(res["loadout"])
+                + "\n　已升的技能等级按技名保留；本门斗技见「斗技」。")
+
+    fac_name = p.get("faction") or ""
+    cur_pool = ""
+    try:
+        cur_pool = fac.FACTIONS.get(fac_name, {}).get("pool", "")
+    except Exception:  # noqa: BLE001
+        cur_pool = ""
+    out = [f"🏯 宗门：{name}"
+           + (f"（{POOL_CN.get(cur_pool, cur_pool)}）" if cur_pool else "")]
+    pools = core.faction_pools_open(p)
+    out.append(f"境界 lv{lv} ｜ 已开放卡池：" + " ".join(POOL_CN[x] for x in pools))
+
+    cands = core.faction_candidates(p)
+    if not cands:
+        out.append("当前无可转宗门。")
+        return "\n".join(out)
+    out.append("")
+    out.append(f"可转宗门（需 {core.faction_switch_cost(p):,} 金币）：")
+    for pool in ("hidden", "advanced", "starter"):
+        rows = [c for c in cands if c["pool"] == pool]
+        if not rows:
+            continue
+        out.append(f"〔{POOL_CN[pool]}〕")
+        line = "　"
+        for c in rows:
+            seg = f"{c['name']} {c['skills']}门"
+            if len(line) + len(seg) > 30:
+                out.append(line)
+                line = "　"
+            line += seg + " · "
+        if line.strip():
+            out.append(line.rstrip(" ·"))
+    out.append("")
+    out.append("用法：转宗 <宗门名>")
+    out.append("　只换师门并重配四槽，不发该派入道物品；已升技能等级按技名保留。")
     return "\n".join(out)
 
 
@@ -345,11 +480,15 @@ async def cmd_skill_up(store, qq, name) -> str:
     if not p:
         return NOT_ENTERED
     name = (name or "").strip()
+    names = [e["name"] for e in core.skill_pool(p) if e["unlocked"]] or list(cfg.SKILL_NAMES)
     if not name:
-        return "用法：升级 龙吟碎（可选：" + "、".join(cfg.SKILL_NAMES) + "）"
-    hit = next((n for n in cfg.SKILL_NAMES if name in n or n in name), None)
+        return "用法：升级 <技名>（可选：" + "、".join(names) + "）"
+    hit = next((n for n in names if n == name), None) or next(
+        (n for n in names if name in n or n in name), None)
     if not hit:
-        return "无此斗技。可选：" + "、".join(cfg.SKILL_NAMES)
+        hit = next((n for n in cfg.SKILL_NAMES if name in n or n in name), None)
+    if not hit:
+        return "无此斗技。可选：" + "、".join(names)
     res = core.skill_up(p, hit)
     await store.put_player(p)
     if not res.get("ok"):
@@ -358,6 +497,81 @@ async def cmd_skill_up(store, qq, name) -> str:
         return (f"❌ {res['item']}不足：需要 {res['need']} 份，你有 {res['have']}。\n"
                 f"　去「炼制 {cfg.SKILL_UP_ITEM}」自己炼。")
     return f"✅【{hit}】升至 {res['lv']}/{res['max']} 级，技能伤害再进一层。"
+
+
+async def cmd_loadout(store, qq, args) -> str:
+    """上阵：从本宗三阶斗技里自由选 ≤4 门。
+
+    简化交互（2026-11-15 用户要求「一次输出四个编号，编号代表斗技即可」）：
+    每门斗技在「斗技」卡片左上角有**固定编号**，口令直接发编号即可，
+    例如「上阵 1 3 2 4」。编号与卡片共用 ``core.skill_pool_sorted`` 的稳定顺序，
+    因此永远对得上，不会出现「卡片 3 号」和「口令 3 号」是两门技的情况。
+    旧式技名写法（「上阵 龙吟碎 天火三玄变」）继续兼容。
+    """
+    p = await _player(store, qq)
+    if not p:
+        return NOT_ENTERED
+    full_sorted = core.skill_pool_sorted(p)          # 与卡片同序（普通→高阶→特殊）
+    learnable = [e for e in full_sorted if e["unlocked"]]
+    # 编号 ↔ 技能名（只把「可上阵」的编入映射；锁定技不参与上阵）
+    num_to_name: dict[int, str] = {}
+    name_to_num: dict[str, int] = {}
+    for i, e in enumerate(full_sorted):
+        if e["unlocked"]:
+            num_to_name[i + 1] = e["name"]
+            name_to_num[e["name"]] = i + 1
+
+    raw = (args or "").replace("，", ",").replace("、", ",").replace("/", ",").replace(" ", ",")
+    tokens = [x.strip() for x in raw.split(",") if x.strip()]
+    if not tokens:
+        cur = core.loadout_entries(p)
+        out = []
+        out.append("当前上阵：" + ("、".join(e["name"] for e in cur) if cur else "（空）"))
+        out.append("可上阵斗技（编号=卡片左上角编号，直接发数字即可）：")
+        for tier in cfg.SKILL_TIERS:
+            row = [e for e in learnable if e["tier"] == tier]
+            if not row:
+                continue
+            seg = "　"
+            for e in row:
+                tok = "%d.%s" % (name_to_num[e["name"]], e["name"])
+                if len(seg) + len(tok) + 1 > 30:
+                    out.append(seg.strip())
+                    seg = "　"
+                seg += tok + "　"
+            if seg.strip():
+                out.append(seg.strip())
+        out.append("")
+        out.append("用法：上阵 1 3 2 4（最多 %d 门，数字即上方编号）" % cfg.LOADOUT_SIZE)
+        return "\n".join(out)
+
+    chosen: list[str] = []
+    for t in tokens:
+        if t.isdigit():
+            n = int(t)
+            if n not in num_to_name:
+                return ("编号 %d 不可上阵（未解锁或超出范围 1~%d）。\n可上阵：%s"
+                        % (n, len(learnable),
+                           "、".join("%d.%s" % (name_to_num[e["name"]], e["name"])
+                                    for e in learnable)))
+            nm = num_to_name[n]
+        else:
+            hit = next((e for e in learnable if e["name"] == t), None) or next(
+                (e for e in learnable if t in e["name"] or e["name"] in t), None)
+            if not hit:
+                return ("「%s」不可上阵（未解锁或非本宗）。\n可上阵：%s"
+                        % (t, "、".join("%d.%s" % (name_to_num[e["name"]], e["name"])
+                                       for e in learnable)))
+            nm = hit["name"]
+        if nm not in chosen:
+            chosen.append(nm)
+    if len(chosen) > cfg.LOADOUT_SIZE:
+        return f"最多上阵 {cfg.LOADOUT_SIZE} 门，你给了 {len(chosen)} 门。"
+    core.set_loadout(p, chosen)
+    await store.put_player(p)
+    return "✅ 已上阵：" + "、".join(
+        f"{e['name']}（{name_to_num.get(e['name'], '?')}号）"
+        for e in core.loadout_entries(p))
 
 
 async def cmd_flames(store, qq) -> str:
@@ -394,6 +608,7 @@ async def cmd_feed(store, qq, name) -> str:
     if not hit:
         return "无此异火。可选：" + "、".join(cfg.FLAME_NAMES)
     res = core.feed_flame(p, hit)
+    chance = core.advance_task(p, "flame", 1) if res.get("ok") else None
     await store.put_player(p)
     if not res.get("ok"):
         if res.get("reason") == "nodross":
@@ -404,9 +619,12 @@ async def cmd_feed(store, qq, name) -> str:
             return f"【{hit}】已至 {res['lv']} 级圆满，再多药渣也烧不动了。"
         return "无可喂养。"
     if res["done"]:
-        return f"🔥 药渣尽数化入【{hit}】，晋为 {res['lv']} 级！"
-    return (f"🔥 投入 {res['give']} 份药渣，{hit} 距下一级还差 "
-            f"{_fmt(res['left'])}。")
+        out = [f"🔥 药渣尽数化入【{hit}】，晋为 {res['lv']} 级！"]
+    else:
+        out = [f"🔥 投入 {res['give']} 份药渣，{hit} 距下一级还差 "
+               f"{_fmt(res['left'])}。"]
+    out.extend(_chance_lines(chance))
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -447,12 +665,18 @@ async def cmd_buy(store, qq, args) -> str:
                     n = max(1, min(99, int(rest)))
                 break
     res = core.shop_buy(p, name, n)
+    # 采办药材也算推进「药农之托」一类 herb 任务（买炎星石不算）。
+    herb_n = (int(res.get("n") or 0)
+              if (res.get("ok") and res.get("name") in cfg.HERB_NAMES) else 0)
+    chance = core.advance_task(p, "herb", herb_n) if herb_n else None
     await store.put_player(p)
     if not res.get("ok"):
         if res.get("reason") == "poor":
             return f"💰 金币不足：需要 {res['need']}，你有 {res['have']}。"
         return f"没有【{name}】这样货。发「宝库」看全部。"
-    return f"✅ 购入【{res['name']}】×{res['n']}，花费 {res['total']} 金，余 {p['gold']}。"
+    out = [f"✅ 购入【{res['name']}】×{res['n']}，花费 {res['total']} 金，余 {p['gold']}。"]
+    out.extend(_chance_lines(chance))
+    return "\n".join(out)
 
 
 async def cmd_recipes(store, qq) -> str:
@@ -491,6 +715,7 @@ async def cmd_craft(store, qq, name) -> str:
     if res.get("reason") == "cd":
         await store.put_player(p)
         return f"丹炉尚温，需再候 {res['left']} 秒。"
+    chance = core.advance_task(p, "craft", 1) if res.get("ok") else None
     await store.put_player(p)
     if not res.get("ok"):
         if res.get("reason") == "mat":
@@ -505,7 +730,9 @@ async def cmd_craft(store, qq, name) -> str:
     msg = f"⚗️ 丹成！【{hit}】×1（成功率 {int(res['rate'] * 100)}%）"
     if res.get("alch_up"):
         msg += f"\n　炼药经验积累，晋为【{res['alch_up']}炼药师】！"
-    return msg
+    out = [msg]
+    out.extend(_chance_lines(chance))
+    return "\n".join(out)
 
 
 async def cmd_bag(store, qq) -> str:
@@ -646,22 +873,31 @@ async def cmd_rob(store, qq, target) -> str:
         return "对方尚未入道。"
     if int(vic.get("gold", 0)) <= 0:
         return "对方囊中空空。"
-    pa, pb = core.power(p), core.power(vic)
-    import random as _r
-    win = pa >= pb * (0.75 + 0.5 * _r.random())
-    if win:
+    # 掠夺也走四槽：双方各用自己上阵的 4 门斗技随机互殴（核心模块骨架）
+    res = core.duel(p, vic)
+    seq = res["log"]
+    show = seq[:4] + (["..."] if len(seq) > 6 else []) + (seq[-2:] if len(seq) > 6 else [])
+    lines = [f"⚔️ 与对手交手 {res['rounds']} 回合"]
+    for it in show:
+        if it == "...":
+            lines.append("　…")
+            continue
+        who = "你" if it.get("who") == "p" else "对方"
+        tag = it["kind"] + ("（暴击！）" if it.get("crit") else "")
+        lines.append(f"　{who}·{tag} {it['dmg']}")
+    if res["win"]:
         amt = max(1, int(int(vic["gold"]) * 0.10))
         vic["gold"] = int(vic["gold"]) - amt
         p["gold"] = int(p.get("gold", 0)) + amt
-        msg = f"😈 你以战力 {pa} 压过 {pb}，夺得 {amt} 金币。"
+        lines.append(f"😈 夺得 {amt} 金币。")
     else:
         amt = max(1, int(int(p["gold"]) * 0.10))
         p["gold"] = int(p.get("gold", 0)) - amt
         vic["gold"] = int(vic["gold"]) + amt
-        msg = f"💢 反被击退（战力 {pa} vs {pb}），赔了 {amt} 金币。"
+        lines.append(f"💢 反被击退，赔了 {amt} 金币。")
     await store.put_player(p)
     await store.put_player(vic)
-    return msg
+    return "\n".join(lines)
 
 
 async def cmd_give(store, qq, target, amount) -> str:

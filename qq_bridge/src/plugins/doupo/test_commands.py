@@ -26,6 +26,10 @@ for _p in (REPO_ROOT, PLUGINS_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+# 机遇是概率事件，会让既有金币/文本断言变 flaky；这里默认关掉，
+# 随机逻辑本身由 test_chance.py 用注入 rng 做确定性验收。
+os.environ["DOUPO_CHANCE_RATE"] = "0"
+
 
 def _stub_nonebot():
     nb = types.ModuleType("nonebot")
@@ -95,7 +99,7 @@ async def main():
     menu = commands.cmd_menu()
     check("菜单含 斗破菜单 口令", "斗破菜单" in menu)
     # 关键：菜单条数必须等于 __init__.py 里注册的 matcher 数（e2e 里再做静态断言）
-    check("菜单条数 = menu_total()", commands.menu_total() == 25,
+    check("菜单条数 = menu_total()", commands.menu_total() == 28,
           f"menu_total={commands.menu_total()}")
     # 新设计：菜单是唯一切换口（斗破菜单），其余口令全部纯中文、不再带前缀
     lines = [l.split(" —— ")[0].strip() for l in menu.splitlines() if " —— " in l]
@@ -122,7 +126,7 @@ async def main():
     # 2. 入道 → 人物
     # ------------------------------------------------------------------
     r = await commands.cmd_enter(store, A, "萧炎", G)
-    check("入道 成功", "玄重尺" in r and "一星斗者" in r, r[:50])
+    check("入道 成功", "玄重尺" in r and "斗之气一段" in r, r[:50])
     p = await store.get_player(A)
     check("入道写入存档", p is not None and p["name"] == "萧炎")
     check("入道赠金币", p["gold"] == cfg.START_GOLD, f"gold={p['gold']}")
@@ -133,7 +137,7 @@ async def main():
     check("重复入道被挡", "已踏入" in r2, r2[:30])
 
     panel = await commands.cmd_panel(store, A)
-    check("人物 含境界", "一星斗者" in panel)
+    check("人物 含境界", "斗之气一段" in panel)
     check("人物 含玄重尺", "玄重尺" in panel)
     check("人物 含战力", "战力" in panel)
 
@@ -148,10 +152,34 @@ async def main():
     p["exp"] = cfg.exp_need(1) + 10
     await store.put_player(p)
     r = await commands.cmd_break(store, A)
-    check("突破 成功", "突破成功" in r and "二星斗者" in r, r[:60])
+    check("突破 成功", "突破成功" in r and "斗之气二段" in r, r[:60])
     p = await store.get_player(A)
     check("突破后等级 =2", int(p["lv"]) == 2, f"lv={p['lv']}")
     check("突破后回满血", p["hp"] == core.stats(p)["体力"])
+
+    # 跨大境界的文案（2026-11-14 用户实测反馈：跨境界时星数归零容易看成掉级）：
+    # 九星制下 九星斗者(9) → 一星斗师(10)，文案必须把「由哪 → 到哪」写清楚。
+    p = await store.get_player(A)
+    p["lv"] = 27                      # 九星斗师（斗师境最后一星）
+    p["exp"] = cfg.exp_need(27) + 10
+    await store.put_player(p)
+    r = await commands.cmd_break(store, A)
+    check("跨境界 文案含起终点", "九星斗师" in r and "一星大斗师" in r, r[:80])
+    check("跨境界 用境界突破措辞", "境界突破" in r, r[:40])
+    p = await store.get_player(A)
+    check("跨境界 等级 =28", int(p["lv"]) == 28, f"lv={p['lv']}")
+    # 境界内晋升：三星斗师(12) → 四星斗师(13)，这才是用户要的顺序
+    p["lv"] = 21
+    p["exp"] = cfg.exp_need(21) + 10
+    await store.put_player(p)
+    r = await commands.cmd_break(store, A)
+    check("同境界 三星→四星", "三星斗师" in r and "四星斗师" in r, r[:80])
+    check("同境界 用突破成功措辞", "突破成功" in r, r[:40])
+    p = await store.get_player(A)
+    check("同境界 等级 =22", int(p["lv"]) == 22, f"lv={p['lv']}")
+    # 还原成 2 级，别把后面的战斗/数值断言带偏
+    p["lv"] = 2
+    await store.put_player(p)
 
     # ------------------------------------------------------------------
     # 4. 战斗（含 CD）
@@ -220,6 +248,61 @@ async def main():
     check("升级 未知斗技被挡", "无此斗技" in r, r[:40])
 
     # ------------------------------------------------------------------
+    # 6b. 斗技详情：说明必须是真的（有数值/有来源/有原著），不是空壳
+    # ------------------------------------------------------------------
+    p = await store.get_player(A)
+    # 6b. 斗技详情口令已废弃（合并进「斗技」卡片），这里校验文本兜底仍完整：
+    # 列出本门三阶全量技能 + 上阵计数，不再只画 4 个上阵槽。
+    pool = core.skill_pool(p)
+    r = await commands.cmd_skills(store, A)
+    for tier in cfg.SKILL_TIERS:
+        check("斗技文本列〔%s〕阶" % tier, ("〔%s〕" % tier) in r, r[:60])
+    check("斗技文本含上阵计数",
+          "上阵 %d/%d" % (len(core.loadout_entries(p)), cfg.LOADOUT_SIZE) in r, r[:60])
+    # 全部门派技能名都在文本里（详情合并进卡片，文本兜底也不漏）
+    listed = sum(1 for e in pool if e["name"] in r)
+    check("斗技文本列全量技能", listed == len(pool),
+          "列出 %d/%d" % (listed, len(pool)))
+
+    # ------------------------------------------------------------------
+    # 6c. 上阵：编号即斗技（2026-11-15 用户要求「一次输出四个编号」）
+    # ------------------------------------------------------------------
+    p = await store.get_player(A)
+    p["lv"] = 40                       # 40 级三阶全解锁，才能凑满 4 个编号
+    await store.put_player(p)
+
+    r = await commands.cmd_loadout(store, A, "")
+    check("上阵 无参列出编号与用法",
+          "可上阵" in r and "用法：上阵" in r, r[:80])
+
+    ordered = core.skill_pool_sorted(p)
+    nums = [i + 1 for i, e in enumerate(ordered) if e["unlocked"]][:cfg.LOADOUT_SIZE]
+    check("上阵 可上阵编号不少于 4 个", len(nums) == cfg.LOADOUT_SIZE, f"nums={nums}")
+    # 无参输出里的「编号.技名」必须与卡片同序
+    name_by_num = {i + 1: e["name"] for i, e in enumerate(ordered) if e["unlocked"]}
+    check("上阵 无参编号与卡片同序",
+          all("%d.%s" % (n, name_by_num[n]) in r for n in nums), r[:120])
+
+    r = await commands.cmd_loadout(store, A, " ".join(str(n) for n in nums))
+    check("上阵 按编号生效", "已上阵" in r, r[:80])
+    p = await store.get_player(A)
+    want = [name_by_num[n] for n in nums]
+    got = [e["name"] for e in core.loadout_entries(p)]
+    check("上阵 编号→技名映射正确", got == want, f"want={want} got={got}")
+
+    bad = max(nums) + 99
+    r = await commands.cmd_loadout(store, A, str(bad))
+    check("上阵 超范围编号被挡", "不可上阵" in r, r[:60])
+    # 旧式技名写法继续兼容（不让老用户突然不会用）
+    r = await commands.cmd_loadout(store, A, want[0])
+    check("上阵 兼容旧式技名", "已上阵" in r and want[0] in r, r[:60])
+
+    p = await store.get_player(A)
+    p["lv"] = 2                       # 还原，别把后面的断言带偏
+    await store.put_player(p)
+
+
+    # ------------------------------------------------------------------
     # 7. 异火 / 养火
     # ------------------------------------------------------------------
     r = await commands.cmd_flames(store, A)
@@ -276,6 +359,10 @@ async def main():
     p = await store.get_player(A)
     p["hp"] = 1
     core.add_item(p, "回灵丹", 3)
+    # 清空回灵丹所需药材：前面几轮炼制有成有败，余量不确定，
+    # 不清就会偶发"材料居然够"，让这条断言飘（2026-11-15 实测 3 次跑 1 次红）。
+    for k in cfg.RECIPE_BY_NAME["回灵丹"]["need"]:
+        core.add_item(p, k, -core.count_item(p, k))
     await store.put_player(p)
     r = await commands.cmd_craft(store, A, "回灵丹")
     check("炼制 材料不足被挡", "材料不足" in r, r[:60])

@@ -41,6 +41,35 @@ _ROLES = ("regular", "bold", "light")
 
 _WARNED: set[str] = set()
 _CACHE: dict[tuple[str, int], FreeTypeFont] = {}
+#: 字体文件 → 真粗体 face 下标（找不到粗体 face 时记 0，由画布层伪粗兜底）
+_BOLD_FACE_CACHE: dict[str, int] = {}
+
+
+def _bold_face_index(path: str) -> int:
+    """TTC/OTC 里找**真正**的粗体 face；没有就返回 0。
+
+    2026-11-14 容器内实测（斗技卡「重点文字加粗」验收抓到）：
+    vendored ``msyh.ttc`` 只有两个 face —— index 0 = Microsoft YaHei Regular、
+    index 1 = Microsoft YaHei UI Regular，**都是 Regular 且字形 mask 完全相同**。
+    旧代码 `role="bold"` 无条件用 index=1，结果「粗体」其实一点没粗。
+    这里改为按 face 名探测；找不到真粗体时回 index 0，由 ``Canvas.text``
+    的伪粗描边保证 bold=True 在视觉上确实加粗（见 canvas.py）。
+    """
+    cached = _BOLD_FACE_CACHE.get(path)
+    if cached is not None:
+        return cached
+    idx = 0
+    if Path(path).suffix.lower() in (".ttc", ".otc"):
+        for i in range(1, 8):
+            try:
+                style = (ImageFont.truetype(path, 16, index=i).getname()[1] or "").lower()
+            except Exception:
+                break
+            if any(k in style for k in ("bold", "black", "heavy", "semibold", "粗")):
+                idx = i
+                break
+    _BOLD_FACE_CACHE[path] = idx
+    return idx
 
 
 def font_path(role: str = "regular") -> str | None:
@@ -68,9 +97,9 @@ def load(role: str = "regular", size: int = 20) -> FreeTypeFont:
     font: FreeTypeFont
     if path:
         try:
-            # msyh.ttc 是 TTC 集合：index 0 常规 / 1 粗体。bold 角色落到 msyh.ttc
-            # （无独立 msyhbd.ttc 时）要用 index 1 才是真粗体。
-            idx = 1 if (role == "bold" and Path(path).name.lower() == "msyh.ttc") else 0
+            # 不再假设「TTC index=1 一定是粗体」：按 face 名探测真粗体，
+            # 找不到就回 index 0，由画布层 bold=True 的伪粗描边兜底。
+            idx = _bold_face_index(path) if role == "bold" else 0
             font = ImageFont.truetype(path, int(size), index=idx)
         except Exception:  # 字体损坏/不支持：降级，不吞异常静默
             font = ImageFont.load_default(size=int(size))

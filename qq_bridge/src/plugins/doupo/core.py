@@ -13,19 +13,24 @@ import random
 import time
 
 from . import config as cfg
+from . import factions as fac
+from . import skills as sk_mod
 
 
 # ---------------------------------------------------------------------------
 # 等级成长  [源码 ah.java:165]
 # ---------------------------------------------------------------------------
 def c_stat(base: int, lv: int) -> int:
-    """原版成长公式：base*10 + 阶²*base*10 + base*lv，阶=(lv-1)/9。
+    """原版成长公式：base*10 + 阶²*base*10 + base*lv。
 
+    2026-11-14：阶改成按**大境界下标**取（cfg.realm_index），
+    不再写死 (lv-1)//9 —— 原著补全 斗之气/斗尊巅峰/半圣 后各境界小段数不同
+    （半圣 3 段、斗帝 1 级），用除法会把斗圣前五星算成半圣阶。
     实机校验（形象 0 / 玄重尺 +0 / 等级 1）：
       体力 880  力量 275  斗气 165  敏捷 220  防御 132
     与人物面板显示逐格吻合。
     """
-    k = (max(1, int(lv)) - 1) // 9
+    k = cfg.realm_index(lv)
     return int(base) * 10 + k * k * int(base) * 10 + int(base) * int(lv)
 
 
@@ -37,10 +42,11 @@ def create_player(qq, name, group) -> dict:
     st = {
         "qq": str(qq), "name": name, "group": str(group),
         "lv": 1, "exp": 0,
+        "lv_ver": 3,          # 原著13阶存档标记（store 用它判断要不要迁移）
         "gold": cfg.START_GOLD, "luck": cfg.START_LUCK,
         "weapon": 0,
         "hp": 0, "mp": 0,
-        "skills": {n: 1 for n in cfg.SKILL_NAMES},
+        "skills": {},
         "flames": {n: 0 for n in cfg.FLAME_NAMES},
         "bag": {"回灵丹": cfg.START_HP_POTION, "炎星石": cfg.START_STONES},
         "alch": cfg.ALCH_START, "alch_exp": 0,
@@ -52,6 +58,18 @@ def create_player(qq, name, group) -> dict:
     }
     st["hp"] = stats(st)["体力"]
     st["mp"] = mp_max(st)
+
+    # 入道随机宗门 + 自动配四槽（斗技三阶四槽骨架）
+    # 按 qq 定种子：每个玩家分到一个"随机但稳定"的宗门（不可反复重掷）
+    try:
+        fac.assign_faction(st, rng=random.Random("faction:" + str(qq)).random)
+    except Exception:
+        st.setdefault("faction", "")
+        st.setdefault("faction_name", "")
+    try:
+        sk_mod.ensure_loadout(st)
+    except Exception:
+        st["loadout"] = []
     return st
 
 
@@ -150,7 +168,7 @@ def can_level(p) -> bool:
 
 
 def level_up(p, rng=random.random) -> dict:
-    """升一级。28 级 -> 29 级（斗帝）走机缘判定。"""
+    """升一级。102 级九星斗圣 -> 103 级（斗帝）走机缘判定。"""
     lv = int(p.get("lv", 1))
     if lv >= cfg.MAX_LV:
         return {"ok": False, "reason": "max"}
@@ -193,10 +211,20 @@ def mitigation(defence: int) -> float:
 
 
 def pick_monster(p, rng=random.random) -> dict:
-    """按玩家等级挑选一个"够得着但不算白给"的怪（等级差 ≤2）。"""
+    """按玩家等级挑选一个"够得着但不算白给"的怪。
+
+    九星制把等级轴拉到 83，而物种表只有 7 只，用原来的「等级差 ≤2」会大面积
+    选不到（中高等级玩家一直掉回最弱的地鬼）。改成两步：
+      1) 先只留「同一大境界内」的物种（等级差 ≤ LV_PER_REALM），保证不会
+         让 1 级新手撞上 27 级的赤炎狼（等级差修正会把战斗拖成 9 回合）；
+      2) 再在窗口内取等级最接近的 3 只随机，保留一点随机性。
+    窗口内一只都没有（物种表没覆盖到）时退到全表最近的一只。
+    """
     lv = int(p.get("lv", 1))
-    cand = [m for m in cfg.MONSTERS if abs(m["lv"] - lv) <= 2] or cfg.MONSTERS[:1]
-    return rng_choice(cand, rng)
+    window = [m for m in cfg.MONSTERS if abs(int(m["lv"]) - lv) <= cfg.LV_PER_REALM]
+    pool = window or cfg.MONSTERS
+    cand = sorted(pool, key=lambda m: abs(int(m["lv"]) - lv))[:3]
+    return rng_choice(cand or cfg.MONSTERS[:1], rng)
 
 
 def rng_choice(seq, rng=random.random):
@@ -206,26 +234,34 @@ def rng_choice(seq, rng=random.random):
 
 
 def damage_schedule(p, rounds: int = 15) -> list:
-    """逐回合的期望输出（已算暴击期望，未乘减伤）。
+    """逐回合的期望输出（四槽模型 · 已算暴击期望，未乘减伤）。
 
-    为什么不用"平均值 × 回合数"：玩家的蓝只够放 5 次斗技（cost = mp_max//5），
-    第 6 回合起只能普攻，单回合输出掉到 42%。若按 4 回合均值外推，
-    高等级的怪血量会被高估一倍，实测表现为"22 级要 11 回合才杀得死"，
-    而目标是 4~5 回合 —— 这正是之前 22/26 级胜率 20% 的根因。
+    与 `fight` 同口径：每回合在已上阵四槽里**随机释放**，期望≈四槽平均；
+    斗气按阶扣除，不足以释放任一技时转武器普攻。用于反解同阶怪血量，
+    使「几回合打完」保持为设计值（TTK_PLAYER）。
     """
     st = stats(p)
-    best = _best_skill(p)
-    sk_lv = int((p.get("skills") or {}).get(best, 1))
-    skill_raw = (st["力量"] * 0.5 + st["斗气"] * 1.5) * cfg.skill_dmg_mult(best, sk_lv)
-    normal_raw = st["力量"] * 1.0
+    normal_raw = st["力量"] * float(cfg.WEAPON_BASE_MULT)
+    entries = _loadout_entries(p)
+    if not entries:
+        return [normal_raw] * max(1, rounds)
 
-    pool = mp_max(p)                     # 每场战斗蓝是满的（_refill / 升级回满）
-    cost = max(1, mp_max(p) // 5)
+    mpmax = mp_max(p)
+    lv_map = p.get("skills") or {}
+    slots = []
+    for e in entries:
+        lv = int(lv_map.get(e["name"], 1))
+        raw = (st["力量"] * 0.5 + st["斗气"] * 1.5) * sk_mod.skill_mult(e, lv)
+        slots.append((raw, sk_mod.tier_cost(e["tier"], mpmax)))
+    avg_dmg = sum(d for d, _ in slots) / len(slots)
+    avg_cost = sum(c for _, c in slots) / len(slots)
+
+    pool = mpmax
     out = []
     for _ in range(max(1, rounds)):
-        if pool >= cost:
-            out.append(skill_raw)
-            pool -= cost
+        if pool >= avg_cost:
+            out.append(avg_dmg)
+            pool -= avg_cost
         else:
             out.append(normal_raw)
     mult = 1.0 + crit_rate(p) / 100.0 * 0.5
@@ -254,7 +290,11 @@ def monster_scaled(p, mon) -> dict:
     """
     st = stats(p)
     lv = int(p.get("lv", 1))
-    delta = max(-0.6, min(0.8, (int(mon["lv"]) - lv) * cfg.LV_DELTA_STEP))
+    # 等级差只微调"几回合打完"，上下限收紧到 ±20%（原 ±60%/+80%）：
+    # 原著 13 阶补齐后，物种表(7 只)不可能覆盖 103 级，总有些等级只能遇到
+    # 隔了十几级的怪；旧钳位会把这种战斗压成 2.9 回合秒杀或拖到 9 回合，
+    # 越过 test_monster_scaled_tracks_player 的 3~8 回合设计窗口。
+    delta = max(-0.2, min(0.2, (int(mon["lv"]) - lv) * cfg.LV_DELTA_STEP))
     m_def = max(20, int(st["防御"] * cfg.MON_DEF_RATIO))
 
     # 玩家打完需要几回合（等级差只影响时长，不影响难度）
@@ -272,31 +312,194 @@ def monster_scaled(p, mon) -> dict:
     }
 
 
-def _player_hit(p, target_def, use_skill, rng) -> dict:
+def _legacy_entries() -> list[dict]:
+    """无宗门旧档的兜底：沿用原 4 门核心斗技（按普通阶计）。"""
+    return [{
+        "name": s["name"], "tier": "普通", "faction": "",
+        "mp": cfg.SKILL_TIER_MP_FRAC["普通"], "dmg": float(s["dmg_mult"]),
+        "unlock": 1, "desc": s.get("desc", ""),
+    } for s in cfg.SKILLS]
+
+
+def _ensure_faction(p) -> bool:
+    """旧存档没有 faction 时惰性补一个（入道分宗的兜底）。
+
+    ⚠️ 必须按 qq 定种子，与 create_player 同一套种子：否则旧档每次读出来都现抽一个，
+    玩家会看到「宗门」每次问都不一样（实测 lv47 老档 faction=None，走的就是这条路径）。
+    """
+    if p.get("faction"):
+        return True
+    try:
+        seed = "faction:" + str(p.get("qq") or "")
+        fac.assign_faction(p, rng=random.Random(seed).random)
+    except Exception:
+        return False
+    return bool(p.get("faction"))
+
+
+def _loadout_entries(p) -> list[dict]:
+    """当前上阵四槽的完整技能对象；无宗门旧档退回原 4 核心。"""
+    _ensure_faction(p)
+    ents = sk_mod.loadout_entries(p)
+    return ents if ents else _legacy_entries()
+
+
+def _pick_skill(p, mp: int, rng=random.random):
+    """在「已上阵且斗气足够」的技中随机挑一个；都不够 -> (None, 0) 转普攻。"""
+    entries = _loadout_entries(p)
+    if not entries:
+        return None, 0
+    mpmax = mp_max(p)
+    options = []
+    for e in entries:
+        c = sk_mod.tier_cost(e["tier"], mpmax)
+        if c <= mp:
+            options.append((e, c))
+    if not options:
+        return None, 0
+    e, c = options[min(len(options) - 1, int(rng() * len(options)))]
+    return e, c
+
+
+def _hit(p, target_def, entry, rng) -> dict:
+    """一次出手：entry 为 None 时用武器普攻，否则按该斗技算伤害。"""
     st = stats(p)
     crit = rng() * 100 < crit_rate(p)
-    if use_skill:
-        name = _best_skill(p)
-        lv = int((p.get("skills") or {}).get(name, 1))
-        raw = (st["力量"] * 0.5 + st["斗气"] * 1.5) * cfg.skill_dmg_mult(name, lv)
-        kind = name
+    if entry is not None:
+        lv = int((p.get("skills") or {}).get(entry["name"], 1))
+        raw = (st["力量"] * 0.5 + st["斗气"] * 1.5) * sk_mod.skill_mult(entry, lv)
+        kind = entry["name"]
     else:
-        raw = st["力量"] * 1.0
+        raw = st["力量"] * float(cfg.WEAPON_BASE_MULT)
         kind = "普攻"
     dmg = max(1, int(raw * mitigation(target_def) * (1.5 if crit else 1.0)))
-    return {"dmg": dmg, "crit": crit, "kind": kind, "skill": use_skill}
+    return {"dmg": dmg, "crit": crit, "kind": kind, "skill": entry is not None}
+
+
+def faction_pools_open(p) -> list[str]:
+    """当前境界已开放的卡池（新手 / 进阶 / 隐世）。"""
+    lv = int(p.get("lv", 1))
+    return [pool for pool in ("starter", "advanced", "hidden")
+            if lv >= int(fac.POOL_UNLOCK.get(pool, 1))]
+
+
+def faction_switch_cost(p) -> int:
+    """转宗所需金币（随境界上涨）。"""
+    return cfg.faction_switch_cost(int(p.get("lv", 1)))
+
+
+def faction_candidates(p) -> list[dict]:
+    """当前境界可以转去的宗门（排除本门）。
+
+    入道只进新手池，进阶池要 lv40、隐世池要 lv90 —— 不转宗的话，
+    25 派里 17 派的斗技玩家永远见不到。
+    """
+    lv = int(p.get("lv", 1))
+    cur = str(p.get("faction") or "")
+    out = []
+    for pool in ("starter", "advanced", "hidden"):
+        if lv < int(fac.POOL_UNLOCK.get(pool, 1)):
+            continue
+        for fid, f in fac.FACTIONS.items():
+            if f["pool"] != pool or fid == cur:
+                continue
+            out.append({
+                "faction": fid, "name": f["name"], "pool": pool,
+                "unlock_lv": int(f["unlock_lv"]), "weight": int(f["weight"]),
+                "skills": len(sk_mod.catalog(fid)),
+            })
+    return out
+
+
+def change_faction(p, key: str) -> dict:
+    """转宗：改换门庭，重配四槽。
+
+    * 只能转去**当前境界已开放**的卡池里的宗门；
+    * 扣金币（`cfg.faction_switch_cost`）；
+    * **不重新发该派的入道物品**（否则转一次刷一次）；
+    * 已升的技能等级按技名保留。
+    """
+    key = str(key or "").strip()
+    if not key:
+        return {"ok": False, "reason": "noarg"}
+    cands = faction_candidates(p)
+    if not cands:
+        return {"ok": False, "reason": "nopool"}
+
+    hit = next((c for c in cands if c["faction"] == key or c["name"] == key), None)
+    if not hit:
+        hit = next((c for c in cands if key in c["name"] or key in c["faction"]), None)
+    if not hit:
+        same = fac.FACTIONS.get(str(p.get("faction") or ""))
+        if same and (key in same["name"] or key == p.get("faction")):
+            return {"ok": False, "reason": "same", "name": same["name"]}
+        return {"ok": False, "reason": "notfound", "options": [c["name"] for c in cands]}
+
+    cost = faction_switch_cost(p)
+    if int(p.get("gold", 0)) < cost:
+        return {"ok": False, "reason": "gold", "need": cost,
+                "have": int(p.get("gold", 0))}
+
+    old_name = str(p.get("faction_name") or "")
+    p["gold"] = int(p.get("gold", 0)) - cost
+    p["faction"] = hit["faction"]
+    p["faction_name"] = hit["name"]
+    p["loadout"] = []                      # 清空后由 ensure_loadout 按新派重配
+    sk_mod.ensure_loadout(p)
+    return {"ok": True, "faction": hit["faction"], "name": hit["name"],
+            "old": old_name, "cost": cost,
+            "loadout": list(p.get("loadout") or []),
+            "pool": hit["pool"]}
 
 
 def _best_skill(p) -> str:
-    """选当前等级最高（同等级取倍率最高）的技能。"""
-    sk = p.get("skills") or {}
-    best, best_score = cfg.SKILL_NAMES[0], -1
-    for n in cfg.SKILL_NAMES:
-        lv = int(sk.get(n, 1))
-        score = lv * 10 + cfg.SKILL_BY_NAME[n]["dmg_mult"]
-        if score > best_score:
-            best, best_score = n, score
-    return best
+    """兼容旧接口：取上阵四槽里期望伤害最高的一门。"""
+    entries = _loadout_entries(p)
+    if not entries:
+        return cfg.SKILL_NAMES[0]
+    st = stats(p)
+    lv_map = p.get("skills") or {}
+    best = max(entries, key=lambda e: (st["力量"] * 0.5 + st["斗气"] * 1.5)
+               * sk_mod.skill_mult(e, int(lv_map.get(e["name"], 1))))
+    return best["name"]
+
+
+def skill_pool(p) -> list[dict]:
+    """本宗全部斗技（含未解锁），带 unlocked / equipped 标记。"""
+    _ensure_faction(p)
+    ents = sk_mod.entries_for(p) or _legacy_entries()
+    lv = int(p.get("lv", 1))
+    lo = set(sk_mod.ensure_loadout(p))
+    out = []
+    for e in ents:
+        d = dict(e)
+        d["unlocked"] = int(d["unlock"]) <= lv
+        d["equipped"] = d["name"] in lo
+        out.append(d)
+    return out
+
+
+def skill_pool_sorted(p) -> list[dict]:
+    """本宗斗技（含未解锁）按三阶稳定排序：普通 → 高阶 → 特殊。
+
+    卡片（build_skills_data）与上阵口令（cmd_loadout）共用同一顺序，
+    因此「卡片上的编号」与「上阵 <编号>」一一对应，不会错位。
+    """
+    pool = skill_pool(p)
+    tier_order = {t: i for i, t in enumerate(cfg.SKILL_TIERS)}
+    return sorted(pool, key=lambda e: (tier_order.get(e["tier"], 9),))
+
+
+def loadout_entries(p) -> list[dict]:
+    """公开版：当前上阵四槽的完整技能对象。"""
+    return _loadout_entries(p)
+
+
+def set_loadout(p, names) -> list[str]:
+    """设置四槽：只保留本宗已解锁技能，最多 4 个。"""
+    allowed = {e["name"] for e in skill_pool(p) if e["unlocked"]}
+    p["loadout"] = [n for n in names if n in allowed][:cfg.LOADOUT_SIZE]
+    return sk_mod.ensure_loadout(p)
 
 
 def fight(p, mon, rng=random.random) -> dict:
@@ -311,7 +514,6 @@ def fight(p, mon, rng=random.random) -> dict:
     m_hp = int(mon["hp"])
     m_atk = int(mon["atk"])
     m_def = int(mon["def"])
-    cost = max(1, mp_max(p) // 5)
 
     rounds, dmg_log, taken = 0, [], 0
     dodge = dodge_rate(p)
@@ -320,9 +522,9 @@ def fight(p, mon, rng=random.random) -> dict:
 
     while rounds < 15 and m_hp > 0 and hp > 0:
         rounds += 1
-        use_skill = mp >= cost
-        hit = _player_hit(p, m_def, use_skill, rng)
-        if use_skill:
+        entry, cost = _pick_skill(p, mp, rng)   # 随机释放「已上阵且斗气够」的技
+        hit = _hit(p, m_def, entry, rng)
+        if entry is not None:
             mp -= cost
         m_hp -= hit["dmg"]
         dmg_log.append(hit)
@@ -362,6 +564,37 @@ def fight(p, mon, rng=random.random) -> dict:
         p["hp"] = int(st["体力"] * (1 - cfg.LOSE_HP_ON_DEFEAT))
         res["hp_after"] = p["hp"]
     return res
+
+
+def duel(p, vic, rng=random.random) -> dict:
+    """掠夺：双方各用自己四槽随机互殴（p 先手）。斗气不足转武器普攻。
+
+    只算胜负与战报，不改双方 hp/gold（结算由 commands.cmd_rob 负责），
+    与 `fight` 共用四槽 / 按阶斗气 / 普攻兜底逻辑。
+    """
+    sp, sv = stats(p), stats(vic)
+    hp_p, hp_v = int(sp["体力"]), int(sv["体力"])
+    mp_p, mp_v = mp_max(p), mp_max(vic)
+    log, rounds = [], 0
+    while rounds < 15 and hp_p > 0 and hp_v > 0:
+        rounds += 1
+        e, c = _pick_skill(p, mp_p, rng)
+        hit = _hit(p, int(sv["防御"]), e, rng)
+        if e is not None:
+            mp_p -= c
+        hp_v -= hit["dmg"]
+        log.append({"who": "p", **hit})
+        if hp_v <= 0:
+            break
+        e2, c2 = _pick_skill(vic, mp_v, rng)
+        hit2 = _hit(vic, int(sp["防御"]), e2, rng)
+        if e2 is not None:
+            mp_v -= c2
+        hp_p -= hit2["dmg"]
+        log.append({"who": "v", **hit2})
+    win = hp_v <= 0 and hp_p > 0
+    return {"win": win, "rounds": rounds, "log": log,
+            "hp_p": max(0, hp_p), "hp_v": max(0, hp_v)}
 
 
 def _roll_drops(p, rng) -> list:
@@ -552,10 +785,12 @@ def use_item(p, name) -> dict:
 # 斗技升级
 # ---------------------------------------------------------------------------
 def skill_up(p, name) -> dict:
-    if name not in cfg.SKILL_BY_NAME:
+    # 允许上阵四槽里的任意斗技（不再限原 4 核心）；旧 4 核心始终兼容
+    allowed = {e["name"] for e in skill_pool(p)} | set(cfg.SKILL_NAMES)
+    if name not in allowed:
         return {"ok": False, "reason": "noskill"}
     cur = int((p.get("skills") or {}).get(name, 1))
-    mx = cfg.SKILL_BY_NAME[name]["max"]
+    mx = int(cfg.SKILL_BY_NAME.get(name, {}).get("max", 5))
     if cur >= mx:
         return {"ok": False, "reason": "max", "lv": cur}
     cost = cfg.skill_up_cost(cur)
@@ -681,6 +916,117 @@ def main_submit(p) -> dict:
     p["main_idx"] = int(p.get("main_idx", 0)) + 1
     p["main_progress"] = 0
     return {"ok": True, "task": t, "reward": rw, "next": current_main(p)}
+
+
+# ---------------------------------------------------------------------------
+# 任务途中的机遇（原版世界地图随机事件，文案见 cfg.CHANCE_EVENTS）
+# ---------------------------------------------------------------------------
+#: 可注入的随机源。验收脚本用 set_chance_rng(lambda: 1.0) 关掉随机，
+#: 用 set_chance_rng(lambda: 0.0) 强制必触发，避免概率让测试变 flaky。
+_chance_rng = random.random
+
+
+def set_chance_rng(fn) -> None:
+    """注入机遇随机源（仅测试/调试用）；传 None 恢复 random.random。"""
+    global _chance_rng
+    _chance_rng = fn or random.random
+
+
+def _pick_chance(rng) -> dict:
+    total = sum(max(0, int(e.get("weight", 1))) for e in cfg.CHANCE_EVENTS)
+    pick = rng() * total
+    acc = 0
+    for e in cfg.CHANCE_EVENTS:
+        acc += max(0, int(e.get("weight", 1)))
+        if pick < acc:
+            return e
+    return cfg.CHANCE_EVENTS[-1]
+
+
+def _apply_chance(p, ev: dict, rng) -> dict:
+    """把一次机遇真正结算到玩家 dict，返回可展示的结果（不改存档 schema）。"""
+    text = str(ev.get("text") or "")
+    tone = str(ev.get("tone") or "neutral")
+
+    # 竞猜：从原版 5 组问答里抽一题展示，奖励按原版 1000 金币
+    quiz = ev.get("quiz")
+    if quiz:
+        text = "《斗破苍穹》有奖竞猜！" + str(rng_choice(quiz, rng)) + " 答案正确，获得1000金币奖励。"
+
+    # 条件：需要交出丹药。原版「丹不够，老者悻悻走开」是真实分支，不扣不奖。
+    need = ev.get("need") or {}
+    for name, n in need.items():
+        if count_item(p, name) < int(n):
+            return {"name": ev["name"], "text": str(ev.get("missing_text") or text),
+                    "tone": "neutral", "gain": "一无所获", "src": ev.get("src", ""),
+                    "reward": {}}
+    # 条件：破财事件金币不足 → 原版「匪头嫌你穷，踹走」分支，零损失
+    guard = int(ev.get("guard_gold") or 0)
+    if guard > 0 and int(p.get("gold", 0)) < guard:
+        return {"name": ev["name"], "text": str(ev.get("poor_text") or text),
+                "tone": "neutral", "gain": "毫发无伤", "src": ev.get("src", ""),
+                "reward": {}}
+
+    for name, n in need.items():
+        take_item(p, name, int(n))
+
+    rw = ev.get("reward") or {}
+    parts: list[str] = []
+    gold = int(rw.get("gold") or 0)
+    if gold:
+        p["gold"] = max(0, int(p.get("gold", 0)) + gold)
+        parts.append("金币 %+d" % gold)
+    exp = int(rw.get("exp") or 0)
+    if exp:
+        p["exp"] = int(p.get("exp", 0)) + exp
+        parts.append("修为 %+d" % exp)
+    luck = int(rw.get("luck") or 0)
+    if luck:
+        p["luck"] = min(9999, max(0, int(p.get("luck", 0)) + luck))
+        parts.append("机缘 %+d" % luck)
+    for name, n in (rw.get("item") or {}).items():
+        if int(n) > 0:
+            add_item(p, name, int(n))
+            parts.append("%s ×%d" % (name, int(n)))
+    if need:
+        parts.append("交出 " + "、".join("%s ×%d" % (k, int(v)) for k, v in need.items()))
+    return {"name": ev["name"], "text": text, "tone": tone,
+            "gain": " · ".join(parts) if parts else "无事发生",
+            "src": ev.get("src", ""), "reward": rw}
+
+
+def roll_chance(p, rng=None) -> dict | None:
+    """掷一次机遇；命中则**直接结算**奖励到 p 并返回展示数据。
+
+    只在「做任务途中」调用（见 advance_task），没任务时不触发。
+    """
+    if not cfg.CHANCE_EVENTS:
+        return None
+    r = rng or _chance_rng
+    if r() >= float(cfg.CHANCE_RATE):
+        return None
+    return _apply_chance(p, _pick_chance(r), r)
+
+
+def advance_task(p, kind, n: int = 1, rng=None) -> dict | None:
+    """推进任务进度，并在任务途中按概率触发一次机遇。
+
+    :param kind: 单个 kind 字符串；或 {kind: n} 一次推进多种（一次动作只掷一次机遇）。
+    :return: 命中的机遇 dict；没接支线且主线已通关 / 未命中则 None。
+
+    注意：core.task_progress() / main_progress() 保持纯进度语义不变（测试直接调它们），
+    机遇只在命令层走这个统一入口，避免一次动作被掷两次。
+    """
+    if isinstance(kind, dict):
+        for k, v in kind.items():
+            task_progress(p, k, v)
+            main_progress(p, k, v)
+    else:
+        task_progress(p, kind, n)
+        main_progress(p, kind, n)
+    if not (p.get("task") or current_main(p)):
+        return None
+    return roll_chance(p, rng)
 
 
 # ---------------------------------------------------------------------------

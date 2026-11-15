@@ -68,7 +68,7 @@ def test_build_data_maps_player():
     p = _player(1)
     d = card.build_data(p)
     assert d["name"] == "测试"
-    assert d["realm"] == cfg.full_realm(1)            # 一星斗者（原著起步）
+    assert d["realm"] == cfg.full_realm(1)            # 斗之气一段（原著起步）
     assert set(["力量", "敏捷", "斗气", "防御", "机缘", "体力"]).issubset(d["stats"])
     assert d["weapon_stats"] and "hp_max" in d and "mp_max" in d
     assert d["can_break"] is False and d["realm_max"] is False
@@ -188,7 +188,7 @@ def test_build_data_embeds_avatar():
     assert d["avatar_b64"] and isinstance(d["avatar_b64"], str)
     head = base64.b64decode(d["avatar_b64"])
     assert head[:8] == b"\x89PNG\r\n\x1a\n", "头像必须是静态 PNG，不是 GIF 动图"
-    assert d["avatar_caption"] in ("持剑少年", "赤手斗者", "蓄力斗皇", "降魔斗帝")
+    assert d["avatar_caption"] in ("持剑少年", "赤手行者", "蓄力之姿", "降魔之姿")
 
 
 def test_render_panel_avatar_pixels_are_inside_card():

@@ -26,6 +26,7 @@ from . import config as cfg
 from . import core
 from . import commands
 from . import avatar
+from . import factions as fac
 
 log = logging.getLogger("qq_bridge.doupo.card")
 
@@ -193,7 +194,9 @@ async def render_menu() -> bytes | None:
 
 
 # ---------------------------------------------------------------------------
-# 通用列表卡（斗技 / 异火 / 宝库 / 背包 / 排行）
+# 通用列表卡（异火 / 宝库 / 背包 / 排行）
+# 斗技自 2026-11-14 起走 doupo_skills 专用模板（描述/伤害/五段条/重点大字），
+# 不再与上面四张共用 doupo_list。
 # ---------------------------------------------------------------------------
 async def _render_list(template: str, data: dict, card_name: str) -> bytes | None:
     """渲染任意斗破列表卡：主题链路 → 内置 light 兜底 → None（调用方回纯文本）。"""
@@ -214,23 +217,136 @@ async def _render_list(template: str, data: dict, card_name: str) -> bytes | Non
 
 
 def build_skills_data(p: dict) -> dict:
-    """斗技列表 → doupo_list 模板参数。"""
+    """斗技 → doupo_skills 专用模板参数（完整技能描述 + 详细伤害口径）。
+
+    伤害数字与 core.damage_schedule() / core._player_hit() 同源：
+        raw = (力量×0.5 + 斗气×1.5) × cfg.skill_dmg_mult(name, lv)
+        期望单击 = raw × (1 + 暴击率/100 × 0.5)   # 暴击 1.5 倍的期望
+    这里展示的是**期望单击（未计目标防御）**，与战斗内实际单次命中的差别只有
+    mitigation(目标防御) 与暴击随机，故不会图文说两回事。
+    """
     sk = p.get("skills") or {}
-    rows = []
-    for s in cfg.SKILLS:
-        lv = int(sk.get(s["name"], 1))
-        rows.append({
-            "badge": str(s["key"]),
-            "title": f"{s['name']}　{lv}/{s['max']}",
-            "sub": "升一级伤害 +20%",
-            "bar": {"cur": lv, "max": s["max"]},
-        })
+    st = core.stats(p)
+    raw_base = st["力量"] * 0.5 + st["斗气"] * 1.5
+    crit_mult = 1.0 + core.crit_rate(p) / 100.0 * 0.5
     item = cfg.SKILL_UP_ITEM
+    have = core.count_item(p, item)
+    frac = cfg.SKILL_TIER_MP_FRAC
+
+    pool = core.skill_pool(p)  # 本宗全部斗技（含未解锁），带 equipped/unlocked 标记
+    # 按三阶排序：普通 → 高阶 → 特殊，阶内保持目录序（与文本「斗技」一致）
+    tier_order = {t: i for i, t in enumerate(cfg.SKILL_TIERS)}
+    pool_sorted = sorted(pool, key=lambda e: (tier_order.get(e["tier"], 9),))
+
+    rows = []
+    equipped_count = 0
+    for idx, e in enumerate(pool_sorted):
+        num = idx + 1                      # 稳定编号：与「上阵 <编号>」口令一一对应
+        name = e["name"]
+        tier = e["tier"]
+        equipped = bool(e.get("equipped"))
+        if equipped:
+            equipped_count += 1
+        mx = 5
+        lv = max(1, min(mx, int(sk.get(name, 1))))
+        maxed = lv >= mx
+        base_mult = float(e["dmg"])
+        cur_mult = base_mult * (1 + 0.2 * (lv - 1))
+        next_mult = cur_mult if maxed else base_mult * (1 + 0.2 * lv)
+        locked = not e.get("unlocked", True)
+        # 合并「斗技详情」：完整描述 + 类型/冷却 + 出处 + 原著，全部并进卡片
+        desc_lines = []
+        if e.get("desc"):
+            desc_lines.append(str(e["desc"]))
+        meta = []
+        if e.get("kind"):
+            meta.append(f"类型：{e['kind']}·{e.get('scope', '')}·{e.get('rank', '')}")
+        meta.append(f"斗气 {int(frac[tier] * 100)}%·mp_max ｜ 冷却 {e.get('cd', '-')} 回合")
+        desc_lines.append("　".join(meta))
+        if e.get("source"):
+            desc_lines.append(f"出处：{e['source']}")
+        if e.get("novel"):
+            desc_lines.append(f"原著：{e['novel']}")
+        if locked:
+            desc_lines.append(f"〔未解锁 · 境界 lv{e.get('unlock', '?')} 解锁〕")
+        rows.append({
+            "num": num,
+            "badge": str(num),
+            "name": name,
+            "lv": lv, "max": mx, "maxed": maxed,
+            "equipped": equipped,
+            "locked": locked,
+            "unlock": e.get("unlock"),
+            "desc": "\n".join(desc_lines),
+            "base_mult": round(base_mult, 2),
+            "cur_mult": round(cur_mult, 2),
+            "next_mult": round(next_mult, 2),
+            "dmg": int(round(raw_base * cur_mult * crit_mult)) if not locked else 0,
+            "next_dmg": int(round(raw_base * next_mult * crit_mult)) if not locked else 0,
+            "segments": mx, "lit": lv,
+            "item": item,
+            "item_need": 0 if maxed else cfg.skill_up_cost(lv),
+        })
+
+    fac_name = p.get("faction_name") or "无宗门"
     return {
         "icon": "bolt", "title": "斗技",
-        "subtitle": "快捷键 1/3/7/9 · 升一级伤害 +20%",
+        "subtitle": (f"{fac_name} · 三阶斗技 · 共 {len(rows)} 门"
+                     f"（红框=已上阵 {equipped_count}/{cfg.LOADOUT_SIZE} · 编号见左上角）"),
+        "item": item, "item_count": have,
+        "formula": "伤害口径：(力量×0.5 + 斗气×1.5) × 阶倍率 ×(1+0.2/级) × 暴击期望（未计目标防御）",
         "rows": rows,
-        "tip": f"用法：升级 龙吟碎 · 现有 {item} ×{core.count_item(p, item)}",
+        "tip": f"上阵 <编号如 1 3 2 4> · 斗气不足转武器普攻 · 现有 {item} ×{have}",
+    }
+
+
+def build_faction_data(p: dict) -> dict:
+    """宗门 → doupo_faction 模板参数（卡片化展示，设计美化）。
+
+    与 commands.cmd_faction 纯文本兜底同源：读同一个 player / FACTIONS，
+    因此「图片里的宗门」和「文字里的宗门」永远不会说两回事。
+    """
+    core.settle(p)
+    name = p.get("faction_name") or "无宗门"
+    fid = p.get("faction") or ""
+    fac_def = fac.FACTIONS.get(fid, {})
+    POOL_CN = {"starter": "新手池", "advanced": "进阶池", "hidden": "隐世池"}
+    pool = str(fac_def.get("pool", ""))
+    base = str(fac_def.get("base", ""))
+    npcs = list(fac_def.get("npcs", []) or [])
+    flames = list(fac_def.get("flames", []) or [])
+    lv = int(p.get("lv", 1))
+
+    # 本门斗技统计（普通/高阶/特殊 门数）
+    pool_sorted = core.skill_pool_sorted(p)
+    tier_counts = {t: sum(1 for e in pool_sorted if e["tier"] == t)
+                   for t in cfg.SKILL_TIERS}
+
+    # 可转宗门（按卡池分组，只列当前境界已开放的）
+    cands = core.faction_candidates(p)
+    groups = []
+    for pool_key in ("starter", "advanced", "hidden"):
+        rows = [c for c in cands if c["pool"] == pool_key]
+        if not rows:
+            continue
+        names = ["%s %d门" % (c["name"], c["skills"]) for c in rows]
+        groups.append({"pool": POOL_CN.get(pool_key, pool_key), "names": names})
+
+    cost = core.faction_switch_cost(p)
+    open_pools = [POOL_CN[x] for x in core.faction_pools_open(p)]
+    return {
+        "name": name,
+        "pool": POOL_CN.get(pool, pool),
+        "base": base,
+        "npcs": npcs,
+        "flames": flames,
+        "tier_counts": tier_counts,
+        "total_skills": len(pool_sorted),
+        "open_pools": open_pools,
+        "lv": lv,
+        "groups": groups,
+        "switch_cost": cost,
+        "tip": "用法：转宗 <宗门名>（只换师门并重配四槽，已升技能等级按技名保留）",
     }
 
 
@@ -309,7 +425,14 @@ def build_rank_data(top: list) -> dict:
 
 
 async def render_skills(p: dict) -> bytes | None:
-    return await _render_list("doupo_list", build_skills_data(p), "斗破斗技")
+    # 专用模板：技能描述 + 详细伤害 + 五段斗气条 + 重点大字粗体。
+    # 不再复用 doupo_list，避免把异火/宝库/背包/排行一起改坏。
+    return await _render_list("doupo_skills", build_skills_data(p), "斗破斗技")
+
+
+async def render_faction(p: dict) -> bytes | None:
+    # 宗门卡片化展示（设计美化，与 commands.cmd_faction 文本同源）
+    return await _render_list("doupo_faction", build_faction_data(p), "斗破宗门")
 
 
 async def render_flames(p: dict) -> bytes | None:

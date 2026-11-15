@@ -40,7 +40,14 @@ from src.game_mode import get_mode, set_mode, register_keywords
 
 
 def _mode_is(game: str):
-    async def _r(event) -> bool:
+    # 官方副本 adapter 隔离（2026-11-11）：event 必须注解为 NapCat/OneBot V11
+    # 具体类型。用户给机器人开通「获取群内全部消息」后，官方全量群消息
+    # (GroupMessageCreateEvent，无 user_id 字段) 会进入本 rule；若 event 无注解，
+    # NoneBot 依赖注入放行 → 执行 event.user_id → AttributeError → 每条官方消息
+    # 刷一条 "Rule check failed" ERROR 噪音。注解具体 MessageEvent 后，官方事件
+    # 在依赖注入阶段抛 TypeMisMatch(SkippedException)，被 Rule.__call__ 静默置
+    # False，绝不再碰 event.user_id；NapCat 的 MessageEvent 实例照常通过，行为不变。
+    async def _r(event: MessageEvent) -> bool:
         return (await get_mode(str(event.user_id))) == game
     return _r
 
@@ -246,12 +253,13 @@ async def _(event: MessageEvent):
     await enh.finish(await commands.cmd_enhance(store, str(event.user_id)))
 
 
-skills = on_regex(_pat(r"(?:斗技|技能)"), priority=PRI, block=True, rule=_mode_is("doupo"))
+# 注意：变量名不能叫 skills，否则会遮蔽 doupo.skills 子模块（core 依赖它）
+skills_cmd = on_regex(_pat(r"(?:斗技|技能)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
 
-@skills.handle()
+@skills_cmd.handle()
 async def _(event: MessageEvent):
-    await _need_group(event, skills)
+    await _need_group(event, skills_cmd)
     qq = str(event.user_id)
     # 纯文本兜底（commands.cmd_skills 即数据源，与图片同源）
     msg = await commands.cmd_skills(store, qq)
@@ -264,8 +272,8 @@ async def _(event: MessageEvent):
     except Exception as e:  # noqa: BLE001
         logger.warning("斗破斗技卡渲染异常，降级纯文本：%s: %s", type(e).__name__, e)
     if png:
-        await skills.finish(MessageSegment.image(png))
-    await skills.finish(msg)
+        await skills_cmd.finish(MessageSegment.image(png))
+    await skills_cmd.finish(msg)
 
 
 sup = on_regex(_pat(r"(?:升级|升技)") + r"\s*(.*)", priority=PRI, block=True, rule=_mode_is("doupo"))
@@ -276,6 +284,56 @@ async def _(event: MessageEvent):
     await _need_group(event, sup)
     arg = _arg(event, "升级") if "升级" in _plain(event) else _arg(event, "升技")
     await sup.finish(await commands.cmd_skill_up(store, str(event.user_id), arg))
+
+
+loadout = on_regex(_pat(r"(?:上阵|布阵|配置斗技)") + r"\s*(.*)", priority=PRI, block=True, rule=_mode_is("doupo"))
+
+
+@loadout.handle()
+async def _(event: MessageEvent):
+    await _need_group(event, loadout)
+    txt = _plain(event)
+    kw = "配置斗技" if "配置斗技" in txt else ("布阵" if "布阵" in txt else "上阵")
+    await loadout.finish(await commands.cmd_loadout(store, str(event.user_id), _arg(event, kw)))
+
+
+# 「宗门」看本门 + 可转列表；「转宗」执行改换门庭。
+# 拆成两个 matcher（而不是一个吃四个词）是为了让 matcher 数 == 菜单条数，
+# test_e2e 会断言这两个数相等（菜单是口令唯一源）。
+sect = on_regex(_pat(r"(?:宗门|门派)") + r"\s*(.*)",
+                priority=PRI, block=True, rule=_mode_is("doupo"))
+
+
+@sect.handle()
+async def _(event: MessageEvent):
+    await _need_group(event, sect)
+    qq = str(event.user_id)
+    # 纯文本兜底（与图片同源）
+    msg = await commands.cmd_faction(store, qq, None)
+    if msg == commands.NOT_ENTERED:
+        await sect.finish(msg)
+    png = None
+    try:
+        p = await store.get_player(qq)
+        if p:
+            png = await card.render_faction(p)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("斗破宗门卡渲染异常，降级纯文本：%s: %s", type(e).__name__, e)
+    if png:
+        await sect.finish(MessageSegment.image(png))
+    await sect.finish(msg)
+
+
+switch = on_regex(_pat(r"(?:转宗|换宗|改换门庭)") + r"\s*(.*)",
+                  priority=PRI, block=True, rule=_mode_is("doupo"))
+
+
+@switch.handle()
+async def _(event: MessageEvent):
+    await _need_group(event, switch)
+    txt = _plain(event)
+    kw = next((k for k in ("改换门庭", "转宗", "换宗") if k in txt), "转宗")
+    await switch.finish(await commands.cmd_faction(store, str(event.user_id), _arg(event, kw)))
 
 
 flames = on_regex(_pat(r"异火"), priority=PRI, block=True, rule=_mode_is("doupo"))
@@ -510,8 +568,15 @@ register_keywords("doupo", [
     "强化",
     "斗技",
     "技能",
+    "宗门",
+    "门派",
+    "转宗",
+    "换宗",
     "升级",
     "升技",
+    "上阵",
+    "布阵",
+    "配置斗技",
     "异火",
     "养火",
     "喂火",

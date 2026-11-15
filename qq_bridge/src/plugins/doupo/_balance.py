@@ -104,13 +104,13 @@ def main() -> int:
           f"{'怪物池':<18} {'胜率':>6} {'回合':>5} {'残血%':>6}")
     print("-" * 82)
     bad = []
-    for lv in range(1, 30):
+    for lv in range(1, cfg.MAX_LV):
         p = make(lv)
         wr, avg_r, avg_hp = run_level(p, rnd)
         pool = "/".join(m["name"] for m in species_pool(lv))
         flag = ""
         upper = 1.01 if lv == 1 else 0.995      # 1 级新手第一战豁免上限
-        if lv < 29 and not (0.70 <= wr <= upper):
+        if lv < cfg.MAX_LV and not (0.70 <= wr <= upper):
             flag = "  <== 胜率越界"
             bad.append((lv, "winrate", wr))
         if avg_r and not (2 <= avg_r <= 10):
@@ -122,7 +122,7 @@ def main() -> int:
     # ---- 全程场次估算（按各等级实际的异火加成算）----
     total_fights = 0
     exp_rnd = random.Random(20261027)
-    for lv in range(1, 29):
+    for lv in range(1, cfg.MAX_LV):
         need = cfg.exp_need(lv)
         p = make(lv)
         pool = species_pool(lv)

@@ -31,6 +31,8 @@ os.environ["GAME_MODE_PATH"] = os.path.join(TMP, "game_mode.json")
 # 日志改道到临时目录：本脚本自己 nonebot.init 且不加载 qq_bridge 插件，
 # 没有群聊闸门；若沿用生产 logs/ 会把伪造群事件写进线上 qq_bridge.log。
 os.environ["QQ_LOG_DIR"] = os.path.join(TMP, "logs")
+# 机遇是概率事件，会让既有回包断言变 flaky；专项验收见 test_chance.py
+os.environ["DOUPO_CHANCE_RATE"] = "0"
 
 import nonebot  # noqa: E402
 

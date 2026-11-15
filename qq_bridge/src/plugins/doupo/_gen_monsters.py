@@ -72,7 +72,7 @@ def main():
         # 掉 50% 血 / 4 回合
         raw_atk = (st["体力"] * 0.5 / 4) / core.mitigation(st["防御"]) * ATK_SCALE
         atk = int(raw_atk / 10) * 10
-        exp = cfg.exp_need(lv) // 6 if lv < 29 else 100000
+        exp = cfg.exp_need(lv) // cfg.EXP_FIGHTS_PER_LV if lv < cfg.MAX_LV else 100000
         gold = int(exp * 0.25 / 10) * 10
         print(f'    {{"name": {m["name"]!r}, "lv": {lv}, "hp": {hp}, '
               f'"atk": {atk}, "def": {mdef}, "exp": {exp}, "gold": {gold}}},')

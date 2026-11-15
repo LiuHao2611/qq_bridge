@@ -24,7 +24,10 @@ import threading
 import time
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[3]
+# 本文件在 pic/ 子目录下，比 qq_bridge/ 直接文件深一层，故 parents[4] = 项目根。
+# 旧写 parents[3] 会算成 /app/src（镜像层），容器重建丢缓存；修正后落到
+# bind 挂载的 /app/data/pic_cache。
+_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_DIR = _ROOT / "data" / "pic_cache"
 DEFAULT_TTL = 300          # 5 分钟
 DEFAULT_MAX_FILES = 200    # 最多缓存 200 张

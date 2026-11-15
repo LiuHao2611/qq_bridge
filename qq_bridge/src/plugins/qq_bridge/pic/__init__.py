@@ -31,7 +31,7 @@ from . import theme as _theme_pkg  # noqa: F401
 from . import card_binds  # 卡片主题内置默认绑定（配置优先，随代码交付）
 from .cache import PicCache, make_key, pic_cache
 from .canvas import Canvas
-from .templates import (menu as _menu, progress as _progress, quota as _quota, text as _text, guide as _guide, hw as _hw, riven as _riven, riven_analysis as _riven_analysis, riven_recommend as _riven_recommend, netracell as _netracell, fissure as _fissure, bounty as _bounty, tenet as _tenet, coda as _coda, incarnon as _incarnon, arbitration_table as _arbitration_table, xiuxian as _xiuxian, xiuxian_menu as _xiuxian_menu, xiuxian_help as _xiuxian_help, doupo as _doupo, doupo_menu as _doupo_menu, doupo_list as _doupo_list, aimenu as _aimenu, checkin as _checkin, plain as _plain, alerts as _alerts, task_alert as _task_alert, archon as _archon, riven_trend as _riven_trend, riven_fusion as _riven_fusion, riven_full as _riven_full)  # noqa: F401
+from .templates import (menu as _menu, progress as _progress, quota as _quota, text as _text, guide as _guide, hw as _hw, riven as _riven, riven_analysis as _riven_analysis, riven_recommend as _riven_recommend, netracell as _netracell, fissure as _fissure, bounty as _bounty, tenet as _tenet, coda as _coda, incarnon as _incarnon, arbitration_table as _arbitration_table, xiuxian as _xiuxian, xiuxian_menu as _xiuxian_menu, xiuxian_help as _xiuxian_help, doupo as _doupo, doupo_menu as _doupo_menu, doupo_list as _doupo_list, doupo_skills as _doupo_skills, doupo_faction as _doupo_faction, aimenu as _aimenu, checkin as _checkin, plain as _plain, alerts as _alerts, task_alert as _task_alert, archon as _archon, riven_trend as _riven_trend, riven_fusion as _riven_fusion, riven_full as _riven_full)  # noqa: F401
 from .theme import AUTO, LIGHT, NEON, Theme, resolve as resolve_theme
 
 __all__ = [
@@ -81,7 +81,9 @@ _TEMPLATES = {
     "xiuxian_help": _xiuxian_help.build,  # 文字修仙玩法细则卡（单列折行要点）
     "doupo": _doupo.build,  # 斗破人物状态卡（境界进度条 + 六维 + 气血/斗气）
     "doupo_menu": _doupo_menu.build,  # 斗破口令菜单卡（分组 + 两列清单）
-    "doupo_list": _doupo_list.build,  # 斗破通用列表卡（斗技/异火/宝库/背包/排行）
+    "doupo_list": _doupo_list.build,  # 斗破通用列表卡（异火/宝库/背包/排行）
+    "doupo_skills": _doupo_skills.build,  # 斗破斗技专用卡（技能描述/伤害详情/五段斗气条）
+    "doupo_faction": _doupo_faction.build,  # 斗破宗门卡（概览/斗技统计/代表人物/异火/可转宗门）
     "aimenu": _aimenu.build,  # 指令总览双列加长图（覆盖全部命令族，一张图）
     "checkin": _checkin.build,  # 每日签到卡（连续/累计/喵币 + 里程碑进度 + 本月日历）
     "plain": _plain.build,  # 平原状态和时间卡（Rabbit 版式：白卡+四组状态/倒计时胶囊）
@@ -117,6 +119,8 @@ TEMPLATE_LABELS: dict[str, str] = {
     "doupo": "斗破人物卡",
     "doupo_menu": "斗破菜单卡",
     "doupo_list": "斗破列表卡",
+    "doupo_skills": "斗破斗技卡",
+    "doupo_faction": "斗破宗门卡",
     "aimenu": "指令总览卡",
     "checkin": "签到卡",
     "plain": "平原状态卡",

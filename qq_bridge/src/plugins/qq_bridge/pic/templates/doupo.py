@@ -25,7 +25,7 @@
   lv         等级（可选，头像下的 LV 标注）
   avatar_b64 96×96 透明头像 PNG 的纯 base64（可选，缺省画占位头像）
   avatar_caption 形象说明（可选，如「持剑少年」）
-  realm      境界名（含星级，如「一星斗者」）
+  realm      境界名（原著 13 阶，如「斗之气一段」「一转斗尊巅峰」）
   exp / need 当前修为 / 升级所需
   realm_max  是否已至巅峰（True 时修为显示 x(已至巅峰)，进度条置满）
   can_break  修为已满、可突破
@@ -54,6 +54,7 @@ from PIL import Image
 from .. import icons
 from ..canvas import Canvas, rounded_mask
 from ..theme import Theme
+from . import doupo_style as S
 
 # ---- 固定配色（斗破：羊皮纸米 / 朱红 / 暗金 / 药青）——未配置专属覆盖时的默认值 ----
 C_PAGE = "#F2ECE2"      # 页面外背景（羊皮纸米白）
@@ -93,12 +94,13 @@ C_MP_TO = "#1F6FB2"
 
 # ---- 排版 ----
 PAD = 28
-FS_TITLE = 34
-FS_NAME = 28
-FS_BODY = 20
-FS_SMALL = 16
-FS_TINY = 14
-FS_STAT = 28
+FS_TITLE = 34          # 标题保持 34：改它会动 H_TITLE → 头像框 y 漂移（像素断言依赖）
+# 其余字号全部对齐 doupo_style 规范：重点放大加粗、说明清晰不糊
+FS_NAME = S.FS_HERO + 2    # 32 角色名
+FS_BODY = S.FS_BODY + 2    # 22 武器 / 炼药师
+FS_SMALL = S.FS_SUB + 1    # 18 次级信息
+FS_TINY = S.FS_LABEL       # 16 小标签
+FS_STAT = S.FS_HERO + 2    # 32 六维大数值
 ICON = 22
 BAR_H = 14
 CELL_H = 80
@@ -195,18 +197,22 @@ def _statcell(c: Canvas, x: int, y: int, w: int, p: dict[str, str],
     """六维单元：圆角底 + 大数值 + 小标签（数值按可用宽度自动降字号）。"""
     c.rounded_rect((x, y, x + w, y + CELL_H), radius=12,
                    fill=p["cell_bg"], outline=p["cell_line"], width=1)
-    # 数值（上方，左对齐）
+    # 数值（上方，左对齐）：大字加粗；度量与绘制同 role，避免右对齐漂移
     avail = x + w - 20 - (x + 20)
     txt, sz = value, size
-    while avail > 0 and _w(txt, sz, "regular") > avail and sz > 14:
+
+    def _role(s: int) -> str:
+        return "bold" if s >= S.MIN_BOLD_FS else "regular"
+
+    while avail > 0 and _w(txt, sz, _role(sz)) > avail and sz > 14:
         sz -= 2
-        if _w(txt, sz, "regular") <= avail:
+        if _w(txt, sz, _role(sz)) <= avail:
             break
-    if _w(txt, sz, "regular") > avail:
-        txt = _fit(txt, avail, sz, "regular")
-    c.text((x + 20, y + 22), txt, size=sz, color=p["text_color"], role="regular", anchor="lm")
-    # 标签（下方）
-    c.text((x + 20, y + CELL_H - 20), label, size=FS_TINY, color=p["dim_color"], anchor="lm")
+    if _w(txt, sz, _role(sz)) > avail:
+        txt = _fit(txt, avail, sz, _role(sz))
+    S.key(c, (x + 20, y + 22), txt, size=sz, color=p["text_color"])
+    # 标签（下方）：小字明确不加粗
+    S.small(c, (x + 20, y + CELL_H - 20), label, size=FS_TINY, color=p["dim_color"])
 
 
 def _bar(c: Canvas, x: int, y: int, w: int, pct: int,
@@ -273,23 +279,23 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
     rx = ax + AVATAR_SIZE + AVATAR_GAP
     cx1 = x0 + content_w
     chip = str(data.get("realm") or "凡人")
-    ch = FS_TINY + 16
-    cw = _w(chip, FS_TINY, "regular") + 28
+    chip_fs = S.FS_KEY                  # 境界是重点：24px 加粗
+    ch = chip_fs + 16
+    cw = _w(chip, chip_fs, "bold") + 28
     name_y = y + 34
     name = str(data.get("name") or "无名")
-    name_show = _fit(name, max(0, cx1 - cw - 16 - rx), FS_NAME, "regular")
-    c.text((rx, name_y), name_show, size=FS_NAME,
-           color=p["text_color"], role="regular", anchor="lm")
+    S.key(c, (rx, name_y), name, size=FS_NAME, color=p["text_color"],
+          max_w=max(0, cx1 - cw - 16 - rx))
     c.rounded_rect((cx1 - cw, name_y - ch // 2, cx1, name_y + ch // 2),
                    radius=ch // 2, fill=p["chip_bg"], outline=p["chip_line"], width=1)
-    c.text((cx1 - cw // 2, name_y), chip, size=FS_TINY,
-           color=p["chip_text"], anchor="mm")
+    S.key(c, (cx1 - cw // 2, name_y), chip, size=chip_fs,
+          color=p["chip_text"], anchor="mm")
 
     lv = data.get("lv")
     cap = str(data.get("avatar_caption") or "斗气修行者")
     cap_txt = f"LV.{int(lv)} · {cap}" if str(lv or "").isdigit() else cap
-    c.text((rx, y + 76), _fit(cap_txt, cx1 - rx - 8, FS_SMALL),
-           size=FS_SMALL, color=p["dim_color"], anchor="lm")
+    S.key(c, (rx, y + 76), cap_txt, size=S.FS_KEY,
+          color=p["chip_text"], max_w=cx1 - rx - 8)
     y += H_HEADER
 
     # ---- 境界 + 修为 + 进度条 ----
@@ -305,10 +311,12 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
         else:
             exp_txt = f"{exp} / {need} 修为"
         pct = int(exp * 100 / need) if need else 0
-    c.text((x0, y + FS_SMALL // 2), "境界修为", size=FS_SMALL,
-           color=p["dim_color"], anchor="lm")
-    c.text((x0 + content_w, y + FS_SMALL // 2), exp_txt, size=FS_SMALL,
-           color=p["chip_text"] if can_break else p["dim_color"], anchor="rm")
+    # 左右同一基线 y+11：字号一大一小但视觉不漂移（原 y+9 / y+11 会错开）
+    S.small(c, (x0, y + 11), "境界修为", size=S.FS_BODY,
+            color=p["dim_color"])
+    # 修为数值放大加粗（可突破时转朱红），一眼看得出「满没满」
+    S.key(c, (x0 + content_w, y + 11), exp_txt, size=S.MIN_BOLD_FS,
+          color=p["chip_text"] if can_break else p["text_color"], anchor="rm")
     y += FS_SMALL + 12
     bar_c1, bar_c2 = ((p["bar_ready_from"], p["bar_ready_to"]) if can_break
                       else (p["bar_from"], p["bar_to"]))
@@ -320,26 +328,26 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
     alch_exp = int(data.get("alch_exp") or 0)
     alch_need = int(data.get("alch_need") or 0)
     alch_txt = f"炼药 · {alch}　{alch_exp}/{alch_need}" if alch_need > 0 else f"炼药 · {alch}"
-    pw = min(content_w, _w(alch_txt, FS_BODY + 1, "regular") + 44)
+    pw = min(content_w, _w(alch_txt, FS_BODY, "bold") + 44)
     ph = PILL_H
     c.rounded_rect((x0, y, x0 + pw, y + ph), radius=ph // 2,
                    fill=p["pill_bg"], outline=p["pill_line"], width=1)
     icons.draw(c, "diamond", x0 + 18, y + ph // 2, ICON, p["pill_text"], style=ICON_STYLE)
-    c.text((x0 + 18 + ICON + 8, y + ph // 2), alch_txt, size=FS_BODY,
-           color=p["pill_text"], anchor="lm")
+    S.key(c, (x0 + 18 + ICON + 8, y + ph // 2), alch_txt,
+          size=FS_BODY, color=p["pill_text"])
     y += PILL_H + 12  # = H_ALCH
 
     # ---- 武器 ----
     wname = str(data.get("weapon_name") or "徒手")
     wlv = str(data.get("weapon_level") or "0")
     icons.draw(c, "sword", x0, y + FS_BODY // 2, FS_BODY, p["accent_color"], style=ICON_STYLE)
-    c.text((x0 + ICON + 10, y + FS_BODY // 2), f"{wname}　{wlv} 级", size=FS_BODY,
-           color=p["text_color"], role="regular", anchor="lm")
+    S.key(c, (x0 + ICON + 10, y + FS_BODY // 2), f"{wname}　{wlv} 级",
+          size=FS_BODY, color=p["text_color"])
     y += FS_BODY + 12
     ws = data.get("weapon_stats") or {}
     wstat = "　".join(f"{k} {int(ws.get(k, 0))}" for k in ("力量", "敏捷", "斗气", "防御"))
-    c.text((x0, y + FS_SMALL // 2), wstat, size=FS_SMALL,
-           color=p["dim_color"], anchor="lm")
+    S.small(c, (x0, y + FS_SMALL // 2), wstat, size=FS_SMALL,
+            color=p["dim_color"])
     y += FS_SMALL + 10  # = H_WEAPON
 
     # ---- 六维 3×2 网格 ----
@@ -369,18 +377,16 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
     mp = int(data.get("mp") or 0)
     mp_max = int(data.get("mp_max") or 0) or 1
 
-    c.text((x0, y + FS_SMALL // 2), "气血", size=FS_SMALL,
-           color=p["dim_color"], anchor="lm")
-    c.text((x0 + content_w, y + FS_SMALL // 2), f"{hp}/{hp_max}", size=FS_SMALL,
-           color=p["dim_color"], anchor="rm")
+    S.small(c, (x0, y + FS_SMALL // 2), "气血", size=FS_SMALL, color=p["dim_color"])
+    S.key(c, (x0 + content_w, y + 11), f"{hp}/{hp_max}", size=S.MIN_BOLD_FS,
+          color=p["chip_text"], anchor="rm")
     y += FS_SMALL + 10
     _bar(c, x0, y, content_w, int(hp * 100 / hp_max), p["hp_from"], p["hp_to"], p["track_color"])
     y += BAR_H + 10  # = H_HP
 
-    c.text((x0, y + FS_SMALL // 2), "斗气", size=FS_SMALL,
-           color=p["dim_color"], anchor="lm")
-    c.text((x0 + content_w, y + FS_SMALL // 2), f"{mp}/{mp_max}", size=FS_SMALL,
-           color=p["dim_color"], anchor="rm")
+    S.small(c, (x0, y + FS_SMALL // 2), "斗气", size=FS_SMALL, color=p["dim_color"])
+    S.key(c, (x0 + content_w, y + 11), f"{mp}/{mp_max}", size=S.MIN_BOLD_FS,
+          color=p["chip_text"], anchor="rm")
     y += FS_SMALL + 10
     _bar(c, x0, y, content_w, int(mp * 100 / mp_max), p["mp_from"], p["mp_to"], p["track_color"])
     y += BAR_H + 10  # = H_MP
@@ -392,12 +398,13 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
     wins = int(data.get("wins") or 0)
     losses = int(data.get("losses") or 0)
     foot = f"金币 {gold}　炎星石 {stone}　战力 {power}　战绩 {wins}胜{losses}负"
-    c.text((x0, y + FS_SMALL // 2), _fit(foot, content_w, FS_SMALL),
-           size=FS_SMALL, color=p["text_color"], anchor="lm")
+    # 底部是玩家高频扫读项，放大到 20px；不加粗（避免整行横画糊在一起）
+    S.small(c, (x0, y + FS_SMALL // 2), foot, size=S.FS_BODY,
+            color=p["text_color"], max_w=content_w)
     y += H_FOOT
 
     if source:
-        c.text((width - PAD, h - PAD + 6), source, size=FS_TINY,
-               color=p["dim_color"], anchor="rb")
+        S.small(c, (width - PAD, h - PAD + 6), source, size=FS_TINY,
+                color=p["dim_color"], anchor="rb")
 
     return c

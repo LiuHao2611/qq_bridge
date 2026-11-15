@@ -16,11 +16,11 @@
 | 分组 | 口令 | 说明 |
 |---|---|---|
 | 入门 | `斗破菜单` / `斗破口令` | 唯一切换口，设定「斗破模式」并出菜单卡 |
-| | `入道` / `开始` / `创建角色` | 建号：一星斗者，赠 10000 金 + 玄重尺 + 回灵丹×5 |
+| | `入道` / `开始` / `创建角色` | 建号：斗之气一段，赠 10000 金 + 玄重尺 + 回灵丹×5 |
 | | `人物` / `属性` / `面板` | 面板：境界星级 / 炼药师品阶 / 六维 / 装备 |
 | | `帮助` / `玩法` / `攻略` / `规则` | 全部数值公式 |
 | 修炼 | `修炼` / `静修` / `打坐` | 结算离线修为（6/分钟，陨落心炎每级 +50%） |
-| | `突破` / `晋升` / `升星` | 修为满晋升一星；28 级冲斗帝看机缘 |
+| | `突破` / `晋升` / `升星` | 修为满晋升一星；102 级九星斗圣冲 103 级斗帝看机缘 |
 | | `战斗` / `打怪` / `历练` | 遭遇同阶妖兽，回合制，CD 20 秒 |
 | 养成 | `强化` | 玄重尺十级蜕变为异火恒古尺 |
 | | `斗技` / `技能` | 4 门斗技（快捷键 1/3/7/9） |
@@ -29,7 +29,7 @@
 | 炼药 | `宝库` / `商店` / `坊市`，`买 血灵草 2` | 随身商店 |
 | | `炼药` / `炼制 回灵丹` | 丹方与开炉，失败给药渣 |
 | | `服丹 回灵丹` / `背包` | 服药与包裹（24 格） |
-| 江湖 | `任务` / `接任务` / `交任务` / `领主线` | 主线 + 支线 |
+| 江湖 | `任务` / `接任务` / `交任务` / `领主线` | 主线 + 支线；推进途中概率触发「机遇」 |
 | | `排行` / `排行榜` | 本群战力榜前 10 |
 | | `抢 @某人` / `送 100 @某人` | 掠夺 / 赠金 |
 
@@ -76,18 +76,57 @@
 
 ```bash
 python src/plugins/doupo/test_core.py        # 纯函数层：31 项
-python src/plugins/doupo/test_commands.py    # 口令业务层：79 项
+python src/plugins/doupo/test_commands.py    # 口令业务层：85 项
 python src/plugins/doupo/test_card.py        # 人物卡渲染（含卡片内头像像素断言）：10 项
 python src/plugins/doupo/test_avatar.py      # 动图 + 静态头像四档：13 项
 python src/plugins/doupo/test_throttle.py    # 出图限流工具类（已停用，仅测工具本身）：10 项
 python src/plugins/doupo/test_e2e.py         # 真实 matcher + 真实事件（含人物回包结构）：75 项
+python src/plugins/doupo/test_menu_full.py   # 菜单 25 条口令全量严格验收：46 项
+python src/plugins/doupo/test_skills_card.py # 斗技专用卡（描述/伤害/五段条/字重像素验收）：10 项
+python src/plugins/doupo/test_chance.py      # 任务机遇（概率/条件分支/文案格式）：11 项
+python src/plugins/doupo/test_typography.py  # 四张卡统一排版（字号/加粗/出图）：6 项
 python src/plugins/xiuxian/test_core.py      # 22 项
 python src/plugins/xiuxian/test_commands.py  # 61 项
 python src/plugins/xiuxian/test_e2e.py       # 59 项
 ```
 
-九个测试都自带 runner、自己把仓库根加进 `sys.path`（不依赖外部 `PYTHONPATH`），`exit 0 = 全绿`。
+十三个测试都自带 runner、自己把仓库根加进 `sys.path`（不依赖外部 `PYTHONPATH`），`exit 0 = 全绿`。
+`test_core.py` / `test_commands.py` / `test_e2e.py` / `test_menu_full.py` 在 import 前置
+`DOUPO_CHANCE_RATE=0` 关掉概率，避免随机事件让既有断言 flaky；机遇本身由 `test_chance.py`
+用 `core.set_chance_rng()` 注入确定性随机源验证。
 `_balance.py` 是数值平衡模拟（调参工具，非单测）：`python src/plugins/doupo/_balance.py`。
+
+`test_menu_full.py` 是 2026-11-14 新增的**菜单全量验收**：把 `MENU_GROUPS` 里 25 条口令
+逐条用真实 matcher 驱动，每条执行前注入「刚好够成功」的最小前置状态，断言恰好 1 条回包、
+回包是正向结果（不落入「用法 / 不足 / 未识别 / 兜底提示」）、文本无异常栈/未替换占位符/
+乱码/超长行、出图口令真的产出合法非空白 PNG/GIF、纯文本口令不夹带图片段。另含 13 阶
+境界名各一张人物卡渲染，以及列表卡「主标题↔说明」间距的像素级检测（含拒绝粘连的自举用例）。
+卡片产物与完整中文报告落在 `tmp/doupo_menu_cards/`（容器内 `/app/tmp` 即宿主 `./tmp`）。
+卡片磁盘缓存改道临时目录，既不污染线上 `data/pic_cache`，也不会命中旧图造成假通过。
+
+### 斗技专用卡（2026-11-14）
+
+`斗技 / 技能` 不再复用 `doupo_list`，改走专用模板 `pic/templates/doupo_skills.py`，
+避免把异火/宝库/背包/排行四张列表卡一起改坏。卡片内容：
+
+- 完整技能描述（`cfg.SKILLS[*].desc`，不截断）；
+- 详细伤害：基础倍率、当前倍率、期望单击、下级倍率/伤害、下级所需 `焚血散`，
+  顶部统一写出口径 `(力量×0.5 + 斗气×1.5) × 倍率 × 暴击期望（未计目标防御）`，
+  与 `core.damage_schedule()` / `core._player_hit()` 同源；
+- **五条独立斗气段**（一/二/三/四/五），一级亮一段、二级亮两段……五级全亮；
+- 重点文字（等级 Lv、技能名、伤害、倍率、升级物品）用 26~30px 大字 + 真粗体 + 朱红/暗金强调色。
+
+字重有个必须知道的坑：`role="bold"` **本身不会加粗**，它只推断 `kind`；字重由
+`Canvas.text(..., bold=...)` 决定。容器内 vendored `msyh.ttc` 实测只有两个 face
+（`Microsoft YaHei Regular` / `Microsoft YaHei UI Regular`，字形 mask 完全相同），
+旧代码盲用 TTC index=1 当粗体是错的。现由 `fonts._bold_face_index()` 按 face 名探测
+真粗体，找不到时 `Canvas.text` 补伪粗描边，且 **<22px 小字禁止伪粗**（1px 描边会把
+中文笔画缝隙填满，实测「已圆满」糊成一团）。`bold=None` 保持旧行为逐像素不变。
+
+`test_skills_card.py` 是像素级验收：用模板同源的 `segment_positions()` 取五段条坐标，
+对 1~5 级逐段采样点亮状态（并含「涂亮第 4 段必须被检出」的自举反例），
+校验粗体墨迹、小字未糊化、字号放大、描述不被截断、PNG 合法；产物落在
+`tmp/doupo_skills_cards/`。缓存同样改道「每次新建的临时目录」，防止命中旧图假通过。
 
 `_balance.py` 的判定口径（写在它自己的 docstring 里）：
 胜率下限 70%（不能有打不过的死局）、上限 99.5%（不能白给，1 级豁免）、
@@ -106,6 +145,56 @@ python src/plugins/xiuxian/test_e2e.py       # 59 项
   连续 3 次「人物」，每次必须**恰好 1 个 image 段**、字节头是 PNG 魔数、绝不夹带 GIF，
   且卡片 `(28,96)-(124,192)` 头像框里深色像素 >1500（像素级证明头像真的画进卡片）。
   断言前自清 `<root>/src/data/pic_cache`，防止命中旧缓存造成假通过。
+
+### 任务途中的「机遇」（2026-11-14）
+
+用户要求「做任务途中有概率触发机遇，去原版小游戏里爬取整理出来」。文案逐字整理自
+`D:\AI\doupo\hy_text\` 下反编译出的静态文本（用户指定目录 `主线剧情`）：
+
+| 资源 | 内容 |
+|---|---|
+| `主线剧情\任务脚本\s__d0.hy.txt` 37–146 行 | 世界地图随机事件表：天降炎星石、紫薇北斗、张大善人、劫匪、神秘老者索丹（6 种丹，其中生骨丹是骗局）、有奖竞猜（5 题）、时空风暴、无尽深渊、女大王… |
+| `任务名称表\s__t.hy.txt` 68/75/76 | 隐藏发现：散财童子、魂淡赠丹方、韩坑藏宝图 |
+| `主线剧情\任务脚本\s__d14.hy.txt` 58 | 试炼之塔稀有材料 |
+| `主线剧情\任务脚本\s__d0.hy.txt` 1 | 兽人藏匿宝藏的洞穴 |
+
+提取时去掉每行行首的 VM 控制字节与文案中的 `\1…\0` 颜色标记；共整理 **17 条事件**，
+分吉（12）/凶（3）/平（2），每条在 `config.CHANCE_EVENTS` 里都带 `src` 出处与
+`[源码]` / `[调参]` 标注（只调数值与丹名映射，不动事件形状与文案口径）。
+可读清单见 `tmp/doupo_chance_samples.txt`（`tmp/export_chance_samples.py` 生成）。
+
+- 触发：推进任务进度（战斗/采办药材/炼丹/强化/养火）时 `cfg.CHANCE_RATE = 22%`；
+  `core.advance_task()` 是统一入口，**一次动作只掷一次**，没在任务途中不触发。
+- 原版分支原样保留：交不出丹药 → 「老者悻悻走开」；金币不够赔 → 「匪头嫌你穷，踹走」，
+  **绝不倒扣金币**；`生骨丹骗局` 会真的骗走丹药。
+- 存档零 schema 变动（奖励只动 `gold/exp/luck/bag`）；既有 `core.task_progress()` /
+  `main_progress()` 保持纯进度语义，测试直接调它们不受影响。
+- 命令层用 `_chance_lines()` 把机遇拼成回复末尾独立小段，不塞进战报语义行；
+  `test_chance.py` 验证概率、条件分支、一次一掷、原版文案未被改坏、回复格式无异常。
+
+### 四张卡统一排版规范（2026-11-14）
+
+用户要求「字体问题不只是斗技这一个卡片，所有的斗破游戏卡片都要进行优化」。
+规范收敛在 `pic/templates/doupo_style.py`，四张卡共用：
+
+| 模板 | 卡片 | 重点文字（放大加粗） |
+|---|---|---|
+| `doupo.py` | 人物卡 | 角色名 32 / 境界 24 / LV 24 / 六维数值 32 / 修为 22 / 气血斗气 22 / 武器与炼药师 22 |
+| `doupo_menu.py` | 菜单卡 | 口令 24 / 分组名 22 |
+| `doupo_list.py` | 通用列表卡（异火/宝库/背包/排行） | 主标题与价格/战力/状态 24 |
+| `doupo_skills.py` | 斗技卡 | 等级 30 / 技能名 27 / 伤害与倍率 26 / 升级材料 26 |
+
+字号阶梯 `FS_HERO 30 > FS_KEY 24 > FS_BODY 20 > FS_SUB 17 > FS_LABEL 16`；
+`S.key()` 负责重点（>=22px 才真加粗），`S.small()` 负责次要（显式不加粗），
+绘制与度量同 role，右对齐不会溢出。
+
+两个必须知道的坑：`role="bold"` **本身不加粗**（只推断 kind），且容器 vendored
+`msyh.ttc` 只有两个 Regular face（见 `fonts._bold_face_index()`）；`<22px` 小字
+叠 1px 伪粗会把中文笔画缝隙填满，实测「已圆满」糊成一团，已由 `canvas.py` 禁止。
+
+`test_typography.py` 锁定四张卡同源、字号达标、重点真加粗、小字不糊、七张卡
+（人物/菜单/宝库/异火/背包/排行/斗技）真实出图合法且头像框不漂移；
+产物在 `tmp/doupo_typography/`。
 
 ### 人物卡头像怎么来的
 
@@ -131,8 +220,12 @@ GIF 缺失时模板画剑形占位，卡片照常出图。
 | `core.py` | 纯函数（属性/战斗/强化/炼药/斗技/异火/任务/商店），零 nonebot |
 | `store.py` | json 落盘 + asyncio.Lock 原子写 |
 | `commands.py` | 业务层，`MENU_GROUPS` 是菜单唯一源 |
-| `__init__.py` | 25 个 matcher，全部 `priority=5 + block=True`；除 3 个入口外均带 `rule=_mode_is("doupo")` |
-| `test_*.py` | 六套自带 runner 的测试（core / commands / card / avatar / throttle / e2e） |
+| `__init__.py` | 27 个 matcher，全部 `priority=5 + block=True`；除 3 个入口外均带 `rule=_mode_is("doupo")` |
+| `skill_book.py` | **斗技唯一权威表**：185 门斗技的阶位/类型/范围/完整说明/数值/出处/原著 + 卡片短释 |
+| `skills.py` | 三阶四槽纯函数内核（目录/解锁/上阵/斗气单价），数据取 `skill_book` |
+| `_gen_book_doc.py` | 由 skill_book 生成 `docs/门派技能图鉴.md`（`--check` 可校验是否过期） |
+| `test_*.py` | 十三套自带 runner 的测试（avatar / card / chance / commands / core / e2e / factions / menu_full / skill_book / skills_card / skills_module / throttle / typography） |
+| `_verify_novel.py` | 原著核对工具（1608 章语料 → 验 `原著：第X章「标题」—— 原句`） |
 | `_balance.py` | 平衡模拟（调参用） |
 | `data/doupo.json` | 存档（可用 `DOUPO_DATA_PATH` 改到别处） |
 | `src/game_mode.py` | 按 QQ 号记录当前游戏模式，落 `data/game_mode.json`（`GAME_MODE_PATH` 可改） |
@@ -144,3 +237,42 @@ GIF 缺失时模板画剑形占位，卡片照常出图。
 ⚠️ 新增口令必须同时登记到 `register_keywords("doupo", [...])`，否则没选模式 / 打错模式时
 `game_router` 认不出这是口令，给不出提示。菜单（`MENU_GROUPS`）也要同步加一行，
 `test_commands.py` 会断言菜单条数等于 matcher 数。
+
+## 斗技描述的唯一权威源
+
+`factions.py` 的 `skills` / `special_skills` 是**带注解的字符串**（`"碎石掌（黄阶低）/ 劈山掌（黄阶中）[C1]"`），
+用 `split("/")[0]` 解析会把合并条目里其余斗技静默丢掉（历史上丢了约 70 门）。
+所以：
+
+* **游戏目录**走 `skill_book.FACTION_SKILLS` + `SKILL_BOOK`，`skills.catalog()` 只在该派未收录时退回字符串解析；
+* **技能说明**只写在 `skill_book` 的 `desc` 里（按施展流程：起手 → 斗气走向 → 打出什么 → 增益/副作用 → 限制）；
+* **卡片**只放 `brief`（≤24 字），完整说明走 `斗技详情 <技名>` 口令；
+* 改完必跑 `_gen_book_doc.py` + `test_skill_book.py`，后者 13 项全绿才算过（缺条目/占位词/无数值/文档过期都会 exit 1）。
+
+## 宗门与卡池（25 派怎么进得来）
+
+三档卡池，按境界放开：
+
+| 池 | 进池等级 | 派数 | 说明 |
+|---|---|---|---|
+| 新手池 starter | lv1 | 8 | 入道时按 qq 定种子抽一个，**不可重掷** |
+| 进阶池 advanced | lv40 | 11 | 必须靠「转宗」进入 |
+| 隐世池 hidden | lv90 | 6 | 必须靠「转宗」进入 |
+
+⚠️ **没有转宗的话，25 派里有 17 派的斗技玩家一辈子见不到**（这是 2026-11-15 补转宗的原因）。
+
+口令：
+
+* `宗门` —— 看本门、已开放卡池、可转门派（带该派斗技门数）与转宗价格
+* `转宗 <宗门名>` —— 改换门庭
+
+转宗规则（`core.change_faction`）：
+
+* 只能转去当前境界已开放卡池里的门派（lv1 转不进迦南学院）；
+* 扣金币 `3000 + lv×200`，境界越高越难改换门庭；
+* **不重发该派的入道物品**，否则转一次刷一次；
+* 四槽清空后按新门重配；已升的技能等级按技名保留（转回去还在）。
+
+四槽是**上限**不是下限：蛇人族 / 毒宗 / 炼药师公会（各 3 门低阶技）、慕兰谷（2 门族技）
+进池时凑不满 4 格 —— 这是原著里这几派斗技本来就少，`test_skill_book.py` 里有豁免名单，
+别当成 bug 去「修」成编技能。

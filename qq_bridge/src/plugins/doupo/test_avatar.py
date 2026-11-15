@@ -55,12 +55,17 @@ def test_available_with_bundled_assets():
 
 
 def test_pick_avatar_tiers():
-    """按境界分档：1-9 持剑站立 / 10-18 战斗姿态 / 19-27 HD蓄力 / 28-29 HD骑乘魔兽。"""
+    """按原著 13 阶大境界分档（满级 103）：
+
+    1-27 斗之气~斗师 持剑站立 / 28-54 大斗师~斗王 战斗姿态 /
+    55-93 斗皇~半圣 HD蓄力 / 94-103 斗圣~斗帝 HD骑乘魔兽。
+    """
     cases = [
-        (1, "h0.gif"), (5, "h0.gif"), (9, "h0.gif"),
-        (10, "w0.gif"), (15, "w0.gif"), (18, "w0.gif"),
-        (19, "hd_h0.gif"), (24, "hd_h0.gif"), (27, "hd_h0.gif"),
-        (28, "hd_n0.gif"), (29, "hd_n0.gif"),
+        (1, "h0.gif"), (9, "h0.gif"), (18, "h0.gif"), (27, "h0.gif"),
+        (28, "w0.gif"), (40, "w0.gif"), (54, "w0.gif"),
+        (55, "hd_h0.gif"), (70, "hd_h0.gif"), (81, "hd_h0.gif"),
+        (82, "hd_h0.gif"), (90, "hd_h0.gif"), (93, "hd_h0.gif"),
+        (94, "hd_n0.gif"), (102, "hd_n0.gif"), (103, "hd_n0.gif"),
     ]
     for lv, want in cases:
         got = avatar.pick_avatar(lv)
@@ -124,7 +129,8 @@ def test_headshot_tiers_are_distinct_96px_png():
     import io
 
     seen = []
-    for lv in (1, 10, 19, 28):
+    # 13 阶后最高档从 lv82 后移到 lv94（斗圣/斗帝），四档取样点同步更新
+    for lv in (1, 28, 55, 94):
         data = avatar.headshot_bytes(lv)
         assert data, f"lv={lv} 未取到静态头像"
         assert data[:8] == b"\x89PNG\r\n\x1a\n", f"lv={lv} 不是 PNG（不能是 GIF）"
@@ -168,7 +174,7 @@ def test_headshot_missing_assets_is_none():
 
 def test_headshot_caption_tracks_tier():
     """形象说明跟着境界档位变，非法等级也不抛异常。"""
-    caps = [avatar.headshot_caption(lv) for lv in (1, 10, 19, 28)]
+    caps = [avatar.headshot_caption(lv) for lv in (1, 28, 55, 94)]
     assert len(set(caps)) == 4, caps
     assert all(isinstance(s, str) and s for s in caps)
     assert isinstance(avatar.headshot_caption("bad"), str)

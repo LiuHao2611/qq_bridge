@@ -23,6 +23,10 @@ for _p in (REPO_ROOT, PLUGINS_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+# 机遇是概率事件，会让既有金币/文本断言变 flaky；这里默认关掉，
+# 随机逻辑本身由 test_chance.py 用注入 rng 做确定性验收。
+os.environ["DOUPO_CHANCE_RATE"] = "0"
+
 
 def _stub_nonebot():
     nb = types.ModuleType("nonebot")
@@ -86,13 +90,24 @@ def test_c_stat_matches_source():
 
 
 def test_realm_and_star():
-    assert cfg.full_realm(1) == "一星斗者"
-    assert cfg.full_realm(9) == "三星大斗师"
-    assert cfg.full_realm(10) == "一星斗灵"
-    assert cfg.full_realm(19) == "一星斗宗"
-    assert cfg.full_realm(27) == "三星斗圣"
-    assert cfg.full_realm(28) == "斗圣巅峰"
-    assert cfg.full_realm(29) == "斗帝"
+    # 原著 13 阶（2026-11-14 补全 斗之气 / 斗尊巅峰 / 半圣）
+    assert cfg.full_realm(1) == "斗之气一段"
+    assert cfg.full_realm(3) == "斗之气三段"      # 萧炎开局就是这个
+    assert cfg.full_realm(9) == "斗之气九段"
+    assert cfg.full_realm(10) == "一星斗者"
+    assert cfg.full_realm(18) == "九星斗者"
+    assert cfg.full_realm(19) == "一星斗师"
+    assert cfg.full_realm(21) == "三星斗师"
+    assert cfg.full_realm(22) == "四星斗师"       # 三星→四星，不再跨境界归零
+    assert cfg.full_realm(27) == "九星斗师"
+    assert cfg.full_realm(28) == "一星大斗师"
+    assert cfg.full_realm(81) == "九星斗尊"
+    assert cfg.full_realm(82) == "一转斗尊巅峰"
+    assert cfg.full_realm(91) == "半圣·低阶"
+    assert cfg.full_realm(93) == "半圣·高阶"
+    assert cfg.full_realm(94) == "一星斗圣"
+    assert cfg.full_realm(102) == "九星斗圣"
+    assert cfg.full_realm(103) == "斗帝"
 
 
 # ---------------------------------------------------------------------------
@@ -295,18 +310,18 @@ def test_level_up_flow():
 
 
 def test_tiandi_needs_luck():
-    p = _p(28)
-    p["exp"] = cfg.exp_need(28)
+    p = _p(102)
+    p["exp"] = cfg.exp_need(102)
     p["luck"] = 0
     r = core.level_up(p, rng=lambda: 0.99)     # 超不过成功率 -> 失败
     assert r["ok"] is False and r["reason"] == "tiandi_fail"
 
-    q = _p(28)
-    q["exp"] = cfg.exp_need(28)
+    q = _p(102)
+    q["exp"] = cfg.exp_need(102)
     q["luck"] = 0
     q["diyan"] = True                          # 帝炎 -> 100%
     r = core.level_up(q, rng=lambda: 0.999)
-    assert r["ok"] and q["lv"] == 29
+    assert r["ok"] and q["lv"] == 103
 
 
 def test_tiandi_rate():
@@ -332,7 +347,7 @@ def test_fight_always_terminates():
     """任意随机序列都必须在 15 回合内结束（防死循环）。"""
     import random
     rnd = random.Random(7)
-    for lv in (1, 5, 10, 20, 28):
+    for lv in (1, 5, 18, 45, 102):
         for mon in cfg.MONSTERS:
             p = _p(lv)
             p["hp"] = core.stats(p)["体力"]
@@ -345,10 +360,14 @@ def test_monster_scaled_tracks_player():
 
     这条是防断崖的回归测试 —— 固定数值怪物 + 玩家每 9 级平方跃升 = 必死局。
     """
-    for lv in range(1, 29):
+    for lv in range(1, cfg.MAX_LV):
         p = _p(lv)
         st = core.stats(p)
-        pool = [m for m in cfg.MONSTERS if abs(m["lv"] - lv) <= 2] or cfg.MONSTERS[:1]
+        # 与 core.pick_monster 同口径：先只留同一大境界内的物种（等级差 ≤9），
+        # 再取最近的 3 只。九星制下物种表比等级轴稀疏，纯「最近 3 只」会让
+        # 1 级新手撞上 27 级赤炎狼（等级差修正把战斗拖到 9 回合）。
+        window = [m for m in cfg.MONSTERS if abs(m["lv"] - lv) <= cfg.LV_PER_REALM]
+        pool = sorted(window or cfg.MONSTERS, key=lambda m: abs(m["lv"] - lv))[:3]
         for sp in pool:
             m = core.monster_scaled(p, sp)
             # 玩家斩杀回合：血量 ÷ 逐回合累计伤害，必须落在设计值附近
@@ -367,7 +386,7 @@ def test_monster_scaled_tracks_player():
 
 def test_out_of_pool_monster_still_killable():
     """越级怪（生产里抽不到，但防呆）也必须在 15 回合内打得死，不能变成死局。"""
-    for lv in (1, 10, 20, 28):
+    for lv in (1, 20, 60, 102):
         p = _p(lv)
         for sp in cfg.MONSTERS:
             m = core.monster_scaled(p, sp)

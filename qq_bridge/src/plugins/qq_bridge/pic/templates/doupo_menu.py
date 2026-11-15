@@ -28,17 +28,18 @@ from ..theme import Theme
 
 # 与人物卡共用配色/度量工具（同包内复用，避免两份 _pal 各自漂移）
 from .doupo import _card_alpha, _fit, _pal, _w
+from . import doupo_style as S
 
-# ---- 排版 ----
+# ---- 排版（2026-11-14 统一字号规范：口令/分组放大加粗，说明清晰不糊）----
 PAD = 28
 FS_TITLE = 34
-FS_GROUP = 18
-FS_CMD = 19
-FS_DESC = 16
-FS_TIP = 14
-CMD_COL = 200          # 说明列起点（相对内容区左边）；最长口令「斗破菜单 / dp菜单」约 160px
+FS_GROUP = S.FS_KEY - 2        # 22 分组名（加粗）
+FS_CMD = S.FS_KEY              # 24 口令——整张卡最重要的可扫读信息
+FS_DESC = S.FS_SUB             # 17 说明
+FS_TIP = S.FS_LABEL            # 16 底部提示
+CMD_COL = 236          # 口令放大到 24px 后要给足宽度，说明列相应变窄
 ROW_PAD = 12
-ROW_MIN = 42
+ROW_MIN = 48
 DESC_LH = FS_DESC + 4  # 说明折行行高
 GROUP_GAP = 18
 ICON_STYLE = "line"
@@ -47,11 +48,11 @@ ICON_STYLE = "line"
 #: 主题编辑器点开该模板时不是一张空白卡（pic 包不 import 插件层，故内置示例）。
 _DEMO = [
     {"name": "入门 · 建立角色",
-     "rows": [["斗破菜单 / dp菜单", "就是这条，随时回来看全部口令"],
-              ["dp入道", "创建角色：一星斗者，赠 10000 金币 + 玄重尺 + 回灵丹×5"]]},
+     "rows": [["斗破菜单", "就是这条，随时回来看全部口令"],
+              ["入道", "创建角色：斗之气一段，赠 10000 金币 + 玄重尺 + 回灵丹×5"]]},
     {"name": "修炼 · 涨修为升境界",
-     "rows": [["dp修炼", "结算离线修为（每分钟自动 +6）"],
-              ["dp突破", "修为满时晋升一星；28 级冲斗帝看机缘"]]},
+     "rows": [["修炼", "结算离线修为（每分钟自动 +6）"],
+              ["突破", "修为满时晋升一星；102 级九星斗圣冲 103 级斗帝看机缘"]]},
 ]
 
 
@@ -115,8 +116,8 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
     for g in groups:
         # 分组头：4px 竖条 + 分组名（比正文小半号、用强调色，形成节奏但不抢戏）
         c.rounded_rect((x0 + 1, y + 3, x0 + 5, y + FS_GROUP - 3), radius=2, fill=p["accent_color"])
-        c.text((x0 + 14, y + FS_GROUP // 2), str(g.get("name") or ""), size=FS_GROUP,
-               color=p["accent_color"], role="regular", anchor="lm")
+        S.key(c, (x0 + 14, y + FS_GROUP // 2), str(g.get("name") or ""),
+              size=FS_GROUP, color=p["accent_color"])
         y += FS_GROUP + 12
 
         for row in _rows_of(g):
@@ -124,16 +125,16 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
             desc = str(row[1]) if len(row) > 1 else ""
             rh = _row_h(desc, content_w)
             cy = y + rh // 2
-            c.text((x0 + 14, cy), _fit(cmd, CMD_COL - 26, FS_CMD), size=FS_CMD,
-                   color=p["text_color"], role="regular", anchor="lm")
+            S.key(c, (x0 + 14, cy), cmd, size=FS_CMD,
+                  color=p["text_color"], max_w=CMD_COL - 26)
             if desc:
                 avail = content_w - CMD_COL
                 lines = Canvas.wrap(desc, FS_DESC, "regular", avail)
                 block_h = len(lines) * DESC_LH
                 dy = y + max(0, (rh - block_h) // 2) + FS_DESC // 2
                 for i, ln in enumerate(lines):
-                    c.text((x0 + CMD_COL, dy + i * DESC_LH), ln, size=FS_DESC,
-                           color=p["dim_color"], anchor="lm")
+                    S.small(c, (x0 + CMD_COL, dy + i * DESC_LH), ln,
+                            size=FS_DESC, color=p["dim_color"])
             y += rh
         y += GROUP_GAP
 
@@ -145,11 +146,11 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
     if tip is None:
         tip = "与「修仙」重名的 商店/突破/任务/排行榜/炼丹 已统一让出，斗破一律 dp 前缀。"
     if tip:
-        c.text((x0, y + FS_TIP // 2), _fit(str(tip), content_w, FS_TIP),
-               size=FS_TIP, color=p["dim_color"], anchor="lm")
+        S.small(c, (x0, y + FS_TIP // 2), tip, size=FS_TIP,
+                color=p["dim_color"], max_w=content_w)
 
     if source:
-        c.text((width - PAD, h - PAD + 6), source, size=14,
-               color=p["dim_color"], anchor="rb")
+        S.small(c, (width - PAD, h - PAD + 6), source, size=14,
+                color=p["dim_color"], anchor="rb")
 
     return c

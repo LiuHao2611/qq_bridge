@@ -310,6 +310,7 @@ class Canvas:
         role: str = "regular",
         anchor: str = "la",
         kind: str | None = None,
+        bold: bool | None = None,
     ) -> "Canvas":
         """绘制文本。anchor 语义同 Pillow（'la' 左上、'lm' 左中、'mm' 正中、'ra' 右上）。
 
@@ -317,11 +318,20 @@ class Canvas:
         kind=文本角色（title/body/sub/badge），缺省按字重 role 推断
         （bold→title、light→sub、regular→body）。管线：字体族 → 伪粗 → 描边 →
         绘制 → 划线；斜体无变体字体时走仿剪切慢路径（画到临时层再贴回）。
+
+        :param bold: 显式强制字重（2026-11-14 斗技卡重点文字需求）。
+            None = 完全沿用主题开关（**默认，保证既有卡片逐像素不变**）；
+            True/False = 覆盖主题开关。注意 `role="bold"` 本身只影响 kind 推断，
+            并不会选粗体字体；真正决定是否用粗体文件的是这里的 bold 状态
+            （``fonts.load_family(..., bold=True)`` → msyhbd / msyh.ttc index=1），
+            主题族无粗体变体时还会叠加伪粗描边。
         """
         s_txt = emoji_safe(str(text))
         size = int(size)
         kind = kind or {"bold": "title", "light": "sub", "regular": "body"}.get(role, "body")
         st = self._text_style(kind)
+        if bold is not None:
+            st["bold"] = bool(bold)
         t = self.theme
         family = str(getattr(t, "font_family", "") or "") if t is not None else ""
         has_bold, has_italic = (False, False)
@@ -339,9 +349,16 @@ class Canvas:
         if st["stroke"]:
             sw = max(1, size // 12)
             sfill = rgb(st["stroke_color"]) + (255,)
-        elif st["bold"] and family and not has_bold:
-            sw = max(1, size // 16)
-            sfill = fill
+        elif st["bold"] and not (family and has_bold):
+            # family 为空时也要伪粗：2026-11-14 实测容器 vendored msyh.ttc 的两个
+            # face 全是 Regular，只换字体文件根本不会变粗。没有真粗体变体可用时，
+            # 同色细描边是唯一能保证 bold=True 视觉生效的手段。
+            # 但 <22px 的小字禁止伪粗：中文 15px 时笔画缝隙本身只有约 1px，
+            # 再加 1px 描边会把缝隙全填满，实测「需 焚血散 ×1」「已圆满」糊成一块。
+            # 小字靠字号 + 强调色区分，加粗只给重点大字。
+            if size >= 22:
+                sw = max(1, size // 16)
+                sfill = fill
 
         fake_italic = st["italic"] and (not family or not has_italic)
 
