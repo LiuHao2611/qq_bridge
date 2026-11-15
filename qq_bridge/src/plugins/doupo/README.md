@@ -23,7 +23,8 @@
 | | `突破` / `晋升` / `升星` | 修为满晋升一星；102 级九星斗圣冲 103 级斗帝看机缘 |
 | | `战斗` / `打怪` / `历练` | 遭遇同阶妖兽，回合制，CD 20 秒 |
 | 养成 | `强化` | 玄重尺十级蜕变为异火恒古尺 |
-| | `斗技` / `技能` | 4 门斗技（快捷键 1/3/7/9） |
+| | `斗技` / `技能` | 本门三阶全量斗技卡（上阵的 4 门朱红描边 + 编号 + ★上阵一眼可辨） |
+| | `上阵 1 3 2 4` / `上阵` | 上阵 4 门：编号即斗技（编号见斗技卡左上角）；无参列出编号清单 |
 | | `升级 龙吟碎` | 焚血散升技，每级伤害 +20% |
 | | `异火` / `养火 青莲地心火` | 5 种异火，药渣喂养，4 级圆满 |
 | 炼药 | `宝库` / `商店` / `坊市`，`买 血灵草 2` | 随身商店 |
@@ -82,7 +83,8 @@ python src/plugins/doupo/test_avatar.py      # 动图 + 静态头像四档：13 
 python src/plugins/doupo/test_throttle.py    # 出图限流工具类（已停用，仅测工具本身）：10 项
 python src/plugins/doupo/test_e2e.py         # 真实 matcher + 真实事件（含人物回包结构）：75 项
 python src/plugins/doupo/test_menu_full.py   # 菜单 25 条口令全量严格验收：46 项
-python src/plugins/doupo/test_skills_card.py # 斗技专用卡（描述/伤害/五段条/字重像素验收）：10 项
+python src/plugins/doupo/test_skills_card.py # 斗技专用卡（描述/伤害/五段条/字重/编号像素验收）：11 项
+python src/plugins/doupo/test_faction_card.py # 宗门卡（注册/数据同源/check_boxes 自检/出图/页边）：5 项
 python src/plugins/doupo/test_chance.py      # 任务机遇（概率/条件分支/文案格式）：11 项
 python src/plugins/doupo/test_typography.py  # 四张卡统一排版（字号/加粗/出图）：6 项
 python src/plugins/xiuxian/test_core.py      # 22 项
@@ -224,7 +226,7 @@ GIF 缺失时模板画剑形占位，卡片照常出图。
 | `skill_book.py` | **斗技唯一权威表**：185 门斗技的阶位/类型/范围/完整说明/数值/出处/原著 + 卡片短释 |
 | `skills.py` | 三阶四槽纯函数内核（目录/解锁/上阵/斗气单价），数据取 `skill_book` |
 | `_gen_book_doc.py` | 由 skill_book 生成 `docs/门派技能图鉴.md`（`--check` 可校验是否过期） |
-| `test_*.py` | 十三套自带 runner 的测试（avatar / card / chance / commands / core / e2e / factions / menu_full / skill_book / skills_card / skills_module / throttle / typography） |
+| `test_*.py` | 十四套自带 runner 的测试（avatar / card / chance / commands / core / e2e / faction_card / factions / menu_full / skill_book / skills_card / skills_module / throttle / typography） |
 | `_verify_novel.py` | 原著核对工具（1608 章语料 → 验 `原著：第X章「标题」—— 原句`） |
 | `_balance.py` | 平衡模拟（调参用） |
 | `data/doupo.json` | 存档（可用 `DOUPO_DATA_PATH` 改到别处） |
@@ -246,8 +248,8 @@ GIF 缺失时模板画剑形占位，卡片照常出图。
 
 * **游戏目录**走 `skill_book.FACTION_SKILLS` + `SKILL_BOOK`，`skills.catalog()` 只在该派未收录时退回字符串解析；
 * **技能说明**只写在 `skill_book` 的 `desc` 里（按施展流程：起手 → 斗气走向 → 打出什么 → 增益/副作用 → 限制）；
-* **卡片**只放 `brief`（≤24 字），完整说明走 `斗技详情 <技名>` 口令；
-* 改完必跑 `_gen_book_doc.py` + `test_skill_book.py`，后者 13 项全绿才算过（缺条目/占位词/无数值/文档过期都会 exit 1）。
+* **卡片**放完整描述（2026-11-15 起 `desc`/类型·冷却/出处/原著/解锁提示已合并进斗技卡，不再有「斗技详情」独立口令）；
+* 改完必跑 `_gen_book_doc.py` + `test_skill_book.py`，后者全绿才算过（缺条目/占位词/无数值/文档过期都会 exit 1）。
 
 ## 宗门与卡池（25 派怎么进得来）
 
@@ -263,7 +265,7 @@ GIF 缺失时模板画剑形占位，卡片照常出图。
 
 口令：
 
-* `宗门` —— 看本门、已开放卡池、可转门派（带该派斗技门数）与转宗价格
+* `宗门` —— 出**宗门卡**（2026-11-15 卡片化）：宗门名/Lv、据点·卡池、已开放卡池、本门斗技统计、代表人物、传承异火、可转门派（按池分组 + 门数）与转宗价格
 * `转宗 <宗门名>` —— 改换门庭
 
 转宗规则（`core.change_faction`）：
@@ -276,3 +278,14 @@ GIF 缺失时模板画剑形占位，卡片照常出图。
 四槽是**上限**不是下限：蛇人族 / 毒宗 / 炼药师公会（各 3 门低阶技）、慕兰谷（2 门族技）
 进池时凑不满 4 格 —— 这是原著里这几派斗技本来就少，`test_skill_book.py` 里有豁免名单，
 别当成 bug 去「修」成编技能。
+
+## 上阵编号（2026-11-15）
+
+「上阵」从技名改成**编号**：斗技卡每门左上角有 1 起始的稳定编号，发 `上阵 1 3 2 4`
+即可上阵 4 门；无参 `上阵` 会列出「编号.技名」清单。编号与卡片共用
+`core.skill_pool_sorted(p)` 的三阶稳定排序（普通→高阶→特殊），**卡片 3 号 == 口令 3 号**，
+换装/转宗后编号不漂移。旧式技名写法（`上阵 龙吟碎`）仍兼容。
+
+卡片里上阵状态一眼可辨：上阵块**朱红加粗描边 + 朱红填充编号 chip + 右端「★上阵」标签**，
+未解锁块置灰并标「未解锁 lvX」。
+

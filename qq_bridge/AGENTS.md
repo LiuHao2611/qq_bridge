@@ -1581,3 +1581,88 @@ stars/boot`）；`fetch_part_art` 对这些部位**先取 WM `prime_*` subIcon�
 - **沙箱**：OFFICIAL_SANDBOX=true 保持（PoC 最安全、不受频控）；容器对 sandbox.api.sgroup.qq.com / api.sgroup.qq.com / bots.qq.com TCP+TLS 实测全通。正式使用需改 false + 平台侧入群/主动发言开关/IP 白名单/Intent。
 - **验收（§31）**：rebuild bridge（napcat/aria2 未动，三容器 healthy）→ 日志 QQ official adapter registered(bots=1) + official_matcher_registered sandbox=True + QQ|Bot 1906371548 connected + READY(session_id) → /api/qqo/status enabled/configured/online=true bots=[1906371548]，/api/qq/status online=true → 双轨并行；容器内 allow() 官方群/私聊(True,official_ok)、NapCat 非白名单群(False,silent)/白名单群(True,group_ok)；test_dispatcher 17P（新增 4 例）+ channel/routes 24P；单群闸 allowed=1075851417 仍生效。
 - **未做/边界**：沙箱保持 true（用户未指定正式）；未发真实群测试消息（由用户在沙箱群最终确认）；官方通道暂不落历史；未 commit/push（主仓有其它会话改动）。
+
+## §22:52 【最高限制】原 NapCat 代码永久只读；官方机器人 = 完整独立副本（非共享分支）
+- **🔴 最高铁律（用户原话，永远记住）**：「你对原有的机器人代码只有只读模式，禁止改动，我要的是复制，懂吗，复制一个机器人，只不过是官方的，懂吗」。**本目录 `D:/AI/manju_agent/qq_bridge/` 原有业务代码冻结**；官方能力另起完整副本 `D:/AI/manju_agent/qq_bridge_official/`，只改副本。**严禁**再往共享 `dispatcher`/`test_dispatcher`/`bot.py` 加 `if channel=="official"` 之类的分支——§22:20 那轮正是这么踩线的，本轮已回退。
+- **两只机器人，不是一只**：原 NapCat（QQ 号 `1564106943` 通道、:8080、`data/` 独立）冻结；独立官方（`qq-bridge-official`、AppID `1906371548`、:8081、独立 `data/logs/tmp/downloads`）可改。二者**进程 / 容器 / 数据目录 / 编排**全部物理隔离。
+- **回退只读**：`src/plugins/qq_bridge/dispatcher/__init__.py` + `tests/test_dispatcher.py` 用 HEAD blob 恢复；三态 HEAD=index=worktree 一致、`git diff --numstat` 空、`official_ok` 残留 0；status 的 `M` 为 CRLF stat 假象。旧记录 blob 短 hash 与现行不同，是主仓/worktree 处在不同 commit 所致，非回退失败。**改任何原代码前必须先向用户确认。**
+- **`requirements.txt` 的 `nonebot-adapter-qq` 保留**：mtime `22:16:25` 早于立规矩 `22:27`，是 §22:20 的依赖加法；HEAD 自带 `bot.py::_official_bots()`/`QQAdapter`，`OFFICIAL_ENABLE=false` 时不注册，该依赖不删。
+- **AppID 单连接冲突（务必记住）**：`1906371548` 只允许一个 WS 连接。靠副本侧 `napcat-disable-official.override.yml` 给 NapCat 注入 `OFFICIAL_ENABLE=false`（不改 NapCat 源码/.env/compose），连接权归副本。**部署 NapCat 时必须叠加该 override**，否则两容器互踢。
+- **副本合法改区**：`qq_bridge_official/` 内的 dispatcher/test 保留 `official_ok`（openid→pseudo 负数 ID 不受数字白名单约束）；`.env` 仅副本侧 `OFFICIAL_ENABLE=true` / 新 Secret；`OFFICIAL_SANDBOX=true` 保持。凭据明文只落两份 `.env`（均 gitignore），泄露审计 PASS。
+- **验收（本轮）**：四容器 healthy；`/api/qqo/status` online=true bots=[1906371548] + `QQ|Bot 1906371548 connected`/READY；AppID 连接 NapCat 0 / 副本 2；挂载卷、db、日志、设备身份、Secret 六项隔离全 PASS。**真实群收发仍由用户在沙箱群确认**，未发测试消息。详见 `PROJECT_MAP.md` §22:52。
+
+## §23:43 官方群 warframe 全套指令可用（协议适配层，warframe 业务代码零改动）
+- **最高限制再次确认**：用户「不要动旧的，不要动旧的，我要新机器人也能用」——warframe 等全部功能**只在副本 `qq_bridge_official/` 补齐**，原件 `qq_bridge/` 永久冻结。本轮校验：官方放行锚点只在副本、原件 bot.py mtime `19:26` 未变、diff 仍是单群闸历史内容，本轮零改动。
+- **warframe 文件本就复制全了**（`warframe.py` + `__init__.py` 136KB）；官方群指令不生效根因是 NapCat 专属契约：① `game_tools._handle_safe(bot: Bot, event: MessageEvent)` 参数锁死 OneBot V11，官方 `GroupAtMessageCreateEvent` 注入 `TypeMisMatch` 静默不执行；② 官方 matcher 只转 `QQEvent` 走 `_route` AI 链路不碰 warframe；③ **致命断点**：warframe/主流程自造 3 字段 ctx 缺 `group_key/user_key/reply_ref` → `OfficialChannel.send` 空 openid 必失败（同时坑主流程官方出图）。
+- **修法（warframe 136KB+280KB 一行不改）**：① 新增 `game_tools/official_bridge.py`：`OfficialLikeEvent`/`OfficialLikeBot` 适配器（官方段 `mention_user/text/image`→OneBot `at/text/image`，openid→pseudo 负数 int，`channel=official`，补 `get_plaintext`/`get_matcher` stub，`delete_msg` 降级 no-op）+ `is_warframe_command` rule（**adapter 守卫**：非 `nonebot.adapters.qq` 一律 False 不误吞 NapCat；`#/＃`/`is_game_command`/带图；排除 `/`）+ 官方 matcher `priority=5 block=True`（确定性互斥，命中阻断 priority=10 `_route` 防双回复）；② `channel/base.py` 加 `ContextVar attach/detach/current`；③ `channel/official.py::send` 用 current ctx 以 merged 语义补全缺失字段（调用方字段优先）；④ `game_tools/__init__.py::register` 接线（try/except 不影响 NapCat）；⑤ `bot.py` 入站闸显式放行 `nonebot.adapters.qq`（官方 group_id 是 str，原 int() ValueError 本就放行，此变动是显式化）。
+- **官方适配器 1.7.2 契约（实测）**：`GroupAtMessageCreateEvent` ⊂ `GroupMessageCreateEvent`；段 data 键 `user_id`/`text`/`url`；官方 Message 无 `get_plaintext`；官方 `group_id` 是 str；`Rule(func)` 参数须具体类型注解（`Any` 报 ValueError）；`content="<@!id> 赏金"`→`mention_user`+`text`。
+- **验收**：离线 E2E **23 PASS/0 FAIL**（@赏金 全链路出图到 `send_to_group(group_openid=...,file_image,msg_id=...)`、Rule 守卫、ctx 补全、带图识别）；5 文件 py_compile PASS；新镜像 `c54410505`，启动 `gt_official_bridge_registered priority=5 block=True` + Bot READY，AppID NapCat 0/副本 2，无注册异常。
+- **能力降级（官方平台限制，非 bug）**：`delete_msg` 撤回（紫卡排队占位消息会残留）、图文拆多条、紫卡截图 OCR（临时签名 URL 裸 GET 可能 403）、数字 QQ 门禁对 pseudo 负数失效。
+- **🔴 待用户平台层实测**：全量日志仍 0 条 `official_message_in`（平台从未推群消息）。`OFFICIAL_SANDBOX=true` + intent 仅 `c2c_group_at_messages`（只订阅被@的群消息）。需用户在**沙箱测试群 @机器人发「赏金」**；正式群则沙箱 Bot 收不到，须改 `OFFICIAL_SANDBOX=false` + 平台正式配置。测后看 `gt_official_dispatch`/`gt_msg`/`official_sent` 日志。
+- **遗留噪音（下轮，未改）**：官方副本 `conn_watch` 沿用 NapCat 反向 WS 检测 → 一直报 `conn_state_down reason=ws_not_connected` + 每 5min `notify_send_failed detail=onebot 未连接`；**不影响官方 Bot 收发**（独立 WS 在线），但建议下轮给副本关掉 `conn_watch`。
+
+## §00:09（11-11）官方 Bot 切正式网关——「收到不到群消息」根因与修复（仅副本）
+- **用户指令**：「我邀请的就是我的机器人，你怎么搞的，弄好了再交付给我」——拉进正式群 1075851417 的是正式版机器人，要求自主修好、不反问。纠正上轮把「确认沙箱/正式」推回用户。
+- **根因（探测坐实，非代码 bug）**：容器内探测 AppID 1906371548——`bots.qq.com/app/getAppAccessToken`→200/token_ok；正式 `api.sgroup.qq.com/gateway/bot`→**HTTP 200 + url=True + remaining 1495**；沙箱端点也 200。**正式环境完全可用，但 bridge 连沙箱网关**；沙箱/正式两套物理隔离通道，正式群消息不推到沙箱连接 → `OFFICIAL_SANDBOX=true`=`official_message_in=0` 根因。原 NapCat 用户 23:54 那条「@4015089726 赏金」其实由旧 NapCat（1564106943）回图，官方 Bot 一条未收。
+- **修复（3 处全在副本，warframe 大文件仍零改动）**：`.env OFFICIAL_SANDBOX=false`（切正式网关）；`.env OPS_CONN_WATCH_ENABLE=false`（关噪音，§23:43 遗留项本轮了结）；`bot.py::_block_non_whitelist_groups` 官方放行分支加 `official_event_arrived name/cls/has_group` **到达即打点**（matcher 前必经）。
+- **部署验收全 PASS**：`up -d --build --force-recreate bridge-official`，`COPY bot.py` DONE 非 CACHED，新镜像 `e33f02d1`，NapCat 三容器未动；启动 `official_matcher_registered sandbox=False` + `conn_watch_ready enable=False` + `Bot 1906371548 connected` + READY(`a82d0f63`) + `official_event_arrived ... ReadyEvent`（观测日志生效）；`/api/qqo/status online=true sandbox=false`；AppID 单连接 NapCat 0/副本 1；conn_watch 噪音 0；py_compile PASS；原件 bot.py mtime 仍 19:26、锚点命中 0。
+- **🔴 待用户实测（代码/网关侧已全就位）**：正式群 1075851417 **@机器人发「赏金」**（intent 只订阅被@的群消息）。排障第一判据=`official_event_arrived`：**有**=平台已推、问题在业务层；**无**=平台仍未推，查 QQ 开放平台后台（群开机器人主动发言/Intent 生效/机器人真入群）。链路 `official_event_arrived→official_message_in→gt_official_dispatch/gt_match→official_sent`。
+- **下轮可选**：`/api/qqo/config` 把 `OFFICIAL_SECRET` 的 value 明文回显（与「页面不回显原值」声明不符）改为 secret 类回显空值；本轮未动（非本任务范围）。
+
+## §斗技卡重构（2026-11-15）· 整门派全列出 + 合并「斗技详情」
+- **用户诉求**：「斗技怎么只有四个？我当时设计的是上阵斗技四个，每个门派可是有不少斗技的」+「去掉斗技详情这个功能，直接合并到斗技里」；改造方向选「整门派全列出(推荐)」。
+- **根因**：「只有 4 个」是设计选择——`card.build_skills_data` 原只遍历 `core.loadout_entries(p)`（上阵 4 槽），整门派技能池一直存在于 `core.skill_pool(p)`（含 unlocked/equipped 标记与完整 desc/source/novel/kind/rank/scope/cd）。
+- **改造**：① `card.py::build_skills_data` 改遍历 `core.skill_pool(p)` 全量、按三阶排序、上阵标★、把完整描述/类型·冷却/出处/原著/解锁提示合并进 `desc`（`\n` 连接）；② 模板 `doupo_skills.py::_desc_lines` 支持多行 `desc` 逐段折行（高度随行数自增长）；③ 删除「斗技详情」独立口令：`commands.cmd_skill_info`、`__init__.py::skinfo` handler、菜单项（`斗技详情 狂狮怒罡`）与 `register_keywords` 关键词登记；④ 文本「斗技」`cmd_skills` 与帮助文案同步清理。
+- **验证**：本地 `test_skills_card.py`（9/10，唯一 overbold 失败为沙箱字体环境告警 `Could not find platform independent libraries`，与改动无关）、`test_commands.py`（90/90）、`test_menu_full.py` 同步删 `26_skillinfo` 用例；容器内渲染真实卡 720×4860，确认全 11 门列出 + ★上阵 4/4 + 合并详情 + 副标题「云岚宗·三阶斗技·共 11 门（★上阵 4/4）」。
+- **部署**：`docker compose -f docker-compose.bridge.yml up -d --build`（仅 bridge+aria2，未碰弃用 `qq-bridge-official`）；NapCat 13:24:07 自动重连 `Bot 3800345425 connected`，healthy。
+- **⚠️ 权衡**：整门派全列出后卡片高度随门派技能数飙升（11 门≈4860px，最多十几门可能 7000px+），QQ 长图可能不友好；若嫌长可下轮分页（按阶/分卡）或压缩详情。
+
+## §斗技上阵可视化 + 编号上阵 + 宗门卡片化（2026-11-15 14:08）
+用户同轮追加三条诉求，在上一节「整门派全列出」基础上再推进一步。全部落地并已提交推送。
+
+### 需求（用户原话）
+1. **「我怎么看出来上阵了哪些斗技？」** —— 上阵的 4 门要在卡片里一眼可辨；
+2. **「上阵斗技方式简单一点，一次输出四个编号，编号代表斗技即可。」** —— 发编号即可上阵；
+3. **「最后再把宗门优化成卡片展示，注意设计美化风格。」** —— 宗门从纯文本改自绘卡片。
+
+### 改造一：上阵可视化（`pic/templates/doupo_skills.py` + `card.py`）
+- `core.py` 新增 `skill_pool_sorted(p)`：本宗斗技（含未解锁）按三阶稳定排序（普通→高阶→特殊）。**这是编号的唯一来源**，卡片与上阵口令共用，编号恒等、永不错位。
+- `card.py::build_skills_data`：每行加 `num`（1 起始稳定编号）+ `badge=str(num)`（徽标改显编号，不再用 `★`/阶字）；副标题改为「红框=已上阵 x/4 · 编号见左上角」；tip 改为「上阵 <编号如 1 3 2 4>」。
+- 模板 `doupo_skills.py` 块渲染三分态：
+  - **上阵**：朱红加粗描边（`width=3`）+ 朱红填充编号 chip（白字）+ 右端「★上阵」标签 + 技能名朱红 + 左侧竖条朱红；
+  - **未解锁**：编号 chip 置灰（dim 色）+ 右端「未解锁 lvX」标签 + 技能名/描述置灰；
+  - **普通已解锁**：默认 chip 色、墨褐名，无状态标签。
+- 名字可用宽度 = 块宽 − Lv 宽 − 状态标签宽 − 间距，**先量标签宽再定名字空间**（防「上阵」标签与 Lv.x/5 或技能名重叠）。
+
+### 改造二：编号上阵（`commands.cmd_loadout`）
+- 无参：先报「当前上阵」，再按三阶分组列 `1.青木剑诀　2.爆步 …`（编号 = 卡片左上角编号），末行「用法：上阵 1 3 2 4（最多 4 门）」。
+- 带参：`上阵 1 3 2 4` 数字映射回技能名（映射表与 `core.skill_pool_sorted` 同序）；超范围 / 未解锁编号挡回并回显可上阵清单；**旧式技名写法（`上阵 龙吟碎`）继续兼容**，不让老用户突然不会用。
+- 成功后回显 `技名（N号）`，把编号与技能对应关系再确认一遍。
+
+### 改造三：宗门卡片化（新增 `pic/templates/doupo_faction.py`）
+- 新增专用模板（不复用 `doupo_list`，避免把异火/宝库/背包/排行一起改坏）。版式（羊皮纸米/朱红/暗金，与人物卡、斗技卡同源）：
+  - 顶部大标题「宗门」+ globe 细描边图标 + 贯通分割线；
+  - 宗门概览：宗门名(30px 粗体朱红) + 右端 Lv.x + 两枚 pill（据点/卡池）+ 一行「境界 lvX · 已开放卡池」；
+  - 本门斗技统计：3 格大数字（普通/高阶/特殊，数字按阶位上色，普通墨褐/高阶暗金/特殊朱红）；
+  - 代表人物：star 分区 + 自动折行；传承异火：bolt 分区 + 自动折行；
+  - 可转宗门：list 分区，按卡池分组（每组标「池名（需 N 金币）」+ `宗门名 门数` 条目）；
+  - 底部：分割线 + 用法提示。
+- **card-design 红线落实**：全部宽度 `_w` 实测、超宽 `_fit` 截断、段落 `Canvas.wrap`/`_pack` 折行（整条优先不拆字，杜绝「血宗 6」/「门」断行）；`_measure` 与 `build` 同一套步进，高度由内容撑开不被裁；`build(..., boxes=[...])` 收集文本包围盒供 `check_boxes` 自检（溢出/重叠/相邻间距）。
+- `card.py` 新增 `build_faction_data`（与 `commands.cmd_faction` 文本同源，读同一 player/FACTIONS）+ `render_faction`；`__init__.py::sect` 出图 + 纯文本兜底（`NOT_ENTERED` 直接返回文本，`render` 异常降级文本）；`pic/__init__.py` 登记 `_TEMPLATES["doupo_faction"]` 与 `TEMPLATE_LABELS["doupo_faction"]="斗破宗门卡"`。转宗口令（`switch`）不变。
+
+### 验证（容器内全绿，含像素级 + 自检）
+- `test_skills_card.py` 11/11：新增「编号 = skill_pool_sorted 同序且换装不漂移」守卫（卡片 3 号 == 口令 3 号的唯一防线）；
+- `test_faction_card.py` 5/5（新增）：模板注册 / 数据与 core·factions 同源 / `check_boxes` 溢出0·重叠0·间距0 / 出图宽720·高==_measure·非空白·页边12px无墨迹 / 三档境界各出一张；
+- `test_commands.py` 97/97（新增 6c 编号上阵用例：无参编号与卡片同序、按编号生效、超范围挡回、旧式技名兼容）；
+- `test_menu_full.py` 49/49（`28_sect` 用例由纯文本改为 `img="png"`）；
+- `test_e2e.py` 75/75、`test_factions` 17/17、`test_core` 31/31、`test_card` 10/10、`test_skill_book` 17/17（本地）；
+- 视觉核对：宗门卡分区清晰、无重叠/越界/豆腐框；斗技卡上阵（红框+红chip+★上阵）、未解锁（灰chip+未解锁lvX）、已解锁三分态逐像素确认无压字。
+
+### 部署 + 交付
+- `docker compose -f docker-compose.bridge.yml up -d --build`（仅 bridge+aria2，未碰弃用 `qq-bridge-official`）；NapCat OneBot `Bot 3800345425` 14:03:17 重连 `connector_attached self_id=3800345425 online=1`（另 `1906371548` 为官方沙箱副本，独立路由，非本次目标）。
+- 提交推送：`000c374`（三项功能）+ `ac72fac`（同步 `docs/门派技能图鉴.md`，185 条斗技/25 派）→ `push origin/master`，`git ls-remote` 返回同一 SHA。
+
+### 遗留说明
+- `test_skill_book` 的「文档同步」用例在**容器内**报 16/17，根因是 `docs/门派技能图鉴.md` 不在镜像里（源仓库产物、非运行依赖）；本地已 17/17 全绿且文档已重新生成提交。若要让容器内该用例也绿，需把 docs 打进出图镜像或让用例改判仓库根路径。
+- 宗门卡「新手池」在 pill 与「已开放卡池」行各出现一次，属有意冗余（多池境界时该行才有价值），暂不合并。
+
