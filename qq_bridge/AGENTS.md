@@ -72,7 +72,7 @@
 | **资源普查不能只抽样就下结论**：用户说「有全屏技能」时，旧结论来自只抽 S28–88 的 `_idx1_compare.png`（该段 s0 恰好全是阴影），得出「完整版只多一个黑球」的错误判断。必须把图集**全部 composite** 与动作表**全部 state** 铺开目视，再对候选段逐帧放大，并用原始像素尺寸标注纠正目视缩放错觉 | `tools/census_skill_effects.py`（全部 `c/*.hy` composite）+ `tools/census_fullscreen.py`（宽画布 669 state 4 页 + 26 段候选 2 页）+ `char_art/_verify_big_states.png`（逐帧标注真实宽高）；`全屏范围对照.png` 叠 240×320 屏幕边界给出「右侧超出 100px」实测 |
 | **签到卡（`checkin`）必须浅色 Rabbit 风，且只展示 manager 真实字段、绝不编造 Rabbit 专属字段**（用户 2026-11-10「参考 Rabbit 图优化签到卡 + 改浅色」）：结果横幅三态（ok/already/未签到）文案由真实 `res.status/gain/streak` 拼装，**禁止**「抽中签/路边捡礼品盒/100点经验」；2×2 胶囊只用 连签/累计/喵币/名次(或距里程碑)，**禁止**「群段位/经验值/群萝卜/本月补签」；保留项目强项 7 列月历（参考图仅两方框）+ 里程碑进度条 + 真实奖励拆分；右侧插画用主题贴纸背景替代，**不引入版权图、不画角落大贴纸压字**；配色/圆角全走主题（light 天然浅色、主题编辑器可调），`radius=0`/Consolas/`[OK]`/`> 每日签到` 深色终端风列为反例 | 主题**双写**：`data/pic_card_themes.json` 配置 `checkin→light`（运行时 bind mount 即时生效）+ `card_binds._DEFAULT_CARD_BINDS["checkin"]="light"`（随代码入库，绕过 data/ 被 gitignore，clone 后开箱浅色）；`pic/templates/checkin.py`（浅色重写 + `boxes=` 登记三类盒：整枚胶囊/`.value` 数值/各分区）+ `checkin_parts.py`（版式常量 + `_blend/_w/_rec/_tb/_month_matrix` 纯度量辅助，按功能拆分守 20KB，主模板 19837B<20480）；`tools/check_checkin_layout.py --check`：25 组（5 状态×5 月份 28/29/30/31+跨年）`check_boxes` 溢出/重叠/间距 0 + 父子嵌套合法 + 数值贴边≥8px + 浅色契约（bg 亮度≥200/radius>0/贴纸背景）+ 数据契约（必备 label/4 胶囊/无编造）+ 源码无深色终端回退，`--selftest` 11 类反例全拦；`tests/test_checkin_card.py` 27 用例（主题三层绑定/三态渲染/无编造字段/跨月/门禁）；`.value` 数值盒距右边框留白 `PAD_VAL=14`（肉眼核对透气） |
 | **机器人语音输出（`/看图 说`）必须按 `TTS_PROVIDER` 路由，且豆包 seed-audio 与火山方舟两条协议严禁混用、密钥严禁入库**：`seed`=豆包 openspeech 私有 `X-Api-Key` + `text_prompt` 生成式描述 → JSON 内嵌 base64 MP3；`openai`=火山方舟 `Authorization: Bearer` + `{model,input,voice}` → `/audio/speech` 裸音频；`auto`=谁配齐用谁（seed 优先），都没有则**显式报错不本地兜底**（本机无 TTS 库，硬凑是次品路径） | `multimodal/audio_seed.py::SeedAudioClient`（复用 `AudioError`，httpx transport 可注入可裸单测；缺 key/空文本/超字数/HTTP 4xx/非 JSON/缺 audio/非法 base64/空音频/非 MP3/超时全显式 `AudioError`；`decode_audio_field` 校验 mp3 帧头）；`Config.TTS_PROVIDER/SEED_TTS_*`（**`SEED_TTS_API_KEY` 只从 `.env` 读，gitignore，禁硬编码/打印/log**）；`MediaManager._tts_route()+speak()` 分流、`capabilities()` 加 `seed_tts/openai_tts/tts_route` 可观测字段**且不回显 key 值**；`tests/test_audio_seed.py` 18 例（真 MP3 帧头 mock + 11 类反例 + 路由三态 + capabilities 不泄 key + 端到端 `send_record` base64 逐字节一致）；`tests/test_multimodal_audio.py::capabilities` 契约同步更新（临时清空含 `SEED_TTS_API_KEY`，精确 7 键 + seed 路由断言，比原 4 键更严） |
-| **斗技名录卡（「斗技 全部」）右上角状态徽章必须一眼可见，且技能描述第一句必须带技能来源**（用户 2026-11-15「右上角提示优化一下，要更明显更显眼；这些技能严格参考原著，第一句话加上技能来源，有来源就加、没有就不加，不用单独分来源标题」）：三态 = 朱红上阵 / 墨绿可学 / 灰褐未解锁，14px 浅字 + 高对比实底 + 状态圆点（旧版 12px 淡底、可学与未解锁同色 = 反例）；来源句取 `skill_book.novel`（经 1608 章原著语料核验的「第X章「标题」」）+ `source`（传承出处），游戏自设无章节只写传承、绝不编章号，无来源则不加任何前缀；**副行按「 · 」语义段折行**，不许 `_fit` 截成「lv…」或逐字拆开「lv20」 | `pic/templates/doupo_roster.py::state_badge_problems`（字号≥14 / 高≥22 / 三态底色亮度<170 且互不相同）+ 反例注入（12px·18px、淡底同色）；`skill_effects.source_lead/desc_with_source` 是来源句唯一生成入口，`card.build_roster_data` 结构化透出 `source_lead/has_source`；`tools/check_skill_multidim.py::source_problems/badge_problems` + `--selftest` 23 类反例（删来源首句 / 编造章节 / 独立「出处：」标题 / 自设冒充原著 / 徽章回退）；`doupo/test_roster_card.py` 17 用例（来源首句、徽章醒目、技能名不截断、副行折行不拆字、`check_boxes` 溢出 0/重叠 0/间距 0）；宿主与容器真实出图肉眼核对 |
+| **斗技名录卡（「斗技 全部」）右上角状态徽章必须一眼可见，且技能描述第一句必须带技能来源**（用户 2026-11-15「右上角提示优化一下，要更明显更显眼；这些技能严格参考原著，第一句话加上技能来源，有来源就加、没有就不加，不用单独分来源标题」）：三态 = 朱红上阵 / 墨绿可学 / 灰褐未解锁，14px 浅字 + 高对比实底 + 状态圆点（旧版 12px 淡底、可学与未解锁同色 = 反例）；来源只取 `skill_book.source`（谁所使 / 怎么得到），用逗号并进描述第一句，写成「天冥宗易尘所使，斗气凝血成掌……」这样的游戏技能说明；**严禁「原著第X章「标题」载」式小说注脚**（用户 22:5x 纠正「不要写原著多少章这种描述，你见过哪个游戏的技能描述这样写的？」），`novel` 章节引文只用于离线核验、绝不进卡片；不许来源单独成句、不许「出处：」标题，无来源不加任何前缀；**副行按「 · 」语义段折行**，不许 `_fit` 截成「lv…」或逐字拆开「lv20」 | `pic/templates/doupo_roster.py::state_badge_problems`（字号≥14 / 高≥22 / 三态底色亮度<170 且互不相同）+ 反例注入（12px·18px、淡底同色）；`skill_effects.source_phrase/desc_with_source` 是来源唯一生成入口（旧 `source_lead` 已删，让下一个 agent 没地方照抄章节写法），`CITATION_RE` 精确识别小说注脚，`card.build_roster_data` 结构化透出 `source_phrase/has_source`；`tools/check_skill_multidim.py::source_problems/badge_problems` + `--selftest` **25 类反例**（含「旧写法原著第X章注脚」「来源单独成句」两类本次真错注入）；`doupo/test_roster_card.py` 17 用例（来源首句、徽章醒目、技能名不截断、副行折行不拆字、`check_boxes` 溢出 0/重叠 0/间距 0）；宿主与容器真实出图肉眼核对 |
 
 ---
 
@@ -1675,10 +1675,22 @@ stars/boot`）；`fetch_part_art` 对这些部位**先取 WM `prime_*` subIcon�
 
 ## §22:2x（2026-11-15）斗技名录卡：状态徽章醒目化 + 描述首句补技能来源
 
+> ⚠️ 本节记录的**来源写法**（「原著第X章「标题」载，…」）已被用户当场纠正并在 §22:5x 全部作废。当前实现以 §22:5x 为准，**禁止照抄本节的来源句**；本节的徽章与副行折行部分仍然有效。
+
 - **用户指令**（附线上截图 + 「你看看日志」）：「把每个技能右上角的提示优化一下，要更明显更显眼」＋「这些技能可是严格参考原著小说做出来的，项目里就有原著小说全文，第一句话加上技能来源，有来源就加、没有就不加，不用单独分来源标题，目的只是丰富技能描述」。
 - **日志取证**：`docker logs qq-bridge` 22:01:26 `text=斗技全部` → 22:01:28 `pic_render template=doupo_roster cache=miss bytes=726135`，确认线上跑的是两列版名录卡（不是旧卡），无渲染报错。
 - **状态徽章**：`doupo_roster.py` 的 12px / 18px 淡底小胶囊（旧版可学与未解锁共用 `cell_bg`）→ 14px / 24px 高对比实底（朱红上阵 / 墨绿可学 / 灰褐未解锁）＋ 浅字 ＋ 状态圆点；右锚定与名字列起点不变。新增纯函数 `state_badge_problems()`，把「退回淡底小字 / 三态同色」拦在交付前。
 - **来源首句**：`skill_effects.source_lead()` / `desc_with_source()` 是唯一生成入口，取 `skill_book.novel`（已用 1608 章原著语料核验的「第X章「标题」」）＋ `source`（传承出处），生成如「原著第一千一百九十章「承让」载，天冥宗易尘所使。」；游戏自设（原著无载）只写传承来源、绝不编章号；两者都无则不加任何前缀，**不新开「出处：」一栏**。只接 `build_roster_data`，四槽卡不受影响；数据层结构化透出 `source_lead/has_source` 供门禁断言。
 - **顺手修肉眼抓到的既有缺陷**：lv1 玩家副行「lv20 解锁」被 `_fit` 截成「lv…」，改逐字折行又拆成「lv2」/「0 解锁」；最终按「 · 」语义段整段折行 + 副行行高 18→21，信息完整、不拆字、行距达 8px。
 - **验收**：`test_roster_card.py` 17/17；`tools/check_skill_multidim.py --check` PASS 且 `--selftest` 23/23 反例全拦；`check_skill_catalog.py --check`、`check_doupo_typography.py --check` PASS；斗破自带 runner 8 套全过（另 2 套依赖 nonebot，容器内补跑）。宿主天冥宗 23 门真实出图 720×3466 / lv1 720×3467，`check_boxes` 溢出 0 / 重叠 0 / 间距 0，三态徽章与来源句逐段放大肉眼核对通过。
+
+---
+
+## §22:5x（2026-11-15）被纠正：技能来源不是小说注脚
+
+- 用户原话：「不要写原著多少章这种描述，你见过哪个游戏的技能描述这样写的？你会不会技能描述」。
+- **根因**：把「技能来源」误解成文献引用，用 `skill_book.novel` 拼出「原著第一千一百九十章「承让」载，天冥宗易尘所使。」当独立首句——那是小说注脚，不是游戏技能说明。
+- **修法**：删掉 `source_lead` / `SOURCE_NOVEL_RE`（旧写法彻底无处可抄），改为 `source_phrase()` 只取 `skill_book.source`，`desc_with_source()` 用逗号把来源状语并进描述第一句：「天冥宗易尘所使，斗气凝血成掌，掌色暗红近黑；……」。`novel` 章节引文只保留给离线核验，绝不进卡片；无来源不加任何前缀。
+- **拦在犯之前**：`skill_effects.CITATION_RE` 识别「原著第 / 出自第 / 第X章 / 」载」；门禁 `source_problems` 对「desc 出现章节引用」「来源单独成句（缺逗号）」「出处：标题」全部报错；`--selftest` 新增两类本次真错注入（旧章节注脚、来源单独成句），连同原有共 **25/25 反例全拦**；`test_roster_card.py` 17 用例同步断言首句形态与 `CITATION_RE` 能认出旧写法。
+- 验收：宿主 720×3226 / lv1 720×3247（比旧版短约 240px，章节废话删掉了），`check_boxes` 溢出 0 / 重叠 0 / 间距 0，`citations=0`；容器内核验见本轮交差。
 

@@ -170,46 +170,41 @@ def desc_without_gate(desc: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 3.5 描述首句的技能来源（2026-11-15 用户「在第一句话加上技能来源」）
+# 3.5 技能来源融入描述（2026-11-15 用户纠正）
 # ---------------------------------------------------------------------------
-#: 与 doupo/_verify_novel.py::_NOVEL_RE 同源的章节格式；只取「第X章「标题」」，
-#: 不把后面的原著引文整段搬进卡片（那会把两列窄卡撑成一片字）。
-SOURCE_NOVEL_RE = re.compile(r"^(第[零〇一两二三四五六七八九十百千]+章)「([^」]+)」")
-SOURCE_ABSENT = "原著无载"
+#: 文献引用写法 —— 卡片描述里**禁止出现**。
+#: 用户原话：「不要写原著多少章这种描述，你见过哪个游戏的技能描述这样写的？」
+#: 技能说明是游戏文案，不是小说注脚。``skill_book.novel``（章节引文）只用于
+#: 离线核验出处，绝不进卡片；卡片只取 ``source``（谁所创 / 谁所使 / 怎么得到）。
+CITATION_RE = re.compile(
+    r"原著第|出自第|第[零〇一两二三四五六七八九十百千]+章|」载")
 #: 这些字样是「游戏补白」标记，不是来源；不能当成技能来源写进描述。
 SOURCE_NOT_REAL = ("游戏自设", "游戏补白", "原著无载")
 
 
-def source_lead(entry: dict) -> str:
-    """技能来源句：作为**描述第一句**，不单独分「来源 / 出处」标题。
+def source_phrase(entry: dict) -> str:
+    """技能来源短语：作为描述的**开头状语**，不独立成句、不带标题。
 
-    数据来自项目自带的原著语料核验结果（``skill_book.novel`` = 第 X 章「标题」
-    —— 原句；``source`` = 谁所创 / 怎么得到）。规则对应用户原话：
-
-      * 有原著章节 + 有传承来源 → 「原著第X章「标题」载，<来源>。」
-      * 只有原著章节          → 「原著第X章「标题」所载。」
-      * 没有原著章节（游戏自设）但有传承来源 → 只写传承来源，不编章号
-      * 两者都没有            → 返回空串，**不加任何前缀**（有来源就加、没有就不加）
-
-    绝不从章节标题硬凑出处，也绝不写「出处：」「来源：」这类独立标题——
-    用户要的是把来源自然融进描述，而不是再加一栏元数据。
+    只取 ``skill_book.source``，去掉句末标点；无来源 / 只有自设标记 /
+    混进章节引用时返回空串（用户：有来源就加、没有就不加）。
     """
-    novel = str(entry.get("novel") or "").strip()
-    src = str(entry.get("source") or "").strip().rstrip("。！？；;")
-    if any(x in src for x in SOURCE_NOT_REAL):
-        src = ""
-    m = None if SOURCE_ABSENT in novel else SOURCE_NOVEL_RE.match(novel)
-    if m:
-        cite = "原著%s「%s」" % (m.group(1), m.group(2))
-        return "%s载，%s。" % (cite, src) if src else "%s所载。" % cite
-    return (src + "。") if src else ""
+    src = str(entry.get("source") or "").strip().rstrip("。！？；;，, ")
+    if not src or any(x in src for x in SOURCE_NOT_REAL):
+        return ""
+    if CITATION_RE.search(src):
+        return ""
+    return src
 
 
 def desc_with_source(entry: dict, desc: str) -> str:
-    """把来源句拼到描述**最前面**；没有来源时原样返回，不造空句。"""
-    lead = source_lead(entry)
+    """把来源并进**描述第一句**：「天冥宗易尘所使，斗气凝血成掌……」。
+
+    用逗号把来源状语接上施展流程，读起来就是一条技能说明；不独立成句、
+    不写「出处：」、不写章节号。没有来源时原样返回，绝不造空句。
+    """
+    phrase = source_phrase(entry)
     body = str(desc or "")
-    return (lead + body) if lead else body
+    return (phrase + "，" + body) if phrase else body
 
 
 # ---------------------------------------------------------------------------

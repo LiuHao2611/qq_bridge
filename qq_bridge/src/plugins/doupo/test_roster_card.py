@@ -306,42 +306,49 @@ def test_lock_state_pill_fits_for_low_level():
 
 
 def test_desc_first_sentence_is_skill_source():
-    """用户 2026-11-15：「在第一句话加上技能来源，有来源就加，没有就不加」。
+    """用户 2026-11-15 纠正：「不要写原著多少章这种描述，你见过哪个游戏的
+    技能描述这样写的？」
 
-    来源必须取自 skill_book 里经原著语料核验过的章节引用 + 传承出处，
-    不许另起「出处：」标题（用户：不用单独分来源标题）；没有原著章节的
-    游戏自设技只能用传承来源，绝不编章号。
+    技能说明首句 = 「<传承来源>，<施展流程>…」：来源只取 skill_book.source，
+    用逗号并入描述，不许写章节号 / 「出处：」标题 / 来源单独成句；
+    没有来源的技能不加任何前缀。
     """
     from doupo import factions as fac
+    from doupo import skill_effects as fx
 
     p = _p(faction="tianmingzong")
     p["faction_name"] = fac.FACTIONS["tianmingzong"]["name"]
     pool = {e["name"]: e for e in core.skill_pool(p)}
     rows = card.build_roster_data(p)["rows"]
-    with_chapter = 0
+    with_source = 0
     for r in rows:
-        lead = str(r.get("source_lead") or "")
+        phrase = str(r.get("source_phrase") or "")
         desc = str(r.get("desc") or "")
-        assert bool(lead) == bool(r.get("has_source")), (
-            "%s 的 has_source 与 source_lead 不一致" % r["name"])
-        if not lead:
-            assert "原著第" not in desc, "%s 没有来源却编了原著章节" % r["name"]
-            continue
-        assert desc.startswith(lead), "%s 的描述首句不是技能来源：%s" % (
-            r["name"], desc[:36])
+        assert bool(phrase) == bool(r.get("has_source")), (
+            "%s 的 has_source 与 source_phrase 不一致" % r["name"])
+        assert phrase == fx.source_phrase(pool[r["name"]]), (
+            "%s 的来源不是 skill_book.source 原文" % r["name"])
+        assert not fx.CITATION_RE.search(desc), (
+            "%s 的描述写成小说注脚了：%s" % (r["name"], desc[:36]))
         for tag in ("出处：", "来源：", "原著："):
-            assert tag not in lead, "%s 把来源写成了独立标题「%s」" % (r["name"], tag)
-        e = pool[r["name"]]
-        novel = str(e.get("novel") or "")
-        if "原著第" in lead:
-            with_chapter += 1
-            cite = lead.split("载，")[0][len("原著"):]
-            assert cite in novel, "%s 的章节引用不在原著记录里：%s / %s" % (
-                r["name"], cite, novel[:40])
+            assert tag not in desc[:24], (
+                "%s 把来源写成了独立标题「%s」" % (r["name"], tag))
+        if phrase:
+            with_source += 1
+            assert desc.startswith(phrase + "，"), (
+                "%s 的来源没并进描述第一句：%s" % (r["name"], desc[:36]))
+            assert not desc.startswith(phrase + "。"), (
+                "%s 的来源单独成句，不像技能描述" % r["name"])
+            assert len(desc) > len(phrase) + 8, (
+                "%s 来源后面没有施展流程" % r["name"])
         else:
-            assert "原著无载" in novel, (
-                "%s 没章节却不是游戏自设，来源可能漏接：%s" % (r["name"], novel[:40]))
-    assert with_chapter >= 20, "23 门里应有绝大多数带原著章节，实测 %d" % with_chapter
+            assert not desc.startswith("，"), "%s 没有来源却留了逗号前缀" % r["name"]
+        assert len(desc) >= 40, "%s 描述过短" % r["name"]
+    assert with_source >= 20, "23 门里绝大多数都应有传承来源，实测 %d" % with_source
+    # 检测本身必须认得出这次真实犯过的旧写法（否则门禁会形同虚设）
+    assert fx.CITATION_RE.search(
+        "原著第一千一百九十章「承让」载，天冥宗易尘所使。斗气凝血成掌……"), (
+        "旧章节引用写法必须被识别")
 
 
 def test_state_badge_is_prominent():

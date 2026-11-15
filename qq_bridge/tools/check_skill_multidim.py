@@ -24,8 +24,11 @@
    防止「文案说有 30% 破防、数据里却是 0」这种图文说两回事。
 5. **卡片消费**：``card.build_skills_data`` / ``build_roster_data`` 必须真的把
    role/chips/gate 透出到卡片数据（否则修了数据层、玩家还是只看到一个数字）。
-6. **来源首句**（2026-11-15 第三轮）：名录卡每行 desc 的第一句必须是技能来源
-   （原著章节 + 传承出处），有来源就加、游戏自设不编章号、不许写「出处：」标题。
+6. **来源融入描述**（2026-11-15 用户纠正）：名录卡每行 desc 以
+   「<传承来源>，<施展流程>…」开头，来源只取 ``skill_book.source``（谁所使 /
+   怎么得到）；**严禁写「原著第X章「标题」载」这类小说注脚**（用户：「不要写
+   原著多少章这种描述，你见过哪个游戏的技能描述这样写的？」）；有来源就加、
+   没有就不加、不许写「出处：」标题、不许来源单独成句。
 7. **状态徽章醒目**：右上角 14px 浅字 + 高对比实底 + 状态圆点、三态不同色；
    退回旧版 12px 淡底同色小胶囊即报错（``state_badge_problems``）。
 
@@ -274,37 +277,45 @@ def _roster_shape_problems(roster: dict) -> list[str]:
 # 4.5 描述首句来源 + 右上角状态徽章（2026-11-15 用户第三轮优化）
 # ---------------------------------------------------------------------------
 def source_problems(roster: dict) -> list[str]:
-    """名录卡每行：有来源必加在**第一句**、无来源不编、不单列「来源」标题。
+    """名录卡每行：来源以状语并进**描述第一句**、无来源不编、不写章节号。
 
-    纯函数，反例注入见 ``selftest``。字段 ``source_lead`` / ``has_source`` 由
-    ``card.build_roster_data`` 结构化透出，避免靠字符串猜「有没有加来源」。
+    用户 2026-11-15 纠正：「不要写原著多少章这种描述，你见过哪个游戏的
+    技能描述这样写的？」——所以除了「有来源必加」，还必须拦文献引用写法
+    与「来源单独成句」（那不是游戏技能说明）。
+
+    纯函数，反例注入见 ``selftest``。字段 ``source_phrase`` / ``has_source``
+    由 ``card.build_roster_data`` 结构化透出，避免靠字符串猜有没有加来源。
     """
     out: list[str] = []
     rows = roster.get("rows") or []
     if not rows:
         return ["[来源] 名录卡没有行"]
     if not any(r.get("has_source") for r in rows):
-        out.append("[来源] 整张名录卡没有任何技能来源（card 层没接 source_lead）")
+        out.append("[来源] 整张名录卡没有任何技能来源（card 层没接 source_phrase）")
     for r in rows:
         name = str(r.get("name") or r.get("title") or "?")
-        lead = str(r.get("source_lead") or "")
+        phrase = str(r.get("source_phrase") or "")
         desc = str(r.get("desc") or "")
         has = bool(r.get("has_source"))
-        if has != bool(lead):
-            out.append("[来源] %s 的 has_source 与 source_lead 不一致" % name)
-        if lead and not desc.startswith(lead):
-            out.append("[来源] %s 的描述首句不是技能来源：%s" % (name, desc[:32]))
+        if has != bool(phrase):
+            out.append("[来源] %s 的 has_source 与 source_phrase 不一致" % name)
+        if phrase and not desc.startswith(phrase + "，"):
+            out.append("[来源] %s 的来源没并进描述第一句（应「<来源>，<施展流程>…」）：%s"
+                       % (name, desc[:32]))
+        if fx.CITATION_RE.search(desc):
+            out.append("[来源] %s 的描述写成小说注脚了（出现原著章节引用）：%s"
+                       % (name, desc[:32]))
         if not has and ("原著第" in desc or "出自第" in desc):
             out.append("[来源] %s 没有来源却编了原著章节" % name)
         for tag in ("出处：", "出处:", "来源：", "来源:", "原著："):
-            if tag in lead:
+            if tag in phrase:
                 out.append("[来源] %s 把来源写成了独立标题「%s」，应融进描述首句"
                            % (name, tag))
                 break
-        if "\n" in lead or lead.startswith("限制："):
-            out.append("[来源] %s 的来源句不是描述里的自然第一句" % name)
-        if "原著无载" in lead or "游戏自设" in lead:
-            out.append("[来源] %s 把「游戏自设」当成了原著来源" % name)
+        if "\n" in phrase or phrase.startswith("限制："):
+            out.append("[来源] %s 的来源短语不是描述里的自然开头" % name)
+        if "原著无载" in phrase or "游戏自设" in phrase:
+            out.append("[来源] %s 把「游戏自设」当成了技能来源" % name)
     return out
 
 
@@ -414,28 +425,35 @@ def selftest() -> list[tuple[str, bool]]:
                        desc="斗气凝血成掌，造成伤害并附加血毒。限制：气血虚时威力骤降，"
                             "对无血之物无效。")]}))))
 
-    # ---- 描述首句来源（2026-11-15 用户「在第一句话加上技能来源」）----
-    lead = "原著第一千一百九十章「承让」载，天冥宗易尘所使。"
+    # ---- 描述首句来源（2026-11-15 用户纠正：不许写原著章节号）----
+    phrase = "天冥宗易尘所使"
     body = "斗气凝血成掌，一掌拍出，血毒随掌力渗入，造成 140% 伤害。"
     good_src = {"rows": [
-        {"name": "血煞掌", "has_source": True, "source_lead": lead,
-         "desc": lead + body},
-        {"name": "嗜血化骨手", "has_source": False, "source_lead": "",
+        {"name": "血煞掌", "has_source": True, "source_phrase": phrase,
+         "desc": phrase + "，" + body},
+        {"name": "无来源技", "has_source": False, "source_phrase": "",
          "desc": body},
     ]}
-    res.append(("来源首句完整时不应报错", not source_problems(good_src)))
+    res.append(("来源并进描述首句时不应报错", not source_problems(good_src)))
     res.append(("删掉描述首句的技能来源", bool(source_problems(
         {"rows": [dict(good_src["rows"][0], desc=body), good_src["rows"][1]]}))))
+    res.append(("旧写法：原著第X章「标题」载（用户纠正的错）", bool(source_problems(
+        {"rows": [dict(good_src["rows"][0],
+                       desc="原著第一千一百九十章「承让」载，天冥宗易尘所使。" + body),
+                  good_src["rows"][1]]}))))
+    res.append(("来源单独成句、没并入施展流程", bool(source_problems(
+        {"rows": [dict(good_src["rows"][0], desc=phrase + "。" + body),
+                  good_src["rows"][1]]}))))
     res.append(("有来源却没标 has_source", bool(source_problems(
         {"rows": [dict(good_src["rows"][0], has_source=False), good_src["rows"][1]]}))))
     res.append(("给无来源技能编造原著章节", bool(source_problems(
         {"rows": [good_src["rows"][0],
                   dict(good_src["rows"][1], desc="原著第五百章「杜撰」载。" + body)]}))))
     res.append(("把来源写成独立标题「出处：」", bool(source_problems(
-        {"rows": [dict(good_src["rows"][0], source_lead="出处：" + body,
+        {"rows": [dict(good_src["rows"][0], source_phrase="出处：" + body,
                        desc="出处：" + body), good_src["rows"][1]]}))))
-    res.append(("把「游戏自设」当成原著来源", bool(source_problems(
-        {"rows": [dict(good_src["rows"][0], source_lead="原著无载 · 游戏自设。",
+    res.append(("把「游戏自设」当成技能来源", bool(source_problems(
+        {"rows": [dict(good_src["rows"][0], source_phrase="原著无载 · 游戏自设。",
                        desc="原著无载 · 游戏自设。" + body), good_src["rows"][1]]}))))
 
     # ---- 右上角状态徽章（用户「更明显更显眼」）----

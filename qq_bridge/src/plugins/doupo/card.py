@@ -362,11 +362,11 @@ def build_roster_data(p: dict) -> dict:
         chips = [{"label": "伤害", "value": "×%.2f" % float(e.get("dmg") or 0)}]
         chips += fx.effect_chips(e.get("effects") or [])
 
-        # 2026-11-15 用户：「这些技能严格参考原著，在第一句话加上技能来源，
-        # 有来源就加、没有就不加，不用单独分来源标题」。来源句来自 skill_book
-        # 已用 1608 章原著语料核验过的 novel + 传承 source，只拼进描述首句，
-        # 不新开一行「出处：」——那会变成元数据栏而不是丰富的技能描述。
-        lead = fx.source_lead(e)
+        # 2026-11-15 用户纠正：「不要写原著多少章这种描述，你见过哪个游戏的
+        # 技能描述这样写的？」——来源只取 skill_book.source（谁所使 / 怎么得到），
+        # 由 desc_with_source 用逗号并进描述第一句，像游戏技能说明而不是小说注脚；
+        # novel 章节引文只用于离线核验，绝不进卡片。有来源就加、没有就不加。
+        phrase = fx.source_phrase(e)
 
         row = {
             "name": name,
@@ -380,13 +380,13 @@ def build_roster_data(p: dict) -> dict:
             # 名片卡只放 brief 是偷懒，玩家看不到机制就会退回比数字。
             # 完整描述去掉末尾「限制：…」段——代价由 gate 行单独展示，
             # 否则同一件事在图里说两遍（用户实测指出重复）。
-            # 首句再拼技能来源（``desc_with_source``），无来源时原样不动。
+            # 首句并入技能来源状语（``desc_with_source``），无来源时原样不动。
             "desc": fx.desc_with_source(
                 e, (fx.desc_without_gate(str(e.get("desc") or ""))
                     or str(e.get("desc") or e.get("brief") or ""))),
-            # 结构化透出来源，供交付闸门断言「有来源必加、无来源不编」
-            "source_lead": lead,
-            "has_source": bool(lead),
+            # 结构化透出来源，供交付闸门断言「有来源必加、无来源不编、不写章节号」
+            "source_phrase": phrase,
+            "has_source": bool(phrase),
             "chips": chips,
             "gate": str(e.get("gate") or ""),
             # ---- 兼容通用列表卡 / 既有测试的扁平字段 ----
