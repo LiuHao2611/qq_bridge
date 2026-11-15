@@ -1,0 +1,299 @@
+# -*- coding: utf-8 -*-
+"""tools/check_skill_multidim.py —— 斗技「多维度设计」交付闸门。
+
+用户 2026-11-15（附截图）：
+    「全部斗技的展示做的太简陋了……技能描述也没展示出来，技能数值也没展示，
+      比如一个技能有位移又有伤害，那就应该有闪避和少量伤害，懂吗，而不是一个
+      单纯的数字。这么设计的话所有的斗技就只剩下一个数值对比了，就失去了斗技
+      使用的多样性……让玩家有更好的技能搭配，而不是无脑选择高数值的斗技。」
+
+根因不是「文案不够好」，而是**数据结构只有一维伤害**：``kind/scope`` 是单值枚举，
+``_hit()`` 只按 ``dmg`` 倍率算伤害，desc 里的吸血/破防/DoT/控制全是死文本。
+因此引入 ``role + effects[] + gate`` 三元组（见 ``src/plugins/doupo/skill_effects.py``），
+并让核心战斗与卡片都消费它。
+
+本闸门守的就是「不许退回去」：
+
+1. **字段完整**：目标宗门（默认天冥宗）每门斗技必须有 role / effects / gate，
+   且 role 在受控词表内、effect 类型在 EFFECT_LABELS 内、数值不越界。
+2. **反无脑选最大值**：每门至少满足一条战术维度——
+   ``effects`` 有实质效果，或 ``gate`` 写明代价，或 role 属于战术型（非纯输出）。
+   低伤（倍率 <= 1.3）技能若既无效果又无门控 = 纯数字填充，直接拦。
+3. **高威力必须付代价**：倍率 >= 1.8 的斗技必须有 gate，否则就是无脑最优解。
+4. **描述与结构一致**：desc 里写到的百分比必须能在 effects 里找到对应数值，
+   防止「文案说有 30% 破防、数据里却是 0」这种图文说两回事。
+5. **卡片消费**：``card.build_skills_data`` / ``build_roster_data`` 必须真的把
+   role/chips/gate 透出到卡片数据（否则修了数据层、玩家还是只看到一个数字）。
+
+用法：
+    python tools/check_skill_multidim.py            # 报告，不中断
+    python tools/check_skill_multidim.py --check    # 违规 exit 1（交付前必跑）
+    python tools/check_skill_multidim.py --selftest # 反例注入：每个旧错都必须被拦
+"""
+from __future__ import annotations
+
+import os
+import re
+import sys
+import types
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+PLUGINS = ROOT / "src" / "plugins"
+for _p in (str(ROOT), str(PLUGINS)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+#: 默认检查的宗门（用户当前宗门；其余宗门的斗技按同一规范逐步补齐）
+TARGET_FACTION = "tianmingzong"
+#: 低伤门槛：倍率 <= 此值且无任何战术维度 = 纯数字技能
+LOW_DMG = 1.3
+#: 高威力门槛：倍率 >= 此值必须写 gate（否则无脑最优）
+HIGH_DMG = 1.8
+
+#: 允许的战术型主定位（纯「输出」不算战术维度——那还是比数字）
+TACTICAL_ROLES = ("续航", "控场", "异常", "防御", "位移", "功能")
+
+
+def _stub_nonebot() -> None:
+    """让 doupo 纯逻辑层可在无 QQ 环境导入（不加载主插件）。"""
+    nb = types.ModuleType("nonebot")
+    nb.get_driver = lambda: types.SimpleNamespace(on_startup=lambda f: f)
+
+    def on_regex(*a, **k):
+        m = types.SimpleNamespace()
+        m.handle = lambda *a, **k: (lambda f: f)
+        m.finish = lambda *a, **k: None
+        return m
+
+    nb.on_regex = on_regex
+    sys.modules["nonebot"] = nb
+    for name in ("nonebot.adapters", "nonebot.adapters.onebot",
+                 "nonebot.adapters.onebot.v11"):
+        sys.modules[name] = types.ModuleType(name)
+    v11 = sys.modules["nonebot.adapters.onebot.v11"]
+    v11.MessageEvent = object
+    v11.MessageSegment = object
+    v11.Message = object
+
+
+_stub_nonebot()
+
+from doupo import skills, skill_book as book          # noqa: E402
+from doupo import skill_effects as fx                 # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# 1. 结构校验
+# ---------------------------------------------------------------------------
+def _faction_entries(fid: str) -> list[dict]:
+    return skills.catalog(fid)
+
+
+def struct_problems(entries: list[dict], fid: str = TARGET_FACTION) -> list[str]:
+    """字段完整性 / 词表 / 数值范围。"""
+    out: list[str] = []
+    if not entries:
+        return ["[数据] %s 一门斗技都没读到（catalog 失效）" % fid]
+    for e in entries:
+        name = e["name"]
+        rec = book.SKILL_BOOK.get(name, {})
+        role = str(rec.get("role") or "")
+        effects = rec.get("effects")
+        gate = str(rec.get("gate") or "")
+        if not role:
+            out.append("[字段] %s 缺 role（主定位）" % name)
+        elif role not in fx.ROLES:
+            out.append("[词表] %s 的 role=%r 不在受控词表 %s" % (name, role, fx.ROLES))
+        if effects is None or effects == []:
+            out.append("[字段] %s 没有 effects（多维度为空，只剩一个伤害数字）" % name)
+        for err in fx.validate_effects(effects or []):
+            out.append("[效果] %s %s" % (name, err))
+        if not gate:
+            out.append("[字段] %s 缺 gate（没写门控/代价）" % name)
+        if not str(rec.get("desc") or ""):
+            out.append("[字段] %s 缺完整 desc" % name)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 2. 反无脑：低伤必须有战术维度，高威力必须有代价
+# ---------------------------------------------------------------------------
+def _has_tactical(e: dict, rec: dict) -> bool:
+    """有实质效果 / 有门控 / 主定位是战术型 —— 三者有其一即算有维度。"""
+    effects = [x for x in (rec.get("effects") or []) if isinstance(x, dict)]
+    if effects:
+        return True
+    if str(rec.get("gate") or "").strip():
+        return True
+    return str(rec.get("role") or "") in TACTICAL_ROLES
+
+
+def balance_problems(entries: list[dict], fid: str = TARGET_FACTION) -> list[str]:
+    out: list[str] = []
+    for e in entries:
+        name = e["name"]
+        rec = book.SKILL_BOOK.get(name, {})
+        mult = float(e.get("dmg") or 0)
+        role = str(rec.get("role") or "")
+        gate = str(rec.get("gate") or "").strip()
+        if mult <= LOW_DMG and not _has_tactical(e, rec):
+            out.append("[无脑] %s 倍率 %.2f 但无任何战术维度（纯数字填充）" % (name, mult))
+        if mult >= HIGH_DMG and not gate:
+            out.append("[无脑] %s 倍率 %.2f 却没有 gate，会成为唯一最优解" % (name, mult))
+        if role == "输出" and not [x for x in (rec.get("effects") or [])]:
+            out.append("[无脑] %s 定位纯输出且无效果（还是只剩比数字）" % name)
+    # 全局：不允许「全部技能同一个 role」这种伪多维
+    roles = {str(book.SKILL_BOOK.get(e["name"], {}).get("role") or "") for e in entries}
+    roles.discard("")
+    if len(roles) < 3:
+        out.append("[多样性] 本宗只有 %d 种主定位 %s，技能搭配空间不足" % (len(roles), sorted(roles)))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 3. 描述与结构一致（文案说 X%，数据里必须有 X）
+# ---------------------------------------------------------------------------
+_PCT_RE = re.compile(r"(\d+)%")
+
+
+def desc_consistency_problems(entries: list[dict]) -> list[str]:
+    """desc 里出现的百分比，至少有一个能在 effects 的 v/p 里对上。
+
+    只做「存在性」校验：完整比对会把「斗气 34%」「体力上限 8%」这类非效果数值
+    误判，因此要求 effects 至少命中一个 desc 百分比即可。
+
+    控制类效果（眩晕/定身/禁技/击退）本身不带百分比——这类技能 desc 里只有
+    伤害倍率（如「造成 160% 伤害，并令目标 1 回合内无法施展斗技」），
+    无数值可比，跳过（否则会误报纯控制技）。
+    """
+    out: list[str] = []
+    for e in entries:
+        name = e["name"]
+        rec = book.SKILL_BOOK.get(name, {})
+        desc = str(rec.get("desc") or "")
+        effects = [x for x in (rec.get("effects") or []) if isinstance(x, dict)]
+        if not desc or not effects:
+            continue
+        # effects 里的数值（v/p）与持续回合(d)都可能以百分比出现，全部纳入候选
+        have: set[int] = set()
+        for x in effects:
+            for k in ("v", "p"):
+                if x.get(k) is not None:
+                    try:
+                        have.add(int(round(float(x[k]) * 100)))
+                    except (TypeError, ValueError):
+                        pass
+        if not have:
+            continue          # 纯控制/纯位移效果：没有百分比可比，跳过
+        want = {int(m) for m in _PCT_RE.findall(desc)}
+        if not want:
+            continue
+        if not (want & have):
+            out.append("[图文] %s 描述里的百分比 %s 在 effects 数值 %s 里找不到对应"
+                       % (name, sorted(want), sorted(have)))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 4. 卡片真的消费了多维字段
+# ---------------------------------------------------------------------------
+def card_problems() -> list[str]:
+    """卡片数据层必须透出 role/chips/gate，否则玩家看到的还是老样子。"""
+    from doupo import card, core, factions as fac
+
+    out: list[str] = []
+    p = core.create_player("10001", "闸门", "20001")
+    p["lv"] = 50
+    p["faction"] = TARGET_FACTION
+    p["faction_name"] = fac.FACTIONS[TARGET_FACTION]["name"]
+    core.skill_pool(p)
+
+    d = card.build_skills_data(p)
+    if not any(r.get("role") for r in d["rows"]):
+        out.append("[卡片] build_skills_data 没有 role（四槽卡看不到主定位）")
+    if not any(r.get("chips") for r in d["rows"]):
+        out.append("[卡片] build_skills_data 没有 chips（四槽卡看不到多维效果）")
+    if not any(r.get("gate") for r in d["rows"]):
+        out.append("[卡片] build_skills_data 没有 gate（四槽卡看不到代价）")
+    if any(len(str(r.get("desc") or "")) <= 20 for r in d["rows"]):
+        out.append("[卡片] build_skills_data 的 desc 过短，疑似退回 brief")
+
+    roster = card.build_roster_data(p)
+    if not any("〔" in str(r.get("sub") or "") for r in roster["rows"]):
+        out.append("[卡片] build_roster_data 没画主定位标签")
+    if not any(r.get("note") for r in roster["rows"]):
+        out.append("[卡片] build_roster_data 没画多维效果/门控行")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 5. 反例注入（自举：闸门必须真的会报错）
+# ---------------------------------------------------------------------------
+def selftest() -> list[tuple[str, bool]]:
+    """把这次真实犯过的错放回去，检查必须报错；全 True 才算闸门有效。"""
+    entries = _faction_entries(TARGET_FACTION)
+    if not entries:
+        return [("读到天冥宗斗技", False)]
+    name0 = entries[0]["name"]
+    rec0 = dict(book.SKILL_BOOK.get(name0, {}))
+    res: list[tuple[str, bool]] = []
+
+    saved = book.SKILL_BOOK.get(name0)
+    book.SKILL_BOOK[name0] = dict(rec0, role="", effects=[], gate="")
+    res.append(("清空 role/effects/gate", bool(struct_problems(entries))))
+    book.SKILL_BOOK[name0] = dict(rec0, effects=[{"t": "wat", "v": 0.5}])
+    res.append(("塞入未知效果类型", bool(struct_problems(entries))))
+    book.SKILL_BOOK[name0] = dict(rec0, effects=[{"t": "dot", "v": 9}])
+    res.append(("效果数值越界", bool(struct_problems(entries))))
+
+    # 低伤纯数字：构造一个倍率 1.0、无任何维度的假条目
+    fake = {"name": name0, "dmg": 1.0, "tier": "普通", "rank": "黄阶低级"}
+    book.SKILL_BOOK[name0] = {"role": "输出", "effects": [], "gate": "", "desc": "造成 100% 伤害。"}
+    res.append(("低伤且无战术维度", bool(balance_problems([fake]))))
+    # 高威力无 gate
+    book.SKILL_BOOK[name0] = {"role": "爆发", "effects": [{"t": "pierce", "v": 0.3}],
+                              "gate": "", "desc": "造成 200% 伤害，无视 30% 防御。"}
+    res.append(("高威力却没有 gate", bool(balance_problems([dict(fake, dmg=2.0)]))))
+    # 图文不一致：desc 说 30%，effects 是 5%
+    book.SKILL_BOOK[name0] = {"role": "异常", "effects": [{"t": "dot", "v": 0.05}],
+                              "gate": "某代价", "desc": "造成 140% 伤害，并附加 30% 减疗。"}
+    res.append(("描述与结构数值不符", bool(desc_consistency_problems([fake]))))
+
+    if saved is not None:
+        book.SKILL_BOOK[name0] = saved
+    return res
+
+
+# ---------------------------------------------------------------------------
+def main() -> int:
+    entries = _faction_entries(TARGET_FACTION)
+    sp = struct_problems(entries)
+    bp = balance_problems(entries)
+    dp = desc_consistency_problems(entries)
+    cp = card_problems()
+    st = selftest()
+    problems = sp + bp + dp + cp
+    for name, caught in st:
+        if not caught:
+            problems.append("[selftest] 反例没被拦住: %s" % name)
+
+    print("斗技多维度闸门 · 宗门=%s · 共 %d 门" % (TARGET_FACTION, len(entries)))
+    print("  结构完整（role/effects/gate/desc）：%s" % ("PASS" if not sp else "FAIL %d 项" % len(sp)))
+    print("  反无脑（低伤有维度/高威力有代价）：%s" % ("PASS" if not bp else "FAIL %d 项" % len(bp)))
+    print("  图文一致（desc 百分比能在 effects 对上）：%s" % ("PASS" if not dp else "FAIL %d 项" % len(dp)))
+    print("  卡片已消费多维字段：%s" % ("PASS" if not cp else "FAIL %d 项" % len(cp)))
+    print("  反例注入：%d/%d 被拦" % (sum(1 for _, ok in st if ok), len(st)))
+    for name, ok in st:
+        print("    %s %s" % ("OK  " if ok else "MISS", name))
+    for p in problems:
+        print("  " + p)
+    if "--selftest" in sys.argv:
+        return 0 if all(ok for _, ok in st) else 1
+    if "--check" in sys.argv and problems:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

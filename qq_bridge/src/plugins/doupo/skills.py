@@ -61,6 +61,11 @@ def _to_entry(rec: dict, fid: str, origin: str) -> dict:
         "source": source,
         "novel": novel,
         "cd": rec["cd"],
+        # 2026-11-15 多维度：主定位 / 效果原子 / 门控代价，供卡片与战斗共用。
+        # 用 .get 兜底，兼容 skill_book 里尚未填这三门的老记录（其余 160+ 门）。
+        "role": rec.get("role", ""),
+        "effects": list(rec.get("effects") or []),
+        "gate": rec.get("gate", ""),
         # 「游戏自设」= 原著无据的战斗技，卡片要显式标注，不许冒充原著斗技
         "core": ("游戏自设" in source) or ("原著无载" in novel),
     }

@@ -15,6 +15,7 @@ import time
 from . import config as cfg
 from . import factions as fac
 from . import skills as sk_mod
+from . import skill_effects as fx
 
 
 # ---------------------------------------------------------------------------
@@ -361,8 +362,13 @@ def _pick_skill(p, mp: int, rng=random.random):
     return e, c
 
 
-def _hit(p, target_def, entry, rng) -> dict:
-    """一次出手：entry 为 None 时用武器普攻，否则按该斗技算伤害。"""
+def _hit(p, target_def, entry, rng, fx_self=None, fx_target=None, ctx=None) -> dict:
+    """一次出手：entry 为 None 时用武器普攻，否则按该斗技算伤害。
+
+    2026-11-15 多维效果：传入 ``fx_target`` 时才结算技能效果（破防/连击/增伤/
+    吸血/挂 DoT/控制），并把逐维文案放进 ``notes``。**不传这两个状态时，行为与
+    改造前逐字节一致**，只是多两个空字段，任何既有调用方/测试都不受影响。
+    """
     st = stats(p)
     crit = rng() * 100 < crit_rate(p)
     if entry is not None:
@@ -372,8 +378,24 @@ def _hit(p, target_def, entry, rng) -> dict:
     else:
         raw = st["力量"] * float(cfg.WEAPON_BASE_MULT)
         kind = "普攻"
-    dmg = max(1, int(raw * mitigation(target_def) * (1.5 if crit else 1.0)))
-    return {"dmg": dmg, "crit": crit, "kind": kind, "skill": entry is not None}
+
+    # 基础单击（未计破防/条件）：也是 DoT 的伤害基数
+    base = max(1, int(raw * mitigation(target_def) * (1.5 if crit else 1.0)))
+    notes: list[str] = []
+    heal_ratio = 0.0
+    dmg = base
+    if entry is not None and fx_target is not None:
+        self_st = fx_self if fx_self is not None else fx.new_state()
+        r = fx.on_hit(entry.get("effects") or [], self_st, fx_target, base, rng, ctx)
+        heal_ratio, notes = r["heal_ratio"], r["notes"]
+        # 破防在 on_hit 里写入 fx_target["def_shred"]，这里读取后重算本次伤害；
+        # 条件/连击/增幅加成走 bonus。
+        eff_def = int(target_def * fx.target_def_mult(fx_target))
+        dmg = max(1, int(raw * mitigation(eff_def) * (1.5 if crit else 1.0)))
+        if r["bonus"] > 0:
+            dmg = max(1, int(dmg * (1.0 + r["bonus"])))
+    return {"dmg": dmg, "crit": crit, "kind": kind, "skill": entry is not None,
+            "notes": notes, "heal_ratio": heal_ratio}
 
 
 def faction_pools_open(p) -> list[str]:
@@ -519,30 +541,57 @@ def fight(p, mon, rng=random.random) -> dict:
     dodge = dodge_rate(p)
     lifesteal = 0.02 * int((p.get("flames") or {}).get("三千焱炎火", 0))
     var = max(0.0, float(cfg.MON_DMG_VAR))
+    # 2026-11-15 多维效果：本场临时状态（战后即弃，绝不写回 p/mon）
+    p_fx, m_fx = fx.new_state(), fx.new_state()
+    m_ctx = {"target_flags": set(), "target_hp_ratio": 1.0}
 
     while rounds < 15 and m_hp > 0 and hp > 0:
         rounds += 1
         entry, cost = _pick_skill(p, mp, rng)   # 随机释放「已上阵且斗气够」的技
-        hit = _hit(p, m_def, entry, rng)
+        m_ctx["target_hp_ratio"] = m_hp / max(1, mon["hp"])
+        hit = _hit(p, m_def, entry, rng, p_fx, m_fx, m_ctx)
         if entry is not None:
             mp -= cost
         m_hp -= hit["dmg"]
         dmg_log.append(hit)
-        if lifesteal > 0:
-            heal = int(hit["dmg"] * lifesteal)
-            hp = min(st["体力"], hp + heal)
+        # 吸血：异火被动 + 技能自带（只回血，不改伤害主值）
+        heal_frac = lifesteal + float(hit.get("heal_ratio", 0))
+        if heal_frac > 0:
+            hp = min(st["体力"], hp + int(hit["dmg"] * heal_frac))
+        # 逐维文案并入主 hit 的 notes（主日志 kind/dmg/skill 字段一律不动）
 
         if m_hp <= 0:
             break
-        # 怪反击
-        if rng() * 100 < dodge:
-            dmg_log.append({"dmg": 0, "kind": "闪避", "miss": True})
-            continue
-        roll = 1.0 - var + 2.0 * var * rng()
-        dealt = max(1, int(m_atk * mitigation(st["防御"]) * roll))
-        hp -= dealt
-        taken += dealt
-        dmg_log.append({"dmg": dealt, "kind": "兽击", "taken": True})
+        # 目标行动前：结算挂在怪身上的 DoT + 眩晕/定身
+        start = fx.on_turn_start(m_fx, rng)
+        if start["dot_dmg"]:
+            m_hp -= start["dot_dmg"]
+            dmg_log.append({"dmg": start["dot_dmg"], "kind": "持续伤害", "dot": True,
+                            "notes": start["notes"]})
+        if m_hp <= 0:
+            break
+        # 怪反击（被眩晕/定身则跳过）
+        if not start["skip"]:
+            if rng() * 100 < dodge:
+                dmg_log.append({"dmg": 0, "kind": "闪避", "miss": True})
+            else:
+                roll = 1.0 - var + 2.0 * var * rng()
+                dealt = max(1, int(m_atk * mitigation(st["防御"]) * roll))
+                # 玩家侧减伤/闪避/反伤（卸力水镜/雷蝠天翼/燕返击）
+                inc = fx.on_incoming(p_fx, dealt, rng)
+                hp -= inc["final"]
+                taken += inc["final"]
+                log_entry = {"dmg": inc["final"], "kind": "兽击", "taken": True}
+                if inc["notes"]:
+                    log_entry["notes"] = inc["notes"]
+                dmg_log.append(log_entry)
+                if inc["reflect"]:
+                    m_hp -= inc["reflect"]
+                    dmg_log.append({"dmg": inc["reflect"], "kind": "反伤", "reflect": True})
+        else:
+            dmg_log.append({"dmg": 0, "kind": "被控", "miss": True})
+        fx.expire_turn(p_fx)
+        fx.expire_turn(m_fx)
 
     win = m_hp <= 0
     p["hp"] = max(0 if not win else 1, hp)
@@ -576,22 +625,56 @@ def duel(p, vic, rng=random.random) -> dict:
     hp_p, hp_v = int(sp["体力"]), int(sv["体力"])
     mp_p, mp_v = mp_max(p), mp_max(vic)
     log, rounds = [], 0
+    # 2026-11-15 多维效果：p 的增益在 p_fx、挂给 vic 的减益在 v_fx，反之亦然
+    p_fx, v_fx = fx.new_state(), fx.new_state()
+    v_ctx = {"target_flags": set(), "target_hp_ratio": 1.0}
+    p_ctx = {"target_flags": set(), "target_hp_ratio": 1.0}
+    hp_p0, hp_v0 = max(1, hp_p), max(1, hp_v)
     while rounds < 15 and hp_p > 0 and hp_v > 0:
         rounds += 1
+        # p 出手
+        v_ctx["target_hp_ratio"] = hp_v / hp_v0
         e, c = _pick_skill(p, mp_p, rng)
-        hit = _hit(p, int(sv["防御"]), e, rng)
+        hit = _hit(p, int(sv["防御"]), e, rng, p_fx, v_fx, v_ctx)
         if e is not None:
             mp_p -= c
         hp_v -= hit["dmg"]
         log.append({"who": "p", **hit})
+        if hit.get("heal_ratio"):
+            hp_p = min(hp_p0, hp_p + int(hit["dmg"] * hit["heal_ratio"]))
         if hp_v <= 0:
             break
-        e2, c2 = _pick_skill(vic, mp_v, rng)
-        hit2 = _hit(vic, int(sp["防御"]), e2, rng)
-        if e2 is not None:
-            mp_v -= c2
-        hp_p -= hit2["dmg"]
-        log.append({"who": "v", **hit2})
+        # vic 行动前：DoT + 控制
+        vs = fx.on_turn_start(v_fx, rng)
+        if vs["dot_dmg"]:
+            hp_v -= vs["dot_dmg"]
+            log.append({"who": "v", "dmg": vs["dot_dmg"], "kind": "持续伤害",
+                        "dot": True, "notes": vs["notes"]})
+        if hp_v <= 0:
+            break
+        if not vs["skip"]:
+            # vic 出手
+            p_ctx["target_hp_ratio"] = hp_p / hp_p0
+            e2, c2 = _pick_skill(vic, mp_v, rng)
+            hit2 = _hit(vic, int(sp["防御"]), e2, rng, v_fx, p_fx, p_ctx)
+            if e2 is not None:
+                mp_v -= c2
+            inc = fx.on_incoming(p_fx, hit2["dmg"], rng)
+            hp_p -= inc["final"]
+            if inc["notes"]:
+                hit2["notes"] = (hit2.get("notes") or []) + inc["notes"]
+            log.append({"who": "v", **hit2})
+            if hit2.get("heal_ratio"):
+                hp_v = min(hp_v0, hp_v + int(inc["final"] * hit2["heal_ratio"]))
+            if inc["reflect"]:
+                hp_v -= inc["reflect"]
+                log.append({"who": "p", "dmg": inc["reflect"], "kind": "反伤", "reflect": True})
+        else:
+            log.append({"who": "v", "dmg": 0, "kind": "被控", "miss": True})
+        if hp_p <= 0:
+            break
+        fx.expire_turn(p_fx)
+        fx.expire_turn(v_fx)
     win = hp_v <= 0 and hp_p > 0
     return {"win": win, "rounds": rounds, "log": log,
             "hp_p": max(0, hp_p), "hp_v": max(0, hp_v)}

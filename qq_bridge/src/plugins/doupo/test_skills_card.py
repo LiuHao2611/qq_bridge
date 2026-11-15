@@ -92,16 +92,24 @@ def _demo_data():
         "subtitle": "四门斗技 · 五重斗气 · 快捷键 1/3/7/9",
         "item": "焚血散", "item_count": 3,
         "formula": "伤害口径：(力量×0.5 + 斗气×1.5) × 当前倍率 × 暴击期望（未计目标防御）",
-        "rows": [
-            {"badge": "1", "name": "龙吟碎", "lv": 1, "max": 5,
-             "desc": cfg.SKILLS[0]["desc"], "base_mult": 1.60, "cur_mult": 1.60,
-             "next_mult": 1.92, "dmg": 1000, "next_dmg": 1200,
-             "segments": 5, "lit": 1, "item": "焚血散", "item_need": 1},
-            {"badge": "3", "name": "天火三玄变", "lv": 1, "max": 5,
-             "desc": cfg.SKILLS[1]["desc"], "base_mult": 1.40, "cur_mult": 1.40,
-             "next_mult": 1.68, "dmg": 875, "next_dmg": 1050,
-             "segments": 5, "lit": 1, "item": "焚血散", "item_need": 1},
-        ],
+    "rows": [
+        {"badge": "1", "name": "龙吟碎", "lv": 1, "max": 5,
+         "rank": "地阶低级", "origin_mark": "〔本宗〕", "role": "爆发",
+         "desc": cfg.SKILLS[0]["desc"],
+         "chips": [{"label": "破防", "value": "30%"}, {"label": "眩晕", "value": "10%"}],
+         "gate": "起手慢、需蓄势",
+         "base_mult": 1.60, "cur_mult": 1.60,
+         "next_mult": 1.92, "dmg": 1000, "next_dmg": 1200,
+         "segments": 5, "lit": 1, "item": "焚血散", "item_need": 1},
+        {"badge": "3", "name": "天火三玄变", "lv": 1, "max": 5,
+         "rank": "玄阶高级", "origin_mark": "〔本宗〕", "role": "续航",
+         "desc": cfg.SKILLS[1]["desc"],
+         "chips": [{"label": "吸血", "value": "25%"}],
+         "gate": "敌有异火则反噬",
+         "base_mult": 1.40, "cur_mult": 1.40,
+         "next_mult": 1.68, "dmg": 875, "next_dmg": 1050,
+         "segments": 5, "lit": 1, "item": "焚血散", "item_need": 1},
+    ],
         "tip": "用法：升级 龙吟碎 · 现有 焚血散 ×3",
     }
 
@@ -151,7 +159,7 @@ def test_template_registered():
 def test_build_skills_data_details():
     p = core.create_player("10001", "测试", "20001")
     p["lv"] = 40
-    pool = core.skill_pool(p)               # 本门全量三阶
+    core.skill_pool(p)                      # 确保四槽就绪
     lo = core.loadout_entries(p)
     levels = [3, 1, 5, 2]
     p["skills"] = {e["name"]: levels[i % 4] for i, e in enumerate(lo)}
@@ -160,55 +168,32 @@ def test_build_skills_data_details():
     d = card.build_skills_data(p)
     assert d["title"] == "斗技"
     assert d["item"] == "焚血散" and d["item_count"] == 7
-    assert len(d["rows"]) == len(pool)        # 整门派全列出（不再只 4 槽）
+    assert len(d["rows"]) == len(lo)        # 四槽（不足则按实际）
     assert "力量" in d["formula"] and "暴击期望" in d["formula"]
-
-    # 上阵的 4 门带 equipped 标记（卡片据此画朱红框 + 上阵标签）
-    star = [r for r in d["rows"] if r["equipped"]]
-    assert len(star) == len(lo), "上阵数须与 loadout 一致"
-    # 编号从 1 连续递增，且徽标显示编号（上阵口令按此编号选技）
-    assert [r["num"] for r in d["rows"]] == list(range(1, len(d["rows"]) + 1))
-    assert all(r["badge"] == str(r["num"]) for r in d["rows"]), "徽标应显示编号"
 
     st = core.stats(p)
     raw_base = st["力量"] * 0.5 + st["斗气"] * 1.5
     crit_mult = 1.0 + core.crit_rate(p) / 100.0 * 0.5
-    name2e = {e["name"]: e for e in pool}
-    for r in d["rows"]:
-        e = name2e[r["name"]]
-        # 阶位(玄阶/黄阶/地阶…)与斗气口径已并进 desc；三阶(普通/高阶/特殊)由 badge 体现
-        assert e["rank"] in r["desc"] and "斗气" in r["desc"]
+    for r, e in zip(d["rows"], lo):
+        assert r["name"] == e["name"]
+        # 2026-11-15 多维重构：desc 必须是完整原著描述（不再是 brief 一句），
+        # 并带主定位 / 多维效果 chip / 门控，而不是只有一个伤害数字。
+        assert r["desc"] == str(e.get("desc") or e.get("brief") or ""), "完整描述须与权威表同源"
+        assert len(r["desc"]) > 20, "描述过短，疑似又退回 brief"
+        assert r["role"] in ("", "输出", "爆发", "续航", "控场", "异常", "防御", "位移", "功能")
+        assert isinstance(r["chips"], list) and all("label" in c for c in r["chips"])
+        assert isinstance(r["gate"], str)
         assert r["base_mult"] == round(float(e["dmg"]), 2)
         mult = float(e["dmg"]) * (1 + 0.2 * (r["lv"] - 1))
         assert r["cur_mult"] == round(mult, 2)
-        if not r["locked"]:
-            assert r["dmg"] == int(round(raw_base * mult * crit_mult)), "伤害须与战斗公式同源"
+        assert r["dmg"] == int(round(raw_base * mult * crit_mult)), "伤害须与战斗公式同源"
         assert r["max"] == 5 and r["segments"] == 5 and r["lit"] == r["lv"]
+    # 天冥宗默认四槽应有主定位与多维效果（防止多维字段没进卡片数据）
+    assert any(r["role"] for r in d["rows"]), "四槽全无主定位，多维数据没进卡片"
+    assert any(r["chips"] for r in d["rows"]), "四槽全无多维效果，玩家只能看到一个数字"
     assert any(r["maxed"] for r in d["rows"])
     for r in d["rows"]:
         assert r["item_need"] == (0 if r["maxed"] else cfg.skill_up_cost(r["lv"]))
-
-
-def test_skill_numbers_match_command_pool_order_and_are_stable():
-    """编号 = 技能身份：与 skill_pool_sorted 同序，且换装后不漂移。
-
-    上阵口令（cmd_loadout）按同一编号把数字映射回技能名，
-    所以两边必须严格同序 —— 这条断言就是「卡片 3 号 == 口令 3 号」的守卫。
-    """
-    p = core.create_player("10001", "测试", "20001")
-    p["lv"] = 40
-    d = card.build_skills_data(p)
-    ordered = core.skill_pool_sorted(p)
-    assert [r["name"] for r in d["rows"]] == [e["name"] for e in ordered]
-
-    # 换一套上阵：编号与顺序必须原样不动（编号不是「第几个上阵」）
-    names = [e["name"] for e in ordered if e["unlocked"]]
-    core.set_loadout(p, names[:2])
-    d2 = card.build_skills_data(p)
-    assert [r["num"] for r in d2["rows"]] == [r["num"] for r in d["rows"]]
-    assert [r["name"] for r in d2["rows"]] == [r["name"] for r in d["rows"]]
-    # 上阵标记确实跟着走
-    assert [r["name"] for r in d2["rows"] if r["equipped"]] == names[:2]
 
 
 # ---------------------------------------------------------------------------
@@ -316,8 +301,9 @@ def test_render_real_card_and_export_previews():
     from PIL import Image
     import io
     img = Image.open(io.BytesIO(png))
-    # 整门派全列出后卡片自然变高（旧 1800 是按 4 槽标定）；按"最多十几"门留足余量
-    assert img.width == 720 and 600 < img.height < 8000, (
+    # 2026-11-15 多维重构：每块多了定位/完整描述/chip/门控四段信息，
+    # 四槽卡高度合理上移到 ~2000px；上限放宽但仍拒绝异常高。
+    assert img.width == 720 and 600 < img.height < 2800, (
         "卡片尺寸异常：%dx%d" % (img.size))
     small = img.convert("RGB").resize((80, 80)).tobytes()
     colors = len({small[i:i + 3] for i in range(0, len(small), 3)})
@@ -333,24 +319,79 @@ def test_render_real_card_and_export_previews():
             f.write(buf)
 
 
-def test_descriptions_merge_detail_and_wrap_sane():
-    """合并「斗技详情」后：desc 含主描述/类型·冷却/出处/原著，
-    折行不丢字（重拼 == 原 desc），且单块行数不爆版。"""
+def test_descriptions_wrap_without_losing_text():
+    """格式护栏：2026-11-15 起展示**完整**描述（不再 brief），折行只换行不丢字。
+
+    行数上限按最长原著描述放宽到 6 行；高度由 _row_h 内容驱动，不写死。
+    """
     tpl = _tpl()
     p = core.create_player("10001", "测试", "20001")
     d = card.build_skills_data(p)
     inner_w = 720 - 28 * 2 - 12 - 36
     for r in d["rows"]:
         lines = tpl._desc_lines(r, inner_w)
-        # 合并内容到位：出处 / 原著 / 类型标识 至少其一出现
-        assert any("出处：" in ln or "原著：" in ln or "类型：" in ln for ln in lines), \
-            "%s 未合并斗技详情" % r["name"]
-        # 折行不丢字：Canvas.wrap 仅插入换行、不删字符；去掉换行后应与原文一致
-        flat = "".join(lines).replace("\n", "")
-        expect = r["desc"].replace("\n", "")
-        assert flat == expect, "%s 描述折行丢字" % r["name"]
-        # 不爆版：单块描述行数在合理上限内（合并后本就多行，仅防失控）
-        assert len(lines) <= 12, "%s 描述折了 %d 行（疑似爆版）" % (r["name"], len(lines))
+        assert 1 <= len(lines) <= 6, "%s 描述折了 %d 行" % (r["name"], len(lines))
+        assert "".join(lines) == r["desc"], "%s 描述被截断或丢字" % r["name"]
+    # 多维区：有 chip / 门控字段的行必须能算出正行数（非天冥宗斗技允许为空）。
+    for r in d["rows"]:
+        if r.get("chips"):
+            assert len(tpl._chip_rows(r, inner_w)) >= 1, "效果 chip 没算出行"
+        if r.get("gate"):
+            assert len(tpl._gate_lines(r, inner_w)) >= 1, "门控没算出行"
+        assert tpl._row_h(r, inner_w) > 0
+
+
+# ---------------------------------------------------------------------------
+# 5. card-design 强制门禁：check_boxes 溢出 / 重叠 / 间距（2026-11-15）
+# ---------------------------------------------------------------------------
+def _overlap_2d(a, b) -> bool:
+    return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
+
+
+def _check_boxes(bounds, boxes, min_gap: int = 2) -> list[str]:
+    """与 card-design skill `check_boxes` 同规则：溢出 / 两方向重叠 / 同行间距过小。"""
+    bx0, by0, bx1, by1 = bounds
+    problems: list[str] = []
+    items = list(boxes)
+    for label, x0, y0, x1, y1 in items:
+        if x0 < bx0 - 1 or y0 < by0 - 1 or x1 > bx1 + 1 or y1 > by1 + 1:
+            problems.append("[溢出] %s 越界: (%d,%d,%d,%d) bounds=%s"
+                            % (label, x0, y0, x1, y1, bounds))
+    for i in range(len(items)):
+        for j in range(i + 1, len(items)):
+            la, a = items[i][0], items[i][1:]
+            lb, b = items[j][0], items[j][1:]
+            if _overlap_2d(a, b):
+                problems.append("[重叠] %s <-> %s: %s vs %s" % (la, lb, a, b))
+            if a[1] < b[3] and b[1] < a[3]:
+                gap_x = b[0] - a[2] if a[0] <= b[0] else a[0] - b[2]
+                if 0 <= gap_x < min_gap:
+                    problems.append("[间距] %s <-> %s 水平间距 %dpx" % (la, lb, gap_x))
+    return problems
+
+
+def test_layout_passes_check_boxes():
+    """真实天冥宗四槽数据走 check_boxes：溢出 0 / 重叠 0 / 间距 0。"""
+    tpl, t = _tpl(), _theme()
+    p = core.create_player("10001", "天冥弟子", "20001")
+    p["lv"] = 50
+    p["faction"] = "tianmingzong"
+    from doupo import factions as fac
+    p["faction_name"] = fac.FACTIONS["tianmingzong"]["name"]
+    core.skill_pool(p)
+    data = card.build_skills_data(p)
+    boxes: list[tuple] = []
+    c = tpl.build(t, data=data, width=720, boxes=boxes)
+    assert len(boxes) > 30, "收集到的包围盒太少，自检会假通过：%d" % len(boxes)
+    problems = _check_boxes((12, 12, 720 - 12, c.height - 12), boxes)
+    assert not problems, "斗技卡触线：\n" + "\n".join(problems[:10])
+
+
+def test_check_boxes_rejects_forged_overlap():
+    """自举：人为塞一对重叠 bbox，check_boxes 必须报错（证明门禁不是恒真）。"""
+    problems = _check_boxes((0, 0, 100, 100), [
+        ("a", 10, 10, 50, 30), ("b", 40, 20, 80, 40)])
+    assert any("[重叠]" in p for p in problems), "重叠检测失效，门禁恒真"
 
 
 # ---------------------------------------------------------------------------

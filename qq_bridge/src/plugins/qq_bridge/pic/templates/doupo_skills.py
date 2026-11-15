@@ -14,10 +14,24 @@
   * 顶部：大标题「斗技」+ 副标题 + **升级材料横幅**（焚血散 ×N 大字粗体）
     + 统一伤害口径说明；
   * 每门斗技一块卡片：快捷键 chip + 技能名(27px 粗体) + Lv.x/5(30px 粗体朱红)
-    → 完整技能描述(17px) → **五段独立的斗气条**（一重亮一段…五重亮五段，
-    段内标「一/二/三/四/五」）→ 伤害面板（基础倍率 / 当前倍率 / 期望单击
-    三列大字粗体 + 下一级预估）；
+    → **主定位胶囊 + 阶位 + 来源**（续航/控场/爆发/位移…一眼可辨）
+    → 完整技能描述(17px，原著全文，不再用 brief 一句带过)
+    → **多维效果 chip 行**（吸血25% / 破防30% / 血毒5%·2回合…，自动折行）
+    → **门控代价行**（限：起手慢、需落脚点…）
+    → **五段独立的斗气条**（一重亮一段…五重亮五段，段内标「一/二/三/四/五」）
+    → 伤害面板（基础倍率 / 当前倍率 / 期望单击三列大字粗体 + 下一级预估，
+    明确「未计目标防御」口径，避免玩家把倍率当成实际伤害）；
   * 底部提示。
+
+2026-11-15 多维度重构（用户明确要求）
+------------------------------------
+用户原话：「技能描述也没展示出来，技能数值也没展示，比如一个技能有位移又有
+伤害，那就应该有闪避和少量伤害，而不是一个单纯的数字……不然所有斗技都只剩
+一个数值对比，失去多样性」。因此单块内**按维度分行呈现**：
+  role(主定位) / effects[](多维效果原子) / gate(门控) / desc(完整描述) / 伤害数值。
+所有文字 obeys card-design 度量优先：`_w` 实测、`_fit` 截断、`Canvas.wrap`
+折行；chip 逐字测宽后换行；`build(..., boxes=[...])` 收集包围盒供 check_boxes
+自检（溢出/重叠/间距），把红线拦在交差前。
 
 字重说明（重要）
 ----------------
@@ -30,9 +44,10 @@
 输入（build 的 data，JSON 友好）：
   icon/title/subtitle/item/item_count/formula/tip
   rows: [{
-    "badge", "name", "lv", "max", "desc",
+    "badge", "name", "lv", "max", "desc", "rank", "origin_mark",
+    "role", "chips": [{"label","value"}], "gate",
     "base_mult", "cur_mult", "next_mult", "dmg", "next_dmg",
-    "segments", "lit", "maxed"
+    "segments", "lit", "maxed", "item", "item_need"
   }]
 """
 from __future__ import annotations
@@ -86,6 +101,31 @@ BLOCK_RADIUS = 16
 ROW_GAP = 12
 BANNER_H = 70          # 标签与大字之间留足呼吸空间（原 62 会贴在一起）
 
+# ---- 多维度区（2026-11-15）----
+# 间距 token 全部 4 的倍数，与 card-design 规范一致；同层统一 gap。
+FS_ROLE = 16                   # 主定位胶囊文字（>=16 清晰下限）
+FS_CHIP = 15                   # 效果 chip 文字
+FS_GATE = 15                   # 门控代价文字
+ROLE_H = 26                    # 主定位胶囊高
+CHIP_H = 24                    # 效果 chip 高
+GATE_LH = FS_GATE + 5          # 20
+META_GAP = 8                   # 标题行 → 定位行
+TAG_GAP = 8                    # 定位/效果/门控各行之间
+CHIP_GAP = 8                   # chip 之间的显式水平/垂直 gap（禁止空格凑距）
+CHIP_PADX = 9                  # chip 内左右留白
+CHIP_PADY = 4
+ROLE_PADX = 12
+ROLE_COLORS = {                # 主定位 → (底色, 描边, 文字) 语义色，暗金/朱红系
+    "续航": ("pill_bg", "pill_line", "pill_text"),
+    "异常": ("pill_bg", "pill_line", "pill_text"),
+    "控场": ("chip_bg", "chip_line", "chip_text"),
+    "爆发": ("chip_bg", "chip_line", "chip_text"),
+    "防御": ("pill_bg", "pill_line", "pill_text"),
+    "位移": ("pill_bg", "pill_line", "pill_text"),
+    "功能": ("cell_bg", "cell_line", "dim_color"),
+    "输出": ("chip_bg", "chip_line", "chip_text"),
+}
+
 #: 五段条的段名（斗技五重，中文数字比 1/2/3 更贴原著语感）
 SEG_NAMES = ("一", "二", "三", "四", "五")
 SEG_LIT_TEXT = "#FFF6E8"
@@ -99,14 +139,23 @@ _DEMO = {
     "item_count": 3,
     "formula": "伤害口径：(力量×0.5 + 斗气×1.5) × 当前倍率 × 暴击期望（未计目标防御）",
     "rows": [
-        {"badge": "1", "name": "龙吟碎", "lv": 3, "max": 5,
-         "desc": "凝火化龙，攻击周围目标，技能每提升一级，技能伤害增加 20%，将目标击晕几率增加 20%",
+        {"badge": "1", "name": "嗜血化骨手", "lv": 3, "max": 5,
+         "rank": "地阶低级", "origin_mark": "〔本宗〕", "role": "续航",
+         "desc": "掌爪涌出血红斗气，凝成一只巨大的血手；血手张开时生出一股诡异吸力，要把对手体内的血硬扯出来。造成 160% 伤害，并回复自身相当于伤害 25% 的体力（吸血）。",
+         "chips": [{"label": "吸血", "value": "25%"}],
+         "gate": "敌有异火则反噬自伤",
          "base_mult": 1.60, "cur_mult": 2.24, "next_mult": 2.56,
-         "dmg": 1234, "next_dmg": 1410, "segments": 5, "lit": 3, "maxed": False},
-        {"badge": "3", "name": "天火三玄变", "lv": 1, "max": 5,
-         "desc": "焚炎附体，连续三段火劲贯体而出，技能每提升一级伤害增加 20%",
+         "dmg": 1234, "next_dmg": 1410, "segments": 5, "lit": 3, "maxed": False,
+         "item": "焚血散", "item_need": 3},
+        {"badge": "3", "name": "血煞掌", "lv": 1, "max": 5,
+         "rank": "玄阶高级", "origin_mark": "〔本宗〕", "role": "异常",
+         "desc": "斗气凝血成掌，掌色暗红近黑；一掌拍出，血毒随掌力渗入，伤口不流血反而发黑。造成 140% 伤害，并附加血毒（每回合 5%，持续 2 回合，且治疗 -30%）。",
+         "chips": [{"label": "血毒", "value": "5%·2回合"},
+                   {"label": "减疗", "value": "30%·2回合"}],
+         "gate": "气血虚时威力骤降，对无血之物无效",
          "base_mult": 1.40, "cur_mult": 1.40, "next_mult": 1.68,
-         "dmg": 771, "next_dmg": 925, "segments": 5, "lit": 1, "maxed": False},
+         "dmg": 771, "next_dmg": 925, "segments": 5, "lit": 1, "maxed": False,
+         "item": "焚血散", "item_need": 1},
     ],
     "tip": "用法：升级 龙吟碎 · 现有 焚血散 ×3",
 }
@@ -131,30 +180,65 @@ def _int(v, default: int = 0) -> int:
 
 
 def _desc_lines(item: dict, inner_w: int) -> list[str]:
-    """技能描述按换行分段，逐段自动折行。
-
-    合并「斗技详情」后，desc 由「主描述 / 类型·冷却 / 出处 / 原著 / 解锁提示」
-    多行组成（以 \\n 分隔）。这里每段独立折行，空段保留为视觉留白；
-    返回的总行数会驱动 _row_h / _seg_y 自动撑高卡片。
-    """
     desc = str(item.get("desc") or "")
     if not desc:
         return []
-    avail = max(80, inner_w - BADGE_W - BADGE_GAP)
-    out: list[str] = []
-    for part in desc.split("\n"):
-        if part.strip() == "":
-            out.append("")  # 空段 → 视觉留白
-            continue
-        out.extend(Canvas.wrap(part, FS_DESC, "regular", avail))
-    return out
+    return Canvas.wrap(desc, FS_DESC, "regular", max(80, inner_w - BADGE_W - BADGE_GAP))
+
+
+def _chip_w(chip: dict) -> int:
+    """单个效果 chip 的文字宽（度量优先，label 与 value 分开测后相加）。"""
+    label = str(chip.get("label") or "")
+    value = str(chip.get("value") or "")
+    w = _w(label, FS_CHIP, "regular")
+    if value:
+        w += 4 + _w(value, FS_CHIP, "bold")   # 数值 bold，与 label 间 4px
+    return int(w) + CHIP_PADX * 2
+
+
+def _chip_rows(item: dict, inner_w: int) -> list[list[dict]]:
+    """效果 chip 按可用宽度逐行打包（显式 CHIP_GAP，禁止空格凑距）。"""
+    chips = [c for c in (item.get("chips") or []) if isinstance(c, dict)]
+    rows: list[list[dict]] = []
+    cur: list[dict] = []
+    cur_w = 0
+    for ch in chips:
+        cw = _chip_w(ch)
+        used = cur_w + (CHIP_GAP if cur else 0) + cw
+        if cur and used > inner_w:
+            rows.append(cur)
+            cur, cur_w = [ch], cw
+        else:
+            cur.append(ch)
+            cur_w = used
+    if cur:
+        rows.append(cur)
+    return rows
+
+
+def _gate_lines(item: dict, inner_w: int) -> list[str]:
+    gate = str(item.get("gate") or "")
+    if not gate:
+        return []
+    return Canvas.wrap("限：" + gate, FS_GATE, "regular", max(80, inner_w - 4))
 
 
 def _row_h(item: dict, inner_w: int) -> int:
-    """单块高度。build 的 y 步进必须与这里完全一致，否则底部留白会歪。"""
+    """单块高度。build 的 y 步进必须与这里完全一致，否则底部留白会歪。
+
+    内容驱动：描述行数 + chip 行数 + 门控行数都参与累加，长描述/多效果不会裁切。
+    """
     n = max(1, len(_desc_lines(item, inner_w)))
-    return (BLOCK_PAD + TITLE_H + 6 + n * DESC_LH + 8
-            + SEG_LABEL_H + 4 + SEG_H + 8 + PANEL_H + BLOCK_PAD)
+    n_chip = len(_chip_rows(item, inner_w))
+    n_gate = len(_gate_lines(item, inner_w))
+    h = BLOCK_PAD + TITLE_H + META_GAP + ROLE_H
+    h += 6 + n * DESC_LH + TAG_GAP
+    if n_chip:
+        h += n_chip * CHIP_H + (n_chip - 1) * CHIP_GAP + TAG_GAP
+    if n_gate:
+        h += n_gate * GATE_LH + TAG_GAP
+    h += SEG_LABEL_H + 4 + SEG_H + 8 + PANEL_H + BLOCK_PAD
+    return h
 
 
 def _content_y(data: dict) -> int:
@@ -185,7 +269,13 @@ def _seg_y(item: dict, block_y: int, inner_w: int) -> int:
     """该块五段条的顶边 y（与 build 里的绘制步进同步）。"""
     iy = block_y + BLOCK_PAD
     n = max(1, len(_desc_lines(item, inner_w)))
-    dy = iy + TITLE_H + 6 + n * DESC_LH + 8
+    dy = iy + TITLE_H + META_GAP + ROLE_H + 6 + n * DESC_LH + TAG_GAP
+    n_chip = len(_chip_rows(item, inner_w))
+    n_gate = len(_gate_lines(item, inner_w))
+    if n_chip:
+        dy += n_chip * CHIP_H + (n_chip - 1) * CHIP_GAP + TAG_GAP
+    if n_gate:
+        dy += n_gate * GATE_LH + TAG_GAP
     return dy + SEG_LABEL_H + 4
 
 
@@ -293,10 +383,30 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
     inner_w = block_w - 36
     h = _measure(data, inner_w)
 
+    #: 可选：收集文本包围盒（card-design check_boxes 自检；默认 None 零开销）
+    boxes = kw.pop("boxes", None)
+
     c = Canvas(width, h, p["page_color"], theme=t)
     c.rounded_rect((12, 12, width - 12, h - 12), radius=24,
                    fill=p["card_color"], outline=p["border_color"], width=1,
                    fill_alpha=_card_alpha(t) * 255 // 100)
+
+    def rec(label: str, txt: str, x: int, y: int, size: int, role: str,
+            anchor: str) -> None:
+        """记录文本包围盒（绘制与度量同 role，锚点换算与 Canvas 一致）。"""
+        if boxes is None:
+            return
+        w = _w(txt, size, role)
+        hh = int(size)
+        if anchor == "lm":
+            bb = (x, y - hh // 2, x + w, y + hh // 2)
+        elif anchor == "rm":
+            bb = (x - w, y - hh // 2, x, y + hh // 2)
+        elif anchor == "mm":
+            bb = (x - w // 2, y - hh // 2, x + w // 2, y + hh // 2)
+        else:                                  # la
+            bb = (x, y, x + w, y + hh)
+        boxes.append((label,) + bb)
 
     x0 = PAD
     y = PAD
@@ -351,83 +461,108 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
 
     # ---- 四门斗技 ----
     layout = list(_rows_layout(data, inner_w))
-    C_WHITE = "#FFFFFF"
     for item, block_y, rh in layout:
         y = block_y
-        equipped = bool(item.get("equipped"))
-        locked = bool(item.get("locked"))
-        # 上阵块：朱红描边加粗，一眼可辨「哪些在阵上」；其余用默认细描边
-        block_outline = p["title_color"] if equipped else p["cell_line"]
-        block_lw = 3 if equipped else 1
         c.rounded_rect((block_x, y, block_x + block_w, y + rh), radius=BLOCK_RADIUS,
-                       fill=p["cell_bg"], outline=block_outline, width=block_lw)
-        # 左侧竖条：上阵朱红、其余暗金，块边界更跳
-        bar_color = p["title_color"] if equipped else p["accent_color"]
+                       fill=p["cell_bg"], outline=p["cell_line"], width=1)
+        # 左侧暗金竖条：块边界一眼可辨
         c.rounded_rect((block_x + 1, y + 14, block_x + 5, y + rh - 14), radius=2,
-                       fill=bar_color)
+                       fill=p["accent_color"])
 
         iy = y + BLOCK_PAD
+        name = str(item.get("name") or "斗技")
+        # 快捷键 chip
         badge = str(item.get("badge") or "")
-        # 编号 chip：上阵填充朱红+白字，未解锁用 dim，其余 chip 色
-        if equipped:
-            badge_fill, badge_text = p["title_color"], C_WHITE
-        elif locked:
-            badge_fill, badge_text = p["chip_bg"], p["dim_color"]
-        else:
-            badge_fill, badge_text = p["chip_bg"], p["chip_text"]
         c.rounded_rect((inner_x, iy, inner_x + BADGE_W, iy + BADGE_H), radius=9,
-                       fill=badge_fill, outline=p["chip_line"], width=1)
-        c.text((inner_x + BADGE_W // 2, iy + BADGE_H // 2),
-               _fit(badge, BADGE_W - 8, FS_BADGE, "bold"), size=FS_BADGE,
-               color=badge_text, role="bold", bold=True, anchor="mm")
+                       fill=p["chip_bg"], outline=p["chip_line"], width=1)
+        badge_txt = _fit(badge, BADGE_W - 8, FS_BADGE, "bold")
+        c.text((inner_x + BADGE_W // 2, iy + BADGE_H // 2), badge_txt, size=FS_BADGE,
+               color=p["chip_text"], role="bold", bold=True, anchor="mm")
+        rec("%s.badge" % name, badge_txt, inner_x + BADGE_W // 2, iy + BADGE_H // 2,
+            FS_BADGE, "bold", "mm")
 
-        # 右端状态标签（上阵 / 未解锁）：先量宽度，再决定名字可用空间
+        # 技能名（大 + 粗）与等级（更大 + 粗 + 朱红）
+        name_x = inner_x + BADGE_W + BADGE_GAP
         lv = _int(item.get("lv"), 1)
         mx = max(1, _int(item.get("max"), 5))
         lv_text = "Lv.%d / %d" % (lv, mx)
         lv_w = _w(lv_text, FS_LV, "bold")
-        tag_text = ""
-        tag_color = p["dim_color"]
-        tag_star = False
-        if equipped:
-            tag_text, tag_color, tag_star = "上阵", p["title_color"], True
-        elif locked:
-            ul = item.get("unlock")
-            tag_text = "未解锁 lv%s" % ul if str(ul).isdigit() else "未解锁"
-        tag_w = 0
-        tag_icon = 0
-        if tag_text:
-            tag_icon = (FS_SUB + 6) if tag_star else 0
-            tag_w = tag_icon + _w(tag_text, FS_SUB, "bold") + 18
-
-        # 技能名（大 + 粗）：上阵朱红、未解锁 dim、其余墨褐
-        name_x = inner_x + BADGE_W + BADGE_GAP
-        name_color = (p["title_color"] if equipped
-                      else (p["dim_color"] if locked else p["text_color"]))
-        name_max = (block_x + block_w - 18) - lv_w - 12 - (tag_w + 10) - name_x
-        name = str(item.get("name") or "斗技")
-        name_disp = _fit(name, max(40, name_max), FS_NAME, "bold")
-        c.text((name_x, iy + BADGE_H // 2), name_disp,
-               size=FS_NAME, color=name_color, role="bold", bold=True, anchor="lm")
+        name_txt = _fit(name, block_x + block_w - 18 - lv_w - 18 - name_x, FS_NAME, "bold")
+        c.text((name_x, iy + BADGE_H // 2), name_txt,
+               size=FS_NAME, color=p["text_color"], role="bold", bold=True, anchor="lm")
+        rec("%s.name" % name, name_txt, name_x, iy + BADGE_H // 2, FS_NAME, "bold", "lm")
         c.text((block_x + block_w - 18, iy + BADGE_H // 2), lv_text,
                size=FS_LV, color=p["title_color"], role="bold", bold=True, anchor="rm")
+        rec("%s.lv" % name, lv_text, block_x + block_w - 18, iy + BADGE_H // 2,
+            FS_LV, "bold", "rm")
 
-        # 右端标签：星 + 文字（上阵） / 纯文字（未解锁）
-        if tag_text:
-            tx = block_x + block_w - 18 - lv_w - 10 - tag_w
-            if tag_star:
-                icons.draw(c, "star", tx + tag_icon // 2, iy + BADGE_H // 2,
-                           tag_icon, tag_color, style="solid")
-            c.text((tx + tag_icon, iy + BADGE_H // 2), tag_text,
-                   size=FS_SUB, color=tag_color, role="bold", bold=True, anchor="lm")
+        # ---- 定位 / 来源行（主定位胶囊 + 阶位 + 来源）----
+        meta_y = iy + TITLE_H + META_GAP
+        role = str(item.get("role") or "")
+        mx0 = inner_x
+        if role:
+            bg_k, ln_k, tx_k = ROLE_COLORS.get(role, ("chip_bg", "chip_line", "chip_text"))
+            rw = ROLE_PADX * 2 + _w(role, FS_ROLE, "regular")
+            c.rounded_rect((mx0, meta_y, mx0 + rw, meta_y + ROLE_H), radius=ROLE_H // 2,
+                           fill=p[bg_k], outline=p[ln_k], width=1)
+            c.text((mx0 + rw // 2, meta_y + ROLE_H // 2), role, size=FS_ROLE,
+                   color=p[tx_k], role="regular", bold=False, anchor="mm")
+            rec("%s.role" % name, role, mx0 + rw // 2, meta_y + ROLE_H // 2,
+                FS_ROLE, "regular", "mm")
+            mx0 += rw + CHIP_GAP
+        meta_txt = " ".join(x for x in (str(item.get("rank") or ""),
+                                        str(item.get("origin_mark") or "")) if x)
+        if meta_txt:
+            c.text((mx0, meta_y + ROLE_H // 2), _fit(meta_txt, inner_w - (mx0 - inner_x), FS_LABEL),
+                   size=FS_LABEL, color=p["dim_color"], role="regular", bold=False, anchor="lm")
+            rec("%s.meta" % name, meta_txt, mx0, meta_y + ROLE_H // 2,
+                FS_LABEL, "regular", "lm")
 
-        # 完整技能描述（与 cfg.SKILLS[*]["desc"] 同源）
-        dy = iy + TITLE_H + 6
+        # ---- 完整技能描述（与 skill_book 权威 desc 同源；折行不丢字）----
+        dy = meta_y + ROLE_H + 6
         lines = _desc_lines(item, inner_w)
-        desc_color = p["dim_color"] if locked else p["text_color"]
         for i, ln in enumerate(lines):
-            c.text((name_x, dy + i * DESC_LH + DESC_LH // 2), ln,
-                   size=FS_DESC, color=desc_color, anchor="lm")
+            ly = dy + i * DESC_LH + DESC_LH // 2
+            c.text((inner_x, ly), ln, size=FS_DESC, color=p["text_color"],
+                   role="regular", bold=False, anchor="lm")
+            rec("%s.desc%d" % (name, i), ln, inner_x, ly, FS_DESC, "regular", "lm")
+
+        # ---- 多维效果 chip 行（每个维度一个 chip，显式 gap，禁止空格凑距）----
+        chip_top = dy + len(lines) * DESC_LH + TAG_GAP
+        chip_rws = _chip_rows(item, inner_w)
+        for ri, row in enumerate(chip_rws):
+            cx = inner_x
+            cy = chip_top + ri * (CHIP_H + CHIP_GAP)
+            for ch in row:
+                label = str(ch.get("label") or "")
+                value = str(ch.get("value") or "")
+                cw = _chip_w(ch)
+                c.rounded_rect((cx, cy, cx + cw, cy + CHIP_H), radius=CHIP_H // 2,
+                               fill=p["chip_bg"], outline=p["chip_line"], width=1)
+                # label 与 bold 数值分段度量，中心对齐到 chip 内
+                lw = _w(label, FS_CHIP, "regular")
+                vw = _w(value, FS_CHIP, "bold") if value else 0
+                seg_w = lw + (4 + vw if value else 0)
+                sx = cx + (cw - seg_w) // 2
+                c.text((sx, cy + CHIP_H // 2), label, size=FS_CHIP,
+                       color=p["chip_text"], role="regular", bold=False, anchor="lm")
+                rec("%s.chip%d.label" % (name, ri), label, sx, cy + CHIP_H // 2,
+                    FS_CHIP, "regular", "lm")
+                if value:
+                    vx = sx + lw + 4
+                    c.text((vx, cy + CHIP_H // 2), value, size=FS_CHIP,
+                           color=p["title_color"], role="bold", bold=True, anchor="lm")
+                    rec("%s.chip%d.value" % (name, ri), value, vx, cy + CHIP_H // 2,
+                        FS_CHIP, "bold", "lm")
+                cx += cw + CHIP_GAP
+
+        # ---- 门控 / 代价行 ----
+        gate_top = chip_top + len(chip_rws) * CHIP_H + (len(chip_rws) - 1) * CHIP_GAP + TAG_GAP
+        for gi, gl in enumerate(_gate_lines(item, inner_w)):
+            gy = gate_top + gi * GATE_LH + GATE_LH // 2
+            c.text((inner_x, gy), gl, size=FS_GATE, color=p["accent_color"],
+                   role="regular", bold=False, anchor="lm")
+            rec("%s.gate%d" % (name, gi), gl, inner_x, gy, FS_GATE, "regular", "lm")
 
         # 五段独立斗气条（坐标与像素级验收共用 _seg_y / segment_positions）
         seg_top = _seg_y(item, block_y, inner_w)
@@ -445,8 +580,10 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
     y += 12
     tip = data.get("tip")
     if tip:
-        c.text((x0, y + FS_TIP // 2), _fit(str(tip), content_w, FS_TIP),
-               size=FS_TIP, color=p["dim_color"], anchor="lm")
+        tip_txt = _fit(str(tip), content_w, FS_TIP)
+        c.text((x0, y + FS_TIP // 2), tip_txt, size=FS_TIP,
+               color=p["dim_color"], anchor="lm")
+        rec("tip", tip_txt, x0, y + FS_TIP // 2, FS_TIP, "regular", "lm")
 
     if source:
         c.text((width - PAD, h - PAD + 6), source, size=14,

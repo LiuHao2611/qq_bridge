@@ -27,6 +27,7 @@ from . import core
 from . import commands
 from . import avatar
 from . import factions as fac
+from . import skill_effects as fx
 
 log = logging.getLogger("qq_bridge.doupo.card")
 
@@ -246,15 +247,24 @@ def build_skills_data(p: dict) -> dict:
         base_mult = float(e["dmg"])
         cur_mult = base_mult * (1 + 0.2 * (lv - 1))
         next_mult = cur_mult if maxed else base_mult * (1 + 0.2 * lv)
+        # 2026-11-15 斗技多维度重构：用户明确要求「技能描述、技能数值都展示出来，
+        # 一个位移+伤害的技能要有闪避和少量伤害，而不是一个单纯数字」。
+        # 因此这里给出结构化多维字段，由 doupo_skills 模板分行呈现：
+        #   role   主定位（续航/控场/爆发/异常/防御/位移/功能/输出）
+        #   chips  效果原子 [{label,value}]（吸血 25% / 破防 30% / 血毒 5%·2回合…）
+        #   gate   门控/代价（起手慢、需落脚点、被控即散…）
+        #   desc   完整原著描述（不再用 brief 一句带过）
+        # 伤害数值仍与 core.damage_schedule 同源（下方 base/cur/dmg 不变）。
         rows.append({
             "badge": tier[0],
             "name": name,
             "lv": lv, "max": mx, "maxed": maxed,
-            # 卡片只有两行位：放「来源 + 斗气 + 短释」；完整说明走 斗技详情
-            # 2026-11-15 梳理后必须标清「本宗 / 通用 / 异火 / 游戏自设」，
-            # 免得再把炼药大会之类的东西混进斗技卡。
-            "desc": (f"[{tier}] {_origin_mark(e)} 斗气 {int(frac[tier] * 100)}%·mp_max ｜ "
-                     f"{e.get('brief') or e.get('desc', '')}"),
+            "rank": e.get("rank") or tier,
+            "origin_mark": _origin_mark(e),
+            "role": fx.role_label(e.get("role", "")),
+            "chips": fx.effect_chips(e.get("effects") or []),
+            "gate": str(e.get("gate") or ""),
+            "desc": str(e.get("desc") or e.get("brief") or ""),
             "base_mult": round(base_mult, 2),
             "cur_mult": round(cur_mult, 2),
             "next_mult": round(next_mult, 2),
@@ -307,17 +317,26 @@ def build_roster_data(p: dict) -> dict:
             "可学" if unlocked else f"未解锁 lv{e.get('unlock', '?')}")
         lv = max(1, min(5, int(sk.get(name, 1))))
         frac = int(cfg.SKILL_TIER_MP_FRAC.get(e["tier"], 0.2) * 100)
-        sub = f"{_origin_mark(e)}{e.get('rank', '')} · {e.get('kind', '')} · 斗气 {frac}%"
+        # 主定位前置：让玩家一眼区分续航/控场/爆发/位移，而不是只看到名字。
+        role = fx.role_label(e.get("role", ""))
+        role_mark = f"〔{role}〕" if role else ""
+        sub = (f"{_origin_mark(e)}{role_mark}{e.get('rank', '')} · "
+               f"{e.get('kind', '')} · 斗气 {frac}%")
         if e.get("flame"):
             sub = f"异火技〔{e['flame']}〕 · " + sub
-        brief = str(e.get("brief") or e.get("desc") or "")
-        if brief:
-            sub += " ｜ " + brief
+        # 多维效果标签独立成 note 行（doupo_list 用 accent 色绘制，与副行拉开：
+        # 这就是用户要的「位移+伤害=闪避 + 少量伤害」——每个维度一个可见标签）。
+        chips = fx.effect_chips(e.get("effects") or [])
+        note = " · ".join(f"{c['label']}{c['value']}" for c in chips) if chips else ""
+        gate = str(e.get("gate") or "")
+        if gate:
+            note += (" ｜ 限：" if note else "限：") + gate
         rows.append({
             "badge": e["tier"][0],
             "title": name,
             "right": state,
             "sub": sub,
+            "note": note,
             "bar": {"cur": lv, "max": 5},
         })
     fac_name = p.get("faction_name") or "无宗门"
