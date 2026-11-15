@@ -9,14 +9,20 @@
 --------------------------------
 1. ``Canvas.text(role="bold")`` **本身不会加粗**：role 只推断 kind，字重由
    ``bold`` 参数 / 主题 ``*_bold`` 开关决定，默认全 False。
-2. 容器 vendored ``msyh.ttc`` 只有两个 Regular face（见 fonts.py），真粗体不可用；
-   画布层会用 1px 伪粗描边补，但 **<22px 的小字加描边会把中文笔画缝隙填满**
-   （实测「已圆满」糊成一团）。所以 ``canvas.py`` 规定 <22px 不伪粗。
+2. 容器 vendored ``msyh.ttc`` 只有两个 Regular face（见 fonts.py）。历史上画布层
+   靠 1px 同色伪粗描边补，但 **<22px 的小字加描边会把中文笔画缝隙填满**
+   （实测「已圆满」糊成一团），且即使拿到真粗体再叠描边也会出双影、发糊。
+   所以 ``canvas.py`` 规定 <22px 不伪粗、**真粗体一律不伪粗**。
+
+2026-11-15 修订：``fonts.py::_BUNDLED_BOLD`` 已内置等线 Bold 子集（真粗体 face），
+``font_path("bold")`` 优先返回它；容器不再缺真粗体，斗破四张卡的加粗字全部走
+同一个字形文件，模糊/重影的根因消除。伪粗描边退化为「连真粗体都加载失败」时的兜底。
 
 因此本模块的规则：
   * 重点文字字号 >= MIN_BOLD_FS(22)，显式 ``bold=True`` + 强调色；
   * 次要文字显式 ``bold=False``，只靠字号与颜色分层，绝不糊；
-  * 绘制与度量必须用同一个 role（"bold" / "regular"），否则右对齐会溢出。
+  * 绘制与度量必须用同一个 role（"bold" / "regular"），否则右对齐会溢出；
+  * 换字体文件后 ``pic.render`` 缓存 key 会随字体 size/mtime 变化自动失效。
 
 四张卡：doupo.py（人物）/ doupo_menu.py（菜单）/ doupo_list.py（通用列表）/
 doupo_skills.py（斗技，已按同一规范实现）。

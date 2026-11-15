@@ -30,6 +30,26 @@ Point = tuple[int, int]
 Box = tuple[int, int, int, int]  # x0, y0, x1, y1
 
 
+#: 与 doupo_style.MIN_BOLD_FS 一致：<22px 的中文小字一律不加载粗体字形。
+#: 2026-11-15 换了项目内置真粗体后，旧测试「15px bold=True 与 regular 逐像素相同」
+#: 会失败——因为粗体真的粗了，笔画缝隙同样会糊。小字只靠字号与颜色分层。
+_MIN_BOLD_FS = 22
+
+
+def _is_real_bold(font) -> bool:
+    """加载到的字体本身就是粗体 face？
+
+    2026-11-15：旧逻辑只看「主题字体族有没有 bold 变体」，family 为空时恒为 False，
+    于是即使已加载 Microsoft YaHei Bold，仍会再叠一层同色细描边 → 所有加粗字发糊。
+    真粗体绝不能再伪粗；只有连真粗体都拿不到时才允许描边兜底。
+    """
+    try:
+        style = (font.getname()[1] or "").lower()
+    except Exception:
+        return False
+    return any(k in style for k in ("bold", "black", "heavy", "semibold", "粗"))
+
+
 # ===========================================================================
 # 渲染安全化（2026-10-21）：emoji 豆腐框修复
 # ===========================================================================
@@ -323,8 +343,9 @@ class Canvas:
             None = 完全沿用主题开关（**默认，保证既有卡片逐像素不变**）；
             True/False = 覆盖主题开关。注意 `role="bold"` 本身只影响 kind 推断，
             并不会选粗体字体；真正决定是否用粗体文件的是这里的 bold 状态
-            （``fonts.load_family(..., bold=True)`` → msyhbd / msyh.ttc index=1），
-            主题族无粗体变体时还会叠加伪粗描边。
+            （``fonts.load_family(..., bold=True)`` → 项目内置真粗体 doupo_bold.ttf），
+            只有连真粗体都拿不到时才叠加伪粗描边兜底。
+            ``size < 22`` 时无论 bold 取值都不加载粗体字形（小字糊化护栏）。
         """
         s_txt = emoji_safe(str(text))
         size = int(size)
@@ -340,7 +361,10 @@ class Canvas:
                 has_bold, has_italic = fonts.variant_flags(family)
             except Exception:
                 has_bold = has_italic = False
-        font = fonts.load_family(family, size, bold=st["bold"], italic=st["italic"])
+        # <22px 小字禁止粗体字形（见 _MIN_BOLD_FS）：否则真粗体会把中文笔画缝隙填满。
+        font = fonts.load_family(family, size,
+                                 bold=bool(st["bold"]) and size >= _MIN_BOLD_FS,
+                                 italic=st["italic"])
         fill = rgb(color) + (255,)
 
         # 描边优先于伪粗（伪粗=同色细描边）
@@ -349,13 +373,11 @@ class Canvas:
         if st["stroke"]:
             sw = max(1, size // 12)
             sfill = rgb(st["stroke_color"]) + (255,)
-        elif st["bold"] and not (family and has_bold):
-            # family 为空时也要伪粗：2026-11-14 实测容器 vendored msyh.ttc 的两个
-            # face 全是 Regular，只换字体文件根本不会变粗。没有真粗体变体可用时，
-            # 同色细描边是唯一能保证 bold=True 视觉生效的手段。
-            # 但 <22px 的小字禁止伪粗：中文 15px 时笔画缝隙本身只有约 1px，
-            # 再加 1px 描边会把缝隙全填满，实测「需 焚血散 ×1」「已圆满」糊成一块。
-            # 小字靠字号 + 强调色区分，加粗只给重点大字。
+        elif st["bold"] and not (family and has_bold) and not _is_real_bold(font):
+            # 只有「连真粗体文件都拿不到」才允许伪粗兜底（见 fonts._BUNDLED_BOLD）。
+            # 真粗体再叠同色描边会糊成一团 —— 2026-11-15 菜单卡模糊的根因。
+            # <22px 小字仍禁止伪粗：中文 15px 笔画缝隙约 1px，加 1px 描边会全填满，
+            # 实测「需 焚血散 ×1」「已圆满」糊成一块。
             if size >= 22:
                 sw = max(1, size // 16)
                 sfill = fill

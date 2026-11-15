@@ -20,7 +20,9 @@
   icon      标题图标名（icons.ICONS 之一，缺省/非法回退 sword）
   title     标题
   subtitle  副标题（可留空）
-  rows      [{"badge","title","right","sub","bar":{"cur","max"},"accent"}]
+  rows      [{"badge","title","right","sub","note","bar":{"cur","max"},"accent"}]
+             note = 可选的「下一行提示」（如「下级需 60 药渣」），独立成行、
+             用显式 NOTE_GAP 与副行拉开，**禁止用全角空格塞进 sub 凑间距**。
   tip      底部提示（可留空）
 """
 from __future__ import annotations
@@ -51,6 +53,11 @@ ROW_MIN = 66
 #: 行高与绘制位置必须同步加这个值，否则说明文字会被下一行盖住。
 TITLE_SUB_GAP = 8
 DESC_LH = FS_SMALL + 4
+#: 独立提示行（2026-11-15 异火卡「下级需 N 药渣」不再用全角空格塞进 sub）：
+#: 显式字号 + 显式 gap，行高与绘制位置共用同一组常量。
+FS_NOTE = S.FS_LABEL          # 16
+NOTE_LH = FS_NOTE + 4         # 20
+NOTE_GAP = 8
 ICON_STYLE = "line"
 
 #: 编辑器预览用的示例数据（pic 包不 import 插件层，故内置示例）。
@@ -79,6 +86,10 @@ def _row_h(item: dict, content_w: int) -> int:
     if sub:
         lines = Canvas.wrap(sub, FS_SMALL, "regular", content_w - BADGE_W - 14)
         h += max(1, len(lines)) * DESC_LH + TITLE_SUB_GAP
+    note = item.get("note") or ""
+    if note:
+        lines = Canvas.wrap(note, FS_NOTE, "regular", content_w - BADGE_W - 14)
+        h += NOTE_GAP + max(1, len(lines)) * NOTE_LH
     if item.get("bar"):
         # 字号放大后要给渐变条留足空间，否则说明文字会压到条上
         h += BAR_H + 18
@@ -178,6 +189,14 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
                 S.small(c, (title_x, cy + i * DESC_LH), ln,
                         size=FS_SMALL, color=p["dim_color"])
             cy += len(lines) * DESC_LH
+        # 独立提示行：显式 gap，不与副行连读（card-design 红线 5：禁止空格凑间距）
+        note = item.get("note") or ""
+        if note:
+            lines = Canvas.wrap(note, FS_NOTE, "regular", (x0 + content_w) - title_x - 8)
+            ny = cy + NOTE_GAP + NOTE_LH // 2
+            for i, ln in enumerate(lines):
+                S.small(c, (title_x, ny + i * NOTE_LH), ln,
+                        size=FS_NOTE, color=p["accent_color"])
         # 等级渐变条
         bar = item.get("bar")
         if bar:

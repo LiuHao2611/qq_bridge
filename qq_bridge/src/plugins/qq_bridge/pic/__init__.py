@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 
 from . import canvas as _canvas  # noqa: F401
 from . import icons as _icons  # noqa: F401
@@ -31,7 +32,7 @@ from . import theme as _theme_pkg  # noqa: F401
 from . import card_binds  # 卡片主题内置默认绑定（配置优先，随代码交付）
 from .cache import PicCache, make_key, pic_cache
 from .canvas import Canvas
-from .templates import (menu as _menu, progress as _progress, quota as _quota, text as _text, guide as _guide, hw as _hw, riven as _riven, riven_analysis as _riven_analysis, riven_recommend as _riven_recommend, netracell as _netracell, fissure as _fissure, bounty as _bounty, tenet as _tenet, coda as _coda, incarnon as _incarnon, arbitration_table as _arbitration_table, xiuxian as _xiuxian, xiuxian_menu as _xiuxian_menu, xiuxian_help as _xiuxian_help, doupo as _doupo, doupo_menu as _doupo_menu, doupo_list as _doupo_list, doupo_skills as _doupo_skills, doupo_faction as _doupo_faction, aimenu as _aimenu, checkin as _checkin, plain as _plain, alerts as _alerts, task_alert as _task_alert, archon as _archon, riven_trend as _riven_trend, riven_fusion as _riven_fusion, riven_full as _riven_full)  # noqa: F401
+from .templates import (menu as _menu, progress as _progress, quota as _quota, text as _text, guide as _guide, hw as _hw, riven as _riven, riven_analysis as _riven_analysis, riven_recommend as _riven_recommend, netracell as _netracell, fissure as _fissure, bounty as _bounty, tenet as _tenet, coda as _coda, incarnon as _incarnon, arbitration_table as _arbitration_table, xiuxian as _xiuxian, xiuxian_menu as _xiuxian_menu, xiuxian_help as _xiuxian_help, doupo as _doupo, doupo_menu as _doupo_menu, doupo_list as _doupo_list, doupo_skills as _doupo_skills, aimenu as _aimenu, checkin as _checkin, plain as _plain, alerts as _alerts, task_alert as _task_alert, archon as _archon, riven_trend as _riven_trend, riven_fusion as _riven_fusion, riven_full as _riven_full)  # noqa: F401
 from .theme import AUTO, LIGHT, NEON, Theme, resolve as resolve_theme
 
 __all__ = [
@@ -83,7 +84,6 @@ _TEMPLATES = {
     "doupo_menu": _doupo_menu.build,  # 斗破口令菜单卡（分组 + 两列清单）
     "doupo_list": _doupo_list.build,  # 斗破通用列表卡（异火/宝库/背包/排行）
     "doupo_skills": _doupo_skills.build,  # 斗破斗技专用卡（技能描述/伤害详情/五段斗气条）
-    "doupo_faction": _doupo_faction.build,  # 斗破宗门卡（概览/斗技统计/代表人物/异火/可转宗门）
     "aimenu": _aimenu.build,  # 指令总览双列加长图（覆盖全部命令族，一张图）
     "checkin": _checkin.build,  # 每日签到卡（连续/累计/喵币 + 里程碑进度 + 本月日历）
     "plain": _plain.build,  # 平原状态和时间卡（Rabbit 版式：白卡+四组状态/倒计时胶囊）
@@ -120,7 +120,6 @@ TEMPLATE_LABELS: dict[str, str] = {
     "doupo_menu": "斗破菜单卡",
     "doupo_list": "斗破列表卡",
     "doupo_skills": "斗破斗技卡",
-    "doupo_faction": "斗破宗门卡",
     "aimenu": "指令总览卡",
     "checkin": "签到卡",
     "plain": "平原状态卡",
@@ -156,6 +155,31 @@ def _config() -> dict:
 def enabled() -> bool:
     """自绘图片总开关（关闭时调用方应直接走纯文本）。"""
     return _config()["enable"]
+
+
+#: 渲染代码签名（进程内算一次）。2026-11-15：字体签名已进缓存 key，但**模板/画布
+#: 源码改了不会变** —— 菜单版式重排后 ``data/pic_cache`` 仍会吐旧布局的 PNG。
+#: 把 pic 包内所有 .py 的 (相对路径, size, mtime_ns) 哈希进 key，任何自绘代码
+#: 变更都会自动失效旧缓存；容器 rebuild 后镜像层文件 mtime 变化 → 同样失效。
+_CODE_SIG: str | None = None
+
+
+def _code_sig() -> str:
+    global _CODE_SIG
+    if _CODE_SIG is not None:
+        return _CODE_SIG
+    try:
+        import hashlib
+        root = Path(__file__).resolve().parent
+        h = hashlib.sha256()
+        for f in sorted(root.rglob("*.py")):
+            st = f.stat()
+            h.update(("%s:%d:%d|" % (f.relative_to(root).as_posix(), st.st_size,
+                                     st.st_mtime_ns)).encode("utf-8"))
+        _CODE_SIG = h.hexdigest()[:12]
+    except Exception:
+        _CODE_SIG = "no-code-sig"
+    return _CODE_SIG
 
 
 def render_sync(template: str, theme_name: str | None = None, card: str | None = None, **params) -> bytes:
@@ -227,7 +251,20 @@ async def render(template: str, theme_name: str | None = None, card: str | None 
         ).hexdigest()[:8]
     except Exception:
         sig = ""
-    key = make_key((template or "").strip().lower() + "|c=" + str(card or ""),
+    # 字体 + 渲染代码签名纳入缓存 key：2026-11-15 斗破卡从「伪粗描边」换成真粗体后，
+    # 磁盘缓存（data/pic_cache，bind mount、重建容器不清）仍返回旧糊图；随后重排菜单
+    # 版式时又发现「只换代码不换字体」同样会命中旧布局。两者都不算进 key，改了也白改。
+    try:
+        _bp = _fonts.font_path("bold")
+        if _bp and Path(_bp).is_file():
+            _st = Path(_bp).stat()
+            fver = "%s:%d:%d" % (Path(_bp).name, _st.st_size, _st.st_mtime_ns)
+        else:
+            fver = "no-bold-font"
+    except Exception:
+        fver = "no-bold-font"
+    key = make_key((template or "").strip().lower() + "|c=" + str(card or "") +
+                   "|f=" + fver + "|v=" + _code_sig(),
                    resolved + ("@" + sig if sig else ""), params)
 
     _t0 = time.perf_counter()

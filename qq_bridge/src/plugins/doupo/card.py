@@ -324,6 +324,7 @@ def build_flames_data(p: dict) -> dict:
     for f in cfg.FLAMES:
         name = f["name"]
         lv = int(fl.get(name, 0))
+        note = ""
         if name == cfg.FLAME_DIYAN:
             state = "已收服" if p.get("diyan") else "未得（成就斗帝自燃）"
             sub = f["desc"]
@@ -333,8 +334,11 @@ def build_flames_data(p: dict) -> dict:
         else:
             need = int(f["need"]) * (lv + 1)
             state = f"{lv}/{cfg.FLAME_MAX_LV} 级"
-            sub = f"{f['desc']}　下级需 {commands._fmt(need)} 药渣"
-        rows.append({"title": name, "right": state, "sub": sub})
+            sub = f["desc"]
+            # 2026-11-15 card-design：「下级需 N 药渣」独立成 note 行，用显式
+            # NOTE_GAP 与描述拉开；旧版用全角空格拼进 sub，长描述折行后会连读。
+            note = f"下级需 {commands._fmt(need)} 药渣"
+        rows.append({"title": name, "right": state, "sub": sub, "note": note})
     return {
         "icon": "star", "title": "异火",
         "subtitle": f"药渣 ×{dross}",

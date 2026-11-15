@@ -72,8 +72,24 @@ def _bold_face_index(path: str) -> int:
     return idx
 
 
+#: 项目内置真粗体：由系统 Dengb.ttf（等线 Bold）子集化（4284 字 / 1.8MB），
+#: 随源码进 git 与镜像，Windows 宿主与 Linux 容器同一字形。
+#: 2026-11-15：容器没有 Windows 字体，旧链路 bold 只能退到 vendored msyh.ttc
+#: （两个 face 全是 Regular），靠同色描边假装加粗，斗破卡的口令名/分区名全糊成一团。
+#: 先试过 msyhbd.ttc（微软雅黑 Bold，2.1MB）子集：双影没了但笔画偏闷；放大对比后
+#: 换成等线 Bold，笔画更清爽锐利。换字体须同步清缓存 —— pic/__init__.py 的缓存 key
+#: 已纳入本文件的 size + mtime_ns（否则 bind mount 的 data/pic_cache 会一直吐旧糊图）。
+_BUNDLED_BOLD = (_ROOT_DIR / "src" / "plugins" / "qq_bridge" / "pic" /
+                 "templates" / "assets" / "doupo_fonts" / "doupo_bold.ttf")
+
+
 def font_path(role: str = "regular") -> str | None:
-    """返回该字重第一个存在的字体文件路径；全部缺失返回 None。"""
+    """返回该字重第一个存在的字体文件路径；全部缺失返回 None。
+
+    bold 优先用项目内置真粗体，保证 Windows 宿主与 Linux 容器同一字形。
+    """
+    if role == "bold" and _BUNDLED_BOLD.is_file():
+        return str(_BUNDLED_BOLD)
     for name in _CANDIDATES.get(role, _CANDIDATES["regular"]):
         for d in (_CUSTOM_DIR, _VENDOR_DIR, _SYSTEM_DIR):
             p = d / name
