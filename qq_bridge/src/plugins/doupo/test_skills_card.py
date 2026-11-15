@@ -60,6 +60,7 @@ def _stub_nonebot():
 _stub_nonebot()
 
 from doupo import card, core, config as cfg  # noqa: E402
+from doupo import skill_effects as fx  # noqa: E402
 
 
 def _pic():
@@ -178,8 +179,13 @@ def test_build_skills_data_details():
         assert r["name"] == e["name"]
         # 2026-11-15 多维重构：desc 必须是完整原著描述（不再是 brief 一句），
         # 并带主定位 / 多维效果 chip / 门控，而不是只有一个伤害数字。
-        assert r["desc"] == str(e.get("desc") or e.get("brief") or ""), "完整描述须与权威表同源"
+        # 卡片上的描述 = 权威 desc 去掉末尾「限制：…」段。代价由 gate 行
+        # 单独展示，两处都画就是同一件事在图里说两遍（用户实测指出）。
+        raw = str(e.get("desc") or e.get("brief") or "")
+        want = fx.desc_without_gate(raw) or raw
+        assert r["desc"] == want, "完整描述须与权威表同源（剥离「限制」段后）"
         assert len(r["desc"]) > 20, "描述过短，疑似又退回 brief"
+        assert "限制：" not in r["desc"], "代价段没剥离，会和 gate 行重复"
         assert r["role"] in ("", "输出", "爆发", "续航", "控场", "异常", "防御", "位移", "功能")
         assert isinstance(r["chips"], list) and all("label" in c for c in r["chips"])
         assert isinstance(r["gate"], str)

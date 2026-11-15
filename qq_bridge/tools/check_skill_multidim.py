@@ -210,6 +210,10 @@ def _skills_shape_problems(d: dict) -> list[str]:
         out.append("[卡片] build_skills_data 没有 gate（四槽卡看不到代价）")
     if any(len(str(r.get("desc") or "")) <= 20 for r in rows):
         out.append("[卡片] build_skills_data 的 desc 过短，疑似退回 brief")
+    for r in rows:
+        if "限制：" in str(r.get("desc") or ""):
+            out.append("[卡片] %s 的描述没剥离「限制：」段，会和 gate 行重复" % r.get("name"))
+            break
     return out
 
 
@@ -233,6 +237,15 @@ def _roster_shape_problems(roster: dict) -> list[str]:
         out.append("[卡片] build_roster_data 没有 gate（看不到代价行）")
     if not any(len(r.get("chips") or []) >= 2 for r in rows):
         out.append("[卡片] build_roster_data 的 chips 不足 2 枚（看不到伤害+多维效果）")
+    # 用户 2026-11-15：「技能描述加上，别偷懒」——名录卡必须有完整描述
+    if not all(str(r.get("desc") or "") for r in rows):
+        out.append("[卡片] 有斗技没有 desc（名录卡只剩 brief，属于偷懒）")
+    if any(len(str(r.get("desc") or "")) < 40 for r in rows):
+        out.append("[卡片] 有斗技描述过短，疑似退回 brief")
+    for r in rows:
+        if "限制：" in str(r.get("desc") or ""):
+            out.append("[卡片] %s 的描述没剥离「限制：」段，会和代价行重复" % r.get("name"))
+            break
     for r in rows:
         ch = r.get("chips") or []
         if ch and str(ch[0].get("label")) != "伤害":
@@ -311,6 +324,8 @@ def selftest() -> list[tuple[str, bool]]:
         "groups": [{"tier": "普通", "count": 1, "rows": []}],
         "rows": [{"name": "示例", "role": "续航", "state_kind": "on",
                   "meta": "〔本宗〕黄阶低级 · 攻击 · 斗气 20%",
+                  "desc": "斗气凝于掌心，一掌拍出，造成伤害并吸取对方气血回复自身；"
+                          "掌风带起一阵血色涟漪，被扫中者伤口发黑，久不能愈。",
                   "chips": [{"label": "伤害", "value": "×1.00"},
                             {"label": "吸血", "value": "25%"}],
                   "gate": "某代价"}],
@@ -334,6 +349,14 @@ def selftest() -> list[tuple[str, bool]]:
     res.append(("四槽卡 desc 退回 brief", bool(_skills_shape_problems(
         {"rows": [{"role": "输出", "chips": [{"label": "破防", "value": "30%"}],
                    "gate": "代价", "desc": "一句短话"}]}))))
+    res.append(("名录卡没有描述（只剩 brief）", bool(_roster_shape_problems(
+        {"groups": good_roster["groups"],
+         "rows": [dict(good_roster["rows"][0], desc="")]}))))
+    res.append(("描述没剥离「限制：」段（与代价行重复）", bool(_roster_shape_problems(
+        {"groups": good_roster["groups"],
+         "rows": [dict(good_roster["rows"][0],
+                       desc="斗气凝血成掌，造成伤害并附加血毒。限制：气血虚时威力骤降，"
+                            "对无血之物无效。")]}))))
 
     if saved is not None:
         book.SKILL_BOOK[name0] = saved

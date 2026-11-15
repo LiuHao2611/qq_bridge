@@ -71,3 +71,37 @@ def small(c: Canvas, pos, text, *, size: int = FS_SUB, color: str,
     txt = fit(text, max_w, size, "regular") if max_w is not None else str(text)
     return c.text(pos, txt, size=int(size), color=color, role="regular",
                   bold=False, anchor=anchor)
+
+
+#: 中文避头标点：这些字符不许落在行首（「。」单独占一行是明显排版瑕疵）
+HEAD_PUNCT = "，。、；：！？）」』】》%·"
+#: 避头预留宽度：15px 字一个全角标点约 15px，留 18 保证回挪后不超原宽
+HEAD_RESERVE = 18
+
+
+def wrap_cjk(text: str, size: int, role: str, max_w: int) -> list[str]:
+    """``Canvas.wrap`` + 中文避头，折行后每行仍不超过 ``max_w``。
+
+    做法：先按 ``max_w - HEAD_RESERVE`` 折行（预留一个标点宽），再把行首标点
+    回挪到上一行末；回挪前用 ``text_width`` 实测确认不超 ``max_w``，超了就
+    放弃回挪（宁可有标点在行首，也不能压到卡片右内边距）。
+
+    为什么不用 ``Canvas.wrap`` 直接折：它按字符宽度累加，标点会自然落到行首
+    （实测「。造成 95% 伤害」这种断句）。改 Canvas.wrap 会影响所有卡片，
+    所以只在斗破的长描述里用这个包装。
+    """
+    s = str(text or "")
+    if max_w <= HEAD_RESERVE * 2:
+        return Canvas.wrap(s, size, role, max_w)
+    lines = Canvas.wrap(s, size, role, max_w - HEAD_RESERVE)
+    out: list[str] = []
+    for ln in lines:
+        while out and ln and ln[0] in HEAD_PUNCT:
+            cand = out[-1] + ln[0]
+            if Canvas.text_width(cand, size, role) > max_w:
+                break
+            out[-1] = cand
+            ln = ln[1:]
+        if ln:
+            out.append(ln)
+    return out

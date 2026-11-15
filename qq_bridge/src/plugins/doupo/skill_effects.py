@@ -25,6 +25,8 @@
 """
 from __future__ import annotations
 
+import re
+
 # ---------------------------------------------------------------------------
 # 1. 词表
 # ---------------------------------------------------------------------------
@@ -133,6 +135,38 @@ def effect_chips(effects) -> list[dict]:
 
 def role_label(role: str) -> str:
     return role if role in ROLES else (role or "")
+
+
+#: desc 末尾的代价段标记（全部 23 门天冥宗斗技都用这个写法）
+_GATE_SPLIT = ("限制：", "限制:")
+
+
+def desc_without_gate(desc: str) -> str:
+    """去掉描述末尾的「限制：…」段。
+
+    为什么需要：``desc`` 是原著全文，末段固定写「限制：……」，而 ``gate`` 字段
+    是同一件事的摘要。卡片上两处都画就会重复（用户 2026-11-15 看到血煞掌的
+    「限制：血毒需自身血气为引，气血虚时威力骤降…」和代价行「限：气血虚时
+    威力骤降，对无血之物无效」说了两遍）。所以卡片只画机制段，代价交给
+    ``gate`` 行单独展示 —— 信息不丢，也不啰嗦。
+
+    没有「限制」段的描述原样返回。
+    """
+    s = str(desc or "")
+    if not s:
+        return ""
+    idx = -1
+    for mark in _GATE_SPLIT:
+        i = s.find(mark)
+        if i >= 0 and (idx < 0 or i < idx):
+            idx = i
+    if idx < 0:
+        return s
+    head = s[:idx].rstrip()
+    # 机制段被切断处补句号，避免出现「…（每回合 5%，持续 2 回合」这种断尾
+    if head and head[-1] not in "。！？…）】」":
+        head += "。"
+    return head
 
 
 # ---------------------------------------------------------------------------

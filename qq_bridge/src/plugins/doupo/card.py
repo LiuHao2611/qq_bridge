@@ -264,7 +264,10 @@ def build_skills_data(p: dict) -> dict:
             "role": fx.role_label(e.get("role", "")),
             "chips": fx.effect_chips(e.get("effects") or []),
             "gate": str(e.get("gate") or ""),
-            "desc": str(e.get("desc") or e.get("brief") or ""),
+            # 完整描述去掉末尾「限制：…」段——代价由 gate 行单独展示，
+            # 否则同一件事在图里说两遍（用户实测指出重复）。
+            "desc": (fx.desc_without_gate(str(e.get("desc") or ""))
+                     or str(e.get("desc") or e.get("brief") or "")),
             "base_mult": round(base_mult, 2),
             "cur_mult": round(cur_mult, 2),
             "next_mult": round(next_mult, 2),
@@ -328,9 +331,14 @@ def build_roster_data(p: dict) -> dict:
         name = e["name"]
         unlocked = bool(e.get("unlocked"))
         equipped = bool(e.get("equipped"))
-        state = "上阵" if equipped else (
-            "可学" if unlocked else f"未解锁 lv{e.get('unlock', '?')}")
-        state_kind = "on" if equipped else ("learn" if unlocked else "lock")
+        # 两列版的状态 pill 只有 ~52px 宽，「未解锁 lv50」会撑爆块宽，
+        # 因此状态只写短词，解锁等级挪到副行末尾（信息不丢、胶囊不挤）。
+        if equipped:
+            state, state_kind = "上阵", "on"
+        elif unlocked:
+            state, state_kind = "可学", "learn"
+        else:
+            state, state_kind = "未解锁", "lock"
         lv = max(1, min(5, int(sk.get(name, 1))))
         frac = int(cfg.SKILL_TIER_MP_FRAC.get(e["tier"], 0.2) * 100)
         role = fx.role_label(e.get("role", ""))
@@ -344,6 +352,8 @@ def build_roster_data(p: dict) -> dict:
         if kind and kind != rank:
             parts.append(kind)
         parts.append(f"斗气 {frac}%")
+        if not unlocked:
+            parts.append("lv%s 解锁" % e.get("unlock", "?"))
         meta = " · ".join(x for x in parts if x)
         if e.get("flame"):
             meta = f"异火技〔{e['flame']}〕 · " + meta
@@ -360,6 +370,12 @@ def build_roster_data(p: dict) -> dict:
             "state": state,
             "state_kind": state_kind,
             "meta": meta,
+            # 完整技能描述（用户 2026-11-15：「技能描述加上，别偷懒」）：
+            # 名片卡只放 brief 是偷懒，玩家看不到机制就会退回比数字。
+            # 完整描述去掉末尾「限制：…」段——代价由 gate 行单独展示，
+            # 否则同一件事在图里说两遍（用户实测指出重复）。
+            "desc": (fx.desc_without_gate(str(e.get("desc") or ""))
+                     or str(e.get("desc") or e.get("brief") or "")),
             "chips": chips,
             "gate": str(e.get("gate") or ""),
             # ---- 兼容通用列表卡 / 既有测试的扁平字段 ----

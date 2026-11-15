@@ -168,6 +168,66 @@ def test_roster_passes_check_boxes():
     assert not problems, "名录卡触线：\n" + "\n".join(problems[:10])
 
 
+def test_roster_shows_full_desc():
+    """用户 2026-11-15：「技能描述加上，别偷懒」——每门必须展示**完整**描述。
+
+    名录卡不许只放 brief 一句。剥离末尾「限制：…」段是允许的（代价由 gate 行
+    单独展示），但剥离后仍须保留机制段，且被剥掉的内容必须能在 gate 里找到，
+    不能凭空空掉。
+    """
+    import importlib
+
+    from doupo import factions as fac
+
+    pic = card._load_pic()
+    tpl = importlib.import_module(card._PKG_NAME + ".templates.doupo_roster")
+    p = _p(faction="tianmingzong")
+    p["faction_name"] = fac.FACTIONS["tianmingzong"]["name"]
+    data = card.build_roster_data(p)
+    rows = data["rows"]
+    inner_w = tpl._cols(720)[2]
+    for r in rows:
+        desc = str(r.get("desc") or "")
+        assert len(desc) >= 40, "%s 描述过短（%d 字），疑似退回 brief" % (r["name"], len(desc))
+        assert "限制：" not in desc, "%s 描述没剥离代价段，会和「限：」行重复" % r["name"]
+        assert r.get("gate"), "%s 剥掉了描述里的代价却没有 gate，信息丢了" % r["name"]
+        lines = tpl._desc_lines(r, inner_w)
+        assert len(lines) >= 2, "%s 描述只折出 %d 行，可能没渲染" % (r["name"], len(lines))
+        assert "".join(lines) == desc, "%s 描述折行丢字" % r["name"]
+
+
+def test_roster_is_two_columns():
+    """用户 2026-11-15：「做成两列」——分区内每行两块、同 y、左右列起点固定。"""
+    import importlib
+
+    from doupo import factions as fac
+
+    pic = card._load_pic()
+    tpl = importlib.import_module(card._PKG_NAME + ".templates.doupo_roster")
+    p = _p(faction="tianmingzong")
+    p["faction_name"] = fac.FACTIONS["tianmingzong"]["name"]
+    data = card.build_roster_data(p)
+    L = tpl._plan(data, 720)
+    pairs = [e for e in L["entries"] if e["kind"] == "pair"]
+    assert pairs, "没有任何成对的行，不是两列布局"
+    full = [e for e in pairs if len(e["cells"]) == 2]
+    assert len(full) >= 10, "绝大多数行应并排两块，实测 %d 行" % len(full)
+
+    x_left = full[0]["cells"][0]["x"]
+    x_right = full[0]["cells"][1]["x"]
+    assert x_left < x_right, "两列 x 顺序错"
+    for e in full:
+        a, b = e["cells"]
+        assert a["x"] == x_left, "左列起点漂移：%d vs %d" % (a["x"], x_left)
+        assert b["x"] == x_right, "右列起点漂移：%d vs %d" % (b["x"], x_right)
+        assert a["w"] == b["w"], "两列宽度不一致"
+        assert e["h"] >= max(c["h"] for c in e["cells"]), "等高计算小于内容高（会裁切）"
+        # 右列必须落在卡片内容区内
+        assert b["x"] + b["w"] <= 720 - tpl.PAD + 1, "右列越出内容区"
+    # 单数门的分区允许只有 1 块（如特殊斗技 1 门）
+    assert any(len(e["cells"]) == 1 for e in pairs), "单数分区应允许单块"
+
+
 def test_roster_uses_dedicated_template():
     """名录卡必须走专用模板（按阶位分组 + 卡片块），不许退回通用列表卡。
 

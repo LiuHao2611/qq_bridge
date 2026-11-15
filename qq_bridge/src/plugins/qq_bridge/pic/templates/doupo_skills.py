@@ -183,7 +183,8 @@ def _desc_lines(item: dict, inner_w: int) -> list[str]:
     desc = str(item.get("desc") or "")
     if not desc:
         return []
-    return Canvas.wrap(desc, FS_DESC, "regular", max(80, inner_w - BADGE_W - BADGE_GAP))
+    # 避头：中文长描述逐字折行会让「。」掉到行首（实测「。造成 95% 伤害」）
+    return S.wrap_cjk(desc, FS_DESC, "regular", max(80, inner_w - BADGE_W - BADGE_GAP))
 
 
 def _chip_w(chip: dict) -> int:
