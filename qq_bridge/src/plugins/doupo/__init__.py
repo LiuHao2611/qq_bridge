@@ -335,7 +335,22 @@ sect = on_regex(_pat(r"(?:宗门|门派)") + r"\s*(.*)",
 @sect.handle()
 async def _(event: MessageEvent):
     await _need_group(event, sect)
-    await sect.finish(await commands.cmd_faction(store, str(event.user_id), None))
+    qq = str(event.user_id)
+    # 纯文本兜底（与图片同源）
+    msg = await commands.cmd_faction(store, qq, None)
+    if msg == commands.NOT_ENTERED:
+        await sect.finish(msg)
+    # 宗门内容基本固定（概览/斗技统计/代表人物/异火/可转宗门），必须出卡片
+    png = None
+    try:
+        p = await store.get_player(qq)
+        if p:
+            png = await card.render_faction(p)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("斗破宗门卡渲染异常，降级纯文本：%s: %s", type(e).__name__, e)
+    if png:
+        await sect.finish(MessageSegment.image(png))
+    await sect.finish(msg)
 
 
 switch = on_regex(_pat(r"(?:转宗|换宗|改换门庭)") + r"\s*(.*)",

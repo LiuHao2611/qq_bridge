@@ -482,8 +482,8 @@ def skill_pool(p) -> list[dict]:
 def skill_pool_sorted(p) -> list[dict]:
     """本宗斗技（含未解锁）按三阶稳定排序：普通 → 高阶 → 特殊。
 
-    卡片（build_skills_data）与上阵口令（cmd_loadout）共用同一顺序，
-    因此「卡片上的编号」与「上阵 <编号>」一一对应，不会错位。
+    宗门卡统计（build_faction_data）与斗技名录共用同一顺序，
+    保证「卡片上的门数统计」与 skill_pool 完全同源、不会错位。
     """
     pool = skill_pool(p)
     tier_order = {t: i for i, t in enumerate(cfg.SKILL_TIERS)}

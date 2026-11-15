@@ -26,6 +26,7 @@ from . import config as cfg
 from . import core
 from . import commands
 from . import avatar
+from . import factions as fac
 
 log = logging.getLogger("qq_bridge.doupo.card")
 
@@ -335,6 +336,61 @@ def build_roster_data(p: dict) -> dict:
 async def render_roster(p: dict) -> bytes | None:
     """「斗技 全部」出图：本宗全部斗技名录卡。"""
     return await _render_list("doupo_list", build_roster_data(p), "斗破本宗斗技")
+
+
+def build_faction_data(p: dict) -> dict:
+    """宗门 → doupo_faction 模板参数（卡片化展示，设计美化）。
+
+    与 commands.cmd_faction 纯文本兜底同源：读同一个 player / FACTIONS，
+    因此「图片里的宗门」和「文字里的宗门」永远不会说两回事。
+    """
+    core.settle(p)
+    name = p.get("faction_name") or "无宗门"
+    fid = p.get("faction") or ""
+    fac_def = fac.FACTIONS.get(fid, {})
+    POOL_CN = {"starter": "新手池", "advanced": "进阶池", "hidden": "隐世池"}
+    pool = str(fac_def.get("pool", ""))
+    base = str(fac_def.get("base", ""))
+    npcs = list(fac_def.get("npcs", []) or [])
+    flames = list(fac_def.get("flames", []) or [])
+    lv = int(p.get("lv", 1))
+
+    # 本门斗技统计（普通/高阶/特殊 门数）
+    pool_sorted = core.skill_pool_sorted(p)
+    tier_counts = {t: sum(1 for e in pool_sorted if e["tier"] == t)
+                   for t in cfg.SKILL_TIERS}
+
+    # 可转宗门（按卡池分组，只列当前境界已开放的）
+    cands = core.faction_candidates(p)
+    groups = []
+    for pool_key in ("starter", "advanced", "hidden"):
+        rows = [c for c in cands if c["pool"] == pool_key]
+        if not rows:
+            continue
+        names = ["%s %d门" % (c["name"], c["skills"]) for c in rows]
+        groups.append({"pool": POOL_CN.get(pool_key, pool_key), "names": names})
+
+    cost = core.faction_switch_cost(p)
+    open_pools = [POOL_CN[x] for x in core.faction_pools_open(p)]
+    return {
+        "name": name,
+        "pool": POOL_CN.get(pool, pool),
+        "base": base,
+        "npcs": npcs,
+        "flames": flames,
+        "tier_counts": tier_counts,
+        "total_skills": len(pool_sorted),
+        "open_pools": open_pools,
+        "lv": lv,
+        "groups": groups,
+        "switch_cost": cost,
+        "tip": "用法：转宗 <宗门名>（只换师门并重配四槽，已升技能等级按技名保留）",
+    }
+
+
+async def render_faction(p: dict) -> bytes | None:
+    """「宗门」出图：宗门概览 / 斗技统计 / 代表人物 / 传承异火 / 可转宗门。"""
+    return await _render_list("doupo_faction", build_faction_data(p), "斗破宗门")
 
 def build_flames_data(p: dict) -> dict:
     """异火列表 → doupo_list 模板参数。"""
