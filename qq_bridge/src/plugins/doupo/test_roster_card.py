@@ -110,7 +110,10 @@ def test_roster_rows_carry_multidim_tags():
     p = _p(faction="tianmingzong")
     p["faction_name"] = fac.FACTIONS["tianmingzong"]["name"]
     rows = card.build_roster_data(p)["rows"]
-    assert len(rows) == 23, "天冥宗应为 23 门，实测 %d" % len(rows)
+    pool_n = len(core.skill_pool(p))
+    assert len(rows) == pool_n, "名录卡行数应等于运行池门数：%d vs %d" % (
+        len(rows), pool_n)
+    assert pool_n >= 10, "天冥宗运行池异常偏少：%d" % pool_n
     assert any("〔" in r["sub"] and "〕" in r["sub"] for r in rows), "没画主定位标签"
     assert any(r["note"] for r in rows), "没画多维效果 / 门控行"
     assert all("note" in r for r in rows), "note 字段必须存在（可为空串）"
@@ -147,7 +150,7 @@ def _check_boxes(bounds, boxes, min_gap: int = 2) -> list[str]:
 
 
 def test_roster_passes_check_boxes():
-    """card-design 门禁：真实天冥宗 23 行名录卡（doupo_roster 专用模板），
+    """card-design 门禁：真实天冥宗 15 行名录卡（doupo_roster 专用模板），
     溢出 0 / 重叠 0 / 间距 0。"""
     import importlib
 
@@ -163,7 +166,8 @@ def test_roster_passes_check_boxes():
     data = card.build_roster_data(p)
     boxes: list[tuple] = []
     c = tpl.build(theme, data=data, width=720, boxes=boxes)
-    assert len(boxes) > 120, "收集到的包围盒太少，自检会假通过：%d" % len(boxes)
+    assert len(boxes) > len(data["rows"]) * 5, (
+        "收集到的包围盒太少，自检会假通过：%d" % len(boxes))
     problems = _check_boxes((12, 12, 720 - 12, c.height - 12), boxes)
     assert not problems, "名录卡触线：\n" + "\n".join(problems[:10])
 
@@ -211,7 +215,14 @@ def test_roster_is_two_columns():
     pairs = [e for e in L["entries"] if e["kind"] == "pair"]
     assert pairs, "没有任何成对的行，不是两列布局"
     full = [e for e in pairs if len(e["cells"]) == 2]
-    assert len(full) >= 10, "绝大多数行应并排两块，实测 %d 行" % len(full)
+    # 按阶位分组后，每个奇数门分区各允许 1 个单块（15 门 = 3 个分区可各留 1 块）
+    groups_n = len(data["groups"])
+    singles = [e for e in pairs if len(e["cells"]) == 1]
+    assert len(singles) <= groups_n, (
+        "每个分区最多 1 个单块，实测 %d 个单块 / %d 个分区"
+        % (len(singles), groups_n))
+    assert len(full) >= len(pairs) - groups_n, (
+        "并排两块的行数过少：%d/%d" % (len(full), len(pairs)))
 
     x_left = full[0]["cells"][0]["x"]
     x_right = full[0]["cells"][1]["x"]
@@ -259,7 +270,8 @@ def test_roster_groups_by_tier():
     tiers = [g["tier"] for g in groups]
     order = [t for t in cfg.SKILL_TIERS if t in tiers]
     assert tiers == order, "分组顺序与 SKILL_TIERS 不一致：%s vs %s" % (tiers, order)
-    assert sum(g["count"] for g in groups) == len(d["rows"]) == 23
+    assert sum(g["count"] for g in groups) == len(d["rows"])
+    assert len(d["rows"]) >= 10, "名录卡门数异常偏少：%d" % len(d["rows"])
     for g in groups:
         assert g["rows"] and g["count"] == len(g["rows"])
         assert g.get("icon"), "%s 分区缺图标" % g["tier"]
@@ -344,7 +356,8 @@ def test_desc_first_sentence_is_skill_source():
         else:
             assert not desc.startswith("，"), "%s 没有来源却留了逗号前缀" % r["name"]
         assert len(desc) >= 40, "%s 描述过短" % r["name"]
-    assert with_source >= 20, "23 门里绝大多数都应有传承来源，实测 %d" % with_source
+    assert with_source >= len(rows) - 2, (
+        "绝大多数斗技都应有传承来源，实测 %d/%d" % (with_source, len(rows)))
     # 检测本身必须认得出这次真实犯过的旧写法（否则门禁会形同虚设）
     assert fx.CITATION_RE.search(
         "原著第一千一百九十章「承让」载，天冥宗易尘所使。斗气凝血成掌……"), (
@@ -428,7 +441,7 @@ def test_meta_wrap_keeps_unlock_level_intact():
             checked += 1
             assert any(m.group(0) in ln and "解锁" in ln for ln in lines), (
                 "%s 的解锁等级被截断或拆字：%s" % (r["name"], lines))
-    assert checked >= 8, "lv1 应有大量未解锁斗技，实测 %d" % checked
+    assert checked >= 4, "lv1 应有多门未解锁斗技，实测 %d" % checked
 
     boxes: list[tuple] = []
     c = tpl.build(theme, data=data, width=720, boxes=boxes)

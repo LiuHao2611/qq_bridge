@@ -59,11 +59,12 @@ def _tianming_player():
 
 
 # ---------------------------------------------------------------------------
-# 1. 数据完整性：23 门都有多维设计，低伤技能必带战术维度
+# 1. 数据完整性：15 门都有多维设计，低伤技能必带战术维度
+#    （2026-11-15 23:2x 通用池精简：本宗 11 + 斗技堂通用 4 = 15）
 # ---------------------------------------------------------------------------
 def test_all_tianming_skills_have_multidim_design():
     ents = sk.catalog("tianmingzong")
-    assert len(ents) == 23, f"天冥宗应 23 门，实际 {len(ents)}"
+    assert len(ents) == 15, f"天冥宗应 15 门，实际 {len(ents)}"
     for e in ents:
         name = e["name"]
         assert e.get("role") in fx.ROLES, f"{name} 主定位非法: {e.get('role')!r}"

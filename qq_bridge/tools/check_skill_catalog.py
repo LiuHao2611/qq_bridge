@@ -13,7 +13,11 @@
   4. 兜底路径（factions.skills / special_skills）也不得再冒出典故；
   5. 每条斗技要么有「第X章「标题」」原著章句，要么显式标「原著无载 · 游戏自设」，
      不许拿编造章号冒充原著；
-  6. 真实存档四槽自动补满、且不含任何非斗技。
+  6. 真实存档四槽自动补满、且不含任何非斗技；
+  7. **通用池准入**（用户 2026-11-15「焰分噬浪尺为什么分到天冥宗了？？？」）：
+     ``COMMON_SKILLS`` 只准放斗技堂按修为传授的黄阶基础技；有明确授受对象的
+     专属技（药尘授萧炎的尺法等）一律不许进通用池，因为 ``skills.catalog``
+     会把通用池全量灌给**每个宗门**。
 
 用法：
     python tools/check_skill_catalog.py             # 报告，不中断
@@ -66,6 +70,40 @@ def _bad_name(n: str) -> str | None:
     return None
 
 
+def common_pool_problems() -> list[str]:
+    """通用池准入：只准「斗技堂按修为传授的黄阶基础技」。
+
+    用户 2026-11-15 质问「焰分噬浪尺为什么分到天冥宗了？？？」后重查：
+    旧 ``COMMON_SKILLS`` 12 门**每一门都已在 FACTION_SKILLS 有专属归属**
+    （药尘亲授萧炎的焰分噬浪尺/吸掌/吹火掌、云韵赠的爆步、萧薰儿的燕返击…），
+    而 ``skills.catalog`` 把通用池全量加给每个宗门 → 25 派人人会萧炎的尺法。
+
+    判据用数据自己说话，不维护人工黑名单：通用技必须是**黄阶**且 ``source``
+    明确写「斗技堂」；有「所授 / 所赠 / 亲授 / 所创」这类授受对象的一律拒绝。
+    这样把任何专属技塞回通用池都会当场报错。
+    """
+    out: list[str] = []
+    if not book.COMMON_SKILLS:
+        out.append("[通用池] 通用池为空，本宗斗技稀薄的宗门四槽填不满")
+    for n in book.COMMON_SKILLS:
+        rec = book.SKILL_BOOK.get(n)
+        if rec is None:
+            out.append(f"[通用池] {n} 不在 SKILL_BOOK")
+            continue
+        rank = str(rec.get("rank") or "")
+        src = str(rec.get("source") or "")
+        if not rank.startswith("黄阶"):
+            out.append(f"[通用池] {n} 是 {rank}，不是斗技堂黄阶基础技"
+                       "（有专属归属的斗技各归其宗，不许跨宗门泛滥）")
+        if "斗技堂" not in src:
+            out.append(f"[通用池] {n} 的出处不是斗技堂流通技：{src}")
+        for w in ("所授", "所赠", "亲授", "所创"):
+            if w in src:
+                out.append(f"[通用池] {n} 有明确授受对象「{w}」，不能当通用技：{src}")
+                break
+    return out
+
+
 def catalog_problems() -> list[str]:
     out: list[str] = []
     bad = book.NON_SKILL_NAMES
@@ -93,6 +131,7 @@ def catalog_problems() -> list[str]:
         w = _bad_name(n)
         if w:
             out.append(f"[通用] 通用斗技名含非斗技词「{w}」：{n}")
+    out += common_pool_problems()
 
     # 4) 宗门表字面量本身（不能等 catalog 静默跳过缺失项）
     for fid, listed in book.FACTION_SKILLS.items():
@@ -210,6 +249,23 @@ def selftest() -> list[tuple[str, bool]]:
     book.SKILL_BOOK["千焰剑罡"]["novel"] = "据说是古河用的剑法"
     res.append(("斗技出处既不写章句也不标自设", bool(catalog_problems())))
     book.SKILL_BOOK["千焰剑罡"]["novel"] = saved_cite
+
+    # ---- 通用池归属（2026-11-15 用户「焰分噬浪尺为什么分到天冥宗了」）----
+    saved_pool = book.COMMON_SKILLS
+    res.append(("现行通用池不应报错", not common_pool_problems()))
+    book.COMMON_SKILLS = tuple(saved_pool) + ("焰分噬浪尺",)
+    res.append(("把焰分噬浪尺放回通用池（用户当场抓到的错）",
+                bool(catalog_problems())))
+    book.COMMON_SKILLS = ("焰分噬浪尺",)
+    res.append(("通用池整体换成专属技", bool(catalog_problems())))
+    book.COMMON_SKILLS = ()
+    res.append(("撤空通用池导致稀薄宗门四槽不满", bool(catalog_problems())))
+    book.COMMON_SKILLS = saved_pool
+    # 改掉某门通用技的阶位，也应当被拦（防止绕开技名黑名单）
+    saved_rank = book.SKILL_BOOK["碎石掌"]["rank"]
+    book.SKILL_BOOK["碎石掌"]["rank"] = "地阶低级"
+    res.append(("把通用基础技改成地阶专属", bool(common_pool_problems())))
+    book.SKILL_BOOK["碎石掌"]["rank"] = saved_rank
 
     return res
 

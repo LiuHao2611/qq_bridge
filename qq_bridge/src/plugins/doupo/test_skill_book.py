@@ -209,6 +209,35 @@ def test_every_faction_has_at_least_four_skills():
     assert not short, "以下宗门运行时斗技不足 4 门，四槽凑不满：%s" % short
 
 
+def test_exclusive_skills_never_leak_into_other_factions():
+    """用户 2026-11-15：「焰分噬浪尺为什么分到天冥宗了？？？？？？」
+
+    通用池会被 ``skills.catalog`` 全量灌给**每个**宗门，所以有明确授受对象的
+    专属技绝不能进 ``COMMON_SKILLS``；撤出后仍须留在自己的宗门（资料不丢）。
+    """
+    exclusive = {
+        "焰分噬浪尺": "xingyunge", "吸掌": "xingyunge", "吹火掌": "xingyunge",
+        "爆步": "yunlanzong", "雷蝠天翼": "xuezong", "燕返击": "guzu",
+        "卸力水镜": "jianan", "水曼陀罗": "jianan",
+    }
+    leaked = [n for n in exclusive if n in book.COMMON_SKILLS]
+    assert not leaked, "专属技混进通用池，会灌给所有宗门：%s" % leaked
+    tianming = set(book.FACTION_SKILLS["tianmingzong"]) | set(book.COMMON_SKILLS)
+    assert not (set(exclusive) & tianming), "天冥宗学到了别人的专属斗技"
+    for name, fid in exclusive.items():
+        assert name in book.FACTION_SKILLS[fid], "%s 的原宗门归属丢了" % name
+
+    # 反例注入：把焰分噬浪尺放回通用池，天冥宗立刻「学会」→ 证明断言不是空跑
+    saved = book.COMMON_SKILLS
+    book.COMMON_SKILLS = tuple(saved) + ("焰分噬浪尺",)
+    try:
+        leaked_pool = (set(book.FACTION_SKILLS["tianmingzong"])
+                       | set(book.COMMON_SKILLS))
+        assert "焰分噬浪尺" in leaked_pool, "反例失效：注入后仍没灌进天冥宗"
+    finally:
+        book.COMMON_SKILLS = saved
+
+
 def _learnable_at(fid: str, lv: int) -> list[dict]:
     """进池等级可学斗技 = 本宗 + 通用（与 skills.learnable 同口径）。"""
     rows = [book.SKILL_BOOK[n] for n in _runtime_pool(fid) if n in book.SKILL_BOOK]

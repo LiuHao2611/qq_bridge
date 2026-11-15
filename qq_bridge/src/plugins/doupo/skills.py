@@ -123,8 +123,13 @@ def catalog(fid: str) -> list[dict]:
 
     2026-11-15 梳理：炼药师公会这类宗门原著里只有 1 门本宗斗技（千焰剑罡，
     古河在「战古河」施展），剥离炼药/考核/丹会后不能靠塞假斗技凑四槽；
-    改用 ``skill_book.COMMON_SKILLS``（原著有章句、斗技堂/拍卖会流通的基础斗技）
-    补齐，并标 ``origin="通用"``，卡片与文本都明说是通用而非本宗传承。
+    改用 ``skill_book.COMMON_SKILLS`` 补齐，并标 ``origin="通用"``，卡片与文本
+    都明说是通用而非本宗传承。
+
+    ⚠️ 2026-11-15 修正：通用池**只准放斗技堂的黄阶基础技**。旧版把 8 门有明确
+    授受对象的专属斗技（药尘授萧炎的焰分噬浪尺、云韵赠的爆步、萧薰儿的燕返击…）
+    也塞了进来，于是全量注入后 25 派人人会萧炎的尺法。这些技仍留在各自宗门的
+    ``FACTION_SKILLS`` 里，数据不丢，只是不再跨宗门泛滥。
     """
     fid = str(fid or "")
     base = _from_book(fid) if fid in book.FACTION_SKILLS else _from_faction_strings(fid)
