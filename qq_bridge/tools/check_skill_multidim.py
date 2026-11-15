@@ -24,6 +24,10 @@
    防止「文案说有 30% 破防、数据里却是 0」这种图文说两回事。
 5. **卡片消费**：``card.build_skills_data`` / ``build_roster_data`` 必须真的把
    role/chips/gate 透出到卡片数据（否则修了数据层、玩家还是只看到一个数字）。
+6. **来源首句**（2026-11-15 第三轮）：名录卡每行 desc 的第一句必须是技能来源
+   （原著章节 + 传承出处），有来源就加、游戏自设不编章号、不许写「出处：」标题。
+7. **状态徽章醒目**：右上角 14px 浅字 + 高对比实底 + 状态圆点、三态不同色；
+   退回旧版 12px 淡底同色小胶囊即报错（``state_badge_problems``）。
 
 用法：
     python tools/check_skill_multidim.py            # 报告，不中断
@@ -266,6 +270,55 @@ def _roster_shape_problems(roster: dict) -> list[str]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# 4.5 描述首句来源 + 右上角状态徽章（2026-11-15 用户第三轮优化）
+# ---------------------------------------------------------------------------
+def source_problems(roster: dict) -> list[str]:
+    """名录卡每行：有来源必加在**第一句**、无来源不编、不单列「来源」标题。
+
+    纯函数，反例注入见 ``selftest``。字段 ``source_lead`` / ``has_source`` 由
+    ``card.build_roster_data`` 结构化透出，避免靠字符串猜「有没有加来源」。
+    """
+    out: list[str] = []
+    rows = roster.get("rows") or []
+    if not rows:
+        return ["[来源] 名录卡没有行"]
+    if not any(r.get("has_source") for r in rows):
+        out.append("[来源] 整张名录卡没有任何技能来源（card 层没接 source_lead）")
+    for r in rows:
+        name = str(r.get("name") or r.get("title") or "?")
+        lead = str(r.get("source_lead") or "")
+        desc = str(r.get("desc") or "")
+        has = bool(r.get("has_source"))
+        if has != bool(lead):
+            out.append("[来源] %s 的 has_source 与 source_lead 不一致" % name)
+        if lead and not desc.startswith(lead):
+            out.append("[来源] %s 的描述首句不是技能来源：%s" % (name, desc[:32]))
+        if not has and ("原著第" in desc or "出自第" in desc):
+            out.append("[来源] %s 没有来源却编了原著章节" % name)
+        for tag in ("出处：", "出处:", "来源：", "来源:", "原著："):
+            if tag in lead:
+                out.append("[来源] %s 把来源写成了独立标题「%s」，应融进描述首句"
+                           % (name, tag))
+                break
+        if "\n" in lead or lead.startswith("限制："):
+            out.append("[来源] %s 的来源句不是描述里的自然第一句" % name)
+        if "原著无载" in lead or "游戏自设" in lead:
+            out.append("[来源] %s 把「游戏自设」当成了原著来源" % name)
+    return out
+
+
+def badge_problems() -> list[str]:
+    """状态徽章醒目度：读模板常量，退回淡色小胶囊即报错。"""
+    from doupo import card
+
+    if card._load_pic() is None:
+        return ["[状态徽章] pic 包不可用，无法读取模板常量"]
+    import importlib
+    tpl = importlib.import_module(card._PKG_NAME + ".templates.doupo_roster")
+    return list(tpl.state_badge_problems())
+
+
 def card_problems() -> list[str]:
     """卡片数据层必须透出结构化多维字段，否则玩家看到的还是老样子。"""
     from doupo import card, core, factions as fac
@@ -277,7 +330,10 @@ def card_problems() -> list[str]:
     core.skill_pool(p)
 
     out = _skills_shape_problems(card.build_skills_data(p))
-    out += _roster_shape_problems(card.build_roster_data(p))
+    roster = card.build_roster_data(p)
+    out += _roster_shape_problems(roster)
+    out += source_problems(roster)
+    out += badge_problems()
 
     # 专用模板接线（源码契约，防止被顺手改回通用列表卡）
     import inspect
@@ -358,6 +414,43 @@ def selftest() -> list[tuple[str, bool]]:
                        desc="斗气凝血成掌，造成伤害并附加血毒。限制：气血虚时威力骤降，"
                             "对无血之物无效。")]}))))
 
+    # ---- 描述首句来源（2026-11-15 用户「在第一句话加上技能来源」）----
+    lead = "原著第一千一百九十章「承让」载，天冥宗易尘所使。"
+    body = "斗气凝血成掌，一掌拍出，血毒随掌力渗入，造成 140% 伤害。"
+    good_src = {"rows": [
+        {"name": "血煞掌", "has_source": True, "source_lead": lead,
+         "desc": lead + body},
+        {"name": "嗜血化骨手", "has_source": False, "source_lead": "",
+         "desc": body},
+    ]}
+    res.append(("来源首句完整时不应报错", not source_problems(good_src)))
+    res.append(("删掉描述首句的技能来源", bool(source_problems(
+        {"rows": [dict(good_src["rows"][0], desc=body), good_src["rows"][1]]}))))
+    res.append(("有来源却没标 has_source", bool(source_problems(
+        {"rows": [dict(good_src["rows"][0], has_source=False), good_src["rows"][1]]}))))
+    res.append(("给无来源技能编造原著章节", bool(source_problems(
+        {"rows": [good_src["rows"][0],
+                  dict(good_src["rows"][1], desc="原著第五百章「杜撰」载。" + body)]}))))
+    res.append(("把来源写成独立标题「出处：」", bool(source_problems(
+        {"rows": [dict(good_src["rows"][0], source_lead="出处：" + body,
+                       desc="出处：" + body), good_src["rows"][1]]}))))
+    res.append(("把「游戏自设」当成原著来源", bool(source_problems(
+        {"rows": [dict(good_src["rows"][0], source_lead="原著无载 · 游戏自设。",
+                       desc="原著无载 · 游戏自设。" + body), good_src["rows"][1]]}))))
+
+    # ---- 右上角状态徽章（用户「更明显更显眼」）----
+    from doupo import card as _card
+    _card._load_pic()
+    import importlib
+    tpl = importlib.import_module(_card._PKG_NAME + ".templates.doupo_roster")
+    res.append(("状态徽章正常时不应报错", not tpl.state_badge_problems()))
+    res.append(("徽章退回 12px / 18px 小胶囊", bool(tpl.state_badge_problems(fs=12, h=18))))
+    pale = {"on": ("#FBEEDD", "#EBC79A", "#9E1B32"),
+            "learn": ("#F7F1E9", "#E6DCCB", "#8A7C6B"),
+            "lock": ("#F7F1E9", "#E6DCCB", "#8A7C6B")}
+    res.append(("徽章退回淡底且可学/未解锁同色",
+                bool(tpl.state_badge_problems(style=pale))))
+
     if saved is not None:
         book.SKILL_BOOK[name0] = saved
     return res
@@ -381,6 +474,9 @@ def main() -> int:
     print("  反无脑（低伤有维度/高威力有代价）：%s" % ("PASS" if not bp else "FAIL %d 项" % len(bp)))
     print("  图文一致（desc 百分比能在 effects 对上）：%s" % ("PASS" if not dp else "FAIL %d 项" % len(dp)))
     print("  卡片已消费多维字段：%s" % ("PASS" if not cp else "FAIL %d 项" % len(cp)))
+    look = [p for p in cp if p.startswith(("[来源]", "[状态徽章]"))]
+    print("  来源首句 / 状态徽章醒目：%s"
+          % ("PASS" if not look else "FAIL %d 项" % len(look)))
     print("  反例注入：%d/%d 被拦" % (sum(1 for _, ok in st if ok), len(st)))
     for name, ok in st:
         print("    %s %s" % ("OK  " if ok else "MISS", name))

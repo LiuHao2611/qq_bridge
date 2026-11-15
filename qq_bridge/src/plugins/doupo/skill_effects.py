@@ -170,6 +170,49 @@ def desc_without_gate(desc: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 3.5 描述首句的技能来源（2026-11-15 用户「在第一句话加上技能来源」）
+# ---------------------------------------------------------------------------
+#: 与 doupo/_verify_novel.py::_NOVEL_RE 同源的章节格式；只取「第X章「标题」」，
+#: 不把后面的原著引文整段搬进卡片（那会把两列窄卡撑成一片字）。
+SOURCE_NOVEL_RE = re.compile(r"^(第[零〇一两二三四五六七八九十百千]+章)「([^」]+)」")
+SOURCE_ABSENT = "原著无载"
+#: 这些字样是「游戏补白」标记，不是来源；不能当成技能来源写进描述。
+SOURCE_NOT_REAL = ("游戏自设", "游戏补白", "原著无载")
+
+
+def source_lead(entry: dict) -> str:
+    """技能来源句：作为**描述第一句**，不单独分「来源 / 出处」标题。
+
+    数据来自项目自带的原著语料核验结果（``skill_book.novel`` = 第 X 章「标题」
+    —— 原句；``source`` = 谁所创 / 怎么得到）。规则对应用户原话：
+
+      * 有原著章节 + 有传承来源 → 「原著第X章「标题」载，<来源>。」
+      * 只有原著章节          → 「原著第X章「标题」所载。」
+      * 没有原著章节（游戏自设）但有传承来源 → 只写传承来源，不编章号
+      * 两者都没有            → 返回空串，**不加任何前缀**（有来源就加、没有就不加）
+
+    绝不从章节标题硬凑出处，也绝不写「出处：」「来源：」这类独立标题——
+    用户要的是把来源自然融进描述，而不是再加一栏元数据。
+    """
+    novel = str(entry.get("novel") or "").strip()
+    src = str(entry.get("source") or "").strip().rstrip("。！？；;")
+    if any(x in src for x in SOURCE_NOT_REAL):
+        src = ""
+    m = None if SOURCE_ABSENT in novel else SOURCE_NOVEL_RE.match(novel)
+    if m:
+        cite = "原著%s「%s」" % (m.group(1), m.group(2))
+        return "%s载，%s。" % (cite, src) if src else "%s所载。" % cite
+    return (src + "。") if src else ""
+
+
+def desc_with_source(entry: dict, desc: str) -> str:
+    """把来源句拼到描述**最前面**；没有来源时原样返回，不造空句。"""
+    lead = source_lead(entry)
+    body = str(desc or "")
+    return (lead + body) if lead else body
+
+
+# ---------------------------------------------------------------------------
 # 4. 战斗状态（一场战斗一份，战后即弃，不写回存档）
 # ---------------------------------------------------------------------------
 def new_state() -> dict:

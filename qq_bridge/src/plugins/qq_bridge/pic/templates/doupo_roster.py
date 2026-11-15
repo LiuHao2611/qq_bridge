@@ -24,7 +24,7 @@
     左右列起点固定 → 不会因一侧描述长而错位；
   * 每门一个圆角卡片块（宽 = 列宽），左缘 4px 阶位色条；
   * 块内六层：
-        血煞掌                      〔异常〕[上阵]   ← 名字 22 粗 / 定位胶囊 / 状态 pill
+        血煞掌                    〔异常〕[● 上阵]  ← 名字 22 粗 / 定位胶囊 / 实底状态徽章
         〔本宗〕玄阶高级 · 攻击 · 斗气 20%           ← 副行 13
         斗气凝血成掌，掌色暗红近黑；一掌拍出，血毒   ← **完整描述 15px 折行**
         随掌力渗入，伤口不流血反而发黑。造成 140%
@@ -47,7 +47,10 @@ QQ 聊天窗显示宽度固定，卡片越宽被压得越狠（1080 宽缩到 72
     chip 逐个测宽后按显式 ``CHIP_GAP`` 打包，**禁止空格凑间距**；
   * **列对齐**：两列左起固定，名字恒从列内左缘起（状态 pill 右锚定，
     绝不放在名字左侧——否则「上阵」与「未解锁」宽度不同会让名字起点漂移）；
-  * **不抢层级**：状态 pill 12px、定位胶囊 13px，绝不与 22px 粗体技能名同字号；
+  * **不抢层级，但一眼可见**（2026-11-15 用户「右上角提示要更明显更显眼」）：
+    状态徽章 14px 浅字 + 高对比实底 + 状态圆点（24px 高），定位胶囊仍是 13px 淡色；
+    两者都不与 22px 粗体技能名同字号，但状态靠实底对比度把扫视优先级拉到定位之上；
+    旧版三态都用 ``cell_bg`` 淡底 + 12px，等于把「上阵」藏在米色背景里；
   * ``build(..., boxes=[...])`` 收集全部文本包围盒，供 ``check_boxes`` 自检；
   * 纯 Pillow 自绘；不使用 emoji；配色读 ``Theme.bg_overrides["doupo"]``。
 
@@ -82,7 +85,7 @@ FS_SUB = 17
 FS_SECTION = 17
 FS_NAME = 22              # 技能名（>=22 才走真粗体）
 FS_ROLE = 13              # 定位胶囊
-FS_STATE = 12             # 状态 pill
+FS_STATE = 14             # 状态徽章（12→14：右上角提示要更明显）
 FS_META = 13              # 副行
 FS_DESC = 15              # 完整技能描述
 FS_CHIP = 13              # 效果 chip
@@ -103,7 +106,7 @@ BAR_W = 4
 
 H_NAME = FS_NAME + 4      # 26
 GAP_NAME_META = 4
-H_META = FS_META + 5      # 18
+H_META = FS_META + 8      # 21（折成两行时 13px 字号的段间 gap = 8，不挤）
 GAP_META_DESC = 4
 DESC_LH = FS_DESC + 5     # 20
 GAP_DESC_CHIP = 6
@@ -114,8 +117,10 @@ GAP_CHIP_GATE = 4
 GATE_LH = FS_GATE + 5     # 18
 ROLE_H = 20
 ROLE_PADX = 8
-STATE_H = 18
-STATE_PADX = 7
+STATE_H = 24              # 18→24：实底徽章够高才压得住浅色羊皮纸底
+STATE_PADX = 10
+STATE_DOT_R = 4           # 状态圆点半径（非 emoji，Pillow 实心圆）
+STATE_DOT_GAP = 6         # 圆点与文字的显式 gap，禁止空格凑间距
 H_TIP = 12 + FS_TIP + 8
 
 #: 阶位 → 左缘色条 / 分区图标（普通沉稳、高阶暗金、特殊朱红）
@@ -135,12 +140,61 @@ ROLE_COLORS = {
     "输出": ("chip_bg", "chip_line", "chip_text"),
     "功能": ("cell_bg", "cell_line", "dim_color"),
 }
-#: 状态 pill → (底色, 描边, 文字)。上阵=暗金强调，可学=中性，未解锁=最弱。
-STATE_STYLE = {
-    "on": ("chip_bg", "accent_color", "accent_color"),
-    "learn": ("cell_bg", "cell_line", "dim_color"),
-    "lock": ("cell_bg", "cell_line", "dim_color"),
+#: 状态徽章三态 → (实底, 描边, 文字/圆点)。
+#: 2026-11-15 用户「右上角提示更明显更显眼」：旧版 learn/lock 共用 ``cell_bg``
+#: 淡底 + 12px 弱文字，在米色块上几乎看不见。改成三个不同色相的深色实底 +
+#: 浅字 + 左端状态圆点；**不随主题淡色漂移**（主题可被 bg_overrides 改，
+#: 但状态徽章必须始终一眼可见）。上阵朱红 / 可学墨绿 / 未解锁灰褐。
+STATE_COLORS = {
+    "on": ("#8A1C1C", "#5E1010", "#FFF4E4"),
+    "learn": ("#2F6B4F", "#1D4634", "#F1FFF6"),
+    "lock": ("#6B5D4F", "#463B31", "#F7EFE6"),
 }
+
+
+def _luminance(hex_color: str) -> float:
+    """sRGB 亮度（0 黑 / 255 白），用于判定状态徽章底色够不够深。"""
+    s = str(hex_color).lstrip("#")
+    try:
+        r, g, b = (int(s[i:i + 2], 16) for i in (0, 2, 4))
+    except (ValueError, IndexError):
+        return 255.0
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def state_badge_problems(style: dict | None = None, fs: int | None = None,
+                         h: int | None = None) -> list[str]:
+    """状态徽章醒目度契约（纯函数，参数可注入反例）。
+
+    由 ``tools/check_skill_multidim.py`` 与 ``test_roster_card.py`` 共同消费：
+    只要有人把徽章改回「12px + 淡底 + 三态同色」，交付闸门必须报错。
+    """
+    style = STATE_COLORS if style is None else style
+    fs = FS_STATE if fs is None else fs
+    h = STATE_H if h is None else h
+    out: list[str] = []
+    if int(fs) < 14:
+        out.append("[状态徽章] 字号 %d < 14（退回看不清的 12px 小胶囊）" % int(fs))
+    if int(h) < 22:
+        out.append("[状态徽章] 高度 %d < 22（徽章太矮压不住浅底）" % int(h))
+    keys = ("on", "learn", "lock")
+    fills: list[str] = []
+    for k in keys:
+        if k not in style:
+            out.append("[状态徽章] 缺少 %s 态配色" % k)
+            continue
+        v = style[k]
+        if not (isinstance(v, (tuple, list)) and len(v) == 3):
+            out.append("[状态徽章] %s 配色必须是 (实底, 描边, 文字)" % k)
+            continue
+        fill = str(v[0]).lower()
+        fills.append(fill)
+        if _luminance(fill) > 170:
+            out.append("[状态徽章] %s 底色 %s 太浅（淡底会和羊皮纸糊在一起）"
+                       % (k, fill))
+    if len(set(fills)) < len(keys):
+        out.append("[状态徽章] 三态实底必须互不相同（旧版可学/未解锁同色）")
+    return out
 
 #: 编辑器预览用示例（pic 包不 import 插件层）
 _DEMO = {
@@ -229,8 +283,42 @@ def _desc_lines(row: dict, max_w: int) -> list[str]:
     return S.wrap_cjk(desc, FS_DESC, "regular", max(60, max_w))
 
 
+def _meta_lines(row: dict, inner_w: int) -> list[str]:
+    """副行按「 · 」语义段折行，不逐字拆。
+
+    逐字 ``Canvas.wrap`` 会把「lv20 解锁」拆成「lv2」+「0 解锁」（肉眼核对
+    抓到）；按段打包则整段移到下一行，解锁等级完整可读。段宽与拼好后的
+    行宽都先实测，单段自身超宽才退回逐字折（极少见）。
+    """
+    meta = str(row.get("meta") or "")
+    if not meta:
+        return [""]
+    parts = meta.split(" · ")
+    lines: list[str] = []
+    cur = ""
+    for part in parts:
+        cand = (cur + " · " + part) if cur else part
+        if cur and _w(cand, FS_META, "regular") > inner_w:
+            lines.append(cur)
+            cur = part
+        else:
+            cur = cand
+    if cur:
+        lines.append(cur)
+    out: list[str] = []
+    for ln in lines:
+        if _w(ln, FS_META, "regular") <= inner_w:
+            out.append(ln)
+        else:
+            out.extend(Canvas.wrap(ln, FS_META, "regular", max(60, inner_w)))
+    return out or [""]
+
+
 def _row_texts(row: dict, inner_w: int) -> dict:
     return {
+        # 2026-11-15 肉眼核对：低等级玩家副行带「lvN 解锁」，旧版 _fit 会把它
+        # 截成「lv…」，解锁等级凭空丢失。改为按语义段折行（信息不丢、不拆字）。
+        "meta_lines": _meta_lines(row, inner_w),
         "desc_lines": _desc_lines(row, inner_w),
         "chip_rows": _chip_rows(row.get("chips"), inner_w),
         "gate_lines": _gate_lines(str(row.get("gate") or ""), inner_w),
@@ -238,9 +326,10 @@ def _row_texts(row: dict, inner_w: int) -> dict:
 
 
 def _row_h(row: dict, inner_w: int) -> int:
-    """单块高度 —— 内容驱动：描述行数 / chip 行数 / 代价行数都参与累加。"""
+    """单块高度 —— 内容驱动：副行 / 描述 / chip / 代价行数都参与累加。"""
     t = _row_texts(row, inner_w)
-    h = BLOCK_PAD_Y * 2 + H_NAME + GAP_NAME_META + H_META
+    h = (BLOCK_PAD_Y * 2 + H_NAME + GAP_NAME_META
+         + H_META * max(1, len(t["meta_lines"])))
     n_desc = len(t["desc_lines"])
     if n_desc:
         h += GAP_META_DESC + n_desc * DESC_LH
@@ -254,10 +343,12 @@ def _row_h(row: dict, inner_w: int) -> int:
 
 
 def _state_w(row: dict) -> int:
+    """徽章宽 = 左内边距 + 圆点 + gap + 实测文字宽 + 右内边距。"""
     txt = str(row.get("state") or "")
     if not txt:
         return 0
-    return _w(txt, FS_STATE, "regular") + STATE_PADX * 2
+    return (_w(txt, FS_STATE, "regular") + STATE_PADX * 2
+            + STATE_DOT_R * 2 + STATE_DOT_GAP)
 
 
 def _role_w(row: dict) -> int:
@@ -440,14 +531,20 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
             if st_w:
                 state = str(row.get("state") or "")
                 kind = str(row.get("state_kind") or "learn")
-                bg_k, ln_k, tx_k = STATE_STYLE.get(kind, STATE_STYLE["learn"])
-                c.rounded_rect((right - st_w, name_y - STATE_H // 2, right,
+                fill, ring, ink = STATE_COLORS.get(kind, STATE_COLORS["learn"])
+                sx = right - st_w
+                c.rounded_rect((sx, name_y - STATE_H // 2, right,
                                 name_y + STATE_H // 2), radius=STATE_H // 2,
-                               fill=p[bg_k], outline=p[ln_k], width=1)
-                c.text((right - st_w // 2, name_y), state, size=FS_STATE,
-                       color=p[tx_k], role="regular", bold=False, anchor="mm")
-                rec("%s.state" % name, state, right - st_w // 2, name_y,
-                    FS_STATE, "regular", "mm")
+                               fill=fill, outline=ring, width=1)
+                # 状态圆点：左内边距起，直径 8，与文字之间留显式 6px gap
+                dx = sx + STATE_PADX
+                c.ellipse((dx, name_y - STATE_DOT_R,
+                           dx + STATE_DOT_R * 2, name_y + STATE_DOT_R), fill=ink)
+                # 文字右锚定到徽章右内缘：圆点右缘与文字左缘恰好差 STATE_DOT_GAP
+                c.text((right - STATE_PADX, name_y), state, size=FS_STATE,
+                       color=ink, role="regular", bold=False, anchor="rm")
+                rec("%s.state" % name, state, right - STATE_PADX, name_y,
+                    FS_STATE, "regular", "rm")
             if role_w:
                 rx = right - st_w - (CHIP_GAP if st_w else 0) - role_w
                 role = str(row.get("role") or "")
@@ -461,13 +558,15 @@ def build(t: Theme, data: dict | None = None, width: int | None = None,
                 rec("%s.role" % name, role, rx + role_w // 2, name_y,
                     FS_ROLE, "regular", "mm")
 
-            # ---- 副行（来源 + 阶位 · 类型 · 斗气）----
-            cy = iy + H_NAME + GAP_NAME_META
-            stext("%s.meta" % name, ix, cy + H_META // 2,
-                  str(row.get("meta") or ""), FS_META, p["dim_color"], max_w=inner_w)
-            cy += H_META
-
             t_ = _row_texts(row, inner_w)
+
+            # ---- 副行（来源 + 阶位 · 类型 · 斗气 · 解锁等级），按实测宽度折行 ----
+            cy = iy + H_NAME + GAP_NAME_META
+            meta_lines = t_["meta_lines"] or [""]
+            for mi, ml in enumerate(meta_lines):
+                stext("%s.meta%d" % (name, mi), ix,
+                      cy + mi * H_META + H_META // 2, ml, FS_META, p["dim_color"])
+            cy += H_META * len(meta_lines)
 
             # ---- 完整技能描述（用户明确要求：不许只放 brief 一句）----
             if t_["desc_lines"]:

@@ -305,6 +305,130 @@ def test_lock_state_pill_fits_for_low_level():
     assert any(".state" in x for x in labels), "状态 pill 没被绘制/登记"
 
 
+def test_desc_first_sentence_is_skill_source():
+    """用户 2026-11-15：「在第一句话加上技能来源，有来源就加，没有就不加」。
+
+    来源必须取自 skill_book 里经原著语料核验过的章节引用 + 传承出处，
+    不许另起「出处：」标题（用户：不用单独分来源标题）；没有原著章节的
+    游戏自设技只能用传承来源，绝不编章号。
+    """
+    from doupo import factions as fac
+
+    p = _p(faction="tianmingzong")
+    p["faction_name"] = fac.FACTIONS["tianmingzong"]["name"]
+    pool = {e["name"]: e for e in core.skill_pool(p)}
+    rows = card.build_roster_data(p)["rows"]
+    with_chapter = 0
+    for r in rows:
+        lead = str(r.get("source_lead") or "")
+        desc = str(r.get("desc") or "")
+        assert bool(lead) == bool(r.get("has_source")), (
+            "%s 的 has_source 与 source_lead 不一致" % r["name"])
+        if not lead:
+            assert "原著第" not in desc, "%s 没有来源却编了原著章节" % r["name"]
+            continue
+        assert desc.startswith(lead), "%s 的描述首句不是技能来源：%s" % (
+            r["name"], desc[:36])
+        for tag in ("出处：", "来源：", "原著："):
+            assert tag not in lead, "%s 把来源写成了独立标题「%s」" % (r["name"], tag)
+        e = pool[r["name"]]
+        novel = str(e.get("novel") or "")
+        if "原著第" in lead:
+            with_chapter += 1
+            cite = lead.split("载，")[0][len("原著"):]
+            assert cite in novel, "%s 的章节引用不在原著记录里：%s / %s" % (
+                r["name"], cite, novel[:40])
+        else:
+            assert "原著无载" in novel, (
+                "%s 没章节却不是游戏自设，来源可能漏接：%s" % (r["name"], novel[:40]))
+    assert with_chapter >= 20, "23 门里应有绝大多数带原著章节，实测 %d" % with_chapter
+
+
+def test_state_badge_is_prominent():
+    """用户 2026-11-15：「右上角提示要更明显更显眼」。
+
+    旧版三态共用 cell_bg 淡底 + 12px，肉眼几乎看不见。守高对比实底 /
+    字号高度 / 三态区分，并用真错注入证明这道检查真的会报错。
+    """
+    import importlib
+
+    card._load_pic()
+    tpl = importlib.import_module(card._PKG_NAME + ".templates.doupo_roster")
+    assert not tpl.state_badge_problems(), "当前状态徽章不合格：" + str(
+        tpl.state_badge_problems())
+    assert tpl.state_badge_problems(fs=12, h=18), "退回 12px/18px 小胶囊必须报错"
+    pale = {"on": ("#FBEEDD", "#EBC79A", "#9E1B32"),
+            "learn": ("#F7F1E9", "#E6DCCB", "#8A7C6B"),
+            "lock": ("#F7F1E9", "#E6DCCB", "#8A7C6B")}
+    assert tpl.state_badge_problems(style=pale), "退回淡底且三态同色必须报错"
+    for kind, (fill, _ring, ink) in tpl.STATE_COLORS.items():
+        assert tpl._luminance(fill) < 170, "%s 底色太浅" % kind
+        assert tpl._luminance(ink) - tpl._luminance(fill) >= 80, (
+            "%s 底色与文字对比不足，浅字会糊" % kind)
+
+
+def test_skill_names_not_truncated_by_wider_badge():
+    """徽章放大后名字可用宽度变小，技能名不能被 _fit 截成「…」。"""
+    import importlib
+
+    from doupo import factions as fac
+
+    card._load_pic()
+    tpl = importlib.import_module(card._PKG_NAME + ".templates.doupo_roster")
+    theme = importlib.import_module(card._PKG_NAME + ".theme").get("light")
+    p = _p(faction="tianmingzong")
+    p["faction_name"] = fac.FACTIONS["tianmingzong"]["name"]
+    data = card.build_roster_data(p)
+    boxes: list[tuple] = []
+    tpl.build(theme, data=data, width=720, boxes=boxes)
+    by_label = {b[0]: b for b in boxes}
+    for r in data["rows"]:
+        key = "%s.name" % r["name"]
+        assert key in by_label, "%s 的技能名没被绘制/登记" % r["name"]
+        w_box = by_label[key][3] - by_label[key][1]
+        w_full = tpl._w(r["name"], tpl.FS_NAME, "bold")
+        assert w_box == w_full, "%s 的技能名被截断（登记宽 %d < 实测 %d）" % (
+            r["name"], w_box, w_full)
+
+
+def test_meta_wrap_keeps_unlock_level_intact():
+    """肉眼核对抓到的真实缺陷：低等级玩家副行「lv20 解锁」被截成「lv…」，
+    改成逐字折行后又会把数字拆成「lv2」/「0 解锁」。折行必须按语义段整段搬，
+    且每行都不越界、不与描述重叠。
+    """
+    import importlib
+    import re
+
+    from doupo import factions as fac
+
+    card._load_pic()
+    tpl = importlib.import_module(card._PKG_NAME + ".templates.doupo_roster")
+    theme = importlib.import_module(card._PKG_NAME + ".theme").get("light")
+    p = _p(lv=1, faction="tianmingzong")
+    p["faction_name"] = fac.FACTIONS["tianmingzong"]["name"]
+    data = card.build_roster_data(p)
+    inner_w = tpl._cols(720)[2]
+    checked = 0
+    for r in data["rows"]:
+        meta = str(r["meta"])
+        lines = tpl._meta_lines(r, inner_w)
+        assert lines, "%s 的副行没折出任何行" % r["name"]
+        for ln in lines:
+            assert tpl._w(ln, tpl.FS_META, "regular") <= inner_w + 1, (
+                "%s 副行越界：%s" % (r["name"], ln))
+        m = re.search(r"lv\d+", meta)
+        if m:
+            checked += 1
+            assert any(m.group(0) in ln and "解锁" in ln for ln in lines), (
+                "%s 的解锁等级被截断或拆字：%s" % (r["name"], lines))
+    assert checked >= 8, "lv1 应有大量未解锁斗技，实测 %d" % checked
+
+    boxes: list[tuple] = []
+    c = tpl.build(theme, data=data, width=720, boxes=boxes)
+    problems = _check_boxes((12, 12, 720 - 12, c.height - 12), boxes)
+    assert not problems, "副行折行后布局触线：\n" + "\n".join(problems[:8])
+
+
 def test_roster_renders_valid_png():
     from PIL import Image
 
