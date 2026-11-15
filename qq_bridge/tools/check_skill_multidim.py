@@ -198,32 +198,78 @@ def desc_consistency_problems(entries: list[dict]) -> list[str]:
 # ---------------------------------------------------------------------------
 # 4. 卡片真的消费了多维字段
 # ---------------------------------------------------------------------------
+def _skills_shape_problems(d: dict) -> list[str]:
+    """四槽卡（doupo_skills）数据结构校验（纯函数，便于反例注入）。"""
+    out: list[str] = []
+    rows = d.get("rows") or []
+    if not any(r.get("role") for r in rows):
+        out.append("[卡片] build_skills_data 没有 role（四槽卡看不到主定位）")
+    if not any(r.get("chips") for r in rows):
+        out.append("[卡片] build_skills_data 没有 chips（四槽卡看不到多维效果）")
+    if not any(r.get("gate") for r in rows):
+        out.append("[卡片] build_skills_data 没有 gate（四槽卡看不到代价）")
+    if any(len(str(r.get("desc") or "")) <= 20 for r in rows):
+        out.append("[卡片] build_skills_data 的 desc 过短，疑似退回 brief")
+    return out
+
+
+def _roster_shape_problems(roster: dict) -> list[str]:
+    """名录卡（doupo_roster）数据结构校验（纯函数，便于反例注入）。
+
+    2026-11-15 第二次视觉重做后，名录卡按阶位分组 + 每门一个卡片块 +
+    状态 pill + 效果 chip + 代价行。这里断言**结构化字段**，不再用
+    「字符串里有没有括号」这种弱判断（弱判断下把 role 删掉、只留字面量
+    括号也能过）。
+    """
+    out: list[str] = []
+    rows = roster.get("rows") or []
+    if not roster.get("groups"):
+        out.append("[卡片] build_roster_data 没有按阶位分组（名录卡会退回平铺表格）")
+    if not any(r.get("role") for r in rows):
+        out.append("[卡片] build_roster_data 没有 role（看不到主定位胶囊）")
+    if not any(r.get("state_kind") for r in rows):
+        out.append("[卡片] build_roster_data 没有 state_kind（状态 pill 无法分色）")
+    if not any(r.get("gate") for r in rows):
+        out.append("[卡片] build_roster_data 没有 gate（看不到代价行）")
+    if not any(len(r.get("chips") or []) >= 2 for r in rows):
+        out.append("[卡片] build_roster_data 的 chips 不足 2 枚（看不到伤害+多维效果）")
+    for r in rows:
+        ch = r.get("chips") or []
+        if ch and str(ch[0].get("label")) != "伤害":
+            out.append("[卡片] %s 的第一个 chip 不是伤害倍率（玩家无法比数值）"
+                       % r.get("name"))
+            break
+    for r in rows:
+        m = str(r.get("meta") or "")
+        if " ·  · " in m or m.startswith(" · "):
+            out.append("[卡片] %s 的副行分隔符异常：%s" % (r.get("name"), m))
+            break
+        segs = [x.strip() for x in m.split("·")]
+        dup = next((segs[i] for i in range(len(segs) - 1)
+                    if segs[i] and segs[i] == segs[i + 1]), None)
+        if dup:
+            out.append("[卡片] %s 的副行重复拼词「%s」：%s" % (r.get("name"), dup, m))
+            break
+    return out
+
+
 def card_problems() -> list[str]:
-    """卡片数据层必须透出 role/chips/gate，否则玩家看到的还是老样子。"""
+    """卡片数据层必须透出结构化多维字段，否则玩家看到的还是老样子。"""
     from doupo import card, core, factions as fac
 
-    out: list[str] = []
     p = core.create_player("10001", "闸门", "20001")
     p["lv"] = 50
     p["faction"] = TARGET_FACTION
     p["faction_name"] = fac.FACTIONS[TARGET_FACTION]["name"]
     core.skill_pool(p)
 
-    d = card.build_skills_data(p)
-    if not any(r.get("role") for r in d["rows"]):
-        out.append("[卡片] build_skills_data 没有 role（四槽卡看不到主定位）")
-    if not any(r.get("chips") for r in d["rows"]):
-        out.append("[卡片] build_skills_data 没有 chips（四槽卡看不到多维效果）")
-    if not any(r.get("gate") for r in d["rows"]):
-        out.append("[卡片] build_skills_data 没有 gate（四槽卡看不到代价）")
-    if any(len(str(r.get("desc") or "")) <= 20 for r in d["rows"]):
-        out.append("[卡片] build_skills_data 的 desc 过短，疑似退回 brief")
+    out = _skills_shape_problems(card.build_skills_data(p))
+    out += _roster_shape_problems(card.build_roster_data(p))
 
-    roster = card.build_roster_data(p)
-    if not any("〔" in str(r.get("sub") or "") for r in roster["rows"]):
-        out.append("[卡片] build_roster_data 没画主定位标签")
-    if not any(r.get("note") for r in roster["rows"]):
-        out.append("[卡片] build_roster_data 没画多维效果/门控行")
+    # 专用模板接线（源码契约，防止被顺手改回通用列表卡）
+    import inspect
+    if '"doupo_roster"' not in inspect.getsource(card.render_roster):
+        out.append("[卡片] render_roster 没走专用模板 doupo_roster（会退回无分组表格）")
     return out
 
 
@@ -259,6 +305,35 @@ def selftest() -> list[tuple[str, bool]]:
     book.SKILL_BOOK[name0] = {"role": "异常", "effects": [{"t": "dot", "v": 0.05}],
                               "gate": "某代价", "desc": "造成 140% 伤害，并附加 30% 减疗。"}
     res.append(("描述与结构数值不符", bool(desc_consistency_problems([fake]))))
+
+    # ---- 名录卡结构反例（2026-11-15 第二次视觉重做后新增）----
+    good_roster = {
+        "groups": [{"tier": "普通", "count": 1, "rows": []}],
+        "rows": [{"name": "示例", "role": "续航", "state_kind": "on",
+                  "meta": "〔本宗〕黄阶低级 · 攻击 · 斗气 20%",
+                  "chips": [{"label": "伤害", "value": "×1.00"},
+                            {"label": "吸血", "value": "25%"}],
+                  "gate": "某代价"}],
+    }
+    res.append(("名录卡结构完整时不应报错", not _roster_shape_problems(good_roster)))
+    res.append(("名录卡退化成平铺表格（删 groups）",
+                bool(_roster_shape_problems(dict(good_roster, groups=[])))))
+    res.append(("名录卡首枚 chip 不是伤害倍率", bool(_roster_shape_problems(
+        {"groups": good_roster["groups"],
+         "rows": [dict(good_roster["rows"][0],
+                       chips=[{"label": "吸血", "value": "25%"},
+                              {"label": "破防", "value": "30%"}])]}))))
+    res.append(("名录卡只剩一个数值（chips 不足 2 枚）", bool(_roster_shape_problems(
+        {"groups": good_roster["groups"],
+         "rows": [dict(good_roster["rows"][0],
+                       chips=[{"label": "伤害", "value": "×1.00"}])]}))))
+    res.append(("名录卡副行重复拼词", bool(_roster_shape_problems(
+        {"groups": good_roster["groups"],
+         "rows": [dict(good_roster["rows"][0],
+                       meta="〔本宗〕 · 秘法 · 秘法 · 斗气 50%")]}))))
+    res.append(("四槽卡 desc 退回 brief", bool(_skills_shape_problems(
+        {"rows": [{"role": "输出", "chips": [{"label": "破防", "value": "30%"}],
+                   "gate": "代价", "desc": "一句短话"}]}))))
 
     if saved is not None:
         book.SKILL_BOOK[name0] = saved

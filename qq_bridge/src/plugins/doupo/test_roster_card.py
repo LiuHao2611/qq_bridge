@@ -147,14 +147,15 @@ def _check_boxes(bounds, boxes, min_gap: int = 2) -> list[str]:
 
 
 def test_roster_passes_check_boxes():
-    """card-design 门禁：真实天冥宗 23 行名录卡，溢出 0 / 重叠 0 / 间距 0。"""
+    """card-design 门禁：真实天冥宗 23 行名录卡（doupo_roster 专用模板），
+    溢出 0 / 重叠 0 / 间距 0。"""
     import importlib
 
     from doupo import factions as fac
 
     pic = card._load_pic()
     assert pic is not None
-    tpl = importlib.import_module(card._PKG_NAME + ".templates.doupo_list")
+    tpl = importlib.import_module(card._PKG_NAME + ".templates.doupo_roster")
     theme = importlib.import_module(card._PKG_NAME + ".theme").get("light")
 
     p = _p(faction="tianmingzong")
@@ -162,9 +163,86 @@ def test_roster_passes_check_boxes():
     data = card.build_roster_data(p)
     boxes: list[tuple] = []
     c = tpl.build(theme, data=data, width=720, boxes=boxes)
-    assert len(boxes) > 60, "收集到的包围盒太少，自检会假通过：%d" % len(boxes)
+    assert len(boxes) > 120, "收集到的包围盒太少，自检会假通过：%d" % len(boxes)
     problems = _check_boxes((12, 12, 720 - 12, c.height - 12), boxes)
     assert not problems, "名录卡触线：\n" + "\n".join(problems[:10])
+
+
+def test_roster_uses_dedicated_template():
+    """名录卡必须走专用模板（按阶位分组 + 卡片块），不许退回通用列表卡。
+
+    2026-11-15 用户第二次说「优化这个卡片，怎么没优化」——上一版只是把多维
+    信息塞进 doupo_list 的行里，视觉上仍是一张无分组无分隔的表格。
+    """
+    pic = card._load_pic()
+    assert pic is not None
+    assert "doupo_roster" in pic.list_templates(), "专用名录卡模板未注册"
+    assert pic.TEMPLATE_LABELS.get("doupo_roster") == "斗破斗技名录卡"
+    # render_roster 必须走 doupo_roster（源码契约，防止被顺手改回去）
+    import inspect
+    src = inspect.getsource(card.render_roster)
+    assert '"doupo_roster"' in src, "render_roster 没有使用专用模板"
+    # 通用列表卡必须保留给异火/宝库/背包/排行
+    assert "doupo_list" in pic.list_templates()
+
+
+def test_roster_groups_by_tier():
+    """按阶位分组：普通 / 高阶 / 特殊，顺序与 SKILL_TIERS 一致，门数不丢。"""
+    from doupo import factions as fac
+    from doupo import config as cfg
+
+    p = _p(faction="tianmingzong")
+    p["faction_name"] = fac.FACTIONS["tianmingzong"]["name"]
+    d = card.build_roster_data(p)
+    groups = d["groups"]
+    assert groups, "没有分组，又退回一张平铺表格"
+    tiers = [g["tier"] for g in groups]
+    order = [t for t in cfg.SKILL_TIERS if t in tiers]
+    assert tiers == order, "分组顺序与 SKILL_TIERS 不一致：%s vs %s" % (tiers, order)
+    assert sum(g["count"] for g in groups) == len(d["rows"]) == 23
+    for g in groups:
+        assert g["rows"] and g["count"] == len(g["rows"])
+        assert g.get("icon"), "%s 分区缺图标" % g["tier"]
+
+
+def test_row_meta_has_no_duplicated_word():
+    """副行不许出现「秘法 · 秘法」这种 rank 与 kind 同名的重复（真实踩过）。"""
+    from doupo import factions as fac
+
+    p = _p(faction="tianmingzong")
+    p["faction_name"] = fac.FACTIONS["tianmingzong"]["name"]
+    rows = card.build_roster_data(p)["rows"]
+    by_name = {r["title"]: r for r in rows}
+    # 九幽魂手：rank=秘法 / kind=秘法
+    assert "秘法 · 秘法" not in by_name["九幽魂手"]["meta"], (
+        "副行把阶位与类型重复拼了两次：%s" % by_name["九幽魂手"]["meta"])
+    for r in rows:
+        assert " ·  · " not in r["meta"], "副行有连续分隔符：%s" % r["meta"]
+        assert not r["meta"].startswith(" · "), "副行以分隔符开头：%s" % r["meta"]
+
+
+def test_lock_state_pill_fits_for_low_level():
+    """低等级玩家的「未解锁 lv50」是最长状态标签，不能撑爆块或压住技能名。"""
+    import importlib
+
+    from doupo import factions as fac
+
+    pic = card._load_pic()
+    tpl = importlib.import_module(card._PKG_NAME + ".templates.doupo_roster")
+    theme = importlib.import_module(card._PKG_NAME + ".theme").get("light")
+
+    p = _p(lv=1, faction="tianmingzong")   # lv1：绝大多数高阶/特殊技未解锁
+    p["faction_name"] = fac.FACTIONS["tianmingzong"]["name"]
+    data = card.build_roster_data(p)
+    locked = [r for r in data["rows"] if r["state_kind"] == "lock"]
+    assert locked, "测试前提：lv1 应有未解锁斗技"
+    boxes: list[tuple] = []
+    c = tpl.build(theme, data=data, width=720, boxes=boxes)
+    problems = _check_boxes((12, 12, 720 - 12, c.height - 12), boxes)
+    assert not problems, "未解锁长标签把布局撑坏：\n" + "\n".join(problems[:10])
+    # 状态标签文字必须真的出现（不是被 _fit 截成空）
+    labels = [b[0] for b in boxes]
+    assert any(".state" in x for x in labels), "状态 pill 没被绘制/登记"
 
 
 def test_roster_renders_valid_png():

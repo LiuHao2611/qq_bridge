@@ -298,63 +298,111 @@ def _origin_mark(e: dict) -> str:
 
 
 def build_roster_data(p: dict) -> dict:
-    """本宗斗技名录 → doupo_list 通用列表卡参数。
+    """本宗斗技名录 → doupo_roster 专用名录卡参数。
 
     与 render_skills 的区别：那张是「四槽上阵专用卡」，只画已上阵项；
     这张画**本宗全部斗技**（含未解锁、已收服异火的主动技），用于「斗技 全部」。
     基本固定的名录内容必须出卡片，不能拿纯文本糊弄。
+
+    2026-11-15 第二次视觉重做（用户：「优化这个卡片，怎么没优化」）
+    ------------------------------------------------------------
+    上一版只是把多维信息塞进通用列表卡的行里，用户仍觉得没优化 —— 因为
+    「上阵/可学」用了和技能名一样的 24px 粗体、23 行无分组无分隔、效果与代价
+    挤成 30 多字一行。这版按阶位**分组**输出，每门给出结构化字段，由
+    ``doupo_roster`` 模板画成独立卡片块：
+
+        name/role/state/state_kind/meta/chips/gate
+
+    ``chips`` 第一项固定是伤害倍率（让数值可比），其后才是各维度效果 ——
+    这样玩家看到的是「一个数值 + 多个维度」，而不是「一个数字比大小」。
+    ``rows`` 仍保留扁平结构，供纯文本兜底与既有测试消费。
     """
     sk = p.get("skills") or {}
     pool = core.skill_pool(p)
     tier_order = {t: i for i, t in enumerate(cfg.SKILL_TIERS)}
     pool_sorted = sorted(pool, key=lambda e: tier_order.get(e["tier"], 9))
-    rows = []
+
+    rows: list[dict] = []
+    by_tier: dict[str, list[dict]] = {}
     for e in pool_sorted:
         name = e["name"]
         unlocked = bool(e.get("unlocked"))
         equipped = bool(e.get("equipped"))
         state = "上阵" if equipped else (
             "可学" if unlocked else f"未解锁 lv{e.get('unlock', '?')}")
+        state_kind = "on" if equipped else ("learn" if unlocked else "lock")
         lv = max(1, min(5, int(sk.get(name, 1))))
         frac = int(cfg.SKILL_TIER_MP_FRAC.get(e["tier"], 0.2) * 100)
-        # 主定位前置：让玩家一眼区分续航/控场/爆发/位移，而不是只看到名字。
         role = fx.role_label(e.get("role", ""))
-        role_mark = f"〔{role}〕" if role else ""
-        sub = (f"{_origin_mark(e)}{role_mark}{e.get('rank', '')} · "
-               f"{e.get('kind', '')} · 斗气 {frac}%")
+
+        # 副行：来源 + 阶位 + 类型 + 斗气消耗（不再把主定位塞进这行，它单独成胶囊）
+        # 注意 rank 与 kind 可能同名（如「秘法」阶 + 「秘法」类型），去重后再拼，
+        # 否则会画出「秘法 · 秘法」这种重复。
+        rank = str(e.get("rank") or "")
+        kind = str(e.get("kind") or "")
+        parts = [f"{_origin_mark(e)}{rank}"]
+        if kind and kind != rank:
+            parts.append(kind)
+        parts.append(f"斗气 {frac}%")
+        meta = " · ".join(x for x in parts if x)
         if e.get("flame"):
-            sub = f"异火技〔{e['flame']}〕 · " + sub
-        # 多维效果标签独立成 note 行（doupo_list 用 accent 色绘制，与副行拉开：
-        # 这就是用户要的「位移+伤害=闪避 + 少量伤害」——每个维度一个可见标签）。
-        chips = fx.effect_chips(e.get("effects") or [])
-        note = " · ".join(f"{c['label']}{c['value']}" for c in chips) if chips else ""
-        gate = str(e.get("gate") or "")
-        if gate:
-            note += (" ｜ 限：" if note else "限：") + gate
-        rows.append({
+            meta = f"异火技〔{e['flame']}〕 · " + meta
+
+        # chip 序列：伤害倍率打头（数值可比），其后每个维度一枚胶囊
+        chips = [{"label": "伤害", "value": "×%.2f" % float(e.get("dmg") or 0)}]
+        chips += fx.effect_chips(e.get("effects") or [])
+
+        row = {
+            "name": name,
             "badge": e["tier"][0],
+            "tier": e["tier"],
+            "role": role,
+            "state": state,
+            "state_kind": state_kind,
+            "meta": meta,
+            "chips": chips,
+            "gate": str(e.get("gate") or ""),
+            # ---- 兼容通用列表卡 / 既有测试的扁平字段 ----
             "title": name,
             "right": state,
-            "sub": sub,
-            "note": note,
+            "sub": ((f"异火技〔{e['flame']}〕 · " if e.get("flame") else "")
+                    + (f"〔{role}〕" if role else "") + meta),
+            "note": " · ".join(f"{c['label']}{c['value']}" for c in chips[1:])
+                    + ((" ｜ 限：" + str(e.get("gate"))) if e.get("gate") else ""),
             "bar": {"cur": lv, "max": 5},
+        }
+        rows.append(row)
+        by_tier.setdefault(e["tier"], []).append(row)
+
+    groups = []
+    for tier in cfg.SKILL_TIERS:
+        rs = by_tier.get(tier) or []
+        if not rs:
+            continue
+        groups.append({
+            "tier": tier,
+            "count": len(rs),
+            "icon": {"普通": "sword", "高阶": "bolt", "特殊": "star"}.get(tier, "sword"),
+            "rows": rs,
         })
+
     fac_name = p.get("faction_name") or "无宗门"
     on = sum(1 for e in pool if e.get("equipped"))
     own = sum(1 for e in pool if e.get("origin") == "本宗")
     common = sum(1 for e in pool if e.get("origin") == "通用")
     return {
         "icon": "bolt", "title": "本宗斗技",
-        "subtitle": (f"{fac_name} · 共 {len(rows)} 门（本宗 {own} / 通用 {common}） · "
+        "subtitle": (f"{fac_name} · 共 {len(rows)} 门 · 本宗 {own} / 通用 {common} · "
                      f"上阵 {on}/{cfg.LOADOUT_SIZE}"),
+        "groups": groups,
         "rows": rows,
         "tip": "〔通用〕为斗技堂流通基础斗技，非本宗传承 ｜ 斗技详情 <技名> 看原著出处",
     }
 
 
 async def render_roster(p: dict) -> bytes | None:
-    """「斗技 全部」出图：本宗全部斗技名录卡。"""
-    return await _render_list("doupo_list", build_roster_data(p), "斗破本宗斗技")
+    """「斗技 全部」出图：本宗全部斗技名录卡（按阶位分组 + 卡片块）。"""
+    return await _render_list("doupo_roster", build_roster_data(p), "斗破本宗斗技")
 
 
 def build_faction_data(p: dict) -> dict:
