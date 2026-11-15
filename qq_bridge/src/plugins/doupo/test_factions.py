@@ -171,14 +171,14 @@ def test_c1_attribution_guard():
     """C1（张谦方《斗破设定整理·斗技整理》）逐条核对后钉死的归属护栏，
     防止再次把斗技张冠李戴挂错门派。依据：bilibili opus 959287705904087041。"""
     # 正确归属（C1 原文）：血裂斩/影血闪=迦南吴昊；血煞掌/嗜血化骨手=天冥宗易尘；
-    # 大寂灭指=古族；化血大法(游戏内改名「化血焚天」)=魂殿四天尊；赤毒掌=神农老人。
+    # 大寂灭指=古族；化血大法=魂殿四天尊；赤毒掌=神农老人。
     assert "血裂斩" in str(F.FACTIONS["jianan"]), "血裂斩应属迦南吴昊"
     assert "血裂斩" not in str(F.FACTIONS["xuezong"]), "血裂斩不是血宗范痨的，误挂血宗"
     assert "血煞掌" in str(F.FACTIONS["tianmingzong"]), "血煞掌应属天冥宗易尘"
     assert "血煞掌" not in str(F.FACTIONS["xuezong"]), "血煞掌不是血宗的，误挂血宗"
     assert "大寂灭指" in str(F.FACTIONS["guzu"]), "大寂灭指应属古族"
     assert "大寂灭指" not in str(F.FACTIONS["hunzu"]), "大寂灭指不是魂族的，误挂魂族"
-    assert "化血焚天" in str(F.FACTIONS["hunzu"]), "化血焚天(原化血大法)应属魂殿(魂族明面势力)"
+    assert "化血大法" in str(F.FACTIONS["hunzu"]), "化血大法应属魂殿(魂族明面势力)"
     assert "赤毒掌" in str(F.FACTIONS["tianfu"]), "赤毒掌属神农老人，其为本盟 NPC"
 
 
@@ -215,17 +215,23 @@ def test_xiaojia_keeps_protagonist_core_only():
 
 
 def test_playable_factions_meet_minimum_bar():
-    """可入游戏的门派最低门槛：特殊斗技≥2；非稀疏派需有异火/灵焰且至少 1 件特殊物品；
-    稀疏派至少 1 件特殊物品（以物品线替代战斗资源）。"""
+    """可入门派最低门槛：特殊斗技≥2 + 至少 1 件特殊物品。
+
+    2026-11-15 修正：原断言要求「非稀疏派必须有异火/灵焰」，等于把原著里
+    极稀有的异火写成了门派标配。现改为：异火允许为空；若该派确有传承异火，
+    每条必须带「第X章「标题」」原著引用且不得自造（章节真实性另由
+    _verify_flames.py 门禁对 1608 章原著正文逐条核验）。
+    """
+    import re
+    cite = re.compile(r"第[零〇一壹二两贰三叁四肆五伍六陆七柒八捌九玖十百千\d]+章「[^」]+」")
     for fid, f in F.FACTIONS.items():
         sp = f["special_skills"]; fl = f["flames"]; it = f["items"]
-        sparse = f.get("sparse")
         assert len(sp) >= 2, "%s 特殊斗技不足(%d)" % (fid, len(sp))
-        if not sparse:
-            assert len(fl) >= 1, "%s 非稀疏派却无异火/灵焰" % fid
-            assert len(it) >= 1, "%s 非稀疏派却无特殊物品" % fid
-        else:
-            assert len(it) >= 1, "%s 稀疏派无特殊物品" % fid
+        assert len(it) >= 1, "%s 无特殊物品" % fid
+        for e in fl:
+            assert cite.search(e), "%s 异火归属缺原著章节引用: %s" % (fid, e[:40])
+            assert "[游戏原创]" not in e and "游戏自设" not in e, \
+                "%s 把游戏自造灵焰冒充原著异火: %s" % (fid, e[:40])
 
 
 # ---------------------------------------------------------------------------
