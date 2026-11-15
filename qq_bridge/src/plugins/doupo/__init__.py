@@ -253,6 +253,20 @@ async def _(event: MessageEvent):
     await enh.finish(await commands.cmd_enhance(store, str(event.user_id)))
 
 
+# 斗技详情必须排在 skills_cmd 之前（同一 PRI 下先注册者先拦），否则「斗技详情 X」
+# 会被「斗技」列表口令吃掉。这里再用 PRI-1 明示抢在列表前。
+skinfo = on_regex(_pat(r"(?:斗技|技能|功法)详情") + r"\s*(.*)",
+                  priority=PRI - 1, block=True, rule=_mode_is("doupo"))
+
+
+@skinfo.handle()
+async def _(event: MessageEvent):
+    await _need_group(event, skinfo)
+    txt = _plain(event)
+    kw = next((k for k in ("斗技详情", "技能详情", "功法详情") if k in txt), "斗技详情")
+    await skinfo.finish(await commands.cmd_skill_info(store, str(event.user_id), _arg(event, kw)))
+
+
 # 注意：变量名不能叫 skills，否则会遮蔽 doupo.skills 子模块（core 依赖它）
 skills_cmd = on_regex(_pat(r"(?:斗技|技能)"), priority=PRI, block=True, rule=_mode_is("doupo"))
 
@@ -263,6 +277,11 @@ async def _(event: MessageEvent):
     qq = str(event.user_id)
     # 纯文本兜底（commands.cmd_skills 即数据源，与图片同源）
     msg = await commands.cmd_skills(store, qq)
+    # 「斗技 全部」→ 强制纯文本全列表：卡片只画四槽上阵项，
+    # 要看本宗全部斗技（含未解锁、异火技）必须走文本，别让用户以为只剩几个。
+    if any(k in _plain(event) for k in ("全部", "列表", "所有")):
+        await skills_cmd.finish(msg)
+        return
     # 优先发自绘列表卡；任何异常都降级为上面的纯文本（绝不丢消息）
     png = None
     try:
@@ -307,21 +326,7 @@ sect = on_regex(_pat(r"(?:宗门|门派)") + r"\s*(.*)",
 @sect.handle()
 async def _(event: MessageEvent):
     await _need_group(event, sect)
-    qq = str(event.user_id)
-    # 纯文本兜底（与图片同源）
-    msg = await commands.cmd_faction(store, qq, None)
-    if msg == commands.NOT_ENTERED:
-        await sect.finish(msg)
-    png = None
-    try:
-        p = await store.get_player(qq)
-        if p:
-            png = await card.render_faction(p)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("斗破宗门卡渲染异常，降级纯文本：%s: %s", type(e).__name__, e)
-    if png:
-        await sect.finish(MessageSegment.image(png))
-    await sect.finish(msg)
+    await sect.finish(await commands.cmd_faction(store, str(event.user_id), None))
 
 
 switch = on_regex(_pat(r"(?:转宗|换宗|改换门庭)") + r"\s*(.*)",
@@ -572,6 +577,9 @@ register_keywords("doupo", [
     "门派",
     "转宗",
     "换宗",
+    "斗技详情",
+    "技能详情",
+    "功法详情",
     "升级",
     "升技",
     "上阵",
