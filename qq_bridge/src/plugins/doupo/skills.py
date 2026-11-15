@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from . import config as cfg
 from . import factions as fac
+from . import flame_skills as fs
 from . import skill_book as book
 
 
@@ -110,8 +111,17 @@ def catalog(fid: str) -> list[dict]:
 
 
 def entries_for(p) -> list[dict]:
-    """玩家所属宗门的技能目录。"""
-    return catalog(str(p.get("faction") or ""))
+    """玩家技能目录：本宗斗技 + 已收服异火的专属主动技。
+
+    2026-11-15：异火技从这里进池，四槽 / 斗技列表 / 斗技详情 / 战斗选招
+    全部自动支持，不必改 skill_book 的 185 条大表。
+    """
+    base = catalog(str(p.get("faction") or ""))
+    extra = fs.entries_for(p)
+    if not extra:
+        return base
+    seen = {e["name"] for e in base}
+    return base + [e for e in extra if e["name"] not in seen]
 
 
 def learnable(p) -> list[dict]:

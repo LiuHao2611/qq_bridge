@@ -15,6 +15,8 @@ import time
 from . import config as cfg
 from . import core
 from . import factions as fac
+from . import flame_skills as fs
+from . import skill_book as book
 
 NOT_ENTERED = "你尚未踏入斗气大陆，发送「入道」开启征程。"
 
@@ -68,12 +70,13 @@ MENU_GROUPS = (
     )),
     ("养成 · 变强", (
         ("强化", "强化玄重尺：十级蜕变为异火恒古尺（2000/2000/1000/1200）"),
-        ("斗技", "看本门三阶斗技（普通 / 高阶 / 特殊）与当前四槽，卡片含完整说明/出处/原著"),
+        ("斗技", "看本门三阶斗技 + 已收服异火的专属主动技与当前四槽"),
+        ("斗技详情 狂狮怒罡", "完整说明：怎么施展 → 打多少 → 副作用/限制 + 来源 + 原著"),
         ("升级 龙吟碎", "用焚血散升斗技，每级伤害 +20%"),
-        ("上阵 技1 技2 技3 技4", "四槽自由搭配，三阶（普通/高阶/特殊）可混搭"),
+        ("上阵 技1 技2 技3 技4", "四槽自由搭配；收服异火后的主动技也能上阵"),
         ("宗门", "看本门与可转宗门（进阶池 lv40 / 隐世池 lv90）"),
         ("转宗 迦南学院", "改换门庭，重配四槽（不发该派入道物品）"),
-        ("异火", "看 5 种异火与进度"),
+        ("异火", "看 5 种异火的主动技 / 被动、原著出处与喂养进度"),
         ("养火 青莲地心火", "用药渣喂养异火（炼药失败会出药渣）"),
     )),
     ("炼药 · 宝库", (
@@ -146,7 +149,7 @@ def cmd_help() -> str:
         "  斗气不够放任何一门 → 强制武器普攻，伤害大减且持续掉血",
         "  升一级伤害 +20%（耗焚血散，最高 5 级）；同名技跨宗共享等级",
         "  解锁按原著阶位：黄/玄 lv1 ｜ 地阶 20/30/40 ｜ 天阶 50/60/70 ｜ 秘法 40 ｜ 体质血脉 50 ｜ 异火 60",
-        "  完整说明（施展流程 + 数值 + 出处 + 原著章句）已并入「斗技」卡片，无需单独口令",
+        "  完整说明见「斗技详情 <技名>」（施展流程 + 数值 + 出处 + 原著章句）",
         "",
         "【宗门】入道按 QQ 定种子随机分宗，不可重掷：",
         "  新手池 8 派 lv1 可进 ｜ 进阶池 11 派 lv40 ｜ 隐世池 6 派 lv90",
@@ -389,7 +392,7 @@ async def cmd_skills(store, qq) -> str:
     fac_name = p.get("faction_name") or "无宗门"
     out = [f"📜 {fac_name} · 斗技三阶（上阵 {len(lo)}/{cfg.LOADOUT_SIZE}）"]
     for tier in cfg.SKILL_TIERS:
-        rows = [e for e in pool if e["tier"] == tier]
+        rows = [e for e in pool if e["tier"] == tier and e.get("faction") != "异火"]
         if not rows:
             continue
         out.append(f"〔{tier}〕斗气 {int(cfg.SKILL_TIER_MP_FRAC[tier] * 100)}%·mp_max")
@@ -397,10 +400,65 @@ async def cmd_skills(store, qq) -> str:
             lv = int((p.get("skills") or {}).get(e["name"], 1))
             mark = "★上阵" if e["equipped"] else ("可学" if e["unlocked"] else "🔒未解锁")
             out.append(f"　{e['name']} Lv{lv}（lv{e['unlock']} 解锁·{mark}）")
+    flames = [e for e in pool if e.get("faction") == "异火"]
+    if flames:
+        out.append(f"〔异火技〕斗气 {int(cfg.SKILL_TIER_MP_FRAC['特殊'] * 100)}%·mp_max　收服即解锁")
+        for e in flames:
+            mark = "★上阵" if e["equipped"] else "可学"
+            out.append(f"　{e['name']}（{e.get('flame', '异火')}·{mark}）")
     out.append("")
     out.append("上阵：" + "、".join(f"{e['name']}[{e['tier']}]" for e in lo))
     out.append("　斗气不足将强制武器普攻（伤害大减、持续掉血）")
     out.append(f"　升一级伤害 +20%，消耗 {cfg.SKILL_UP_ITEM}；用法：升级 <技名> / 上阵 <4 技名>")
+    return "\n".join(out)
+
+
+async def cmd_skill_info(store, qq, name) -> str:
+    """斗技详情：完整说明（施展→效果→增益/副作用→限制）+ 数值 + 来源 + 原著。
+
+    desc 写在 skill_book.SKILL_BOOK 里，与图鉴文档同源；卡片只放两行短释，
+    想看全的就走这条口令。
+    """
+    p = await _player(store, qq)
+    if not p:
+        return NOT_ENTERED
+    name = (name or "").strip()
+    pool = core.skill_pool(p)
+    if not pool:
+        return "你还没有斗技。"
+    if not name:
+        return ("用法：斗技详情 <技名>\n本宗可选：" + "、".join(e["name"] for e in pool))
+
+    hit = next((e for e in pool if e["name"] == name), None) or next(
+        (e for e in pool if name in e["name"] or e["name"] in name), None)
+    if not hit:
+        book_hit = book.get(name)
+        if book_hit is None:
+            return "无此斗技。本宗可选：" + "、".join(e["name"] for e in pool)
+        return f"【{book_hit['name']}】不属于你的宗门，无法查看细节。"
+
+    lv = int((p.get("skills") or {}).get(hit["name"], 1))
+    st = core.stats(p)
+    raw = (st["力量"] * 0.5 + st["斗气"] * 1.5) * float(hit["dmg"]) * (1 + 0.2 * (lv - 1))
+    dmg = int(round(raw * (1 + core.crit_rate(p) / 100.0 * 0.5)))
+    state = "★上阵" if hit.get("equipped") else ("可学" if hit.get("unlocked") else "未解锁")
+
+    # 只有真打得出去的技才显示伤害系数；功法/增益/技艺的 130% 是倍率不是伤害，写出来会误导
+    nfmt = f"斗气 {int(hit['mp'] * 100)}%·mp_max ｜ 冷却 {hit.get('cd', '-')} 回合"
+    if hit.get("kind") in ("攻击", "控制", "召唤", "秘法"):
+        nfmt += f" ｜ 基础 {int(hit['dmg'] * 100)}% ｜ 当前约 {dmg} 伤害"
+    else:
+        nfmt += " ｜ 非直接伤害技（增益/功能）"
+    out = [f"📖 {hit['name']}　Lv{lv}　{state}",
+           f"{hit.get('rank', '')} · {hit.get('kind', '')} · {hit.get('scope', '')}［{hit['tier']}］",
+           nfmt,
+           ""]
+    out.append(hit.get("desc") or "（暂无说明）")
+    if hit.get("source"):
+        out += ["", f"出处：{hit['source']}"]
+    if hit.get("novel"):
+        out.append(f"原著：{hit['novel']}")
+    out += ["", f"　升级 +20%/级（需 {cfg.SKILL_UP_ITEM}）｜ 用法：升级 {hit['name']}"]
     return "\n".join(out)
 
 
@@ -500,78 +558,31 @@ async def cmd_skill_up(store, qq, name) -> str:
 
 
 async def cmd_loadout(store, qq, args) -> str:
-    """上阵：从本宗三阶斗技里自由选 ≤4 门。
-
-    简化交互（2026-11-15 用户要求「一次输出四个编号，编号代表斗技即可」）：
-    每门斗技在「斗技」卡片左上角有**固定编号**，口令直接发编号即可，
-    例如「上阵 1 3 2 4」。编号与卡片共用 ``core.skill_pool_sorted`` 的稳定顺序，
-    因此永远对得上，不会出现「卡片 3 号」和「口令 3 号」是两门技的情况。
-    旧式技名写法（「上阵 龙吟碎 天火三玄变」）继续兼容。
-    """
+    """上阵：从本宗三阶斗技里自由选 ≤4 门。"""
     p = await _player(store, qq)
     if not p:
         return NOT_ENTERED
-    full_sorted = core.skill_pool_sorted(p)          # 与卡片同序（普通→高阶→特殊）
-    learnable = [e for e in full_sorted if e["unlocked"]]
-    # 编号 ↔ 技能名（只把「可上阵」的编入映射；锁定技不参与上阵）
-    num_to_name: dict[int, str] = {}
-    name_to_num: dict[str, int] = {}
-    for i, e in enumerate(full_sorted):
-        if e["unlocked"]:
-            num_to_name[i + 1] = e["name"]
-            name_to_num[e["name"]] = i + 1
-
+    pool = [e for e in core.skill_pool(p) if e["unlocked"]]
     raw = (args or "").replace("，", ",").replace("、", ",").replace("/", ",").replace(" ", ",")
-    tokens = [x.strip() for x in raw.split(",") if x.strip()]
-    if not tokens:
+    names = [x.strip() for x in raw.split(",") if x.strip()]
+    if not names:
         cur = core.loadout_entries(p)
-        out = []
-        out.append("当前上阵：" + ("、".join(e["name"] for e in cur) if cur else "（空）"))
-        out.append("可上阵斗技（编号=卡片左上角编号，直接发数字即可）：")
-        for tier in cfg.SKILL_TIERS:
-            row = [e for e in learnable if e["tier"] == tier]
-            if not row:
-                continue
-            seg = "　"
-            for e in row:
-                tok = "%d.%s" % (name_to_num[e["name"]], e["name"])
-                if len(seg) + len(tok) + 1 > 30:
-                    out.append(seg.strip())
-                    seg = "　"
-                seg += tok + "　"
-            if seg.strip():
-                out.append(seg.strip())
-        out.append("")
-        out.append("用法：上阵 1 3 2 4（最多 %d 门，数字即上方编号）" % cfg.LOADOUT_SIZE)
-        return "\n".join(out)
-
-    chosen: list[str] = []
-    for t in tokens:
-        if t.isdigit():
-            n = int(t)
-            if n not in num_to_name:
-                return ("编号 %d 不可上阵（未解锁或超出范围 1~%d）。\n可上阵：%s"
-                        % (n, len(learnable),
-                           "、".join("%d.%s" % (name_to_num[e["name"]], e["name"])
-                                    for e in learnable)))
-            nm = num_to_name[n]
-        else:
-            hit = next((e for e in learnable if e["name"] == t), None) or next(
-                (e for e in learnable if t in e["name"] or e["name"] in t), None)
-            if not hit:
-                return ("「%s」不可上阵（未解锁或非本宗）。\n可上阵：%s"
-                        % (t, "、".join("%d.%s" % (name_to_num[e["name"]], e["name"])
-                                       for e in learnable)))
-            nm = hit["name"]
-        if nm not in chosen:
-            chosen.append(nm)
+        return ("当前上阵：" + "、".join(f"{e['name']}[{e['tier']}]" for e in cur)
+                + "\n可上阵：" + "、".join(e["name"] for e in pool)
+                + f"\n用法：上阵 <技1> <技2> <技3> <技4>（最多 {cfg.LOADOUT_SIZE} 门，三阶任意搭配）")
+    chosen = []
+    for n in names:
+        hit = next((e for e in pool if e["name"] == n), None) or next(
+            (e for e in pool if n in e["name"] or e["name"] in n), None)
+        if not hit:
+            return f"「{n}」不可上阵（未解锁或非本宗）。可上阵：" + "、".join(e["name"] for e in pool)
+        if hit["name"] not in chosen:
+            chosen.append(hit["name"])
     if len(chosen) > cfg.LOADOUT_SIZE:
         return f"最多上阵 {cfg.LOADOUT_SIZE} 门，你给了 {len(chosen)} 门。"
     core.set_loadout(p, chosen)
     await store.put_player(p)
-    return "✅ 已上阵：" + "、".join(
-        f"{e['name']}（{name_to_num.get(e['name'], '?')}号）"
-        for e in core.loadout_entries(p))
+    return "✅ 已上阵：" + "、".join(f"{e['name']}[{e['tier']}]" for e in core.loadout_entries(p))
 
 
 async def cmd_flames(store, qq) -> str:
@@ -581,18 +592,27 @@ async def cmd_flames(store, qq) -> str:
     fl = p.get("flames") or {}
     out = [f"🔥 异火　药渣 ×{core.count_item(p, '药渣')}"]
     for f in cfg.FLAMES:
-        lv = int(fl.get(f["name"], 0))
-        if f["name"] == cfg.FLAME_DIYAN:
+        name = f["name"]
+        lv = int(fl.get(name, 0))
+        if name == cfg.FLAME_DIYAN:
             state = "已收服" if p.get("diyan") else "未得（成就斗帝自燃）"
-            out.append(f"　{f['icon']} {f['name']}　{state}")
-            continue
-        if lv >= cfg.FLAME_MAX_LV:
-            out.append(f"　{f['icon']} {f['name']}　{lv} 级（圆满）")
-            continue
-        need = int(f["need"]) * (lv + 1)
-        out.append(f"　{f['icon']} {f['name']}　{lv}/{cfg.FLAME_MAX_LV} 级　"
-                   f"下级需 {_fmt(need)} 药渣")
+            out.append(f"　{f['icon']} {name}　{state}")
+        elif lv >= cfg.FLAME_MAX_LV:
+            out.append(f"　{f['icon']} {name}　{lv} 级（圆满）")
+        else:
+            need = int(f["need"]) * (lv + 1)
+            out.append(f"　{f['icon']} {name}　{lv}/{cfg.FLAME_MAX_LV} 级　下级需 {_fmt(need)} 药渣")
+        a = fs.active_of(name)
+        pv = fs.passive_of(name)
+        if a:
+            out.append(f"　　主动【{a['name']}】{a['brief']}")
+        if pv:
+            out.append(f"　　被动【{pv['name']}】{pv['effect']}")
+        if a:
+            cite = a["novel"].split(" —— ")[0].split("；")[0]
+            out.append(f"　　原著：{cite}")
     out.append("")
+    out.append("　收服后主动技可用「上阵 <技名>」放进四槽，「斗技详情 <技名>」看全文与出处")
     out.append("　用法：养火 青莲地心火（一次喂光现有药渣）")
     return "\n".join(out)
 
