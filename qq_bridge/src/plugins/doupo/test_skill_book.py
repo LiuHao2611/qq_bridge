@@ -183,8 +183,24 @@ def test_numeric_fields_in_range():
 
 
 def test_every_entry_has_source_and_novel_slot():
-    bad = [r["name"] for r in book.SKILL_BOOK.values() if not str(r.get("source") or "").strip()]
-    assert not bad, "缺来源：%s" % "、".join(bad)
+    """2026-11-16 新口径：source 写「怎么来的」，查不到就留空。
+
+    用户：「你全都写谁用的，这并不符合斗技来源的说法」——
+    旧断言要求每门非空，逼着填「某某所使」；改成：空合法，但写了就必须是
+    真正的来历（创/传/取得/购/夺/锤炼），不许写成使用记录。
+    """
+    # 本 runner 不 stub nonebot，不能 import skill_effects（它会触发 nonebot）；
+    # 判据就地写一份，与 skill_effects 的两条正则保持一致。
+    usage_re = re.compile(r"(所使|所用|所修|亦修|施展者|擅长使用|惯用|所使用的?|最擅长)")
+    origin_re = re.compile(
+        r"(所创|创出|自创|所传|传授|所授|授与|取得|到手|所得|购|买|拍得|"
+        r"拍卖|抢|夺|获|得自|锤炼|磨出|修成|习得|藏|捡|发现|遗留|继承)")
+    # 2026-11-16 用户「先把迦南学院的斗技都改好再说」：本轮只锁已逐门查证过的
+    # 迦南学院本宗 19 门；其余宗门同类问题由 usage_only_source_stats() 统计排期。
+    bad = [n for n in book.FACTION_SKILLS["jianan"]
+           if usage_re.search(str(book.SKILL_BOOK[n].get("source") or ""))
+           and not origin_re.search(str(book.SKILL_BOOK[n].get("source") or ""))]
+    assert not bad, "迦南学院来源只写「谁用过」而非来历：%s" % "、".join(bad[:12])
     # novel 允许为空，但必须是字符串键（生成文档要用）
     bad2 = [r["name"] for r in book.SKILL_BOOK.values() if "novel" not in r]
     assert not bad2, "缺原著字段：%s" % "、".join(bad2)

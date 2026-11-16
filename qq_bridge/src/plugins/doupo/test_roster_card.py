@@ -356,8 +356,9 @@ def test_desc_first_sentence_is_skill_source():
         else:
             assert not desc.startswith("，"), "%s 没有来源却留了逗号前缀" % r["name"]
         assert len(desc) >= 40, "%s 描述过短" % r["name"]
-    assert with_source >= len(rows) - 2, (
-        "绝大多数斗技都应有传承来源，实测 %d/%d" % (with_source, len(rows)))
+    # 2026-11-16 新口径：来源必须写「怎么来的」，查不到就留空。
+    # 不再要求「绝大多数都有来源」——那会逼着写「某某所使」冒充来源。
+    assert with_source >= 1, "名录卡一门来源都没有，来源层可能没接上"
     # 检测本身必须认得出这次真实犯过的旧写法（否则门禁会形同虚设）
     assert fx.CITATION_RE.search(
         "原著第一千一百九十章「承让」载，天冥宗易尘所使。斗气凝血成掌……"), (

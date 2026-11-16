@@ -70,6 +70,45 @@ def _bad_name(n: str) -> str | None:
     return None
 
 
+def source_origin_problems() -> list[str]:
+    """斗技来源必须写「怎么来的」，不能是「谁用的」（用户 2026-11-16）。
+
+    用户原话：「斗技来源，原著一般会有说创作的，或者从哪买的、抢的，等等，
+    你全都写谁用的，这并不符合斗技来源的说法」。
+
+    空 source 合法（原著查不到来历就如实不加）；写了就必须含真实来历词
+    （创/传/授/取得/购/拍/夺/锤炼/习得…），只有「某某所使/所修」即报错。
+    """
+    from doupo import skill_effects as fx
+
+    out: list[str] = []
+    # 2026-11-16 用户「先把迦南学院的斗技都改好再说」：严格校验先只覆盖
+    # 已逐门查证过的迦南学院本宗 19 门；其余宗门同类问题见函数末尾待办统计，
+    # 不阻塞本轮，但不能再悄悄扩散（新写的使用记录一律在 selftest 里被拦）。
+    strict = set(book.FACTION_SKILLS["jianan"])
+    for n in strict:
+        rec = book.SKILL_BOOK.get(n, {})
+        src = str(rec.get("source") or "").strip()
+        if not src:
+            continue
+        if fx.CITATION_RE.search(src):
+            out.append(f"[来源] {n} 的 source 写了原著章节号，游戏文案不写注脚：{src}")
+        if fx.USAGE_ONLY_RE.search(src) and not fx.SOURCE_ORIGIN_RE.search(src):
+            out.append(f"[来源] {n} 只写「谁用过」不是来历，应写谁创/哪取得/"
+                       f"买到/抢到/锤炼所得，查不到就留空：{src}")
+    return out
+
+
+def usage_only_source_stats() -> list[str]:
+    """统计全图鉴仍写「谁用过」的斗技（供排期，不阻塞交付）。"""
+    from doupo import skill_effects as fx
+
+    bad = [n for n, r in book.SKILL_BOOK.items()
+           if fx.USAGE_ONLY_RE.search(str(r.get("source") or ""))
+           and not fx.SOURCE_ORIGIN_RE.search(str(r.get("source") or ""))]
+    return bad
+
+
 def common_pool_problems() -> list[str]:
     """通用池准入：只准「斗技堂按修为传授的黄阶基础技」。
 
@@ -132,6 +171,7 @@ def catalog_problems() -> list[str]:
         if w:
             out.append(f"[通用] 通用斗技名含非斗技词「{w}」：{n}")
     out += common_pool_problems()
+    out += source_origin_problems()
 
     # 4) 宗门表字面量本身（不能等 catalog 静默跳过缺失项）
     for fid, listed in book.FACTION_SKILLS.items():
@@ -244,6 +284,15 @@ def selftest() -> list[tuple[str, bool]]:
     book.COMMON_SKILLS = saved_common
     book.FACTION_SKILLS.clear()
     book.FACTION_SKILLS.update(saved_fs)
+
+    # ---- 来源必须是来历，不是使用记录（用户 2026-11-16 纠正）----
+    saved_src = book.SKILL_BOOK["撼雷地弧爆"]["source"]
+    book.SKILL_BOOK["撼雷地弧爆"]["source"] = "迦南学院白山所使。"
+    res.append(("把来源写回「某某所使」", bool(source_origin_problems())))
+    book.SKILL_BOOK["撼雷地弧爆"]["source"] = "原著第33章「证实」载，萧家斗技堂基础斗技。"
+    res.append(("来源里写原著章节号", bool(source_origin_problems())))
+    book.SKILL_BOOK["撼雷地弧爆"]["source"] = saved_src
+    res.append(("真实来源不应报错", not source_origin_problems()))
 
     saved_cite = book.SKILL_BOOK["千焰剑罡"]["novel"]
     book.SKILL_BOOK["千焰剑罡"]["novel"] = "据说是古河用的剑法"

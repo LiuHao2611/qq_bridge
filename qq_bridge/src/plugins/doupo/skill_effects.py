@@ -180,6 +180,15 @@ CITATION_RE = re.compile(
     r"原著第|出自第|第[零〇一两二三四五六七八九十百千]+章|」载")
 #: 这些字样是「游戏补白」标记，不是来源；不能当成技能来源写进描述。
 SOURCE_NOT_REAL = ("游戏自设", "游戏补白", "原著无载")
+#: 使用记录 ≠ 来源（用户 2026-11-16：「你全都写谁用的，这并不符合斗技来源的
+#: 说法」）。来源要写它**怎么来的**：谁创 / 谁传 / 从哪取得 / 买 / 夺 / 锤炼。
+#: 只有「某某所使 / 所修 / 所用 / 亦修」这种句子，等于没写来源。
+USAGE_ONLY_RE = re.compile(
+    r"(所使|所用|所修|亦修|施展者|擅长使用|惯用|所使用的?|最擅长)")
+#: 真正的来源线索：创作 / 传授 / 取得 / 交易 / 抢夺 / 苦修 / 发现。
+SOURCE_ORIGIN_RE = re.compile(
+    r"(所创|创出|自创|所传|传授|所授|授与|取得|到手|所得|购|买|拍得|"
+    r"拍卖|抢|夺|获|得自|锤炼|磨出|修成|习得|藏|捡|发现|遗留|继承)")
 
 
 def source_phrase(entry: dict) -> str:
@@ -192,6 +201,10 @@ def source_phrase(entry: dict) -> str:
     if not src or any(x in src for x in SOURCE_NOT_REAL):
         return ""
     if CITATION_RE.search(src):
+        return ""
+    # 纯使用记录（「白山所使」）不是来源：拒绝，并在描述里不显示。
+    # 只有同时含真实来历词才放行（如「柳擎锤炼近二十年的爪法」）。
+    if USAGE_ONLY_RE.search(src) and not SOURCE_ORIGIN_RE.search(src):
         return ""
     return src
 
