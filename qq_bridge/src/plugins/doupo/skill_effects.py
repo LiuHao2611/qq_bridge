@@ -73,7 +73,7 @@ def validate_effects(effects) -> list[str]:
     """校验一条效果数组，返回错误文案列表（空 = 合法）。"""
     errs: list[str] = []
     if effects is None:
-        return errs  # 未填效果的斗技（非天冥宗 15 门）允许为空
+        return errs  # effects=None 仅作防御性兼容；全 150 门都必须填（全宗门门禁拦）
     if not isinstance(effects, list):
         return ["effects 必须是 list"]
     for i, e in enumerate(effects):
@@ -137,7 +137,7 @@ def role_label(role: str) -> str:
     return role if role in ROLES else (role or "")
 
 
-#: desc 末尾的代价段标记（天冥宗 15 门斗技都用这个写法）
+#: desc 末尾的代价段标记（全 150 门斗技都用这个写法）
 _GATE_SPLIT = ("限制：", "限制:")
 
 

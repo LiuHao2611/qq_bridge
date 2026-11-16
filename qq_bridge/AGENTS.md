@@ -74,6 +74,7 @@
 | **机器人语音输出（`/看图 说`）必须按 `TTS_PROVIDER` 路由，且豆包 seed-audio 与火山方舟两条协议严禁混用、密钥严禁入库**：`seed`=豆包 openspeech 私有 `X-Api-Key` + `text_prompt` 生成式描述 → JSON 内嵌 base64 MP3；`openai`=火山方舟 `Authorization: Bearer` + `{model,input,voice}` → `/audio/speech` 裸音频；`auto`=谁配齐用谁（seed 优先），都没有则**显式报错不本地兜底**（本机无 TTS 库，硬凑是次品路径） | `multimodal/audio_seed.py::SeedAudioClient`（复用 `AudioError`，httpx transport 可注入可裸单测；缺 key/空文本/超字数/HTTP 4xx/非 JSON/缺 audio/非法 base64/空音频/非 MP3/超时全显式 `AudioError`；`decode_audio_field` 校验 mp3 帧头）；`Config.TTS_PROVIDER/SEED_TTS_*`（**`SEED_TTS_API_KEY` 只从 `.env` 读，gitignore，禁硬编码/打印/log**）；`MediaManager._tts_route()+speak()` 分流、`capabilities()` 加 `seed_tts/openai_tts/tts_route` 可观测字段**且不回显 key 值**；`tests/test_audio_seed.py` 18 例（真 MP3 帧头 mock + 11 类反例 + 路由三态 + capabilities 不泄 key + 端到端 `send_record` base64 逐字节一致）；`tests/test_multimodal_audio.py::capabilities` 契约同步更新（临时清空含 `SEED_TTS_API_KEY`，精确 7 键 + seed 路由断言，比原 4 键更严） |
 | **斗技名录卡（「斗技 全部」）右上角状态徽章必须一眼可见，且技能描述第一句必须带技能来源**（用户 2026-11-15「右上角提示优化一下，要更明显更显眼；这些技能严格参考原著，第一句话加上技能来源，有来源就加、没有就不加，不用单独分来源标题」）：三态 = 朱红上阵 / 墨绿可学 / 灰褐未解锁，14px 浅字 + 高对比实底 + 状态圆点（旧版 12px 淡底、可学与未解锁同色 = 反例）；来源只取 `skill_book.source`（谁所使 / 怎么得到），用逗号并进描述第一句，写成「天冥宗易尘所使，斗气凝血成掌……」这样的游戏技能说明；**严禁「原著第X章「标题」载」式小说注脚**（用户 22:5x 纠正「不要写原著多少章这种描述，你见过哪个游戏的技能描述这样写的？」），`novel` 章节引文只用于离线核验、绝不进卡片；不许来源单独成句、不许「出处：」标题，无来源不加任何前缀；**副行按「 · 」语义段折行**，不许 `_fit` 截成「lv…」或逐字拆开「lv20」 | `pic/templates/doupo_roster.py::state_badge_problems`（字号≥14 / 高≥22 / 三态底色亮度<170 且互不相同）+ 反例注入（12px·18px、淡底同色）；`skill_effects.source_phrase/desc_with_source` 是来源唯一生成入口（旧 `source_lead` 已删，让下一个 agent 没地方照抄章节写法），`CITATION_RE` 精确识别小说注脚，`card.build_roster_data` 结构化透出 `source_phrase/has_source`；`tools/check_skill_multidim.py::source_problems/badge_problems` + `--selftest` **25 类反例**（含「旧写法原著第X章注脚」「来源单独成句」两类本次真错注入）；`doupo/test_roster_card.py` 17 用例（来源首句、徽章醒目、技能名不截断、副行折行不拆字、`check_boxes` 溢出 0/重叠 0/间距 0）；宿主与容器真实出图肉眼核对 |
 | **通用斗技池只准放「斗技堂按修为传授的黄阶基础技」，有明确授受对象的专属技绝不跨宗门泛滥**（用户 2026-11-15「焰分噬浪尺为什么分到天冥宗了？？？」）：`skills.catalog` 会把 `COMMON_SKILLS` **全量加给每个宗门**，所以药尘亲授萧炎的焰分噬浪尺/吸掌/吹火掌、云韵赠的爆步、萧薰儿的燕返击、范凌的雷蝠天翼、若琳的卸力水镜/水曼陀罗一律不许进通用池；撤出后各留其宗、资料不丢 | `tools/check_skill_catalog.py::common_pool_problems`（必须黄阶 + `source` 含「斗技堂」+ 无「所授/所赠/亲授/所创」）+ `--selftest` **11/11 反例**（把焰分噬浪尺放回通用池 / 通用池整体换成专属技 / 改成地阶 / 撤空通用池）；`test_skill_book.py::test_exclusive_skills_never_leak_into_other_factions`（8 门专属技不在通用池也不在天冥宗 + 反例注入）；`test_multidim.py` / `test_roster_card.py` 门数改动态或 15；`docs/斗技图鉴_梳理报告.md` §4 与 `斗技多维度重构设计.md` 顶部已标注修订；原著语料 8 处命中全是萧炎施展 |
+| **全 25 派每门斗技都必须有天冥宗同款展示（role / effects / gate），且归属须经原著核验**（用户 2026-11-15「检查一遍所有宗门的资源是否有同样的问题，处理掉，必须要查原著；按照天冥宗的技能展示优化剩余所有宗门」）：127 门补齐多维数据、21 条归属疑点逐条裁决；7 门原著/desc 无可量化机制者显式登记 `NO_EFFECT_SKILLS`，4 门无对应宗门的个人技登记 `UNATTACHED_SKILLS`，绝不硬编数值或塞回错误宗门 | `tools/check_skill_multidim.py` 全 25 派逐派跑（结构/反无脑/图文一致/逐派 `build_roster_data`）+ `no_effect_registry_problems` 白名单诚实性 + `test_skill_book.py::test_no_orphan_book_entry` 无归属登记；`--selftest` 27/27 反例全拦；多维数据用 `tokenize` 直接写回 `skill_book.py` 各自 `_s(...)`，单一事实来源、不建第二数据源；`docs/门派技能图鉴.md` 由 `_gen_book_doc.py` 重生成并 `--check` 同步 |
 
 ---
 
@@ -1706,4 +1707,18 @@ stars/boot`）；`fetch_part_art` 对这些部位**先取 WM `prime_*` subIcon�
 - **拦在犯之前**：`check_skill_catalog.py::common_pool_problems` 用数据自身判准入（黄阶 + `source` 含「斗技堂」+ 无「所授 / 所赠 / 亲授 / 所创」），`--selftest` **11/11 反例全拦**（把焰分噬浪尺放回通用池 / 通用池整体换成专属技 / 改成地阶 / 撤空通用池）；`test_skill_book.py` 新增归属回归 + 反例注入；`test_multidim.py` 与 `test_roster_card.py` 门数改动态或 15；`docs/斗技图鉴_梳理报告.md` §4、`docs/斗技多维度重构设计.md` 顶部已标注修订。
 - **验收**：宿主 8 套 runner 全过（17/12/18/90/6/31/17/6）、三门禁 PASS、`_gen_book_doc.py --check` 同步、py_compile 8/8；名录卡 720×2473 / lv1 720×2494，`check_boxes` 溢出 0 / 重叠 0 / 间距 0，放大肉眼核对「共 15 门 · 本宗 11 / 通用 4」且无焰分噬浪尺。
 - **部署与提交**：见本轮交差。
+
+---
+
+## §11-16 08:1x 全宗门归属审查（查原著）+ 剩余 24 派技能展示补全
+
+- 用户指令：「检查一遍所有宗门的资源是否有同样的问题，处理掉，必须要查原著，处理好之后，按照目前天冥宗的技能展示，优化剩余的所有宗门技能展示。如果太多不好做，可以派发子代理」。
+- 规模：150 门图鉴里 **127 门缺 role/effects/gate**；派 5 个子代理分片（第 5 组首次因上游流中断失败、未留任何产物，按用户裁定拆成两个 11 门小任务重跑成功）。
+- 原著查证：统一用 `_verify_novel.py`（1608 章 / 497 万字）逐技 `hits()`，6 份产物触达数百个章回；写回脚本对每条 evidence 的章节 cite 做机器核验，拦下 1 处「站方屏蔽字被还原」导致的标题不符（六合游身尺第 117 章语料原题为「**游身尺」）。
+- **归属裁决 21 条**：9 条移动/移除（骨皇裂天 / 化血大法 / 百魂锁天蟒→魂殿，奔雷鉴 / 惊蛰雷法→萧家，五轮离火法从魔炎谷移除，万花冰镜 / 玄冰旋杀 / 地火印 / 魔蛇噬移出错配宗门）；其余改 `source`/`novel` 的事实与时点口径（千焰剑罡「会长古河」、六合游身尺「萧厉拍下」、云韵花宗/云岚宗时期、药尘于萧家授技、摄魂冥手与噬血大法撤掉张冠李戴的引文改标自设等）。4 门无对应宗门的个人技登记 `UNATTACHED_SKILLS` 并在图鉴文档单列，不冒充任何宗门传承；`sherenzu` 本宗专属清空，靠 4 门通用基础技填满四槽。
+- **展示补全**：127 门写回 role/effects/gate，单一事实来源仍是 `skill_book.py`（`tokenize` 精确定位 `_s(...)`，不建第二数据源）；7 门原著/desc 无可合规量化机制者显式登记 `NO_EFFECT_SKILLS`（带理由），不硬编数值凑 chip。
+- **拦截**：`check_skill_multidim.py` 升级为全 25 派逐派跑 + 逐派 `build_roster_data` + 白名单诚实性；`--selftest` 27/27 反例全拦；`test_multidim.py` 新增全派用例；`test_skill_book.py` 无归属登记校验；`docs/门派技能图鉴.md` 由生成器重生成并 `--check` 同步。
+- **验收**：宿主 8 套 runner 全过、三门禁 PASS、8 派真实出图 `check_boxes` 0/0/0（迦南学院 23 门 3299px 放大肉眼核对通过）；容器 rebuild 新镜像、NapCat 容器 ID/启动时间未变、三层 md5 全等、容器内全派门禁 PASS 与 8 派出图 0 问题。
+- ⚠️ **与本次改动无关的线上状态**：NapCat 于 11-16 02:58 报 `Login Error ErrCode: 3` +「二维码已过期：自动刷新已禁用，等待人工刷新」，主通道当前 `ws_down`。按账号安全铁律**未自动重登**，需用户自行运行扫码脚本后才能从 QQ 客户端收到新卡。
+- 未验证：容器内 `test_skill_book` 17/18（文档同步用例，docs 不进镜像，宿主 18/18）、e2e 74/75（`skinfo` priority 旧断言），均为既有；本机/容器无 pytest；未从 QQ 客户端真发口令收图。
 

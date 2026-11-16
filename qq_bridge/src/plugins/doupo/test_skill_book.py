@@ -100,10 +100,21 @@ def test_every_code_skill_has_book_entry():
 
 
 def test_no_orphan_book_entry():
-    """反向：图鉴里每条都必须真被某个宗门收录，避免写了没人用。"""
+    """反向：图鉴里每条都必须真被某个宗门收录，避免写了没人用。
+
+    例外是归属审查后从错误宗门移除的 4 门可考个人技：必须在
+    ``UNATTACHED_SKILLS`` 显式登记理由，且确实不属于任何宗门。
+    没登记的无归属条目一律 FAIL（不许悄悄把斗技丢成孤儿）。
+    """
     ref = {n for ns in book.FACTION_SKILLS.values() for n in ns}
     orphan = sorted(set(book.SKILL_BOOK) - ref)
-    assert not orphan, "图鉴里有未被任何宗门收录的条目：%s" % "、".join(orphan)
+    unknown = [n for n in orphan if n not in book.UNATTACHED_SKILLS]
+    assert not unknown, "图鉴里有未登记的无归属条目：%s" % "、".join(unknown)
+    for n in book.UNATTACHED_SKILLS:
+        assert n in book.SKILL_BOOK, "%s 登记了却不在图鉴里" % n
+        assert n not in ref, "%s 登记为无归属，却又挂了宗门" % n
+        assert str(book.UNATTACHED_REASONS.get(n) or "").strip(), (
+            "%s 没写不归属理由" % n)
 
 
 def test_faction_skills_cover_all_factions():

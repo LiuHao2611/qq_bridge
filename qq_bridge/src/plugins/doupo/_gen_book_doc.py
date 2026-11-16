@@ -114,6 +114,22 @@ def build() -> str:
                 L.append("- 原著：%s" % ("无载（游戏自设）" if nv.startswith("原著无载") else nv))
                 L.append("")
 
+    # ---------------- 无宗门归属的可考斗技 ----------------
+    L += ["## 无宗门归属的可考斗技（全宗门归属审查后单列）", "",
+          "原著里属于个人 / 世家、项目 25 派中没有对应宗门的斗技。"
+          "保留在权威表中，**不冒充任何宗门传承**，也不进任何宗门的斗技池。", ""]
+    for n in book.UNATTACHED_SKILLS:
+        r = book.SKILL_BOOK.get(n)
+        if r is None:
+            continue
+        L += ["**%s** ｜ %s · %s · %s ｜ %s"
+              % (r["name"], r["rank"], r["kind"], r["scope"], r["tier"]), "",
+              "- 说明：%s" % r["desc"],
+              "- 出处：%s" % r["source"],
+              "- 原著：%s" % (r["novel"] or "无载（游戏自设）"),
+              "- 不归属理由：%s" % book.UNATTACHED_REASONS.get(n, ""),
+              ""]
+
     # ---------------- 自检 ----------------
     L += ["## 数据自检", "",
           "| 项 | 值 |", "|---|---|",

@@ -73,6 +73,32 @@ def test_all_tianming_skills_have_multidim_design():
         assert not fx.validate_effects(e["effects"]), f"{name} 效果字段非法"
 
 
+def test_all_factions_have_multidim_design():
+    """用户 2026-11-15：「按照目前天冥宗的技能展示，优化剩余的所有宗门技能展示」。
+
+    天冥宗同款展示 = 每门技都有主定位 / 效果原子 / 门控代价，卡片自动出
+    role 胶囊 + 效果 chip + 代价行；任何一派缺字段都会退回「只有伤害数字」。
+    """
+    from doupo import skill_book as book
+
+    checked = 0
+    for fid in book.FACTION_SKILLS:
+        ents = sk.catalog(fid)
+        assert len(ents) >= 4, "%s 运行池不足 4 门（四槽填不满）" % fid
+        for e in ents:
+            name = e["name"]
+            assert e.get("role") in fx.ROLES, (
+                "%s/%s role 非法: %r" % (fid, name, e.get("role")))
+            if name not in book.NO_EFFECT_SKILLS:
+                assert e.get("effects"), (
+                    "%s/%s 没有效果原子（退化成纯数字）" % (fid, name))
+            assert e.get("gate"), "%s/%s 没有门控代价" % (fid, name)
+            assert not fx.validate_effects(e["effects"]), (
+                "%s/%s 效果字段非法: %s" % (fid, name, fx.validate_effects(e["effects"])))
+            checked += 1
+    assert checked >= 25 * 4, "覆盖门次太少，测试可能没真跑：%d" % checked
+
+
 def test_low_damage_skills_carry_tactical_dimension():
     """反无脑红线：伤害倍率 <1.2 的技能必须带战术维度（不能只比数字大）。"""
     low = [e for e in sk.catalog("tianmingzong") if float(e["dmg"]) < 1.2]

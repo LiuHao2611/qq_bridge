@@ -24,6 +24,7 @@
    防止「文案说有 30% 破防、数据里却是 0」这种图文说两回事。
 5. **卡片消费**：``card.build_skills_data`` / ``build_roster_data`` 必须真的把
    role/chips/gate 透出到卡片数据（否则修了数据层、玩家还是只看到一个数字）。
+   2026-11-15 23:5x 起**全 25 派逐派跑** ``build_roster_data``，不再只查天冥宗。
 6. **来源融入描述**（2026-11-15 用户纠正）：名录卡每行 desc 以
    「<传承来源>，<施展流程>…」开头，来源只取 ``skill_book.source``（谁所使 /
    怎么得到）；**严禁写「原著第X章「标题」载」这类小说注脚**（用户：「不要写
@@ -113,7 +114,10 @@ def struct_problems(entries: list[dict], fid: str = TARGET_FACTION) -> list[str]
         elif role not in fx.ROLES:
             out.append("[词表] %s 的 role=%r 不在受控词表 %s" % (name, role, fx.ROLES))
         if effects is None or effects == []:
-            out.append("[字段] %s 没有 effects（多维度为空，只剩一个伤害数字）" % name)
+            # 7 门技原著/desc 里确实没有可合规量化的独立机制，已显式登记，
+            # 不许硬编数值凑 chip；白名单之外一律报错。
+            if name not in book.NO_EFFECT_SKILLS:
+                out.append("[字段] %s 没有 effects（多维度为空，只剩一个伤害数字）" % name)
         for err in fx.validate_effects(effects or []):
             out.append("[效果] %s %s" % (name, err))
         if not gate:
@@ -148,7 +152,8 @@ def balance_problems(entries: list[dict], fid: str = TARGET_FACTION) -> list[str
             out.append("[无脑] %s 倍率 %.2f 但无任何战术维度（纯数字填充）" % (name, mult))
         if mult >= HIGH_DMG and not gate:
             out.append("[无脑] %s 倍率 %.2f 却没有 gate，会成为唯一最优解" % (name, mult))
-        if role == "输出" and not [x for x in (rec.get("effects") or [])]:
+        if (role == "输出" and not [x for x in (rec.get("effects") or [])]
+                and name not in book.NO_EFFECT_SKILLS):
             out.append("[无脑] %s 定位纯输出且无效果（还是只剩比数字）" % name)
     # 全局：不允许「全部技能同一个 role」这种伪多维
     roles = {str(book.SKILL_BOOK.get(e["name"], {}).get("role") or "") for e in entries}
@@ -469,25 +474,97 @@ def selftest() -> list[tuple[str, bool]]:
     res.append(("徽章退回淡底且可学/未解锁同色",
                 bool(tpl.state_badge_problems(style=pale))))
 
+    # ---- 无机制白名单诚实性 ----
+    saved_reg = book.NO_EFFECT_SKILLS
+    book.NO_EFFECT_SKILLS = tuple(saved_reg) + ("碎石掌",)
+    res.append(("把有效果原子的技塞进无机制白名单",
+                bool(no_effect_registry_problems())))
+    book.NO_EFFECT_SKILLS = saved_reg
+
+    # ---- 全宗门覆盖（用户「优化剩余的所有宗门技能展示」）----
+    other_fid = ("xiaojia" if "xiaojia" in book.FACTION_SKILLS
+                 else tuple(book.FACTION_SKILLS)[0])
+    other_name = _faction_entries(other_fid)[0]["name"]
+    saved_other = book.SKILL_BOOK.get(other_name)
+    book.SKILL_BOOK[other_name] = dict(saved_other, role="", effects=[], gate="")
+    res.append(("清空非天冥宗某派斗技的多维字段",
+                bool(struct_problems(_faction_entries(other_fid), other_fid))))
+    if saved_other is not None:
+        book.SKILL_BOOK[other_name] = saved_other
+
     if saved is not None:
         book.SKILL_BOOK[name0] = saved
     return res
 
 
 # ---------------------------------------------------------------------------
+def no_effect_registry_problems() -> list[str]:
+    """白名单本身必须诚实：登记的技确实无 effects、有 role/gate、理由非空。
+
+    防止有人把有机制却写坏的技塞进白名单来绕过「空 effects」检查。
+    """
+    out: list[str] = []
+    if len(set(book.NO_EFFECT_SKILLS)) != len(book.NO_EFFECT_SKILLS):
+        out.append("[白名单] NO_EFFECT_SKILLS 有重复技名")
+    for n in book.NO_EFFECT_SKILLS:
+        rec = book.SKILL_BOOK.get(n)
+        if rec is None:
+            out.append("[白名单] %s 不在 SKILL_BOOK" % n)
+            continue
+        if rec.get("effects"):
+            out.append("[白名单] %s 明明有 effects，却登记成无独立机制" % n)
+        if not rec.get("role") or not rec.get("gate"):
+            out.append("[白名单] %s 缺 role/gate，不能用白名单掩盖" % n)
+        if not str(book.NO_EFFECT_REASONS.get(n) or "").strip():
+            out.append("[白名单] %s 没写理由" % n)
+    return out
+
+
+def all_faction_card_problems() -> list[str]:
+    """按天冥宗同款展示，全 25 派名录卡都必须消费多维字段。
+
+    用户 2026-11-15：「按照目前天冥宗的技能展示，优化剩余的所有宗门技能展示」。
+    数据齐了模板自动生效，这里逐派跑 build_roster_data 确认没有一派退化成
+    「只有伤害数字 + 一句 brief」。
+    """
+    from doupo import card, core, factions as fac
+
+    out: list[str] = []
+    for fid in book.FACTION_SKILLS:
+        p = core.create_player("10001", "闸门", "20001")
+        p["lv"] = 50
+        p["faction"] = fid
+        p["faction_name"] = fac.FACTIONS[fid]["name"]
+        core.skill_pool(p)
+        d = card.build_roster_data(p)
+        for x in (_roster_shape_problems(d) + source_problems(d)):
+            out.append("[%s] %s" % (fid, x))
+    return out
+
+
 def main() -> int:
-    entries = _faction_entries(TARGET_FACTION)
-    sp = struct_problems(entries)
-    bp = balance_problems(entries)
-    dp = desc_consistency_problems(entries)
-    cp = card_problems()
+    # 2026-11-15 23:5x：从「只查天冥宗」升级为「全 25 派」
+    all_fids = tuple(book.FACTION_SKILLS)
+    sp: list[str] = []
+    bp: list[str] = []
+    dp: list[str] = []
+    total = 0
+    for fid in all_fids:
+        ents = _faction_entries(fid)
+        total += len(ents)
+        sp += struct_problems(ents, fid)
+        bp += balance_problems(ents, fid)
+        dp += desc_consistency_problems(ents)
+    cp = card_problems() + all_faction_card_problems()
+    rp = no_effect_registry_problems()
     st = selftest()
-    problems = sp + bp + dp + cp
+    problems = sp + bp + dp + cp + rp
     for name, caught in st:
         if not caught:
             problems.append("[selftest] 反例没被拦住: %s" % name)
 
-    print("斗技多维度闸门 · 宗门=%s · 共 %d 门" % (TARGET_FACTION, len(entries)))
+    print("斗技多维度闸门 · 全 %d 派 / %d 门次（图鉴 %d 门）"
+          % (len(all_fids), total, len(book.SKILL_BOOK)))
     print("  结构完整（role/effects/gate/desc）：%s" % ("PASS" if not sp else "FAIL %d 项" % len(sp)))
     print("  反无脑（低伤有维度/高威力有代价）：%s" % ("PASS" if not bp else "FAIL %d 项" % len(bp)))
     print("  图文一致（desc 百分比能在 effects 对上）：%s" % ("PASS" if not dp else "FAIL %d 项" % len(dp)))
@@ -495,6 +572,9 @@ def main() -> int:
     look = [p for p in cp if p.startswith(("[来源]", "[状态徽章]"))]
     print("  来源首句 / 状态徽章醒目：%s"
           % ("PASS" if not look else "FAIL %d 项" % len(look)))
+    print("  无机制白名单诚实性（%d 门）：%s"
+          % (len(book.NO_EFFECT_SKILLS),
+             "PASS" if not rp else "FAIL %d 项" % len(rp)))
     print("  反例注入：%d/%d 被拦" % (sum(1 for _, ok in st if ok), len(st)))
     for name, ok in st:
         print("    %s %s" % ("OK  " if ok else "MISS", name))
