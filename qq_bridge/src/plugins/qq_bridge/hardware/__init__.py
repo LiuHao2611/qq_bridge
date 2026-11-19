@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import datetime
 
 from nonebot import on_message, on_regex
 from nonebot.adapters.onebot.v11 import MessageEvent
@@ -34,6 +35,7 @@ except Exception:  # noqa: BLE001 — 官方适配器可选，不影响 NapCat
     QQEvent = object
     C2CMessageCreateEvent = GroupMessageCreateEvent = ()
 
+from . import daily
 from . import dataset as ds
 from . import market
 
@@ -71,11 +73,35 @@ def _tracked_line(dataset) -> str:
 def build_payload(arg: str) -> tuple[dict | None, str]:
     """返回 (卡面 payload, 纯文字提示)。二者恰有一个非空。
 
+    默认「今日」（ZOL 每日快照）；``月报`` 走 frocloud 月度档案。
     纯文字只用于「查不到 / 命中多个」这类**检索结果说明**，不是出图的降级路径。
     """
+    arg = (arg or "").strip()
+    if arg in ("月报", "月度", "monthly"):
+        return market.overview(), ""
     dataset = ds.load()
-    if not arg:
-        return market.overview(dataset), ""
+    if not arg or arg in ("今日", "today"):
+        try:
+            return daily.overview_payload(), ""
+        except daily.DailyError:
+            # 还没有任何快照：明确告知（不拿月度数据冒充今日）
+            return None, ("今天还没有每日快照，自动采集尚未成功。\n"
+                          "稍后会自动重试；也可以发「硬件行情 月报」看月度档案。")
+    dhit = daily.search(arg)
+    if len(dhit) == 1:
+        got = daily.model_payload(dhit[0])
+        if got:
+            return got, ""
+    if len(dhit) > 1:
+        rows = ["「%s」在今日行情里命中 %d 个型号，说具体一点：" % (arg, len(dhit))]
+        for label in dhit[:6]:
+            snap = daily.load() or {"items": {}}
+            price = next((v["price"] for k, v in snap["items"].items()
+                          if k.split(":", 1)[-1] == label), None)
+            rows.append("· %s（%s）" % (label, "¥%d" % price if price else "今日无报价"))
+        rows.append("例：硬件行情 %s" % dhit[0])
+        return None, "\n".join(rows)
+
     hits = market.search(arg, dataset)
     if not hits:
         return None, ("档案里没有「%s」。%s。\n发「硬件行情」看本期涨跌总览，"
@@ -95,11 +121,75 @@ def _fmt(i) -> str:
     return ("¥%.2f/GB" % i.latest) if i.unit == "元/GB" else "¥{:,.0f}".format(i.latest)
 
 
+async def _ensure_daily(arg: str) -> None:
+    """今日/单型号请求前保证快照够新：没有就现采；超过 12h 且已过点就重采。
+
+    采不到直接抛（由调用方显式告知用户），绝不拿月度数据或旧快照冒充今日。
+    """
+    if arg.strip() not in ("", "今日", "today") and not daily.search(arg):
+        return
+    snap = daily.load()
+    h, mi = daily.schedule_at()
+    minutes = daily.now().hour * 60 + daily.now().minute
+    if snap is not None:
+        if daily.age_hours(snap) < 12:
+            return
+        if minutes < h * 60 + mi:  # 还没到今天的采集点，沿用昨日
+            return
+    await asyncio.wait_for(asyncio.to_thread(daily.fetch_today, True), timeout=240.0)
+
+
+async def _daily_loop() -> None:
+    """每天 HW_DAILY_AT（默认 10:10）采一次；启动时若当天没采且已过点则补采。"""
+    try:
+        h, mi = daily.schedule_at()
+        now = daily.now()
+        if daily.load() is None and (now.hour * 60 + now.minute) >= (h * 60 + mi):
+            await asyncio.sleep(45)
+            snap = await asyncio.to_thread(daily.fetch_today, True)
+            logger.info("hw_daily_catchup items=%d", len(snap["items"]))
+    except Exception:  # noqa: BLE001 — 补采失败不阻塞主流程，下轮定时再试
+        logger.exception("hw_daily_catchup_failed")
+    while True:
+        try:
+            wait = max(60.0, (daily.next_run() - daily.now()).total_seconds())
+            await asyncio.sleep(wait)
+            snap = await asyncio.to_thread(daily.fetch_today, True)
+            logger.info("hw_daily_fetched items=%d errors=%d",
+                        len(snap["items"]), len(snap.get("errors") or []))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — 定时失败只记日志并留待手动/明日
+            logger.exception("hw_daily_fetch_failed")
+            await asyncio.sleep(300)
+
+
+def _register_daily_job() -> None:
+    """挂启动钩子。必须用 async 回调：sync lambda 里 create_task 在 uvicorn 启动阶段
+    没有 running loop，会直接把 Application startup 干掉（2026-11-19 实测事故）。"""
+    async def _boot() -> None:
+        asyncio.create_task(_daily_loop())
+
+    try:
+        from nonebot import get_driver
+
+        get_driver().on_startup(_boot)
+    except Exception:  # noqa: BLE001 — 调度注册失败不影响口令
+        logger.exception("hw_daily_job_register_failed")
+
+
 async def _handle(event: MessageEvent) -> None:
     from .. import pic as pic_mod
     from ..media import send_pic
 
     arg = _arg_of(event)
+    try:
+        await _ensure_daily(arg)
+    except Exception as e:  # noqa: BLE001 — 抓取失败必须让用户看见，不静默也不伪造
+        logger.exception("hw_daily_fetch_failed: %s", e)
+        await _say(event, "今日行情抓取失败：%s（ZOL 不可达或页面改版，已记录日志）"
+                   % str(e)[:100])
+        return
     payload, note = build_payload(arg)
     if note:
         await _say(event, note)
@@ -217,5 +307,6 @@ def register():
     matcher = on_regex(PAT, priority=PRI, block=True, flags=re.I)
     matcher.handle()(_handle_safe)
     logger.info("hardware market registered (words=%s)", "/".join(WORDS))
+    _register_daily_job()
     register_official()
     return matcher

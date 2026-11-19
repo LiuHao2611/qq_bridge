@@ -73,7 +73,8 @@ src/plugins/qq_bridge/hardware/
 src/plugins/qq_bridge/pic/templates/hw_market.py   两个视图的卡片渲染（先算布局再画）
 tools/vendor_frocloud.py                           搬运 / 校验
 tools/check_hw_market_layout.py                    布局 + 数据 + 口径门禁（含 --selftest）
-tests/test_hw_market.py                            21 用例
+tests/test_hw_market.py                            23 用例
+tests/test_hw_daily.py                             14 用例（ZOL 解析/分词/涨跌/调度，离线）
 ```
 
 ## 4.1 两个通道
@@ -86,11 +87,43 @@ tests/test_hw_market.py                            21 用例
 官方事件注入不到 OneBot 类型的 handler（TypeMisMatch），**两条通道必须各注册一个 matcher**；
 官方副本 `qq_bridge_official/` 是独立部署目录（不入 git），改动需同步过去再重建容器。
 
+
+## 3.1 每日行情（默认视图，2026-11-19 新增）
+
+```
+硬件行情                → 今日卡（ZOL 当日参考价，涨跌 = 今日 vs 上一份快照）
+硬件行情 月报           → frocloud 月度档案（显卡/CPU/内存存储三分类，历史涨跌）
+硬件行情 5070           → 单款今日价 + 本地日线 + 天梯
+```
+
+**源：ZOL 中关村在线公开系列页**（`detail.zol.com.cn/vga/s<系列ID>/`），不需要登录、无浏览器。
+当前跟踪 12 个有系列页的显卡：RTX 5050 / 5060 / 5060 Ti 8G·16G / 5070 / 5070 Ti / 5080 /
+5090 D / 5090 D v2 / RX 9070 / 9070 XT / 9070 GRE。每个系列取当日**样本最低价**并记录样本数。
+
+**为什么 CPU / 内存没有日更**（实测，不是偷懒）：
+- ZOL 的 CPU 列表/家族页只公开十来个「热门」型号，把 frocloud 当前 24 个在售型号拿去匹配
+  只命中 3 个（9600X / 9700X / 9800X3D）；只报 3 款会让「几涨几跌」变成误导。
+- 京东 `p.3.cn` 价格接口在本机与容器均不可达；京东/拼多多/闲鱼的完整采集都要登录态浏览器
+  （账号风控 + 封号风险，与本项目账号安全红线冲突）。
+- 所以 CPU 与内存存储继续走 frocloud 月度（`硬件行情 月报`），卡面固定写「CPU / 内存存储：
+  ZOL 公开列表无稳定日价」。
+
+**调度**：每天 **10:10（北京时间）** 自动采一次。理由：早间电商调价已完成、页面报价稳定；
+避开 0–8 点维护与 0 点大促抖动。可用 `HW_DAILY_AT=HH:MM` 覆盖；服务重启时若当天还没采且已过点，
+启动 45 秒后补采一次。用户手动问且快照超过 12 小时 → 当场重采（最多一次，避免刷 ZOL）。
+
+**存储**：`data/hardware_daily/YYYY-MM-DD.json`（原子写、保留 180 天）。涨跌只和**上一份快照**比，
+第一天是「首日基线」，卡面不画空榜，改画「今日在售」价格表。
+
+**口径**：ZOL 页面的「参考报价」，不是某家店实时成交价；卡面页脚写「每日 10:10 自动抓取 · 仅供参考」，
+门禁禁止出现「实时 / 秒杀 / 成交价」这类词。
+
 ## 5. 验收
 
 ```bash
 python tools/vendor_frocloud.py --verify
-python tools/check_hw_market_layout.py --check --out tmp/hw.png
+python tools/check_hw_market_layout.py --check --out tmp/hw.png   # 含今日卡（hw_daily_gate）
+python tools/hw_daily_gate.py
 python tools/check_hw_market_layout.py --selftest
 python -m pytest tests/test_hw_market.py -q
 ```

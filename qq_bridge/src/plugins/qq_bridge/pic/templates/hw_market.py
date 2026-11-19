@@ -46,6 +46,9 @@ FOOT_OVERVIEW = ("来源 frocloud-DIYPCmarket（数据 CC BY 4.0 · 脚本 MIT�
                  "· 月度档案，非日内行情")
 FOOT_MODEL = ("来源 frocloud-DIYPCmarket（CC BY 4.0）"
               "· 月度档案，非日内行情 · 数据截止 %s")
+#: 每日行情（ZOL 公开报价）：口径必须写「每日抓取 + 仅供参考」，不许写成实时成交价
+FOOT_DAILY = "来源 ZOL 中关村在线公开报价 · 每日 %s 自动抓取 · 仅供参考"
+FOOT_DAILY_MODEL = "来源 ZOL 公开报价 · %s · 当日样本最低价 · 仅供参考"
 #: 卡面「口径必现词」与「严禁词」（门禁读实际绘制文本核对）
 MUST_SAY = ("月度", "非日内")
 FORBID = ("今日", "实时行情", "当天行情", "盘中")
@@ -385,12 +388,16 @@ def build_model(t: Theme, payload: dict, width: int, boxes=None) -> Canvas:
         c.text((x0, L["tier"] + 10), line1, size=t.fs(18), color=t.text_sub, anchor="lm")
         _rec(boxes, "tier.title", _tb((x0, L["tier"] + 10), line1, t.fs(18)))
 
-    foot = FOOT_MODEL % payload["asof"]
+    if payload.get("source") == "daily":
+        foot = FOOT_DAILY_MODEL % payload["asof"]
+    else:
+        foot = FOOT_MODEL % payload["asof"]
     c.text((x0, L["foot"]), foot, size=t.fs(FS_FOOT), color=t.text_weak, anchor="lm")
     _rec(boxes, "footer", _tb((x0, L["foot"]), foot, t.fs(FS_FOOT)))
 
     # 本卡信息密度高、内容占满整宽，不画右下角大贴纸（会压住末行价格/页脚）。
     return c
+
 
 
 def build(t: Theme, payload: dict | None = None, width: int | None = None, boxes=None) -> Canvas:
@@ -400,6 +407,9 @@ def build(t: Theme, payload: dict | None = None, width: int | None = None, boxes
     width = int(width or getattr(t, "width", 800) or 800)
     if payload["view"] == "overview":
         return build_overview(t, payload, width, boxes=boxes)
+    if payload["view"] == "daily":
+        from .hw_market_daily import build_daily  # 懒导入：拆分后守 20KB 门禁
+        return build_daily(t, payload, width, boxes=boxes)
     if payload["view"] == "model":
         return build_model(t, payload, width, boxes=boxes)
     raise ValueError("未知 view：%r" % (payload.get("view"),))

@@ -34,12 +34,16 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "src" / "plugins"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # 同目录门禁模块（hw_daily_gate）
 
 from qq_bridge.hardware import dataset as ds  # noqa: E402
 from qq_bridge.hardware import market as mk  # noqa: E402
 from qq_bridge.pic import canvas as _canvas  # noqa: E402
 from qq_bridge.pic import render_sync, resolve_theme  # noqa: E402
 from qq_bridge.pic.templates import hw_market as tpl  # noqa: E402
+
+# 今日卡（daily 视图）的检查按功能拆到 hw_daily_gate.py，守本文件 <20KB
+import hw_daily_gate  # noqa: E402
 
 MIN_GAP = 8
 PAD = 24
@@ -248,7 +252,7 @@ def _render(view: str, theme: str):
 
 
 def check_all(out: str = "") -> list[str]:
-    problems: list[str] = []
+    problems: list[str] = ["daily " + p for p in hw_daily_gate.check()]
     truth = recompute_from_csv()
     for theme_name in ("light", "neon"):
         theme = resolve_theme(theme_name)

@@ -1752,3 +1752,35 @@ stars/boot`）；`fetch_part_art` 对这些部位**先取 WM `prime_*` subIcon�
 - **验收**：`--check` PASS（6 张图：overview/gpu/mem × light/neon），`--selftest` 6/6，`tests/test_hw_market.py` 21/21；出图尺寸 800×706（总览）/ 800×658（5090）/ 800×634（内存），四周内边距 24/22px，溢出 0 / 重叠 0 / 间距 0。
 - **官方通道（2026-11-19 22:0x 补）**：线上实际在跑的是 `qq-bridge-official`（官方 Bot，代码在**独立副本** `qq_bridge_official/`），不是 NapCat 版 —— 用户发「硬件行情」没回的两条根因：① 功能只落在 `qq_bridge/`；② 官方事件类型是 nonebot-adapter-qq，OneBot `MessageEvent` 注入不到（TypeMisMatch），必须另开官方 matcher。修法：`hardware.register_official()` 用 `on_message(priority=5, block=True, rule=…)` + adapter 守卫，复用 `game_tools.official_bridge.OfficialLikeEvent` 与 `attach_official_ctx`（openid/reply_ref 由 ContextVar 供给 `OfficialChannel.send`）；官方副本已同步并 `docker compose -f docker-compose.official.yml up -d --build` 重建，日志可见 `hardware market registered` 与 `hardware official matcher registered`。
 - **未验证**：按用户「先不用同步容器」，**未 rebuild / 未 force-recreate**，线上仍是旧镜像；未从 QQ 客户端真发「硬件行情」收图（容器未更新，发了也没这功能）。数据时效止于上游 2026-10-02，非日内行情——这是数据源事实，不是实现缺陷。
+
+---
+
+## §11-19 23:3x（2026-11-19）补「当天」行情：ZOL 每日快照 + 每天 10:10 自动抓 + 手动即问即采
+
+- **用户指令**：「把当天的行情补上，我主要看当天的，你调研一下看看每天几点获取比较合适，自动获取，手动就是我直接问。深度调研 2026 github 大佬权威优秀项目，搬运源码。全量对齐」
+- **调研结论（先说不能做的事）**：没有任何**带许可**的 GitHub 项目提供「中国 DIY 每日行情」数据或采集器 ——
+  `shyss1292-afk/diy-price-report`（日报/三平台/四道质量闸门，最贴需求）**无 LICENSE**（不可复制）且依赖 Playwright + 京东/拼多多/闲鱼登录态；
+  `DAILtech/PriceDive`（97★、MIT）是通用商品追踪，不含型号级硬件口径；
+  其余 `yachty66` / `HardwareDealsCo` / `alex-hubbard` 全是美元或云 GPU 租赁。
+  **本轮没有搬运新仓库**：无许可的项目不能搬，搬一个不用的通用项目是噪音；如需，可另行裁定搬 PriceDive（MIT）做调度/告警参考。
+- **可用日源（实测）**：京东 `p.3.cn` 价格接口本机与容器均不可达（No route/502）；京东搜索未登录只回 2.7KB 拦截页；拼多多/闲鱼要登录。
+  **ZOL 中关村在线系列页**（`detail.zol.com.cn/vga/s<ID>/`）公开、免登录、一页带参考价 → 唯一能在容器里稳定每日抓的 CNY 源。
+- **覆盖（诚实边界）**：日更只做**显卡 12 个系列**（5050/5060/5060Ti 8G·16G/5070/5070Ti/5080/5090D/5090D v2/9070/9070XT/9070GRE），
+  每系列取当日样本最低价并记录样本数（4~23 条）。**CPU 不做日更**：ZOL CPU 列表/家族页只公开十来个热门且多为「暂无报价」，
+  24 个在售型号只命中 3 个（9600X/9700X/9800X3D），只报 3 款会让「几涨几跌」变误导；CPU/内存继续走 frocloud 月度（`硬件行情 月报`），
+  卡面固定写「CPU / 内存存储：ZOL 公开列表无稳定日价」。
+- **实现**：`hardware/zol.py`（GB18030 解析、Cookie+Referer 翻页、junk 过滤、8G/16G 与 v2 变体切分、型号分词）
+  ＋ `hardware/daily.py`（快照 `data/hardware_daily/YYYY-MM-DD.json`、原子写、保留 180 天、今日 vs 上一份、**北京时间**调度、12h 手动刷新阈值）
+  ＋ `pic/templates/hw_market_daily.py`（首日基线画「今日在售」价格表，次日画涨/跌榜；拆出守 20KB）
+  ＋ `硬件行情` 默认今日、`硬件行情 月报` 回月度、单型号优先日更。
+- **每天几点**：**10:10（北京时间）**。早间电商调价已完成、页面稳定；避开 0–8 点维护与 0 点大促抖动。`HW_DAILY_AT=HH:MM` 可覆盖。
+  重启时若当天没采且已过点 → 启动 45 秒后补采；用户手动问且快照 >12h → 当场重采（远端 12 个请求 ≈ 15~30s）。
+- **踩坑（真实事故，已修）**：`driver.on_startup(lambda: asyncio.create_task(...))` 在 uvicorn 启动阶段没有 running loop →
+  `Application startup failed. Exiting.`，容器直接起不来。必须用 **async 回调** `async def _boot(): asyncio.create_task(_daily_loop())`。
+  同轮还修了 `age_hours` 的 aware/naive 时区比较、模板拆分后漏导入 `FOOT_DAILY`。
+- **拦截**：`tools/hw_daily_gate.py`（今日卡 baseline/compare × light/neon：盒越界/重叠/行数=数据/口径必须含 ZOL·每日·仅供参考、禁止「实时/秒杀/成交价」），
+  已并入 `check_hw_market_layout.py --check`；`tests/test_hw_daily.py` 14 用例（离线夹具解析、分词、junk、对比、调度、payload 历史）。
+- **验收**：`check_hw_market_layout.py --check` PASS（含今日卡）、`--selftest` 6/6、`test_hw_market` 23 + `test_hw_daily` 14 全过；
+  容器内补采 `hw_daily_catchup items=12`、快照落 `/app/data/hardware_daily/2026-11-19.json`（12 条 0 错误）、
+  容器内渲染 today 74,196B / 5070 单卡 47,091B；官方容器 22:33 重启后 healthy + READY。
+- **未验证**：未在 QQ 里真发口令收今日卡（等用户发）；ZOL 改版会让解析失效（`parse_cards` 空 → `DailyError`，卡面会显式报错而不是空数据）。

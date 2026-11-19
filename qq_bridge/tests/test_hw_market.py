@@ -143,9 +143,19 @@ def test_search_common_ways(query, label):
     assert hits and hits[0].label == label
 
 
-def test_empty_arg_returns_overview_card():
-    """不带型号 = 总览卡（这是最常发的口令，必须真的出 payload 而不是空提示）。"""
+def test_empty_arg_returns_daily_card(monkeypatch):
+    """不带型号 = 今日卡（最常发的口令）；不再默认月度总览。"""
+    from qq_bridge.hardware import daily
+
+    fake = {"view": "daily", "date": "2026-11-19", "buckets": [], "samples": []}
+    monkeypatch.setattr(daily, "overview_payload", lambda *a, **k: fake)
     payload, note = build_payload("")
+    assert note == "" and payload is fake
+
+
+def test_month_report_keeps_monthly_overview():
+    """「硬件行情 月报」仍然是 frocloud 月度总览（三分类都在）。"""
+    payload, note = build_payload("月报")
     assert note == ""
     assert payload["view"] == "overview" and len(payload["buckets"]) == 3
 
@@ -235,9 +245,14 @@ def test_command_end_to_end_sends_a_real_image(monkeypatch):
 
     monkeypatch.setattr(media, "send_pic", fake_pic)
     monkeypatch.setattr(media, "send_text", fake_text)
+
+    async def _no_fetch(arg):
+        return None
+
+    monkeypatch.setattr(hw, "_ensure_daily", _no_fetch)
     import asyncio
 
-    asyncio.run(hw._handle_safe(_ev("硬件行情 5090")))
+    asyncio.run(hw._handle_safe(_ev("硬件行情 5070")))
     assert sent.get("bytes", 0) > 5000 and "text" not in sent
     assert sent["group"] == 123
 
@@ -258,6 +273,11 @@ def test_command_end_to_end_ambiguous_asks_instead_of_guessing(monkeypatch):
 
     monkeypatch.setattr(media, "send_pic", fake_pic)
     monkeypatch.setattr(media, "send_text", fake_text)
+
+    async def _no_fetch(arg):
+        return None
+
+    monkeypatch.setattr(hw, "_ensure_daily", _no_fetch)
     import asyncio
 
     asyncio.run(hw._handle_safe(_ev("硬件行情 ddr5")))
