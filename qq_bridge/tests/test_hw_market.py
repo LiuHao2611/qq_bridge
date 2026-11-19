@@ -265,6 +265,23 @@ def test_command_end_to_end_ambiguous_asks_instead_of_guessing(monkeypatch):
     assert "命中 4 个标的" in sent["text"]
 
 
+def test_official_rule_guard_and_text_extraction():
+    """官方通道 rule：能取到官方 text 段，但**非官方事件一律拒绝**（不吞 NapCat/闲聊）。"""
+    import qq_bridge.hardware as hw
+
+    class _Seg:
+        def __init__(self, t, data):
+            self.type, self.data = t, data
+
+    class _Ev:
+        def get_message(self):
+            return [_Seg("text", {"text": "硬件行情 5090"})]
+
+    assert hw._official_text_of(_Ev()) == "硬件行情 5090"
+    assert hw.is_official_command(_Ev()) is False  # adapter 守卫：非官方事件不接
+    assert hw.is_official_command(object()) is False
+
+
 # --------------------------------------------------------------------- 搬运清单
 def test_vendor_manifest_matches_files():
     """上游副本必须与清单 sha256 一致（手改 CSV / 多放文件都会被这条抓）。

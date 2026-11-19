@@ -21,8 +21,18 @@ import asyncio
 import logging
 import re
 
-from nonebot import on_regex
+from nonebot import on_message, on_regex
 from nonebot.adapters.onebot.v11 import MessageEvent
+
+# QQ 官方通道（nonebot-adapter-qq）：NapCat 副本里可能没装，装不到就只注册 OneBot matcher。
+try:
+    from nonebot.adapters.qq import Bot as QQBot
+    from nonebot.adapters.qq import Event as QQEvent
+    from nonebot.adapters.qq import C2CMessageCreateEvent, GroupMessageCreateEvent
+except Exception:  # noqa: BLE001 — 官方适配器可选，不影响 NapCat
+    QQBot = None
+    QQEvent = object
+    C2CMessageCreateEvent = GroupMessageCreateEvent = ()
 
 from . import dataset as ds
 from . import market
@@ -38,6 +48,7 @@ PAT = r"^(?:\[CQ:[^\]]*\]|\s)*#?\s*(?:" + _ALT + r")\s*(.*)$"
 _ARG_RE = re.compile(r"^(?:" + _ALT + r")\s*(.*)$", re.I)
 
 matcher = None
+_official_matcher = None
 
 
 def _arg_of(event: MessageEvent) -> str:
@@ -128,7 +139,77 @@ async def _handle_safe(event: MessageEvent) -> None:
             logger.exception("hw_market_error_report_failed")
 
 
+# ---------------------------------------------------------------------------
+# QQ 官方通道：OneBot 类型注入不到官方事件（TypeMisMatch），必须另开 matcher。
+# 复用 game_tools.official_bridge 的「官方事件 → OneBot 风格事件」适配器，
+# 再把完整 ctx attach 到 ContextVar，让 OfficialChannel.send 拿到 openid/reply_ref。
+# ---------------------------------------------------------------------------
+def _official_text_of(event) -> str:
+    """官方事件只拼 text 段（at 段已被适配器拆走）。"""
+    parts = []
+    try:
+        for seg in event.get_message():
+            if str(getattr(seg, "type", "")) == "text":
+                parts.append(str((getattr(seg, "data", {}) or {}).get("text") or ""))
+    except Exception:  # noqa: BLE001 — 取不到就当非命令，交给主流程
+        return ""
+    return "".join(parts).strip()
+
+
+def is_official_command(event) -> bool:
+    """官方事件是否是本插件的口令（先 adapter 守卫，绝不吞 NapCat / 闲聊）。"""
+    if QQBot is None:
+        return False
+    if not isinstance(event, (C2CMessageCreateEvent, GroupMessageCreateEvent)):
+        return False
+    text = _official_text_of(event)
+    return bool(text and re.match(PAT, text, re.I))
+
+
+async def _handle_official(bot, event) -> None:
+    from ..channel import OFFICIAL, get_channel
+    from ..channel.base import attach_official_ctx, detach_official_ctx
+    from ..game_tools.official_bridge import OfficialLikeEvent
+
+    ch = get_channel(OFFICIAL)
+    full = await ch.normalize(event, self_id=str(getattr(bot, "self_id", "") or ""),
+                              trace_id="")
+    if not full:
+        return
+    full["keyboard_cmd"] = _official_text_of(event)
+    token = attach_official_ctx(full)
+    try:
+        wrapped = OfficialLikeEvent(event, full, str(getattr(bot, "self_id", "") or ""))
+        await _handle_safe(wrapped)
+    finally:
+        detach_official_ctx(token)
+
+
+def register_official():
+    """注册官方通道 matcher（幂等；未配官方通道时直接跳过）。"""
+    global _official_matcher
+    if _official_matcher is not None:
+        return _official_matcher
+    if QQBot is None:
+        return None
+    try:
+        from ..config import Config
+        if not Config.official_configured():
+            return None
+    except Exception:  # noqa: BLE001 — 配置读不到就不注册，NapCat 不受影响
+        return None
+
+    async def _rule(event: QQEvent) -> bool:
+        return is_official_command(event)
+
+    _official_matcher = on_message(priority=PRI, block=True, rule=_rule)
+    _official_matcher.handle()(_handle_official)
+    logger.info("hardware official matcher registered")
+    return _official_matcher
+
+
 def register():
+
     """注册行情口令 matcher（幂等）。priority=5 + block=True：命中即阻断后续 LLM 回复。"""
     global matcher
     if matcher is not None:
@@ -136,4 +217,5 @@ def register():
     matcher = on_regex(PAT, priority=PRI, block=True, flags=re.I)
     matcher.handle()(_handle_safe)
     logger.info("hardware market registered (words=%s)", "/".join(WORDS))
+    register_official()
     return matcher

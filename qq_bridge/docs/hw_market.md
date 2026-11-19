@@ -76,6 +76,16 @@ tools/check_hw_market_layout.py                    布局 + 数据 + 口径门�
 tests/test_hw_market.py                            21 用例
 ```
 
+## 4.1 两个通道
+
+| 通道 | 事件类型 | matcher |
+|---|---|---|
+| NapCat（OneBot V11） | `MessageEvent` | `on_regex(priority=5, block=True)` |
+| QQ 官方 Bot（nonebot-adapter-qq） | `GroupMessageCreateEvent` / `C2CMessage*` | `on_message(priority=5, block=True, rule=…)` + adapter 守卫，复用 `game_tools.official_bridge.OfficialLikeEvent` |
+
+官方事件注入不到 OneBot 类型的 handler（TypeMisMatch），**两条通道必须各注册一个 matcher**；
+官方副本 `qq_bridge_official/` 是独立部署目录（不入 git），改动需同步过去再重建容器。
+
 ## 5. 验收
 
 ```bash
