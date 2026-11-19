@@ -1,0 +1,76 @@
+# LICENSE · 授权总览
+
+**这是一个混合许可仓库（mixed-license repository）** —— 不是「MIT 仓库」，也不是「CC BY 仓库」。
+仓库里不同部分适用不同许可，各自全文见下表指向的文件：
+
+| 内容 | 许可 | 全文 |
+|---|---|---|
+| `frocloud.xlsx`、`data/*.csv`、`README.md`、工作簿内的文字说明 | **CC BY 4.0** | [`LICENSES/CC-BY-4.0.txt`](LICENSES/CC-BY-4.0.txt) |
+| `tools/` 下的脚本（`export_csv.py`、`check_csv.py`、`test_materialize.py`） | **MIT** | [`LICENSES/MIT.txt`](LICENSES/MIT.txt) |
+| 引用的第三方跑分、拆解、行情资料 | **不属于**本仓库许可范围，版权归原权利人 | [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) |
+
+版权所有者：**x1shang**（GitHub） ｜ 建档：2023-05 ｜ 数据与文档版权年份：2023-2026
+
+---
+
+## 一、数据与文档：CC BY 4.0
+
+`frocloud.xlsx`、`data/*.csv`，以及随仓库发布的说明文字（`README.md`、工作簿里的「说明」表，
+以及本文件、`DISCLAIMER.md`、`THIRD_PARTY_NOTICES.md` 等说明性文字）
+采用 **Creative Commons Attribution 4.0 International（CC BY 4.0）** 许可。
+
+你可以自由地：
+
+- **共享** —— 以任何媒介或格式复制、发行本作品
+- **演绎** —— 修改、转换或以本作品为基础进行创作
+- 用于任何目的，**包括商业目的**
+
+惟须遵守下列条件：
+
+- **署名** —— 你必须给出适当的署名，提供指向本许可的链接，并说明是否作了修改。
+  你可以用任何合理的方式署名，但不得以任何方式暗示许可人认可你或你的使用。
+
+- **不得增加额外限制** —— 你不得适用法律条款或技术措施，从而在法律上限制他人
+  做本许可允许的事情。
+
+许可全文：[`LICENSES/CC-BY-4.0.txt`](LICENSES/CC-BY-4.0.txt)
+（Creative Commons 官方英文 legalcode，**逐字收录、未作任何改动**）
+官方中文译本：<https://creativecommons.org/licenses/by/4.0/legalcode.zh-Hans>
+人类可读摘要：<https://creativecommons.org/licenses/by/4.0/deed.zh-Hans>
+
+> **为什么数据不用 MIT？** MIT 是**软件**许可证，它的免责条款是围绕「软件」写的，
+> 套在数据集上既不贴切、也不覆盖数据库权利（sui generis database rights）。数据用 CC BY 是通行做法。
+
+### 建议的署名格式
+
+```text
+数据来源：frocloud · DIYPCmarket（<https://github.com/x1shang/frocloud-DIYPCmarket>），
+采用 CC BY 4.0 许可。数据截止 YYYY-MM。
+```
+
+## 二、脚本：MIT
+
+`tools/` 下的所有脚本（`export_csv.py`、`check_csv.py`、`test_materialize.py`）采用 **MIT License**，
+全文见 [`LICENSES/MIT.txt`](LICENSES/MIT.txt)。每个脚本的文件头也带了 SPDX 标识：
+
+```python
+# SPDX-License-Identifier: MIT
+```
+
+## 三、第三方资料
+
+本表引用的跑分与拆解资料来自第三方，**不属于**本仓库的许可范围，转载时请一并注明其原始来源。
+来源清单与商标声明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+
+## 四、免责与数据说明
+
+- 免责声明、使用限制与联系渠道 → [`DISCLAIMER.md`](DISCLAIMER.md)
+- 数据里的「空」是什么意思（空值口径、合并单元格物化规则） → [`README.md`](README.md) 的「空值口径」一节
+  数据部分的 SPDX 标识：`SPDX-License-Identifier: CC-BY-4.0`
+
+> 许可证覆盖的只是**授权**；数据的准确性、时效性与适用性另见上面两份说明。
+
+---
+
+项目主页：<https://github.com/x1shang/frocloud-DIYPCmarket>
+本文件更新：2026-10-08

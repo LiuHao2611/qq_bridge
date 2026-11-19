@@ -1,0 +1,72 @@
+name: 数据纠错 / 字段疑问
+description: 价格或天梯图有误、字段含义不清、月更流程有问题——都发这里。
+title: "[数据] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        谢谢纠错！这份数据是**月更的手工调研**，错误在所难免，反馈越具体越好核对。
+
+        提交前可以先确认两件事：
+        1. **数据截止日**（见 README「读者须知」）——如果你看到的是更晚的市场价，那不是错误；
+        2. **口径**（是否含税、是否含运费、哪家渠道）——口径不同不算错误，但欢迎指出说明不清的地方。
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 问题类型
+      options:
+        - 价格数值有误
+        - 天梯图档位归属有误
+        - 字段含义不清 / 文档没写清
+        - 缺某个型号 / 品类
+        - 空值口径不符合预期
+        - 月更流程 / 脚本问题
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: where
+    attributes:
+      label: 涉及哪个文件、哪一行/哪个型号
+      description: 例如 `data/gpu-prices.csv` 的 `RTX 5070` 行，或 `frocloud.xlsx` 的「显卡行情」表
+      placeholder: "data/memory-prices.csv · DDR5 16G×2 6000"
+    validations:
+      required: true
+
+  - type: textarea
+    id: seen
+    attributes:
+      label: 你看到的值
+      placeholder: "当前写的是 ¥899"
+    validations:
+      required: true
+
+  - type: textarea
+    id: should
+    attributes:
+      label: 你认为应该是多少 / 应该怎么改，以及依据
+      description: 依据是这条反馈能不能被采纳的关键——链接、截图、渠道与日期都算
+      placeholder: |
+        应为 ¥1,049（京东自营 2026-10-01 截图：<链接>）
+        注：原价可能是 899 的促销价，建议标注"促销"
+    validations:
+      required: true
+
+  - type: input
+    id: date
+    attributes:
+      label: 你查看价格的日期
+      description: 价格随时间变化，没有日期无法核对
+      placeholder: "2026-10-20"
+    validations:
+      required: false
+
+  - type: input
+    id: source
+    attributes:
+      label: 你的数据来源
+      placeholder: "京东自营 / 淘宝 / 线下 / 厂商官网 / 跑分来源"
+    validations:
+      required: false

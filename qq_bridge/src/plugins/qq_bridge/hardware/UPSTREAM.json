@@ -1,0 +1,133 @@
+{
+  "repo": "https://github.com/x1shang/frocloud-DIYPCmarket",
+  "branch": "main",
+  "commit": "53a43827db0e97a63091858f5032f28012d53a41",
+  "commit_date": "2026-10-08T16:12:50Z",
+  "vendored_at": "2026-11-19T12:50:08Z",
+  "data_asof": "2026-10-02",
+  "license": {
+    "data_and_docs": "CC BY 4.0",
+    "tools": "MIT",
+    "see": "vendored_frocloud/LICENSE"
+  },
+  "excluded": [
+    {
+      "path": "frocloud.xlsx",
+      "reason": "上游 AGENTS.md §0 绝对红线：xlsx 只准人碰，脚本不得创建/修改/移动/删除；本项目只读 data/*.csv，不搬二进制设计稿"
+    }
+  ],
+  "file_count": 22,
+  "total_bytes": 185145,
+  "files": [
+    {
+      "path": ".gitattributes",
+      "size": 975,
+      "sha256": "9a53f926ebbcefc94bacd40d4332ae5ec86e42a201e3d3a51d47b205044aa46d"
+    },
+    {
+      "path": ".githooks/commit-msg",
+      "size": 2066,
+      "sha256": "69edcc726839cd39d9d3ed2945ffcd091eff34093e8df4c6e796289e2c6f5f7f"
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/bug_report.yml",
+      "size": 2360,
+      "sha256": "d65f8b5a8a169ebdcb1c1ce13205c57bc8171714fb2ef570e51d9bf08e9ea63f"
+    },
+    {
+      "path": ".github/workflows/check-csv.yml",
+      "size": 5628,
+      "sha256": "17d4583da7a78d22d5296483c9d98bef7296ea2fc81f69d350030cff33ce1a93"
+    },
+    {
+      "path": ".gitignore",
+      "size": 1032,
+      "sha256": "656f21aa4f5d437c0f5f27c49081c5e2baf3998e7466266c4f7d84e88230aed3"
+    },
+    {
+      "path": "AGENTS.md",
+      "size": 5086,
+      "sha256": "f5021d96a7e194a6479ddc1a3b9490a113657b89545a81116ef0f9052e923822"
+    },
+    {
+      "path": "data/cpu-prices.csv",
+      "size": 21757,
+      "sha256": "eabb1bc8d526fac3c2276cc176b3f6b4cef4ad53b9eb1707ee1c0006e4a2a2b4"
+    },
+    {
+      "path": "data/cpu-tier.csv",
+      "size": 3637,
+      "sha256": "2f7c2fbf0736434b58d533c2d6aea06519dff91c48e8d8be38caa78077cb24cb"
+    },
+    {
+      "path": "data/gpu-brands.csv",
+      "size": 2457,
+      "sha256": "f123a64d43864195f494666bd2cdf06540b53733b93046ab73b192494ae24ae5"
+    },
+    {
+      "path": "data/gpu-prices.csv",
+      "size": 24841,
+      "sha256": "76b5f0dcdb478bfdf9ca9b2ffe1fc848b35ea19a1f2af737eda9eb0364766352"
+    },
+    {
+      "path": "data/gpu-tier.csv",
+      "size": 6989,
+      "sha256": "b169104dd2616ab08d933e7371ec8db5a5b2728bd0a15601dab56223ea73f803"
+    },
+    {
+      "path": "data/laptop-cpu-tier.csv",
+      "size": 3893,
+      "sha256": "bdc7d48caff4d90f2e343a15ffb23eeed3c57dfc0d04632682577b25492a0615"
+    },
+    {
+      "path": "data/memory-prices.csv",
+      "size": 2654,
+      "sha256": "d0ed4d2e62201dc2c33097cd3d8d9be3d14084cd347b167c263d6e56625afdd0"
+    },
+    {
+      "path": "DISCLAIMER.md",
+      "size": 1239,
+      "sha256": "8a55f6ec2bd14a2d1fb59de59ffb10088c18615765c12f08ec725a4ae8c521c1"
+    },
+    {
+      "path": "LICENSE",
+      "size": 3614,
+      "sha256": "99f7089aeaf996329f0a1a745b61292066a569319adad9fde9fff185f399af64"
+    },
+    {
+      "path": "LICENSES/CC-BY-4.0.txt",
+      "size": 18657,
+      "sha256": "9ba9550ad48438d0836ddab3da480b3b69ffa0aac7b7878b5a0039e7ab429411"
+    },
+    {
+      "path": "LICENSES/MIT.txt",
+      "size": 1069,
+      "sha256": "ca0a571cee65ffa4e173168d6c33bc61ee31da46762d7c0e599e548f12ba300d"
+    },
+    {
+      "path": "README.md",
+      "size": 21658,
+      "sha256": "2e3fe1a856077c04011527326ce51d81f87b08eec76f12c91a82177468f88167"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "size": 1725,
+      "sha256": "7c2c49dfb9f6f2fa48fb2013579be216b1580fa212511dea7596f3d9f64d6a0f"
+    },
+    {
+      "path": "tools/check_csv.py",
+      "size": 23075,
+      "sha256": "f78c812581483d122c7cf551063d43e980fe0adafe2566d408dfa0e9604988d6"
+    },
+    {
+      "path": "tools/export_csv.py",
+      "size": 25304,
+      "sha256": "7a38517798c6d2bbf4f69e06089e26ffba472fefbec9bfd7a987616651d64e1b"
+    },
+    {
+      "path": "tools/test_materialize.py",
+      "size": 5429,
+      "sha256": "156c1c9207cf9ff1cc089286ec7f594ed7c87883020ff2775eecf88a663f8513"
+    }
+  ]
+}

@@ -69,10 +69,10 @@ def _official_bots() -> list:
     try:
         intent = json.loads(
             os.environ.get("OFFICIAL_INTENT")
-            or '{"c2c_group_at_messages": true, "group_members": true}'
+            or '{"c2c_group_at_messages": true, "group_members": true, "interaction": true}'
         )
     except Exception:  # noqa: BLE001 — 配置写错不能让进程起不来，回退默认 intent
-        intent = {"c2c_group_at_messages": True, "group_members": True}
+        intent = {"c2c_group_at_messages": True, "group_members": True, "interaction": True}
     return [{
         "id": appid,
         # 适配器 BotInfo 仍保留 token 字段（历史遗留）；1.7.x 实际用 appid+secret
@@ -127,7 +127,11 @@ if OFFICIAL_BOTS:
 # 要恢复 → 改回 true 再重启，代码零改动。
 # 开关的唯一事实来源在 src/group_switch.py：插件侧（xiuxian 广播）也读它，
 # 否则各处各写一个 os.environ.get，早晚漂移成「入站关了、出站还开着」。
-from src.group_switch import group_enabled  # noqa: E402
+from src.group_switch import (  # noqa: E402
+    group_enabled,
+    group_send_whitelist,
+    install_outbound_guard,
+)
 
 GROUP_ENABLED = group_enabled()
 
@@ -172,15 +176,91 @@ if not GROUP_ENABLED:
     # 上面那道只管进，不管出。2026-10-29 实测：入站被拦死了，
     # 机器人照样在 13:53 / 14:33 / 15:26 往群里发主动广播（xiuxian 的世界事件循环
     # 直接调 bots[0].send_group_msg，根本不经过事件链路）。
-    # 出站闸挂在 Bot.call_api 上，覆盖所有走 OneBot API 的群发送。
-    from src.group_switch import install_outbound_guard
-
-    install_outbound_guard()
+    # 出站闸挂在 Bot.call_api 上，覆盖所有走 OneBot API 的群发送；
+    # ⚠️ 它现在在下面「无条件」安装，不再只属于 GROUP_ENABLED=false 分支。
 
     print(
         "[qq_bridge] 群聊总闸已开启（GROUP_ENABLED=false）：群消息一律静默丢弃，仅响应私聊",
         flush=True,
     )
+
+# ---------------------------------------------------------------------------
+# 出站常驻闸 + 入站单群收窄（2026-11-10「乱发群消息」事故修复）
+# ---------------------------------------------------------------------------
+# 事故复盘：GROUP_WHITELIST 只在 dispatcher（priority=10）生效，而 doupo /
+# xiuxian 是 priority=5 + block=True，抢先消费群消息；日志实证 17:49:07
+# 非白名单群 1042928787 的 `dj` 口令 → 17:49:11 回了一张 288KB 图。
+# 两道闸都放在框架层，与插件优先级无关：
+#   · 出站：Bot.call_api 统一拦所有群发送（文字/图片/转发/公告/面板手发/主动广播）；
+#   · 入站：event_preprocessor 直接丢弃非白名单群消息，连 matcher 都不让进。
+# ⚠️ 出站闸必须无条件安装：只在 GROUP_ENABLED=false 时装，等于群聊开启时
+#    所有非白名单群发送全部放行，正是这次事故的直接原因。
+install_outbound_guard()
+_allowed_groups = group_send_whitelist()
+print(
+    "[qq_bridge] 出站群消息白名单已生效 allowed=%s group_enabled=%s"
+    % (",".join(str(g) for g in sorted(_allowed_groups)) or "(none)", GROUP_ENABLED),
+    flush=True,
+)
+
+from nonebot.adapters import Event as _Event  # noqa: E402
+from nonebot.message import (  # noqa: E402
+    IgnoredException as _IgnoredException,
+    event_preprocessor as _event_preprocessor,
+)
+
+_wl_dropped = 0
+
+
+@_event_preprocessor
+async def _block_non_whitelist_groups(event: _Event):
+    """非白名单群消息在任何 matcher 之前静默丢弃（含主人发言，避免误回）。
+
+    2026-11-10 官方机器人副本适配（原 NapCat 代码只读，此改动只在副本）：
+    官方通道（QQ 开放平台 nonebot-adapter-qq）身份是 openid → pseudo 负数 ID，
+    **没有 NapCat 的数字群号**，数字白名单 GROUP_WHITELIST 对它不适用
+    （与 dispatcher.allow 的 official_ok 同源）。这里必须直接放行，否则官方群
+    每条消息都会在 matcher 之前被误杀，导致 warframe / 签到 / 对话等所有指令
+    在官方机器人上「完全没反应」。NapCat 分支（有数字 group_id）逻辑一字不动。
+    """
+    global _wl_dropped
+    # 官方通道事件模块名固定为 nonebot.adapters.qq；用它精确识别并放行，
+    # 不碰 NapCat 的 OneBot V11 数字群白名单逻辑。
+    if type(event).__module__.startswith("nonebot.adapters.qq"):
+        # 官方事件到达即打点（2026-11-11，仅副本）：这是 matcher 之前必经的一道闸，
+        # 在这里留痕可一眼区分「平台没推消息」与「推了但业务层没接住」——
+        # 上一轮 official_message_in=0 却无法判断卡在适配层还是平台层，就是缺这一行。
+        # 只打事件类型/群标识存在性，openid 不当凭据但也不全量落日志。
+        try:
+            print(
+                "[qq_bridge] official_event_arrived name=%s cls=%s has_group=%s"
+                % (
+                    getattr(event, "get_event_name", lambda: "?")(),
+                    type(event).__name__,
+                    bool(getattr(event, "group_openid", "")),
+                ),
+                flush=True,
+            )
+        except Exception:  # noqa: BLE001 — 观测日志绝不能影响事件放行
+            pass
+        return
+    gid_raw = getattr(event, "group_id", None)
+    if not gid_raw:
+        return
+    try:
+        gid = int(gid_raw)
+    except (TypeError, ValueError):
+        return
+    if gid in _allowed_groups:
+        return
+    _wl_dropped += 1
+    if _wl_dropped == 1 or _wl_dropped % 200 == 0:
+        print(
+            "[qq_bridge] 非白名单群消息已忽略 %d 条（group_id=%s）"
+            % (_wl_dropped, gid),
+            flush=True,
+        )
+    raise _IgnoredException("group_not_whitelisted")
 
 # 加载插件目录（相对运行目录 qq_bridge/）
 # 注：load_plugins 只扫一层，src/plugins/qq_bridge 作为唯一插件入口，
@@ -192,6 +272,18 @@ nonebot.load_plugins("src/plugins")
 from src.plugins.qq_bridge import register  # noqa: E402
 
 register()
+
+# DIY 硬件行情（2026-11-19）：独立 matcher，priority=5 + block=True。
+# 注册放在入口而不是 qq_bridge/__init__.py —— 那个文件是 366KB 存量超大文件，
+# 提交门禁（200KB）不许再增长；功能 matcher 的晚期注册统一收敛到本文件。
+# 失败只打印，不影响主流程启动（行情卡不可用 ≠ 机器人不可用）。
+try:
+    from src.plugins.qq_bridge.hardware import register as register_hardware  # noqa: E402
+
+    register_hardware()
+except Exception as _e:  # noqa: BLE001
+    print("[qq_bridge] hardware register failed: %s: %s" % (type(_e).__name__, _e),
+          flush=True)
 
 if __name__ == "__main__":
     nonebot.run()

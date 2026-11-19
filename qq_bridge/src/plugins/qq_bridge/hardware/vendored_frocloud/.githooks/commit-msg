@@ -1,0 +1,52 @@
+#!/bin/sh
+# ============================================================
+#  frocloud · DIYPCmarket —— commit-msg 钩子
+#
+#  规则：frocloud.xlsx 是**纯手搓**的设计稿，机器不许碰。
+#  如果这次提交改了 xlsx，却没有在提交信息里写明 [handmade-xlsx]，
+#  就拦下来 —— 提醒你：这个改动是不是某个脚本干的？
+#
+#  （用 commit-msg 而不是 pre-commit：提交信息文件是作为参数传进来的，
+#    无论 `-m` 还是编辑器都拿得到；pre-commit 阶段那个文件还不存在。）
+#
+#  启用（每个 clone 都要做一次，.git/hooks 不入库）：
+#      git config core.hooksPath .githooks
+#
+#  真的是人工改的 xlsx，提交时带上标记：
+#      git commit -m "data-2026-11 调整配色 (prerelease) [handmade-xlsx]"
+#
+#  临时跳过（明知故犯）：
+#      git commit --no-verify ...
+# ============================================================
+
+msg_file="$1"
+
+# 本次提交是否改了仓库里的 xlsx？（GIT_INDEX_FILE 在 merge / cherry-pick 时可能省略）
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -qx 'frocloud\.xlsx'; then
+    exit 0
+fi
+
+if [ -n "$msg_file" ] && [ -f "$msg_file" ] && grep -q '\[handmade-xlsx\]' "$msg_file"; then
+    echo "✓ frocloud.xlsx 有改动，且提交信息带 [handmade-xlsx] —— 视为人工编辑。"
+    exit 0
+fi
+
+cat <<'EOF'
+
+✗ 拒绝提交：本次改动包含 frocloud.xlsx，但提交信息里没有 [handmade-xlsx] 标记。
+
+  规则：这份工作簿是纯手搓的，任何脚本都不得写入它。
+  如果你确实是在 WPS / Excel 里手工改的（加月份列、调价、改美化），
+  在提交信息里加上标记后重试：
+
+      git commit -m "data-2026-11 手工调整 (prerelease) [handmade-xlsx]"
+
+  如果是某个脚本改出来的 —— 那本身就是违规操作，请先回退：
+  仓库里**不存在**也不允许存在能写 xlsx 的工具（见 AGENTS.md 第 0 条）。
+
+  确实想跳过这次检查：
+
+      git commit --no-verify ...
+
+EOF
+exit 1

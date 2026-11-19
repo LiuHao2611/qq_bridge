@@ -9,6 +9,7 @@
 
 | 规则 | 由什么拦住 |
 |---|---|
+| **硬件行情卡（`硬件行情`）的数据只能来自全量搬运的上游 CSV，卡面口径必须写「月度 / 非日内」**：不得伪造成日内实时报价，内存/存储必须标 元/GB 并给整条折算 | `tools/vendor_frocloud.py --verify`（sha256 清单，手改 CSV 即失败）＋ `tools/check_hw_market_layout.py --check/--selftest`（口径词、单位、统计与 CSV 重算逐项比对、5 类注入）＋ `tests/test_hw_market.py` |
 | **交差前代码必须上传 GitHub**：本次任务涉及的源码 / 配置等**受 git 管理**的文件必须 `commit` + `push` 到项目远程，不能只留在工作区或 Docker 镜像；无远程 / 历史分叉 / 门禁拦截 / 用户要求「只本地」时必须在交差中显式申报并确认 | `prove-it`「交差之前」第 4 条 + 交差格式新增 `代码：` 行（正本与 `.bak` 副本一致）；`manju-dev-guard` 收尾段；机器判定：`git status --short -- <本次文件>` 无输出且 `git ls-remote origin <branch>` 含该 commit |
 | **出图口令必须出图，禁止降级纯文字 / 禁止限流 / 禁止静默**（用户 2026-11-07 21:17 明确要求并说「记住了」）：斗破里凡是会出自绘卡片的口令，任何频率下都必须真的发 image 段；`_throttle.py` 已从链路移除，禁止重新接入 `Throttle.check()` 或任何冷却 / 降级 / 静默逻辑，也不许用无参数 `finish()` 掐断 handler；若担心账号风控只能先问用户 | `doupo/__init__.py` 完全不 import `_throttle`，8 个出图 handler 无条件 `if png:` 发图；`doupo/test_e2e.py` 末尾 7 条「建号 + 连续 6 条出图口令必须真的带 image 段」行为断言（全部落在旧 25s 冷却窗口内）；注入验证：把限流接回 → 6 条 FAIL；`_throttle.py` 顶部「已停用 · 禁止重新接入」 |
 | **人物卡头像必须画在卡片里，不许再单独发动态小人 GIF**（用户 2026-11-07 22:3x：「人物卡片里不用放动态人物小人了，截图一个头像就行，放在卡片里」）：`人物/属性/面板` 回包只能有 **1 个 image 段**，且必须是 PNG 卡片；头像用对应档位 GIF **首帧**裁 96×96 静态图，base64 经 `card.build_data()` 传给模板画进左侧圆角框；不得回退成「动图 + 卡片」两张图，也不得把头像从卡片里拿掉 | `doupo/__init__.py::panel` 只读 `card.render_panel(p)` 并无条件 `finish(MessageSegment.image(png))`，链路里没有 `avatar_for`；`avatar.py::HEADSHOT_BOXES` 四档裁剪 + `headshot_for()` 产出 base64 PNG；`pic/templates/doupo.py` 用 `paste_alpha(av, ..., rounded_mask(...))` 画头像，`H_HEADER=112` 与 `_measure()` 同步；`doupo/test_e2e.py` 连续 3 次「人物」断言「恰好 1 个 image 段 + PNG 魔数 + 无 GIF + 头像框深色像素 >1500」，且**自清 pic 磁盘缓存**防旧图假通过；`test_card.py` 用 `render_sync` 绕开缓存做有无头像的像素对比；`tests/test_pic_templates.py` 固定高度 712 + 纯色假头像 9216 像素探针；注入验证：接回 GIF → 6 项 FAIL、模板不画头像 → 3 项 FAIL，还原后 75/75 |
@@ -1735,3 +1736,18 @@ stars/boot`）；`fetch_part_art` 对这些部位**先取 WM `prime_*` subIcon�
 - 验收：宿主 8 套 runner 全过、三门禁 PASS、图鉴文档同步；迦南学院卡 720×3219、`check_boxes` 0 问题；容器 rebuild 后 NapCat ID/启动时间未变、三层 md5 全等、容器内门禁 14/14 与出图 0 问题。
 - ⚠️ 视觉模型本轮不可用，顶部放大图**未能由视觉核对**；卡面描述首句逐条文本已核对，不冒充肉眼验收。主通道仍 `ws_down`（NapCat 二维码过期，未自动重登），与本次改动无关。
 
+
+---
+
+## §11-19 21:3x（2026-11-19）新增 DIY 电脑硬件行情卡：全量搬运 frocloud-DIYPCmarket
+
+- **用户指令**：「给机器人加一个新功能，电脑主机硬件价格最新整理，当天什么硬件，几涨几跌等等，去深度调研 2026 最新 github 大佬项目源码，全部源码，全量搬运，先不用同步容器，做好交付就行。」
+- **调研与选型**（候选：frocloud-DIYPCmarket / nerdyaf ram-price-tracker / yachty66 gpu-price-tracker / HardwareDealsCo gpu-deals / alex-hubbard gpu_price_tracker）：只有 `x1shang/frocloud-DIYPCmarket` 是**中国大陆 DIY 整机市场**的人民币月度档案（显卡 39 款 / CPU 54 款 / 内存存储 15 款，2025-01 起），自带 GPU/CPU 天梯与校验脚本、混合许可（数据 CC BY 4.0、tools MIT）。其余为美元单品类、云 GPU 租赁价或需 Playwright 抓 PCPartPicker，口径与本需求不符。
+- **口径诚实性（本次最重要的裁定）**：上游是**月度**档案（数据截止 2026-10-02），不存在日内数据。卡面固定写「上游月度档案 · 非日内行情 · 数据截止 …（N 天前）」，**不伪造「今日/实时」**；「几涨几跌」= 最新一期（2026-10）对比上一期（2026-09），两期缺一期的标的不计入，覆盖数如实写在面板上。
+- **全量搬运**：commit `53a43827db0e97a63091858f5032f28012d53a41`，22 个文件 / 185,145 B → `src/plugins/qq_bridge/hardware/vendored_frocloud/`（7 份 CSV + README/AGENTS/DISCLAIMER/LICENSE/LICENSES/THIRD_PARTY_NOTICES + 上游 3 个 tools + git 元数据），清单落 `hardware/UPSTREAM.json`（逐文件 sha256 + data_asof）。**排除 `frocloud.xlsx`**：上游 AGENTS.md §0 是绝对红线（xlsx 只准人碰，脚本不得创建/修改/移动/删除），本项目只读 CSV，不搬二进制设计稿。
+- **实现**：`hardware/dataset.py`（CSV→Instrument，月份排序含上游非标准标签 `2026-07-下旬`，元/GB→整条容量换算）＋ `hardware/market.py`（最新/上期配对、涨跌家数、榜首、模糊检索、卡面 payload）＋ `pic/templates/hw_market.py`（总览/单型号两视图，先算布局再画，口径文案常量化）＋ `hardware/__init__.py`（`硬件行情|装机行情|硬件价格|电脑硬件|diy行情`，priority=5 block=True，命中出图；查不到/命中多个只回检索说明，绝不拿文字卡冒充行情卡）。matcher 的注册点在 `bot.py`（`register()` 之后）——`qq_bridge/__init__.py` 是 366KB 存量超大文件，提交门禁 200KB 上限不许再增长，功能注册统一收敛到入口。
+- **检索体验**：剥厂商前缀（RTX/RX/GTX/ARC）+ 去空格/乘号/间隔点；`7800x3d→R77800X3D`、`i5 14600K→i514600K`、`DDR5 32G→DDR5·16G×2（整条 32GB）`、`固态 2T` 均可命中；完全相等优先（`5070` 不会被 `5070Ti` 抢走）；命中多个列出前 6 个让用户选，不擅自挑一个。
+- **拦截**：`tools/vendor_frocloud.py --verify`（清单 sha256，手改/多放/缺失都报错）；`tools/check_hw_market_layout.py --check`（溢出/重叠/同房间距/必备盒/**门禁自己重读 CSV 重算涨跌家数与榜首**/口径词/元GB 单位，两视图 × light+neon）；`--selftest` 注入 5 类真实错误（页脚盒丢失、面板重叠、家数篡改、口径写成今日、画布少算 40px）全部被抓；`tests/test_hw_market.py` 21 用例（含独立 CSV 重算、口令正则与参数提取、空参数出总览）。
+- **本期真实数据（卡面核对基准）**：显卡 17 涨 / 0 跌 / 0 平（17/17 可比，全部上涨，榜首 7650GRE ¥2000→¥2400 +20.0%）；CPU 10 涨 / 6 跌 / 5 平（21/24）；内存存储 3 涨 / 7 跌 / 1 平（11/11，跌幅榜首 固态 PCIE5.0 2TB ¥0.99→¥0.84/GB −14.6%）。`5090` 单卡：¥47,500（2026-10），环比 +18.75%，较档案低点 ¥18,500（2025-08） **+156.8%**。
+- **验收**：`--check` PASS（6 张图：overview/gpu/mem × light/neon），`--selftest` 5/5，`tests/test_hw_market.py` 21/21；出图尺寸 800×706（总览）/ 800×658（5090）/ 800×634（内存），四周内边距 24/22px，溢出 0 / 重叠 0 / 间距 0。
+- **未验证**：按用户「先不用同步容器」，**未 rebuild / 未 force-recreate**，线上仍是旧镜像；未从 QQ 客户端真发「硬件行情」收图（容器未更新，发了也没这功能）。数据时效止于上游 2026-10-02，非日内行情——这是数据源事实，不是实现缺陷。

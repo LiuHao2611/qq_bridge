@@ -1,0 +1,25 @@
+# ============================================================
+#  frocloud · DIYPCmarket
+#  行尾统一成 LF（Windows 的 core.autocrlf=true 会把它们变成 CRLF，
+#  那会让每次重新导出 CSV 都变成整文件 diff，shell 钩子在 Linux/macOS 上也会坏）
+# ============================================================
+
+* text=auto eol=lf
+
+# 数据与文档：必须是 LF
+*.csv           text eol=lf
+*.md            text eol=lf
+*.py            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+LICENSE         text eol=lf
+.gitattributes  text eol=lf
+.gitignore      text eol=lf
+
+# shell 钩子：必须是 LF，否则 Git for Windows / Linux 上无法执行
+.githooks/*     text eol=lf
+
+# 让 Git 知道这些不是文本，别做行级 diff / 自动合并
+# （frocloud.xlsx 其实是个 zip；data/*.csv 由脚本生成，冲突时应当重新导出而不是手工合并）
+frocloud.xlsx   binary -diff -merge
+data/*.csv      -merge
