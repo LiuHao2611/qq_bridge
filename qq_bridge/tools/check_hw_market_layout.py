@@ -12,14 +12,15 @@
   2. **重叠**：叶子盒两两比对，合法包含（面板包住内部文字）跳过；
   3. **间距**：三块分类面板、每行「名称 / 涨跌幅 / 价格」之间水平间距 ≥ 8px；
   4. **必备**：总览/明细两视图的关键盒 label 齐全（页脚/指标/图表/面板…）；
-  5. **数据**：门禁**自己重新读 CSV**（不复用 dataset 聚合）算涨跌家数与榜首，
+  5. **包含**：面板内的名称/数字/覆盖行必须完整落在面板盒内（数据长到 3 位数先撞这里）；
+  6. **数据**：门禁**自己重新读 CSV**（不复用 dataset 聚合）算涨跌家数与榜首，
      与卡面 payload 逐项比对 —— 抓「聚合口径写错却画得很漂亮」；
-  6. **口径**：拦截实际绘制文本里的「今日 / 实时行情」等词，要求出现「月度 / 非日内」，
+  7. **口径**：拦截实际绘制文本里的「今日 / 实时行情」等词，要求出现「月度 / 非日内」，
      并核对数据截止日与 UPSTREAM.json 一致（本卡不是日内行情，禁止暗示实时）；
-  7. **单位**：内存/存储必须画 元/GB 与「整条 ≈」折算，缺失即失败（上游是元/GB 口径）。
+  8. **单位**：内存/存储必须画 元/GB 与「整条 ≈」折算，缺失即失败（上游是元/GB 口径）。
 
 绝不降级：任一问题即 ``exit 1``；不吞异常、不放宽阈值。``--selftest`` 把真实犯过的
-错（盒越界、面板重叠、页脚丢失、口径写错、统计篡改）逐类注入，必须全部被抓到。
+错（盒越界、面板重叠、页脚丢失、口径写错、统计篡改、面板内文字溢出）逐类注入，必须全部被抓到。
 """
 from __future__ import annotations
 
@@ -98,6 +99,23 @@ def gap_problems(boxes, pairs) -> list[str]:
         gap = d[right][1] - d[left][3]
         if gap < MIN_GAP:
             out.append("间距不足：%s→%s 仅 %dpx（要求 ≥%d）" % (left, right, gap, MIN_GAP))
+    return out
+
+
+def containment_problems(boxes) -> list[str]:
+    """面板内的文字/数字必须完整落在面板盒内（数据长大到 3 位数时会先撞这里）。"""
+    d = {b[0]: b for b in boxes}
+    out = []
+    for idx in (0, 1, 2):
+        parent = d.get("stat.%d" % idx)
+        if parent is None:
+            continue
+        for k, box in d.items():
+            if not k.startswith("stat.%d." % idx):
+                continue
+            if not _contains(parent, box):
+                out.append("面板溢出：%s %r 超出 %s %r"
+                           % (k, box[1:], parent[0], parent[1:]))
     return out
 
 
@@ -245,6 +263,8 @@ def check_all(out: str = "") -> list[str]:
                          for p in box_problems(boxes, 800, h)]
             problems += ["%s/%s %s" % (theme_name, view, p)
                          for p in missing_problems(boxes, req)]
+            problems += ["%s/%s %s" % (theme_name, view, p)
+                         for p in containment_problems(boxes)]
             pairs = []
             if view == "overview":
                 pairs = [("stat.0", "stat.1"), ("stat.1", "stat.2")]
@@ -364,11 +384,24 @@ def _selftest() -> int:
 
     expect("画布高度不足（页脚/末行出界）", m5, m5_check)
 
+    # 6) 面板被压窄 100px → 内部数字溢出面板，包含检查必须报错
+    def m6():
+        def bad(c, t, box, b, boxes, idx):
+            if idx == 0:
+                box = (box[0], box[1], box[2] - 100, box[3])
+            return orig_panel(c, t, box, b, boxes, idx)
+
+        tpl._panel = bad
+        return lambda: setattr(tpl, "_panel", orig_panel)
+
+    expect("面板压窄（内部文字溢出）", m6,
+           lambda: containment_problems(_boxes(payload, theme)))
+
     if failures:
         for f in failures:
             print("SELFTEST FAIL", f)
         return 1
-    print("selftest ok：5 类注入全部被拦")
+    print("selftest ok：6 类注入全部被拦")
     return 0
 
 
