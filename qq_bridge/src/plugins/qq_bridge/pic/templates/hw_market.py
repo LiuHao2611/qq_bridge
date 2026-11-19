@@ -265,6 +265,12 @@ def _chart(c, t, box, chart, color, boxes):
     _rec(boxes, "chart", box)
     inner_x0, inner_x1 = x0 + 16, x1 - 16
     inner_y0, inner_y1 = y0 + 30, y1 - 26
+    if len(chart) < 2:
+        msg = "历史不足 2 天 · 明日起显示走势"
+        c.text(((x0 + x1) // 2, (y0 + y1) // 2), msg, size=t.fs(16),
+               color=t.text_weak, anchor="mm")
+        _rec(boxes, "chart.empty", _tb(((x0 + x1) // 2, (y0 + y1) // 2), msg, t.fs(16), "mm"))
+        return
     prices = [p["p"] for p in chart] or [0.0]
     lo, hi = min(prices), max(prices)
     span = (hi - lo) or 1.0
@@ -354,23 +360,31 @@ def build_model(t: Theme, payload: dict, width: int, boxes=None) -> Canvas:
     col_w = cw // 3
     _metric(c, t, x0, L["metric"], col_w, "环比上一期（%s）" % (payload.get("prev_month") or "—"),
             _pct(pct), pcol, boxes, "metric.pct")
-    _metric(c, t, x0 + col_w, L["metric"], col_w,
-            "较档案最低点（%s）" % (payload.get("low_month") or ""),
-            _pct(payload.get("vs_low_pct")), pcol, boxes, "metric.vslow")
-    _metric(c, t, x0 + col_w * 2, L["metric"], col_w, "档案区间 高 / 低",
-            "%s / %s" % (_money(payload.get("high"), payload["unit"]),
-                         _money(payload.get("low"), payload["unit"])),
-            t.text, boxes, "metric.range", size=t.fs(16))
+    thin = payload.get("hist_days") is not None and payload["hist_days"] < 2
+    low_tag = ("较档案最低点（%s）" % payload["low_month"]) if payload.get("low_month") else "较档案最低点"
+    _metric(c, t, x0 + col_w, L["metric"], col_w, low_tag,
+            "—" if thin else _pct(payload.get("vs_low_pct")), pcol, boxes, "metric.vslow")
+    if thin:
+        _metric(c, t, x0 + col_w * 2, L["metric"], col_w, "档案区间 高 / 低", "—（明日起）",
+                t.text_sub, boxes, "metric.range", size=t.fs(16))
+    else:
+        _metric(c, t, x0 + col_w * 2, L["metric"], col_w, "档案区间 高 / 低",
+                "%s / %s" % (_money(payload.get("high"), payload["unit"]),
+                             _money(payload.get("low"), payload["unit"])),
+                t.text, boxes, "metric.range", size=t.fs(16))
 
     _chart(c, t, (x0, L["chart"], x1, L["chart"] + CHART_H), chart, pcol, boxes)
 
     if tier:
-        tname = tier.get("tier") or "上游未分级"
-        line1 = "天梯 · %s" % tname
+        if payload["bucket"] == "gpu":
+            line1 = "跑分 · %s" % (tier.get("vendor") or "GPU")
+        else:
+            line1 = "天梯 · %s" % (tier.get("tier") or "上游未分级")
         c.text((x0, L["tier"] + 10), line1, size=t.fs(20), color=t.accent,
                role="bold", anchor="lm")
         _rec(boxes, "tier.title", _tb((x0, L["tier"] + 10), line1, t.fs(20), "bold"))
-        bits = [tier.get("vendor") or "", tier.get("extra") or ""]
+        bits = ([(tier.get("extra") or "")] if payload["bucket"] == "gpu"
+                else [tier.get("vendor") or "", tier.get("extra") or ""])
         if tier.get("score_main"):
             bits.append(("CPUMark " if payload["bucket"] == "cpu" else "TimeSpy ")
                         + "{:,.0f}".format(float(tier["score_main"])))
